@@ -1,0 +1,428 @@
+/* ============================================================
+   PromptOps Design System — Global UI Overrides
+   Streamlit 1.56+  |  Dark sidebar, high-contrast main area
+   Version 2.0 — Role rename (ID/Lead), scoped activation, UX improvements
+   ============================================================ */
+
+/* ── Sidebar: Dark Premium Background + Scrollable ─────────── */
+section[data-testid="stSidebar"] {
+    background-color: #1e1b4b !important;
+    border-right: 1px solid rgba(99, 102, 241, 0.3) !important;
+}
+
+section[data-testid="stSidebar"] > div:first-child {
+    background-color: #1e1b4b !important;
+    height: 100vh !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+    align-items: stretch !important;
+}
+
+/* Inner content wrapper: let it grow naturally from the top, never push content down */
+section[data-testid="stSidebar"] > div:first-child > div {
+    overflow-x: hidden !important;
+    flex: 0 0 auto !important;
+}
+
+/* Scrollbar styling for sidebar — all nested scroll containers */
+section[data-testid="stSidebar"]::-webkit-scrollbar,
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar {
+    width: 6px;
+}
+section[data-testid="stSidebar"]::-webkit-scrollbar-track,
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-track {
+    background: rgba(255,255,255,0.05);
+}
+section[data-testid="stSidebar"]::-webkit-scrollbar-thumb,
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb {
+    background: rgba(165,180,252,0.45);
+    border-radius: 3px;
+}
+section[data-testid="stSidebar"]::-webkit-scrollbar-thumb:hover,
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb:hover {
+    background: rgba(165,180,252,0.75);
+}
+
+/* ── Sidebar: Native Text Elements ────────────────────────── */
+/* Catch-all for any unstyled text nodes in the sidebar */
+section[data-testid="stSidebar"] p {
+    color: #c7d2fe !important;
+}
+
+/* Widget labels (text_input, textarea, selectbox, etc.) */
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] label {
+    color: #c7d2fe !important;
+    font-weight: 500 !important;
+}
+
+/* Caption / small help text */
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p,
+section[data-testid="stSidebar"] small {
+    color: #a5b4fc !important;
+}
+
+/* Markdown text nodes inside sidebar */
+section[data-testid="stSidebar"] [data-testid="stMarkdown"] p {
+    color: #c7d2fe !important;
+}
+
+/* ── Sidebar: Form Inputs ──────────────────────────────────── */
+/* Light background with dark text — reliable on dark sidebar */
+section[data-testid="stSidebar"] input[type="text"],
+section[data-testid="stSidebar"] input[type="password"],
+section[data-testid="stSidebar"] textarea,
+section[data-testid="stSidebar"] input {
+    background-color: rgba(255, 255, 255, 0.92) !important;
+    color: #111827 !important;
+    border: 1px solid rgba(165, 180, 252, 0.55) !important;
+    border-radius: 6px !important;
+    caret-color: #4338ca !important;
+}
+
+section[data-testid="stSidebar"] input[type="text"]::placeholder,
+section[data-testid="stSidebar"] input[type="password"]::placeholder,
+section[data-testid="stSidebar"] textarea::placeholder,
+section[data-testid="stSidebar"] input::placeholder {
+    color: #9ca3af !important;
+}
+
+section[data-testid="stSidebar"] input[type="text"]:focus,
+section[data-testid="stSidebar"] input[type="password"]:focus,
+section[data-testid="stSidebar"] textarea:focus,
+section[data-testid="stSidebar"] input:focus {
+    background-color: #ffffff !important;
+    color: #111827 !important;
+    border-color: #818cf8 !important;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3) !important;
+    outline: none !important;
+}
+
+/* Selectbox */
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div {
+    background-color: rgba(255, 255, 255, 0.92) !important;
+    color: #111827 !important;
+    border-color: rgba(165, 180, 252, 0.55) !important;
+    border-radius: 6px !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] span {
+    color: #111827 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] svg {
+    fill: #a5b4fc !important;
+}
+
+/* ── Sidebar: Buttons ─────────────────────────────────────── */
+/* Secondary (default) buttons */
+section[data-testid="stSidebar"] [data-testid="stButton"] > button {
+    background-color: rgba(255, 255, 255, 0.09) !important;
+    color: #c7d2fe !important;
+    border: 1px solid rgba(165, 180, 252, 0.3) !important;
+    font-weight: 500 !important;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stButton"] > button:hover {
+    background-color: rgba(99, 102, 241, 0.28) !important;
+    color: #ffffff !important;
+    border-color: rgba(165, 180, 252, 0.6) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stButton"] > button:active {
+    background-color: rgba(99, 102, 241, 0.45) !important;
+    color: #ffffff !important;
+}
+
+/* Primary (Sign In) button */
+section[data-testid="stSidebar"] [data-testid="stButton"] > button[kind="primary"] {
+    background-color: #4338ca !important;
+    color: #ffffff !important;
+    border: none !important;
+    font-weight: 700 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stButton"] > button[kind="primary"]:hover {
+    background-color: #3730a3 !important;
+    color: #ffffff !important;
+}
+
+/* Disabled buttons */
+section[data-testid="stSidebar"] [data-testid="stButton"] > button:disabled {
+    opacity: 0.45 !important;
+    cursor: not-allowed !important;
+}
+
+/* ── Sidebar: Dividers ────────────────────────────────────── */
+section[data-testid="stSidebar"] hr {
+    border: none !important;
+    border-top: 1px solid rgba(165, 180, 252, 0.25) !important;
+    margin: 0.7rem 0 !important;
+}
+
+/* ── Sidebar: Expanders ───────────────────────────────────── */
+section[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(165, 180, 252, 0.22) !important;
+    border-radius: 8px !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    color: #c7d2fe !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary p,
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary span {
+    color: #c7d2fe !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    color: #ffffff !important;
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stExpander"] svg {
+    fill: #a5b4fc !important;
+}
+
+/* ── Sidebar: Checkboxes ─────────────────────────────────── */
+section[data-testid="stSidebar"] [data-testid="stCheckbox"] label p,
+section[data-testid="stSidebar"] [data-testid="stCheckbox"] span {
+    color: #c7d2fe !important;
+}
+
+/* ── Sidebar: Code Blocks ────────────────────────────────── */
+section[data-testid="stSidebar"] code,
+section[data-testid="stSidebar"] pre,
+section[data-testid="stSidebar"] [data-testid="stCode"] {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    color: #c7d2fe !important;
+    border: 1px solid rgba(165, 180, 252, 0.2) !important;
+    border-radius: 6px !important;
+}
+
+/* ── Sidebar: Alerts / Error messages ────────────────────── */
+section[data-testid="stSidebar"] [data-testid="stAlert"] {
+    background-color: rgba(239, 68, 68, 0.15) !important;
+    border-left: 4px solid #ef4444 !important;
+    color: #fca5a5 !important;
+    border-radius: 6px !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stAlert"] p {
+    color: #fca5a5 !important;
+}
+
+/* Primary form submit buttons inside sidebar forms (Sign In, etc.) */
+section[data-testid="stSidebar"] [data-testid="stForm"] [data-testid="stButton"] > button[kind="primaryFormSubmit"],
+section[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] > button[kind="primaryFormSubmit"] {
+    background-color: #4338ca !important;
+    color: #ffffff !important;
+    border: none !important;
+    font-weight: 700 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stForm"] [data-testid="stButton"] > button[kind="primaryFormSubmit"]:hover,
+section[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] > button[kind="primaryFormSubmit"]:hover {
+    background-color: #3730a3 !important;
+}
+
+/* Secondary form submit buttons in sidebar (Create Project, Create Course) —
+   default Streamlit styles render these with white background + grey text on the dark
+   sidebar, making them unreadable. Override with a light-indigo background + dark text. */
+section[data-testid="stSidebar"] [data-testid="stForm"] [data-testid="stButton"] > button[kind="secondaryFormSubmit"],
+section[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] > button[kind="secondaryFormSubmit"],
+section[data-testid="stSidebar"] [data-testid="stForm"] [data-testid="stButton"] > button[kind="secondary"],
+section[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] > button[kind="secondary"] {
+    background-color: #eef2ff !important;
+    color: #3730a3 !important;
+    border: 1px solid rgba(165, 180, 252, 0.55) !important;
+    font-weight: 600 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stForm"] [data-testid="stButton"] > button[kind="secondaryFormSubmit"]:hover,
+section[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] > button[kind="secondaryFormSubmit"]:hover,
+section[data-testid="stSidebar"] [data-testid="stForm"] [data-testid="stButton"] > button[kind="secondary"]:hover,
+section[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] > button[kind="secondary"]:hover {
+    background-color: rgba(99, 102, 241, 0.28) !important;
+    color: #ffffff !important;
+    border-color: rgba(165, 180, 252, 0.65) !important;
+}
+
+/* ── Main Content Area: High-Contrast Text ───────────────── */
+
+/* Page-level headers */
+[data-testid="stMainBlockContainer"] h1 {
+    color: #111827 !important;
+    font-weight: 800 !important;
+}
+
+[data-testid="stMainBlockContainer"] h2 {
+    color: #1e293b !important;
+    font-weight: 700 !important;
+}
+
+[data-testid="stMainBlockContainer"] h3 {
+    color: #1e293b !important;
+    font-weight: 700 !important;
+}
+
+/* Widget labels in main area */
+[data-testid="stMainBlockContainer"] [data-testid="stWidgetLabel"] p,
+[data-testid="stMainBlockContainer"] label {
+    color: #374151 !important;
+    font-weight: 600 !important;
+}
+
+/* Caption / help text in main area */
+[data-testid="stMainBlockContainer"] [data-testid="stCaptionContainer"] p {
+    color: #4b5563 !important;
+}
+
+/* Regular paragraph text in main area */
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdown"] p {
+    color: #374151 !important;
+}
+
+/* Expander headers in main area */
+[data-testid="stMainBlockContainer"] [data-testid="stExpander"] summary p,
+[data-testid="stMainBlockContainer"] [data-testid="stExpander"] summary {
+    color: #1e293b !important;
+    font-weight: 600 !important;
+}
+
+/* Info / success / warning alerts in main area */
+[data-testid="stMainBlockContainer"] [data-testid="stAlert"][data-baseweb="notification"] {
+    border-radius: 8px !important;
+}
+
+/* Project / course cards: elevate on hover */
+[data-testid="stMainBlockContainer"] [data-testid="stVerticalBlock"] > div > [data-testid="stMarkdown"] > div {
+    transition: box-shadow 0.15s ease !important;
+}
+
+/* Dividers in main area */
+[data-testid="stMainBlockContainer"] hr {
+    border-color: #e2e8f0 !important;
+}
+
+/* ── Shared: Button States (main area) ───────────────────── */
+[data-testid="stMainBlockContainer"] [data-testid="stButton"] > button {
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease !important;
+    font-weight: 600 !important;
+    border-radius: 7px !important;
+}
+
+[data-testid="stMainBlockContainer"] [data-testid="stButton"] > button:hover {
+    border-color: #6366f1 !important;
+    color: #4338ca !important;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.18) !important;
+}
+
+[data-testid="stMainBlockContainer"] [data-testid="stButton"] > button[kind="primary"] {
+    background-color: #4f46e5 !important;
+    color: #ffffff !important;
+    border: none !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 6px rgba(79,70,229,0.3) !important;
+}
+
+[data-testid="stMainBlockContainer"] [data-testid="stButton"] > button[kind="primary"]:hover {
+    background-color: #3730a3 !important;
+    border-color: #3730a3 !important;
+    color: #ffffff !important;
+    box-shadow: 0 3px 12px rgba(79,70,229,0.4) !important;
+}
+
+[data-testid="stMainBlockContainer"] [data-testid="stButton"] > button:disabled {
+    opacity: 0.5 !important;
+    cursor: not-allowed !important;
+}
+
+/* ── Input Fields: Consistent Main Area Styling ──────────── */
+[data-testid="stMainBlockContainer"] input[type="text"],
+[data-testid="stMainBlockContainer"] input[type="password"],
+[data-testid="stMainBlockContainer"] textarea {
+    border: 1.5px solid #d1d5db !important;
+    border-radius: 7px !important;
+    background: #ffffff !important;
+    color: #111827 !important;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+}
+
+[data-testid="stMainBlockContainer"] input[type="text"]:focus,
+[data-testid="stMainBlockContainer"] input[type="password"]:focus,
+[data-testid="stMainBlockContainer"] textarea:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;
+    outline: none !important;
+}
+
+/* ── Tabs: Active state highlight ────────────────────────── */
+[data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
+    color: #4338ca !important;
+    border-bottom: 3px solid #4338ca !important;
+    font-weight: 700 !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    font-weight: 500 !important;
+    transition: color 0.15s ease !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"]:hover {
+    color: #6366f1 !important;
+}
+
+/* ── Metrics: Better visibility ──────────────────────────── */
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: #1e293b !important;
+    font-weight: 700 !important;
+}
+
+/* ── Primary action buttons: higher visual priority ─────── */
+[data-testid="stMainBlockContainer"] form [data-testid="stButton"] > button[kind="primaryFormSubmit"] {
+    background-color: #4f46e5 !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 6px rgba(79,70,229,0.3) !important;
+    border: none !important;
+}
+
+[data-testid="stMainBlockContainer"] form [data-testid="stButton"] > button[kind="primaryFormSubmit"]:hover {
+    background-color: #3730a3 !important;
+    box-shadow: 0 3px 12px rgba(79,70,229,0.4) !important;
+}
+
+/* ── Toast notifications: ensure visibility ─────────────── */
+[data-testid="stToast"] {
+    font-weight: 600 !important;
+    border-radius: 10px !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15) !important;
+}
+
+
+/*header[data-testid="stHeader"] {
+#    display: none !important;
+#}*/
+
+/*[data-testid="stToolbar"] {
+#    display: none !important;
+}*/
+
+#MainMenu {
+    visibility: hidden !important;
+}
+
+footer {
+    visibility: hidden !important;
+}
+
+/*.stDeployButton {
+    display: none !important;
+}*/

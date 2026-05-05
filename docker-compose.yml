@@ -1,0 +1,9 @@
+services:
+  promptops:
+    build: .
+    container_name: promptops_app
+    ports:
+      - "5001:8501"
+    env_file:
+      - .env
+    restart: always
