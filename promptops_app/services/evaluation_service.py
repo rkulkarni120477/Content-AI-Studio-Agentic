@@ -12,9 +12,10 @@ import streamlit as st
 from promptops_app.prompt_templates import EVAL_PROMPT, SCORING_PROMPT, META_PROMPT, REVIEW_PROMPT, PLAGIARISM_PROMPT
 from promptops_app.core.llm_client import safe_json_loads
 from promptops_app.core.config import SYNC_QUALITY_CHECKS, SYNC_PLAGIARISM_CHECKS
+from promptops_app.core.config import settings as _eval_cfg
 from promptops_app.services.llm_service import generate_text as _llm
 
-_EVAL_MODEL = "GPT"  # evaluation always uses the default OpenAI path with Bedrock as fallback
+_EVAL_MODEL = _eval_cfg.default_model  # follows PROMPTOPS_DEFAULT_MODEL — works with OpenAI or Bedrock
 
 # ── Prompt-library helpers ────────────────────────────────────────────────────
 # The validation template from the library is optional — the inline constants

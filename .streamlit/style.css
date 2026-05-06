@@ -11,14 +11,7 @@ section[data-testid="stSidebar"] {
 }
 
 section[data-testid="stSidebar"] > div:first-child {
-    background-color: #1e1b4b !important;
-    height: 100vh !important;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: flex-start !important;
-    align-items: stretch !important;
+    background-color: #1e1b4b !important; 
 }
 
 /* Inner content wrapper: let it grow naturally from the top, never push content down */

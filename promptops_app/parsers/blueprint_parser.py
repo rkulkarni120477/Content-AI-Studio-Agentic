@@ -44,7 +44,7 @@ def _is_bp_section_hidden(title: str) -> bool:
     for key in _BP_UI_HIDDEN_SECTION_KEYS:
         if key in tl:
             return True
-    if re.match(r"^step\s+\d+", tl):
+    if re.match(r"^step\s+[15]\b", tl):
         return True
     if re.search(r"blueprint\s+(complete|ready|validated|done)", tl):
         return True
