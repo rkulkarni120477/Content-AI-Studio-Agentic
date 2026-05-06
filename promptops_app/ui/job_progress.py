@@ -127,18 +127,24 @@ def render_active_job(db, job_id: str) -> bool:
         if _gen_id:
             st.session_state.last_gen_id = _gen_id
 
-        st.success(
-            f"✅ **Generation complete** — **{_n_blks}** block(s) created. "
-            "Open the **Editor** tab to review and refine."
-        )
+        st.success(f"✅ **Generation complete** — **{_n_blks}** block(s) created.")
+
+        # ── Render generated blocks inline ─────────────────────────────────
         if _gen_id:
-            st.markdown(
-                f"<div style='background:#0f2027;border:1px solid #1e3a5f;border-radius:8px;"
-                f"padding:10px 16px;font-size:0.83rem;color:#cbd5e1;margin:6px 0 12px;'>"
-                f"🔗 Generation <strong>#{_gen_id}</strong> · "
-                f"{_n_blks} block(s) queued for review</div>",
-                unsafe_allow_html=True,
-            )
+            from promptops_app.database import Block
+            _blocks = db.query(Block).filter(Block.generation_id == _gen_id).all()
+            if _blocks:
+                st.markdown(
+                    "<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
+                    "letter-spacing:.08em;color:#4f46e5;margin:12px 0 6px;'>"
+                    "📄 Generated Output</div>",
+                    unsafe_allow_html=True,
+                )
+                for _i, _blk in enumerate(_blocks):
+                    _blk_title = _blk.block_label or _blk.block_type or f"Block {_i + 1}"
+                    with st.expander(f"📋 {_blk_title}", expanded=(_i == 0)):
+                        st.markdown(_blk.content or "_No content._")
+
         if st.button("🔄 Start Another Generation", key=f"clear_job_{job_id}", type="primary"):
             st.session_state.pop("active_gen_job_id", None)
             st.rerun()

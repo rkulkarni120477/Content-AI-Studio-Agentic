@@ -724,6 +724,8 @@ def render_blueprint_content(full_content: str, bp_id: int, ver_label: str, sel_
 
         # Rename display labels per spec
         _display = sec_title
+        # Strip "Step N:" prefix so blocks show clean titles e.g. "Learning Objectives"
+        _display = _re.sub(r'(?i)^step\s+\d+\s*[:\-–—.]\s*', '', _display).strip()
         _display = _re.sub(r'(?i)lesson\s+structure\s*\(planks?\)', 'Lesson Structure (Topics)', _display)
         if _re.search(r'(?i)^lesson structure$', _display.strip()):
             _display = 'Lesson Structure (Topics)'
@@ -2131,7 +2133,6 @@ def render_course_completion_gate(course_status: dict, component_label: str) -> 
 def login_page():
     """Display the login screen with sidebar sign-in form and main area branding."""
     inject_premium_style()
-    init_db()
     db = SessionLocal()
 
     # Seed default users on first run
@@ -2157,19 +2158,8 @@ def login_page():
     )
     st.sidebar.divider()
     st.sidebar.markdown("<p style='font-size:0.8rem;color:#a5b4fc;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:2px;'>Sign In</p>", unsafe_allow_html=True)
-    #username_input = st.sidebar.text_input("Username", placeholder="Enter username")
-    username_input = st.sidebar.text_input(
-    "Username",
-    placeholder="Enter username",
-    key="login_username"
-    )
-    #password_input = st.sidebar.text_input("Password", type="password", placeholder="Enter password")
-    password_input = st.sidebar.text_input(
-    "Password",
-    type="password",
-    placeholder="Enter password",
-    key="login_password"
-    )
+    username_input = st.sidebar.text_input("Username", placeholder="Enter username", key="login_username")
+    password_input = st.sidebar.text_input("Password", type="password", placeholder="Enter password", key="login_password")
     if st.sidebar.button("Sign In", type="primary", use_container_width=True):
         user = db.query(User).filter(User.username == username_input).first()
         if user and (user.is_active is None or user.is_active) and verify_password(password_input, user.password_hash):

@@ -7,42 +7,9 @@ import time
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Content AI Studio",
-    page_icon="🌀",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-#def hide_streamlit_style():
-#    st.markdown("""
-#        <style>
-#        header[data-testid="stHeader"] {display: none !important;}
-#        [data-testid="stToolbar"] {display: none !important;}
-#        #MainMenu {visibility: hidden !important;}
-#        footer {visibility: hidden !important;}
-#        .stDeployButton {display: none !important;}
-#        </style>
-#    """, unsafe_allow_html=True)
-
-def hide_streamlit_style():
-    st.markdown("""
-        <style>
-        #MainMenu {visibility: hidden !important;}
-        footer {visibility: hidden !important;}
-        </style>
-    """, unsafe_allow_html=True)
-
 _log = logging.getLogger(__name__)
 
-#from promptops_app.database import SessionLocal, CourseDesignDocument, get_active_style, init_db_with_seed
-from promptops_app.database import (
-    SessionLocal,
-    CourseDesignDocument,
-    get_active_style,
-    init_db_with_seed,
-)
+from promptops_app.database import SessionLocal, CourseDesignDocument, get_active_style, init_db_with_seed
 from promptops_app.core.context import PageContext
 from promptops_app.core.shared import (
     login_page, project_dashboard_page, course_selection_page, _sidebar_brand,
@@ -64,17 +31,14 @@ PAGE_RENDERERS = {
 }
 
 def main():
-    # hide_streamlit_style()
-
     # Display any deferred notifications from previous actions
     notify_check()
 
-    if not st.session_state.get("user"):
-        login_page()
-        return
+    if not st.session_state.get('user'):
+        login_page(); return
 
-    user_role = st.session_state.user["role"]
-    user_name = st.session_state.user["username"]
+    user_role = st.session_state.user['role']
+    user_name = st.session_state.user['username']
 
     # ── Project / Course selection gates ─────────────────────────────────────
     if not st.session_state.get('selected_project_id'):
@@ -362,9 +326,15 @@ def main():
         db.close()
 
 
+@st.cache_resource(show_spinner=False)
+def _initialize_database():
+    """Run DB migrations and seed exactly once per server process, not on every rerun."""
+    init_db_with_seed()
+
+
 def run():
     if st.runtime.exists():
-        init_db_with_seed()
+        _initialize_database()
         main()
     else:
         _log.info("Bootstrapping Content AI Studio — launching Streamlit on port 1060")

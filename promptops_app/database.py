@@ -59,7 +59,7 @@ class _DBSettings:
 
 settings = _DBSettings()
 
-# Public alias — `from promptops_app.database import Settings` continues to work for any
+# Public alias — `from database import Settings` continues to work for any
 # existing code that references the class by name (e.g. core/shared.py).
 Settings = _DBSettings
 
@@ -800,12 +800,15 @@ def init_db():
         "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
     ]
 
-    with engine.begin() as conn:
-        for stmt in _column_migrations:
+    # Each migration runs in its own transaction so AccessExclusiveLock is held
+    # for the minimum time — prevents deadlocks when concurrent Streamlit reruns
+    # would otherwise hold locks across multiple tables simultaneously.
+    for stmt in _column_migrations:
+        with engine.begin() as conn:
             conn.execute(text(stmt))
 
-        # Performance indexes — idempotent and safe on every startup.
-        _index_migrations = [
+    # Performance indexes — idempotent and safe on every startup.
+    _index_migrations = [
             "CREATE INDEX IF NOT EXISTS idx_generations_project_course ON generations(project_id, course_id)",
             "CREATE INDEX IF NOT EXISTS idx_generations_blueprint_id ON generations(blueprint_id)",
             "CREATE INDEX IF NOT EXISTS idx_generations_cdd_id ON generations(cdd_id)",
@@ -842,10 +845,12 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_status ON llm_usage_logs(status, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_entity ON llm_usage_logs(entity_type, entity_id)",
         ]
-        for stmt in _index_migrations:
+    for stmt in _index_migrations:
+        with engine.begin() as conn:
             conn.execute(text(stmt))
 
-        # Backfill updated_at for documents where it landed NULL
+    # Backfill updated_at for documents where it landed NULL
+    with engine.begin() as conn:
         conn.execute(text(
             "UPDATE documents SET updated_at = uploaded_at WHERE updated_at IS NULL"
         ))
