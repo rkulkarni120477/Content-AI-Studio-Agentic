@@ -56,10 +56,10 @@ jobs:
               "mv /opt/promptops-new /opt/promptops",
               "cd /opt/promptops",
               "echo Rebuilding Docker...",
-              "docker-compose down --remove-orphans || true",
+              "docker compose down --remove-orphans || true",
               "docker rm -f promptops_app 2>/dev/null || true",
-              "docker-compose build --no-cache",
-              "docker-compose up -d",
+              "docker compose build --no-cache",
+              "docker compose up -d",
               "docker ps",
               "docker logs --tail 80 promptops_app",
               "echo Deployment completed successfully."
