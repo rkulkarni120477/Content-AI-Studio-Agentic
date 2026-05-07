@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -15,3 +15,6 @@ class PageContext:
     expert_domain: str
     target_audience: str
     audience_category: str
+    # Cluster layer — defaults keep all existing PageContext construction sites valid
+    cluster_id: int = 0
+    cluster_name: str = ""

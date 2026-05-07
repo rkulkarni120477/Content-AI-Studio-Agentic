@@ -83,7 +83,7 @@ from promptops_app.database import (
     Generation, Block, BlockComment, BlockVersion, WorkflowEvent,
     ABTestRun, Review, SystemLog, FeedbackSignal,
     CourseDesignDocument, CDDVersion, ModuleBlueprint, BlueprintVersion,
-    Project, Course, ProjectUserAssignment, CourseUserAssignment,
+    Project, Cluster, Course, ProjectUserAssignment, CourseUserAssignment,
     init_db, init_db_with_seed, seed_data,
     hash_password, verify_password,
     log_event,
@@ -2299,7 +2299,9 @@ def project_dashboard_page():
     for i in range(0, len(projects), cols_per_row):
         row_cols = st.columns(cols_per_row, gap="medium")
         for j, proj in enumerate(projects[i : i + cols_per_row]):
-            course_count = db.query(Course).filter(Course.project_id == proj.id).count()
+            cluster_count = db.query(Cluster).filter(
+                Cluster.project_id == proj.id, Cluster.is_active == True
+            ).count()
             with row_cols[j]:
                 client_line = f"<div style='font-size:0.75rem;color:#4f46e5;font-weight:600;margin-bottom:4px;'>Client: {proj.client_name}</div>" if proj.client_name else ""
                 desc_line   = f"<div style='font-size:0.82rem;color:#1f2937;margin-bottom:8px;line-height:1.5;'>{(proj.description or '')[:90]}{'…' if proj.description and len(proj.description) > 90 else ''}</div>" if proj.description else ""
@@ -2308,15 +2310,17 @@ def project_dashboard_page():
                     f"padding:1.2rem;margin-bottom:0.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.07);'>"
                     f"<div style='font-weight:700;font-size:1.05rem;color:#111827;margin-bottom:4px;'>{proj.name}</div>"
                     f"{client_line}{desc_line}"
-                    f"<div style='font-size:0.72rem;color:#374151;font-weight:500;'>{course_count} course{'s' if course_count != 1 else ''}</div>"
+                    f"<div style='font-size:0.72rem;color:#374151;font-weight:500;'>🗂️ {cluster_count} cluster{'s' if cluster_count != 1 else ''}</div>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
                 if st.button("Open →", key=f"proj_open_{proj.id}", use_container_width=True):
                     st.session_state.selected_project_id   = proj.id
                     st.session_state.selected_project_name = proj.name
-                    st.session_state.pop("selected_course_id", None)
-                    st.session_state.pop("selected_course_name", None)
+                    st.session_state.pop("selected_cluster_id",   None)
+                    st.session_state.pop("selected_cluster_name", None)
+                    st.session_state.pop("selected_course_id",    None)
+                    st.session_state.pop("selected_course_name",  None)
                     st.rerun()
 
                 # Admin and Lead (within their assigned scope): Edit & Delete controls
@@ -2408,13 +2412,180 @@ def project_dashboard_page():
     db.close()
 
 
-def course_selection_page():
-    """Course selection page — shown after project selection, before workspace."""
+def cluster_selection_page():
+    """Cluster selection page — shown after project selection, before course selection."""
     inject_premium_style()
-    user_role = st.session_state.user["role"]
-    user_name = st.session_state.user["username"]
-    proj_id   = st.session_state.selected_project_id
-    proj_name = st.session_state.selected_project_name
+    user_role    = st.session_state.user["role"]
+    user_name    = st.session_state.user["username"]
+    proj_id      = st.session_state.selected_project_id
+    proj_name    = st.session_state.selected_project_name
+
+    _sidebar_brand(user_name, user_role)
+    db = SessionLocal()
+
+    st.sidebar.markdown(
+        f"<div style='background:rgba(255,255,255,0.12);border:1px solid rgba(165,180,252,0.22);"
+        f"border-radius:8px;padding:8px 12px;margin:4px 0;font-size:0.78rem;color:#c7d2fe;font-weight:500;'>"
+        f"📁 Project: <strong style='color:#ffffff;font-weight:700;'>{proj_name}</strong></div>",
+        unsafe_allow_html=True
+    )
+    if st.sidebar.button("← Back to Projects", use_container_width=True, key="cluster_back_to_projects"):
+        st.session_state.pop("selected_project_id",   None)
+        st.session_state.pop("selected_project_name", None)
+        st.rerun()
+
+    _lead_here  = _is_lead_for_project(db, user_name, proj_id)
+    _can_manage = (user_role == "admin") or _lead_here
+
+    if _can_manage:
+        with st.sidebar.expander("➕ New Cluster", expanded=False):
+            with st.form("create_cluster_form"):
+                cl_name = st.text_input("Cluster Name *")
+                cl_desc = st.text_area("Description", height=60)
+                if st.form_submit_button("Create Cluster", use_container_width=True):
+                    if cl_name.strip():
+                        db.add(Cluster(project_id=proj_id, name=cl_name.strip(),
+                                       description=cl_desc, created_by=user_name))
+                        db.commit()
+                        log_event(db, "cluster_created", user_name, f"Cluster '{cl_name}' created in project {proj_id}")
+                        st.toast(f"✅ Cluster '{cl_name}' created!")
+                        st.rerun()
+                    else:
+                        st.error("Cluster name is required.")
+
+    if st.sidebar.button("🚪 Sign Out", use_container_width=True, key="cluster_signout"):
+        st.session_state.user = None
+        st.rerun()
+
+    # ── Main area ─────────────────────────────────────────────────────────────
+    st.markdown(
+        f"<div style='padding:2rem 0 1rem 0;'>"
+        f"<div style='font-size:0.78rem;color:#4b5563;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:.06em;margin-bottom:4px;'>Project: {proj_name}</div>"
+        f"<h1 style='font-size:2rem;font-weight:800;color:#111827;margin-bottom:0.25rem;'>Select Cluster</h1>"
+        f"<p style='color:#374151;font-size:0.95rem;'>Choose a domain cluster to browse its courses.</p></div>",
+        unsafe_allow_html=True
+    )
+
+    clusters = db.query(Cluster).filter(
+        Cluster.project_id == proj_id, Cluster.is_active == True
+    ).order_by(Cluster.created_at.asc()).all()
+
+    if not clusters:
+        if _can_manage:
+            st.info("No clusters yet. Create your first cluster using the sidebar panel.")
+        else:
+            st.info("No clusters available. Ask an Admin or Lead to create clusters for this project.")
+        db.close()
+        return
+
+    cols_per_row = 3
+    for i in range(0, len(clusters), cols_per_row):
+        row_cols = st.columns(cols_per_row, gap="medium")
+        for j, cluster in enumerate(clusters[i : i + cols_per_row]):
+            active_course_count = db.query(Course).filter(
+                Course.cluster_id == cluster.id, Course.is_active == True
+            ).count()
+            with row_cols[j]:
+                desc_line = (
+                    f"<div style='font-size:0.82rem;color:#1f2937;margin-bottom:8px;line-height:1.5;'>"
+                    f"{(cluster.description or '')[:90]}"
+                    f"{'…' if cluster.description and len(cluster.description) > 90 else ''}"
+                    f"</div>"
+                ) if cluster.description else ""
+                st.markdown(
+                    f"<div style='background:#ffffff;border:1.5px solid #d1d5db;border-radius:12px;"
+                    f"padding:1.2rem;margin-bottom:0.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.07);'>"
+                    f"<div style='font-weight:700;font-size:1.05rem;color:#111827;margin-bottom:4px;'>"
+                    f"🗂️ {cluster.name}</div>"
+                    f"{desc_line}"
+                    f"<div style='font-size:0.72rem;color:#374151;font-weight:500;'>"
+                    f"{active_course_count} course{'s' if active_course_count != 1 else ''}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                if st.button("Open →", key=f"cluster_open_{cluster.id}", use_container_width=True):
+                    st.session_state.selected_cluster_id   = cluster.id
+                    st.session_state.selected_cluster_name = cluster.name
+                    st.session_state.pop("selected_course_id",   None)
+                    st.session_state.pop("selected_course_name", None)
+                    st.rerun()
+
+                if _can_manage:
+                    _edit_key = f"cluster_edit_{cluster.id}"
+                    _del_key  = f"cluster_del_confirm_{cluster.id}"
+
+                    _a1, _a2 = st.columns(2)
+                    if _a1.button("✏️ Edit", key=f"cluster_edit_btn_{cluster.id}", use_container_width=True):
+                        st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+                        st.session_state.pop(_del_key, None)
+                        st.rerun()
+                    if user_role == "admin":
+                        if _a2.button("🗑️ Delete", key=f"cluster_del_btn_{cluster.id}", use_container_width=True):
+                            st.session_state[_del_key] = not st.session_state.get(_del_key, False)
+                            st.session_state.pop(_edit_key, None)
+                            st.rerun()
+
+                    if st.session_state.get(_edit_key):
+                        with st.form(f"edit_cluster_form_{cluster.id}"):
+                            new_name = st.text_input("Cluster Name", value=cluster.name)
+                            new_desc = st.text_area("Description", value=cluster.description or "", height=70)
+                            _s1, _s2 = st.columns(2)
+                            if _s1.form_submit_button("💾 Save", use_container_width=True):
+                                if new_name.strip():
+                                    cluster.name        = new_name.strip()
+                                    cluster.description = new_desc.strip() or None
+                                    db.commit()
+                                    log_event(db, "cluster_updated", user_name,
+                                              f"Cluster '{cluster.name}' updated")
+                                    st.session_state.pop(_edit_key, None)
+                                    st.toast("✅ Cluster updated!")
+                                    st.rerun()
+                                else:
+                                    st.error("Cluster name cannot be empty.")
+                            if _s2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(_edit_key, None)
+                                st.rerun()
+
+                    if st.session_state.get(_del_key):
+                        if active_course_count > 0:
+                            st.error(
+                                f"Cannot delete **{cluster.name}** — it has {active_course_count} "
+                                f"active course{'s' if active_course_count != 1 else ''}. "
+                                f"Move or delete all courses first."
+                            )
+                            if st.button("Dismiss", key=f"cluster_del_dismiss_{cluster.id}", use_container_width=True):
+                                st.session_state.pop(_del_key, None)
+                                st.rerun()
+                        else:
+                            st.warning(f"Delete **{cluster.name}**? This action cannot be undone.")
+                            _d1, _d2 = st.columns(2)
+                            if _d1.button("Confirm Delete", key=f"cluster_del_ok_{cluster.id}",
+                                          type="primary", use_container_width=True):
+                                cluster.is_active = False
+                                db.commit()
+                                log_event(db, "cluster_deleted", user_name,
+                                          f"Cluster '{cluster.name}' archived")
+                                st.session_state.pop(_del_key, None)
+                                st.toast(f"🗑️ Cluster '{cluster.name}' deleted.")
+                                st.rerun()
+                            if _d2.button("Cancel", key=f"cluster_del_cancel_{cluster.id}",
+                                          use_container_width=True):
+                                st.session_state.pop(_del_key, None)
+                                st.rerun()
+
+    db.close()
+
+
+def course_selection_page():
+    """Course selection page — shown after cluster selection, before workspace."""
+    inject_premium_style()
+    user_role    = st.session_state.user["role"]
+    user_name    = st.session_state.user["username"]
+    proj_id      = st.session_state.selected_project_id
+    proj_name    = st.session_state.selected_project_name
+    cluster_id   = st.session_state.get("selected_cluster_id")
+    cluster_name = st.session_state.get("selected_cluster_name", "")
 
     _sidebar_brand(user_name, user_role)
 
@@ -2422,13 +2593,21 @@ def course_selection_page():
 
     st.sidebar.markdown(
         f"<div style='background:rgba(255,255,255,0.12);border:1px solid rgba(165,180,252,0.22);border-radius:8px;padding:8px 12px;"
-        f"margin:4px 0;font-size:0.78rem;color:#c7d2fe;font-weight:500;'>"
-        f"📁 Project: <strong style='color:#ffffff;font-weight:700;'>{proj_name}</strong></div>",
+        f"margin:4px 0;font-size:0.75rem;color:#c7d2fe;font-weight:500;line-height:1.6;'>"
+        f"📁 <strong style='color:#ffffff;'>{proj_name}</strong><br>"
+        f"🗂️ <strong style='color:#ffffff;'>{cluster_name}</strong></div>",
         unsafe_allow_html=True
     )
-    if st.sidebar.button("← Back to Projects", use_container_width=True):
-        st.session_state.pop("selected_project_id", None)
+    _sb1, _sb2 = st.sidebar.columns(2)
+    if _sb1.button("← Projects", use_container_width=True, key="course_back_projects"):
+        st.session_state.pop("selected_project_id",   None)
         st.session_state.pop("selected_project_name", None)
+        st.session_state.pop("selected_cluster_id",   None)
+        st.session_state.pop("selected_cluster_name", None)
+        st.rerun()
+    if _sb2.button("← Clusters", use_container_width=True, key="course_back_clusters"):
+        st.session_state.pop("selected_cluster_id",   None)
+        st.session_state.pop("selected_cluster_name", None)
         st.rerun()
 
     # Admin and Lead can add/manage courses within assigned project
@@ -2441,15 +2620,16 @@ def course_selection_page():
                 c_desc = st.text_area("Description", height=60)
                 if st.form_submit_button("Create Course", use_container_width=True):
                     if c_name.strip():
-                        db.add(Course(project_id=proj_id, name=c_name.strip(),
-                                      description=c_desc, created_by=user_name))
+                        db.add(Course(project_id=proj_id, cluster_id=cluster_id,
+                                      name=c_name.strip(), description=c_desc,
+                                      created_by=user_name))
                         db.commit()
                         st.toast(f"✅ Course '{c_name}' created!")
                         st.rerun()
                     else:
                         st.error("Course name is required.")
 
-    if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    if st.sidebar.button("🚪 Sign Out", use_container_width=True, key="course_signout"):
         st.session_state.user = None
         st.rerun()
 
@@ -2457,21 +2637,23 @@ def course_selection_page():
     st.markdown(
         f"<div style='padding:2rem 0 1rem 0;'>"
         f"<div style='font-size:0.78rem;color:#4b5563;font-weight:700;text-transform:uppercase;"
-        f"letter-spacing:.06em;margin-bottom:4px;'>Project: {proj_name}</div>"
+        f"letter-spacing:.06em;margin-bottom:4px;'>{proj_name} › {cluster_name}</div>"
         f"<h1 style='font-size:2rem;font-weight:800;color:#111827;margin-bottom:0.25rem;'>Select Course</h1>"
         f"<p style='color:#374151;font-size:0.95rem;'>Choose a course to enter the workspace.</p></div>",
         unsafe_allow_html=True
     )
 
     courses = db.query(Course).filter(
-        Course.project_id == proj_id, Course.is_active == True
+        Course.project_id == proj_id,
+        Course.cluster_id == cluster_id,
+        Course.is_active  == True,
     ).order_by(Course.created_at.desc()).all()
 
     if not courses:
-        if user_role == "admin":
-            st.info("No courses in this project yet. Create one using the sidebar panel.")
+        if _can_manage_courses:
+            st.info(f"No courses in **{cluster_name}** yet. Create one using the sidebar panel.")
         else:
-            st.info("No courses available. Ask an Admin or Lead to create courses for this project.")
+            st.info(f"No courses in **{cluster_name}** yet. Ask an Admin or Lead to create courses.")
         db.close()
         return
 

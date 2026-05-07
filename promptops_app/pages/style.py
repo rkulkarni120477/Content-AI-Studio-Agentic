@@ -28,6 +28,10 @@ from promptops_app.repositories import document_repository
 from promptops_app.services.audit_service import log_audit_event
 from promptops_app.ui.components import _section_badge
 from promptops_app.ui.pagination import paginate as _paginate_docs
+from promptops_app.ui.prompt_panel import render_prompt_panel
+from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
+from promptops_app.ui.user_prompt_widget import auto_save_instructions
+from promptops_app.prompt_templates import CDD_SYSTEM_PROMPT
 
 
 def render_page(db, ctx):
@@ -499,14 +503,22 @@ def render_page(db, ctx):
                                     st.warning("⚠️ No documents or instructions linked to this style. Add content before generating understanding.")
                                 else:
                                     st.caption(f"📎 {_doc_count} document(s) + {'custom instructions' if sty.custom_instructions else 'no custom instructions'} will be processed as unified context.")
-                                    _pending_instr = st.session_state.get(f"sty_pending_instructions_{sty.id}", "")
-                                    _gen_extra = st.text_area(
-                                        "Additional validation instructions (optional)",
-                                        value=_pending_instr,
-                                        placeholder="e.g. Pay extra attention to clinical terminology usage…",
-                                        height=80, key=f"sty_gen_extra_{sty.id}"
+                                    _sty_sys, _sty_usr, _gen_extra = render_inline_prompt_controls(
+                                        db, "style",
+                                        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                                        user_name=user_name, model_choice=model_choice,
+                                        extra_placeholder="e.g. Pay extra attention to clinical terminology usage…",
+                                        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
                                     )
-                                    if st.button("🚀 Generate Understanding", key=f"sty_gen_run_{sty.id}", type="primary"):
+                                    _sty_gen_col, _sty_dl_col = st.columns([0.65, 0.35])
+                                    render_prompt_download_button(
+                                        db, "style",
+                                        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                                        button_label="⬇️ Download Prompt Used (.md)",
+                                        key=f"sty_dl_prompt_{sty.id}",
+                                        use_container_width=True,
+                                    )
+                                    if _sty_gen_col.button("🚀 Generate Understanding", key=f"sty_gen_run_{sty.id}", type="primary", use_container_width=True):
                                         if rbac_gate(user_role, "style.understand", "Generating Style Understanding"):
                                             _mc = st.session_state.get("model_choice", "GPT-5.4")
                                             with st.spinner("Processing all documents as unified context…"):
@@ -518,7 +530,12 @@ def render_page(db, ctx):
                                                 sty.understanding_status = "fresh"
                                                 sty.updated_at = datetime.now(timezone.utc)
                                                 db.commit()
-                                                st.session_state.pop(f"sty_pending_instructions_{sty.id}", None)
+                                                auto_save_instructions(
+                                                    db, "style", _gen_extra,
+                                                    name=f"{sty.name[:60]} validation",
+                                                    project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                                                    user_name=user_name,
+                                                )
                                                 log_event(db, "style_understanding_generated", user_name,
                                                     f"Understanding generated for style '{sty.name}'")
                                                 log_audit_event(db, user_name, "style.upgraded", entity_type="style",
@@ -802,4 +819,28 @@ The system will detect the filename, retrieve the content, and inject it as stru
             if _doc_active > 100:
                 _ref_lines.append(f"… and {_doc_active - 100} more (use filters above to find them)")
             st.code("\n".join(_ref_lines), language=None)
+
+    # ── Prompt Management ─────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        "<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
+        "letter-spacing:.1em;color:#6366f1;margin-bottom:4px;'>📚 Prompt Library</div>"
+        "<p style='font-size:0.82rem;color:#6b7280;margin-bottom:8px;'>"
+        "Create, edit, version, and improve prompt assets tagged <code>style</code>. "
+        "These are available across all generation components.</p>",
+        unsafe_allow_html=True,
+    )
+    render_prompt_panel(
+        db,
+        component="style",
+        user_name=user_name,
+        model_choice=model_choice,
+        default_system=(
+            "You are an expert instructional designer with deep expertise in instructional style "
+            "and tone. Analyse the provided style guidelines and documents."
+        ),
+        default_user=(
+            "Apply the following style guidelines to the content generation task:\n\n{style_context}"
+        ),
+    )
 

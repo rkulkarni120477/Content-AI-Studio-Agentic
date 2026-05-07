@@ -23,6 +23,13 @@ from promptops_app.prompt_templates import (
     SEED_PROMPT_V1_USER,
     SEED_PROMPT_V2_SYSTEM,
     SEED_PROMPT_V2_USER,
+    # Default component prompts — seeded as DB assets on first startup
+    CDD_SYSTEM_PROMPT,
+    CDD_USER_PROMPT_TEMPLATE,
+    BLUEPRINT_SYSTEM_PROMPT,
+    BLUEPRINT_USER_PROMPT_TEMPLATE,
+    LESSON_WITH_CONTEXT_SYSTEM,
+    LESSON_WITH_CONTEXT_USER,
 )
 
 # =============================================================================
@@ -175,27 +182,43 @@ class StyleDocument(Base):
 
 
 class Prompt(Base):
+    """A versioned prompt asset belonging to one pipeline component.
+
+    component_type : "style" | "cdd" | "blueprint" | "generate"
+    is_default     : True only for the one system-seeded canonical prompt per component.
+                     Edits to a default always produce a new version — the original v1
+                     is never overwritten.
+    """
     __tablename__ = "prompts"
-    id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True)
-    description = Column(Text)
-    owner = Column(String)
+    id             = Column(Integer, primary_key=True)
+    name           = Column(String, unique=True)
+    description    = Column(Text)
+    owner          = Column(String)
     active_version = Column(String)
-    tags = Column(String) # Comma separated
-    created_at = Column(DateTime, default=datetime.utcnow)
+    tags           = Column(String)             # comma-separated
+    component_type = Column(String(50), nullable=True)   # style|cdd|blueprint|generate
+    is_default     = Column(Boolean, default=False)      # True = system seed
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    updated_at     = Column(DateTime, default=datetime.utcnow)
     versions = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 class PromptVersion(Base):
+    """Single version snapshot of a Prompt asset.
+
+    Versions are append-only; the active flag moves forward, never back.
+    created_by tracks which user committed this version.
+    """
     __tablename__ = "prompt_versions"
-    id = Column(Integer, primary_key=True)
-    prompt_id = Column(Integer, ForeignKey("prompts.id"))
-    version = Column(String)
-    system_prompt = Column(Text)
+    id                   = Column(Integer, primary_key=True)
+    prompt_id            = Column(Integer, ForeignKey("prompts.id"))
+    version              = Column(String)
+    system_prompt        = Column(Text)
     user_prompt_template = Column(Text)
-    change_reason = Column(Text)
-    is_active = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    change_reason        = Column(Text)
+    is_active            = Column(Boolean, default=False)
+    created_by           = Column(String(100), nullable=True)
+    created_at           = Column(DateTime, default=datetime.utcnow)
     prompt = relationship("Prompt", back_populates="versions")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -630,6 +653,34 @@ class BlueprintVersion(Base):
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class UserPromptHistory(Base):
+    """Saved user additional-instruction records, scoped per component + project/cluster/course.
+
+    These capture the free-text instructions users type in generation forms
+    (e.g. "Focus on clinical simulations, add DEI examples") so they can be
+    reloaded, versioned, and improved across sessions.
+
+    Versioning: multiple rows may share (name + component + project_id + course_id).
+    version_number distinguishes them — higher = newer.
+    """
+    __tablename__ = "user_prompt_history"
+
+    id             = Column(Integer,     primary_key=True)
+    name           = Column(String(255), nullable=False)
+    component      = Column(String(50),  nullable=False)   # style|cdd|blueprint|generate
+    content        = Column(Text,        nullable=False)
+    version_number = Column(Integer,     default=1, nullable=False)
+    project_id     = Column(Integer,     nullable=True)
+    cluster_id     = Column(Integer,     nullable=True)
+    course_id      = Column(Integer,     nullable=True)
+    created_by     = Column(String(100), nullable=True)
+    created_at     = Column(DateTime,    default=datetime.utcnow)
+    updated_at     = Column(DateTime,    default=datetime.utcnow)
+    is_active      = Column(Boolean,     default=True)
+
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 class Project(Base):
     """Top-level client project container."""
     __tablename__ = "projects"
@@ -641,16 +692,39 @@ class Project(Base):
     created_at       = Column(DateTime, default=datetime.utcnow)
     is_active        = Column(Boolean, default=True)
     active_style_id  = Column(Integer, nullable=True)   # Project-level active style (FK to styles.id)
+    clusters         = relationship("Cluster", back_populates="project", cascade="all, delete-orphan")
     courses          = relationship("Course", back_populates="project", cascade="all, delete-orphan")
     assignments      = relationship("ProjectUserAssignment", back_populates="project", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class Cluster(Base):
+    """Domain/category container that groups related Courses within a Project.
+
+    Hierarchy: Project → Cluster → Course.
+    Every Course must belong to exactly one Cluster.  Existing courses are
+    automatically migrated into a 'General' cluster on first startup.
+    """
+    __tablename__ = "clusters"
+    id          = Column(Integer, primary_key=True)
+    project_id  = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name        = Column(String(255), nullable=False)
+    description = Column(Text)
+    created_by  = Column(String(100))
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    is_active   = Column(Boolean, default=True)
+    # Relationships — no cascade on courses; Project.courses handles hard-delete cascade
+    courses     = relationship("Course", back_populates="cluster")
+    project     = relationship("Project", back_populates="clusters")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 class Course(Base):
-    """Course within a Project."""
+    """Course within a Cluster, within a Project."""
     __tablename__ = "courses"
     id               = Column(Integer, primary_key=True)
     project_id       = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    cluster_id       = Column(Integer, ForeignKey("clusters.id"), nullable=True)   # nullable for backward compat
     name             = Column(String(255), nullable=False)
     description      = Column(Text)
     created_by       = Column(String(100))
@@ -659,6 +733,7 @@ class Course(Base):
     active_style_id  = Column(Integer, nullable=True)   # Course-level active style override
     active_cdd_id    = Column(Integer, nullable=True)   # Course-level pinned CDD
     project          = relationship("Project", back_populates="courses")
+    cluster          = relationship("Cluster", back_populates="courses")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -728,6 +803,8 @@ def init_db():
         # courses (v19)
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS active_style_id INTEGER",
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS active_cdd_id INTEGER",
+        # courses — cluster hierarchy (v20)
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
         # styles — understanding status (v20)
         "ALTER TABLE styles ADD COLUMN IF NOT EXISTS understanding_status VARCHAR(20) DEFAULT 'fresh'",
         # blocks — enterprise approval & versioning (Phase 2)
@@ -798,6 +875,12 @@ def init_db():
         "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS status VARCHAR(30)",
         "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS error_message TEXT",
         "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+        # prompts — component typing and default flag
+        "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS component_type VARCHAR(50)",
+        "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+        # prompt_versions — authorship tracking
+        "ALTER TABLE prompt_versions ADD COLUMN IF NOT EXISTS created_by VARCHAR(100)",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
@@ -832,6 +915,11 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id)",
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_project ON audit_logs(project_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_generation_jobs_project_course ON generation_jobs(project_id, course_id)",
+            "CREATE INDEX IF NOT EXISTS idx_clusters_project_id ON clusters(project_id, is_active)",
+            "CREATE INDEX IF NOT EXISTS idx_courses_cluster_id ON courses(cluster_id)",
+            "CREATE INDEX IF NOT EXISTS idx_uph_component_project ON user_prompt_history(component, project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_uph_component_course ON user_prompt_history(component, course_id)",
+            "CREATE INDEX IF NOT EXISTS idx_uph_name_component ON user_prompt_history(name, component)",
             "CREATE INDEX IF NOT EXISTS idx_job_metrics_job_id ON job_metrics(job_id)",
             "CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id)",
             # Phase 2
@@ -854,6 +942,31 @@ def init_db():
         conn.execute(text(
             "UPDATE documents SET updated_at = uploaded_at WHERE updated_at IS NULL"
         ))
+
+    # ── Cluster hierarchy backfill (idempotent) ───────────────────────────────
+    # Step 1: For every active project that has no cluster yet, create "General".
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO clusters (project_id, name, description, created_by, created_at, is_active)
+            SELECT p.id, 'General', 'Default cluster for existing courses', 'system', NOW(), TRUE
+            FROM projects p
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clusters c WHERE c.project_id = p.id
+            )
+        """))
+
+    # Step 2: Assign any course with NULL cluster_id to its project's first cluster.
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE courses
+            SET cluster_id = (
+                SELECT c.id FROM clusters c
+                WHERE c.project_id = courses.project_id
+                ORDER BY c.created_at ASC
+                LIMIT 1
+            )
+            WHERE cluster_id IS NULL
+        """))
 
 
 # =============================================================================
@@ -1288,6 +1401,76 @@ def seed_data(db):
             change_reason="Enhanced engagement version"
         )
         db.add(v1); db.add(v2); db.commit()
+
+    # ── Default component prompt assets (idempotent — skip if name already exists) ─
+    _STYLE_DEFAULT_SYSTEM = (
+        "You are an expert instructional style consultant. "
+        "Analyse the provided style guidelines and documents, then apply the defined "
+        "tone, vocabulary, structure, and formatting rules consistently across all "
+        "content generation tasks for this course."
+    )
+    _STYLE_DEFAULT_USER = (
+        "Apply the following style guidelines to all content generated for this course:\n\n"
+        "{style_context}\n\n"
+        "Ensure every piece of content respects the tone, vocabulary, structural requirements, "
+        "and formatting conventions defined above."
+    )
+
+    _DEFAULT_COMPONENT_PROMPTS = [
+        (
+            "default_style_prompt",
+            "style",
+            "Default Style Prompt — applied when generating style-guided content.",
+            _STYLE_DEFAULT_SYSTEM,
+            _STYLE_DEFAULT_USER,
+        ),
+        (
+            "default_cdd_prompt",
+            "cdd",
+            "Default CDD Prompt — generates Course Design Documents.",
+            CDD_SYSTEM_PROMPT,
+            CDD_USER_PROMPT_TEMPLATE,
+        ),
+        (
+            "default_blueprint_prompt",
+            "blueprint",
+            "Default Blueprint Prompt — generates Module Blueprints from a CDD.",
+            BLUEPRINT_SYSTEM_PROMPT,
+            BLUEPRINT_USER_PROMPT_TEMPLATE,
+        ),
+        (
+            "default_generate_prompt",
+            "generate",
+            "Default Generate Prompt — generates lesson and course component content.",
+            LESSON_WITH_CONTEXT_SYSTEM,
+            LESSON_WITH_CONTEXT_USER,
+        ),
+    ]
+
+    for _p_name, _p_comp, _p_desc, _p_sys, _p_usr in _DEFAULT_COMPONENT_PROMPTS:
+        if not db.query(Prompt).filter(Prompt.name == _p_name).first():
+            _p_new = Prompt(
+                name=_p_name,
+                description=_p_desc,
+                owner="system",
+                active_version="v1",
+                tags=_p_comp,
+                component_type=_p_comp,
+                is_default=True,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            db.add(_p_new); db.commit(); db.refresh(_p_new)
+            db.add(PromptVersion(
+                prompt_id=_p_new.id,
+                version="v1",
+                system_prompt=_p_sys,
+                user_prompt_template=_p_usr,
+                change_reason="System-seeded default — converted from hardcoded prompt.",
+                is_active=True,
+                created_by="system",
+            ))
+            db.commit()
 
 def init_db_with_seed():
     init_db()
