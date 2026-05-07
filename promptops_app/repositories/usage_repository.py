@@ -205,19 +205,16 @@ def monthly_usage(
 ) -> list[dict]:
     """Monthly token and cost totals — PostgreSQL date_trunc GROUP BY."""
     month_col = func.date_trunc("month", LLMUsageLog.created_at)
-    q = (
-        db.query(
-            month_col.label("month"),
-            func.count(LLMUsageLog.id).label("calls"),
-            func.coalesce(func.sum(LLMUsageLog.total_tokens), 0).label("tokens"),
-            func.coalesce(func.sum(LLMUsageLog.estimated_cost), 0.0).label("cost"),
-        )
-        .group_by(month_col)
-        .order_by(month_col.desc())
-        .limit(months)
+    # Filters MUST be applied before GROUP BY / ORDER BY / LIMIT.
+    q = db.query(
+        month_col.label("month"),
+        func.count(LLMUsageLog.id).label("calls"),
+        func.coalesce(func.sum(LLMUsageLog.total_tokens), 0).label("tokens"),
+        func.coalesce(func.sum(LLMUsageLog.estimated_cost), 0.0).label("cost"),
     )
     if user_name:  q = q.filter(LLMUsageLog.user_id == user_name)
     if project_id: q = q.filter(LLMUsageLog.project_id == project_id)
+    q    = q.group_by(month_col).order_by(month_col.desc()).limit(months)
     rows = q.all()
     return [
         {
