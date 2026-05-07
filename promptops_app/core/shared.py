@@ -2738,10 +2738,22 @@ def course_selection_page():
                     if _prev_crs and _prev_crs != course.id:
                         st.session_state.pop("active_cdd_id", None)
                         st.session_state.pop("active_blueprint_id", None)
+                        # Signal that config needs reloading for the new course
+                        st.session_state.pop("_cfg_loaded_for", None)
                     st.session_state.selected_course_id   = course.id
                     st.session_state.selected_course_name = course.name
                     # Admin/Lead → Style tab; ID → CDD (ID does not manage Style)
                     st.session_state.nav_page = "CDD" if user_role == "author" else "Style"
+                    # ── Req 1 + 3: Load course-level config and pinned IDs from DB ──
+                    try:
+                        from promptops_app.repositories.course_repository import get_course_config
+                        _saved_cfg = get_course_config(db, course.id)
+                        for _k, _v in _saved_cfg.items():
+                            if _v is not None:
+                                st.session_state[_k] = _v
+                        st.session_state._cfg_loaded_for = course.id
+                    except Exception:
+                        pass   # config load failure must never block workspace entry
                     st.rerun()
 
                 # Admin and Lead can edit courses

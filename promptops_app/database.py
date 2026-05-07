@@ -275,6 +275,49 @@ class UserPromptPreference(Base):
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class PlagiarismReport(Base):
+    """One row per plagiarism scan submitted to Copyleaks.
+
+    Lifecycle: pending → processing → completed | failed
+    The block's legacy ``plagiarism_score`` / ``plagiarism_report`` columns are
+    updated from ``similarity_score`` / ``ai_score`` when a scan completes, so
+    the existing dashboard keeps working without changes.
+    """
+    __tablename__ = "plagiarism_reports"
+
+    id              = Column(Integer,  primary_key=True, autoincrement=True)
+    block_id        = Column(Integer,  ForeignKey("blocks.id", ondelete="CASCADE"),
+                             nullable=False, index=True)
+    project_id      = Column(Integer,  nullable=True,  index=True)
+    course_id       = Column(Integer,  nullable=True,  index=True)
+
+    # Copyleaks tracking
+    scan_id         = Column(String(64),  nullable=True, unique=True)  # UUID hex
+    celery_task_id  = Column(String(155), nullable=True)
+
+    # Status: pending | processing | completed | failed
+    status          = Column(String(20),  nullable=False, default="pending", index=True)
+
+    # Results (populated when status == "completed")
+    similarity_score = Column(Float, nullable=True)    # 0-100, content similarity
+    ai_score         = Column(Float, nullable=True)    # 0-100, AI-generation probability
+    source_urls      = Column(JSON,  nullable=True)    # list[{url, similarity, title}]
+    highlights       = Column(JSON,  nullable=True)    # list[{text, similarity, source_url}]
+    raw_response     = Column(Text,  nullable=True)    # full Copyleaks JSON for debugging
+
+    # Error info
+    error_message    = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at       = Column(DateTime, default=datetime.utcnow)
+    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    submitted_at     = Column(DateTime, nullable=True)
+    completed_at     = Column(DateTime, nullable=True)
+
+    block = relationship("Block", foreign_keys=[block_id])
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 class Generation(Base):
     __tablename__ = "generations"
     id = Column(Integer, primary_key=True)
@@ -783,8 +826,14 @@ class Course(Base):
     created_by       = Column(String(100))
     created_at       = Column(DateTime, default=datetime.utcnow)
     is_active        = Column(Boolean, default=True)
-    active_style_id  = Column(Integer, nullable=True)   # Course-level active style override
-    active_cdd_id    = Column(Integer, nullable=True)   # Course-level pinned CDD
+    active_style_id       = Column(Integer, nullable=True)   # Course-level active style override
+    active_cdd_id         = Column(Integer, nullable=True)   # Course-level pinned CDD (Req 3)
+    active_blueprint_id   = Column(Integer, nullable=True)   # Course-level pinned Blueprint (Req 3)
+    # Target & Model config — persisted per course (Req 1)
+    config_model_choice      = Column(String(100), nullable=True)
+    config_expert_domain     = Column(String(255), nullable=True)
+    config_target_audience   = Column(String(255), nullable=True)
+    config_audience_category = Column(String(100), nullable=True)
     project          = relationship("Project", back_populates="courses")
     cluster          = relationship("Cluster", back_populates="courses")
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -856,6 +905,12 @@ def init_db():
         # courses (v19)
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS active_style_id INTEGER",
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS active_cdd_id INTEGER",
+        # courses — per-course pinning + config (Req 1, 3)
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS active_blueprint_id INTEGER",
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS config_model_choice VARCHAR(100)",
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS config_expert_domain VARCHAR(255)",
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS config_target_audience VARCHAR(255)",
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS config_audience_category VARCHAR(100)",
         # courses — cluster hierarchy (v20)
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
         # styles — understanding status (v20)

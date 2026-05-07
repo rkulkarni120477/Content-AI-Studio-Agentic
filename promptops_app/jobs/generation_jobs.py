@@ -313,27 +313,54 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         db.commit()
         db.refresh(g_entry)
 
+        saved_blocks = []
         for bt, ordr, cnt, srcs in blocks:
-            plagi_res, eval_data, ai_rev_text = get_initial_quality_metadata(cnt, bt)
-            db.add(Block(
+            _, eval_data, ai_rev_text = get_initial_quality_metadata(cnt, bt)
+            blk = Block(
                 generation_id=g_entry.id,
                 block_type=bt,
                 block_label=f"{bt.title()} - {topic}",
                 content=cnt,
                 sources=json.dumps(list(set(srcs))) if srcs else None,
-                # Only store a real score; if check_error=True the score is
-                # meaningless (0) and storing it would make the dashboard show
-                # a misleading green "0%" instead of "not checked yet".
-                plagiarism_score=(
-                    None if plagi_res.get("check_error")
-                    else plagi_res.get("confidence_score")
-                ),
-                plagiarism_report=plagi_res.get("explanation", ""),
+                plagiarism_score=None,          # set by async Copyleaks scan
+                plagiarism_report=None,
                 eval_score=eval_data.get("structural_score", 0),
                 eval_report=json.dumps(eval_data),
                 ai_review=ai_rev_text,
-            ))
-        db.commit()
+            )
+            db.add(blk)
+            saved_blocks.append((blk, cnt))
+        db.commit()   # flush so blocks have their PKs
+
+        # ── Enqueue async Copyleaks scan for each block (non-blocking) ──────
+        try:
+            from promptops_app.database import PlagiarismReport
+            from promptops_app.services.plagiarism_service import generate_scan_id
+            from promptops_app.jobs.plagiarism_jobs import run_plagiarism_scan
+
+            for blk, cnt in saved_blocks:
+                scan_id = generate_scan_id()
+                report  = PlagiarismReport(
+                    block_id=blk.id,
+                    project_id=project_id,
+                    course_id=course_id,
+                    scan_id=scan_id,
+                    status="pending",
+                )
+                db.add(report)
+                db.commit()
+                db.refresh(report)
+
+                task = run_plagiarism_scan.delay(report.id, cnt)
+                report.celery_task_id = task.id
+                db.commit()
+
+        except Exception as _plag_exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Could not enqueue plagiarism scan (Celery/Redis not available?): %s",
+                _plag_exc,
+            )
 
         log_event(
             db,

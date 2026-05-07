@@ -30,8 +30,9 @@ from promptops_app.repositories.block_repo import (
 )
 from promptops_app.services.evaluation_service import (
     score_content_quality, llm_evaluate_block,
-    check_plagiarism_content, get_initial_quality_metadata,
+    get_initial_quality_metadata,
 )
+from promptops_app.database import PlagiarismReport
 from dataclasses import replace as _dc_replace
 from promptops_app.services.export_service import (
     export_content, export_html, export_docx,
@@ -48,6 +49,42 @@ from promptops_app.core.constants import WorkflowState
 from promptops_app.ui import validation_panel
 from promptops_app.ui.components import status_badge, _section_badge
 from promptops_app.ui.generation_controls import render_prompt_download_button
+
+
+def _trigger_copyleaks_scan(db, block, project_id, course_id) -> None:
+    """Create a PlagiarismReport row and enqueue the Celery scan task.
+
+    Non-blocking — returns immediately after enqueueing.
+    Errors are shown as st.warning so they never block the page.
+    """
+    import streamlit as _st
+    try:
+        from promptops_app.services.plagiarism_service import generate_scan_id
+        from promptops_app.jobs.plagiarism_jobs import run_plagiarism_scan
+
+        report = PlagiarismReport(
+            block_id=block.id,
+            project_id=project_id,
+            course_id=course_id,
+            scan_id=generate_scan_id(),
+            status="pending",
+        )
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+
+        task = run_plagiarism_scan.delay(report.id, block.content)
+        report.celery_task_id = task.id
+        db.commit()
+
+        _st.toast("🔍 Copyleaks plagiarism scan queued.")
+        _st.rerun()
+
+    except Exception as _exc:
+        _st.warning(
+            f"Could not start plagiarism scan: {_exc}  "
+            "Check that Celery worker and Redis are running."
+        )
 
 
 def render_page(db, ctx):
@@ -412,41 +449,67 @@ def render_page(db, ctx):
         for b in blks:
             st.markdown(f"### {status_badge(b.workflow_state)} {b.block_label} *(Block #{b.id})*", unsafe_allow_html=True)
             
-            # 📊 Dedicated Plagiarism & Citation Dashboard
+            # 📊 Plagiarism & Citation Dashboard (Copyleaks async)
             with st.expander("📊 Plagiarism & Citation Dashboard", expanded=True):
+                # ── Fetch latest Copyleaks report for this block ──────────────
+                _cl_report = (
+                    db.query(PlagiarismReport)
+                    .filter(PlagiarismReport.block_id == b.id)
+                    .order_by(PlagiarismReport.created_at.desc())
+                    .first()
+                )
+
                 d_col1, d_col2, d_col3 = st.columns(3)
-                
-                # Col 1: Plagiarism (AI Authenticity)
+
+                # Col 1: Copyleaks plagiarism panel
                 with d_col1:
-                    st.markdown("**🛡️ Plagiarism (AI Detect)**")
-                    _plag_report = b.plagiarism_report or ""
-                    _check_failed = (
-                        "could not be completed" in _plag_report.lower()
-                        or "evaluation error" in _plag_report.lower()
-                        or "deferred" in _plag_report.lower()
-                    )
-                    if b.plagiarism_score is None:
-                        if _check_failed:
-                            st.markdown(
-                                "<span style='color:#f59e0b;font-weight:700;'>⚠ Check failed</span>",
-                                unsafe_allow_html=True,
-                            )
-                            st.caption("Detection backend unavailable.")
-                        else:
-                            st.caption("Not checked yet — click 'Check Content Authenticity'.")
-                    else:
-                        p_color = (
-                            "#ef4444" if b.plagiarism_score > 70
-                            else "#f59e0b" if b.plagiarism_score > 30
-                            else "#10b981"
-                        )
+                    st.markdown("**🛡️ Plagiarism (Copyleaks)**")
+
+                    if _cl_report is None:
+                        st.caption("Not checked yet.")
+                        if st.button("🔍 Check Plagiarism", key=f"plag_trigger_{b.id}",
+                                     use_container_width=True):
+                            _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
+
+                    elif _cl_report.status == "pending":
+                        st.info("⏳ Scan queued…")
+                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                     use_container_width=True):
+                            st.rerun()
+
+                    elif _cl_report.status == "processing":
+                        st.info("🔄 Checking via Copyleaks…")
+                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                     use_container_width=True):
+                            st.rerun()
+
+                    elif _cl_report.status == "completed":
+                        _sim  = _cl_report.similarity_score or 0
+                        _ai   = _cl_report.ai_score
+                        _pc   = ("#ef4444" if _sim > 70
+                                 else "#f59e0b" if _sim > 30
+                                 else "#10b981")
                         st.markdown(
-                            f"<h2 style='color:{p_color}; margin:0;'>{b.plagiarism_score}%</h2>",
+                            f"<h2 style='color:{_pc};margin:0;'>{_sim:.1f}%</h2>",
                             unsafe_allow_html=True,
                         )
-                        st.caption("AI Likelihood Score")
-                        if _plag_report:
-                            st.info(_plag_report)
+                        st.caption("Similarity (Copyleaks)")
+                        if _ai is not None:
+                            _ac = ("#ef4444" if _ai > 70 else "#f59e0b" if _ai > 30 else "#10b981")
+                            st.markdown(
+                                f"<span style='font-size:0.85rem;color:{_ac};'>"
+                                f"🤖 AI score: <strong>{_ai:.1f}%</strong></span>",
+                                unsafe_allow_html=True,
+                            )
+                        if st.button("🔁 Re-check", key=f"plag_recheck_{b.id}",
+                                     use_container_width=True):
+                            _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
+
+                    elif _cl_report.status == "failed":
+                        st.warning(f"⚠️ Scan failed: {_cl_report.error_message or 'Unknown error'}")
+                        if st.button("🔄 Retry", key=f"plag_retry_{b.id}",
+                                     use_container_width=True):
+                            _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
 
                 # Col 2: Citations (RAG Sources)
                 with d_col2:
@@ -1009,48 +1072,43 @@ def render_page(db, ctx):
                             review_text = llm_evaluate_block(b.content, b.block_type)
                         st.markdown(review_text)
 
-                    if st.button("🤖 Check Content Authenticity", key=f"ai_plag_{b.id}", use_container_width=True):
-                        with st.spinner("Running AI-content detection (LLM analysis)…"):
-                            plag_res = check_plagiarism_content(b.content)
+                    # ── Copyleaks source URLs + highlights ────────────────
+                    if _cl_report and _cl_report.status == "completed":
+                        _sources    = _cl_report.source_urls or []
+                        _highlights = _cl_report.highlights  or []
 
-                        if plag_res.get("check_error"):
-                            # Both LLM and HuggingFace backends failed — do NOT show
-                            # a false "0% / human-written" result; show a clear error.
-                            st.warning(
-                                "⚠️ **Plagiarism check could not be completed.** "
-                                "The detection backend returned an error. "
-                                "Check server logs for details."
-                            )
-                            st.caption(
-                                "Possible causes: LLM API key missing / rate-limited, "
-                                "or `transformers`/`torch` not installed for the local fallback."
-                            )
-                            st.info(plag_res.get("explanation", "No detail available."))
-                        else:
-                            score = plag_res.get("confidence_score", 0)
-                            if plag_res.get("is_plagiarized"):
-                                st.error(
-                                    f"⚠️ **High AI-content likelihood** — "
-                                    f"{score}% probability of AI-generated content."
-                                )
-                            else:
-                                st.success(
-                                    f"✅ **Likely original / human-written** — "
-                                    f"AI likelihood: {score}%"
+                        if _sources:
+                            st.markdown("**📎 Matched Sources**")
+                            for _src in _sources[:10]:
+                                _s_url  = _src.get("url", "")
+                                _s_sim  = _src.get("similarity", 0)
+                                _s_title = _src.get("title") or _s_url[:60]
+                                st.markdown(
+                                    f"<div style='border-left:3px solid #f59e0b;"
+                                    f"padding:4px 10px;margin:3px 0;font-size:0.8rem;'>"
+                                    f"<a href='{_s_url}' target='_blank'>{_s_title}</a>"
+                                    f" &nbsp;<span style='color:#9ca3af;'>"
+                                    f"{_s_sim:.1f}% similar</span></div>",
+                                    unsafe_allow_html=True,
                                 )
 
-                            st.markdown("**Analysis:**")
-                            st.info(plag_res.get("explanation", "No explanation provided."))
+                        if _highlights:
+                            st.markdown("**🔍 Matched Text Highlights**")
+                            for _h in _highlights[:8]:
+                                st.markdown(
+                                    f"<div style='background:#fef9c3;border-left:3px solid #f59e0b;"
+                                    f"border-radius:4px;padding:6px 10px;font-size:0.82rem;"
+                                    f"margin:3px 0;font-style:italic;'>"
+                                    f"\"{_h.get('text', '')}\"</div>",
+                                    unsafe_allow_html=True,
+                                )
 
-                            if plag_res.get("raw_data"):
-                                st.markdown("**Raw Detection Data:**")
-                                st.json(plag_res["raw_data"], expanded=False)
-
-                            # Persist the result so the dashboard reflects the latest check.
-                            b.plagiarism_score  = plag_res.get("confidence_score")
-                            b.plagiarism_report = plag_res.get("explanation")
-                            db.commit()
-                            st.rerun()
+                        with st.expander("🔬 Raw Copyleaks Response", expanded=False):
+                            if _cl_report.raw_response:
+                                try:
+                                    st.json(json.loads(_cl_report.raw_response), expanded=False)
+                                except Exception:
+                                    st.code(_cl_report.raw_response[:2000])
 
             # ── Version History ───────────────────────────────────────────────
             with st.expander(f"⏱️ Version History — Block #{b.id}", expanded=False):

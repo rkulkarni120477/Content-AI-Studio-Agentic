@@ -1,4 +1,35 @@
 services:
+
+  # ── Redis broker + result backend ─────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: contentai_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Celery worker (plagiarism scans) ──────────────────────────────────────
+  celery_worker:
+    build: .
+    container_name: contentai_celery
+    command: >
+      celery -A promptops_app.celery_app worker
+             --loglevel=info
+             --concurrency=4
+             --queues=celery
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Streamlit application ─────────────────────────────────────────────────
   promptops:
     build: .
     container_name: promptops_app
@@ -6,4 +37,7 @@ services:
       - "5001:8501"
     env_file:
       - .env
-    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
