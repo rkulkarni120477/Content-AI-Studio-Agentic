@@ -505,19 +505,21 @@ def render_page(db, ctx):
                                     st.caption(f"📎 {_doc_count} document(s) + {'custom instructions' if sty.custom_instructions else 'no custom instructions'} will be processed as unified context.")
                                     _sty_sys, _sty_usr, _gen_extra = render_inline_prompt_controls(
                                         db, "style",
-                                        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                                        project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
                                         user_name=user_name, model_choice=model_choice,
                                         extra_placeholder="e.g. Pay extra attention to clinical terminology usage…",
                                         project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                                        user_role=user_role,
                                     )
                                     _sty_gen_col, _sty_dl_col = st.columns([0.65, 0.35])
-                                    render_prompt_download_button(
-                                        db, "style",
-                                        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-                                        button_label="⬇️ Download Prompt Used (.md)",
-                                        key=f"sty_dl_prompt_{sty.id}",
-                                        use_container_width=True,
-                                    )
+                                    with _sty_dl_col:
+                                        render_prompt_download_button(
+                                            db, "style",
+                                            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                                            button_label="⬇️ Download Prompt",
+                                            key=f"sty_dl_prompt_{sty.id}",
+                                            use_container_width=True,
+                                        )
                                     if _sty_gen_col.button("🚀 Generate Understanding", key=f"sty_gen_run_{sty.id}", type="primary", use_container_width=True):
                                         if rbac_gate(user_role, "style.understand", "Generating Style Understanding"):
                                             _mc = st.session_state.get("model_choice", "GPT-5.4")

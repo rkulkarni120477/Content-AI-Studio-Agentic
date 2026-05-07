@@ -70,8 +70,13 @@ class LLMResult:
 # ---------------------------------------------------------------------------
 
 def _is_bedrock(model_choice: str) -> bool:
-    lc = model_choice.lower()
-    return "bedrock" in lc or "sonnet" in lc
+    """Return True when model_choice routes to AWS Bedrock.
+
+    Uses the model catalog for an authoritative answer; falls back to a
+    string heuristic for unrecognised names so legacy call sites still work.
+    """
+    from promptops_app.core.models import resolve_model
+    return resolve_model(model_choice).provider == "bedrock"
 
 
 def _classify(exc: Exception) -> str:
@@ -100,20 +105,39 @@ def _user_msg(error_type: str) -> str:
 
 
 def _invoke_primary(model_choice: str, system: str, user: str) -> LLMResponse:
-    if _is_bedrock(model_choice):
-        return _call_bedrock_raw(system, user)
-    return _call_openai_raw(system, user)
+    """Dispatch to the correct provider using the model catalog.
+
+    Raises LLMProviderError for unknown model names so the retry pipeline
+    surfaces a clear error instead of silently routing elsewhere.
+    """
+    from promptops_app.core.models import validate_model
+    try:
+        m = validate_model(model_choice)
+    except ValueError as exc:
+        raise LLMProviderError(str(exc)) from exc
+
+    if m.provider == "bedrock":
+        return _call_bedrock_raw(system, user, model_id=m.api_model_id)
+    return _call_openai_raw(system, user, model=m.api_model_id)
 
 
 def _invoke_fallback(model_choice: str, system: str, user: str) -> LLMResponse:
-    if _is_bedrock(model_choice):
+    """Fall back to the opposite provider using its first catalog entry."""
+    from promptops_app.core.models import resolve_model, OPENAI_MODELS, BEDROCK_MODELS
+    m = resolve_model(model_choice)   # safe — never raises
+
+    if m.provider == "bedrock":
+        # Primary was Bedrock → fall back to first OpenAI model in catalog
         if not settings.openai_api_key:
             raise LLMAuthError("Fallback OpenAI key not configured.")
-        return _call_openai_raw(system, user)
+        fallback_id = OPENAI_MODELS[0].api_model_id if OPENAI_MODELS else settings.openai_model
+        return _call_openai_raw(system, user, model=fallback_id)
     else:
+        # Primary was OpenAI → fall back to first Bedrock model in catalog
         if not (settings.aws_access_key and settings.aws_secret_key):
             raise LLMAuthError("Fallback Bedrock credentials not configured.")
-        return _call_bedrock_raw(system, user)
+        fallback_id = BEDROCK_MODELS[0].api_model_id if BEDROCK_MODELS else settings.bedrock_model_id
+        return _call_bedrock_raw(system, user, model_id=fallback_id)
 
 
 def _make_result(resp: LLMResponse, start: float, status: str) -> LLMResult:

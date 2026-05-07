@@ -1,15 +1,23 @@
 """Main Streamlit shell for the production-split PromptOps app."""
 
+import datetime
 import logging
 import sys
 import subprocess
 import time
 
+import extra_streamlit_components as stx
 import streamlit as st
+import streamlit.components.v1 as _stcomp
 
 _log = logging.getLogger(__name__)
 
-from promptops_app.database import SessionLocal, CourseDesignDocument, get_active_style, init_db_with_seed
+from promptops_app.auth.session_manager import COOKIE_NAME, create_token, decode_token
+from promptops_app.core.models import (
+    MODEL_CATALOG, MODELS_BY_NAME, OPENAI_MODELS, BEDROCK_MODELS,
+    DEFAULT_MODEL_NAME, resolve_model,
+)
+from promptops_app.database import SessionLocal, CourseDesignDocument, get_active_style, init_db_with_seed, User
 from promptops_app.core.context import PageContext
 from promptops_app.core.shared import (
     login_page, project_dashboard_page, cluster_selection_page,
@@ -19,6 +27,8 @@ from promptops_app.pages import style, cdd, blueprint, generate, editor, workflo
 from promptops_app.repositories import cdd_repository
 from promptops_app.ui.components import inject_premium_style
 from promptops_app.ui.notifications import notify_check
+
+_COOKIE_TTL_DAYS = 7
 
 PAGE_RENDERERS = {
     "Style": style.render_page,
@@ -31,11 +41,112 @@ PAGE_RENDERERS = {
 }
 
 def main():
+    # ── Cookie-based session: must initialise before any other st calls ───────
+    # CookieManager communicates with the browser via a hidden component.
+    # get_all() reads the current cookie jar; result is None on first render
+    # of a cold session (returns {} or the actual cookies on subsequent renders).
+    _cm = stx.CookieManager(key="__contentai_cm")
+    _all_cookies = _cm.get_all() or {}
+
+    # Restore auth from cookie when session_state has no user (fresh / refreshed session)
+    if not st.session_state.get("user"):
+        _token = _all_cookies.get(COOKIE_NAME)
+        if _token:
+            _sd = decode_token(_token)
+            if _sd:
+                _db_chk = SessionLocal()
+                try:
+                    _u = _db_chk.query(User).filter(
+                        User.username == _sd["username"]
+                    ).first()
+                    if _u and (_u.is_active is None or _u.is_active):
+                        st.session_state.user = {
+                            "username": _sd["username"],
+                            "role":     _sd["role"],
+                        }
+                        # Restore workspace (project / cluster / course / nav_page)
+                        for _k, _v in (_sd.get("workspace") or {}).items():
+                            if _v is not None:
+                                st.session_state[_k] = _v
+                        # Restore sidebar config (model / domain / audience)
+                        for _k, _v in (_sd.get("cfg") or {}).items():
+                            if _v:
+                                st.session_state[_k] = _v
+                        st.rerun()
+                    else:
+                        # Account deactivated or deleted — drop the stale cookie
+                        _cm.delete(COOKIE_NAME, key="__del_stale")
+                finally:
+                    _db_chk.close()
+            else:
+                # Token expired or tampered — clear it
+                _cm.delete(COOKIE_NAME, key="__del_invalid")
+
     # Display any deferred notifications from previous actions
     notify_check()
 
     if not st.session_state.get('user'):
         login_page(); return
+
+    # ── Keep cookie fresh on every render with latest workspace / config ──────
+    # This ensures that after a browser refresh the user returns to the exact
+    # page and workspace they were on, without re-selecting project/cluster/course.
+    _cur_ws = {
+        "selected_project_id":   st.session_state.get("selected_project_id"),
+        "selected_project_name": st.session_state.get("selected_project_name"),
+        "selected_cluster_id":   st.session_state.get("selected_cluster_id"),
+        "selected_cluster_name": st.session_state.get("selected_cluster_name"),
+        "selected_course_id":    st.session_state.get("selected_course_id"),
+        "selected_course_name":  st.session_state.get("selected_course_name"),
+        "nav_page":              st.session_state.get("nav_page"),
+    }
+    _cur_cfg = {
+        "model_choice":    st.session_state.get("model_choice"),
+        "expert_domain":   st.session_state.get("expert_domain"),
+        "target_audience": st.session_state.get("target_audience"),
+        "sidebar_aud_cat": st.session_state.get("sidebar_aud_cat"),
+    }
+    # Only write the cookie when the tracked state has changed (avoids noisy
+    # component re-renders; the key is stable so Streamlit updates in-place).
+    _state_sig = (
+        st.session_state.get("selected_course_id"),
+        st.session_state.get("nav_page"),
+        st.session_state.get("model_choice"),
+        st.session_state.get("expert_domain"),
+        st.session_state.get("target_audience"),
+    )
+    if st.session_state.get("_last_cookie_sig") != _state_sig:
+        _cm.set(
+            COOKIE_NAME,
+            create_token(
+                st.session_state.user["username"],
+                st.session_state.user["role"],
+                workspace=_cur_ws,
+                cfg=_cur_cfg,
+            ),
+            expires_at=datetime.datetime.now() + datetime.timedelta(days=_COOKIE_TTL_DAYS),
+            key="__session_refresh",
+        )
+        st.session_state._last_cookie_sig = _state_sig
+
+    # ── Unsaved-changes guard: warn the user before browser refresh / close ───
+    # The browser shows a generic "Leave site?" prompt; the custom message is
+    # ignored by modern browsers but the prompt itself fires reliably.
+    _stcomp.html(
+        """<script>
+        (function() {
+            var _w = window.parent || window;
+            if (!_w.__contentai_unload_guard) {
+                _w.__contentai_unload_guard = true;
+                _w.addEventListener('beforeunload', function(e) {
+                    e.preventDefault();
+                    e.returnValue = 'You have unsaved changes. Refresh anyway?';
+                });
+            }
+        })();
+        </script>""",
+        height=0,
+    )
 
     user_role = st.session_state.user['role']
     user_name = st.session_state.user['username']
@@ -154,17 +265,47 @@ def main():
             Move blocks Draft → Review → Approved → Published in the **Workflow** tab.
             """)
 
+    # ── Ensure session defaults ───────────────────────────────────────────────
+    # Resolve old/unknown model names via backward-compat aliases before
+    # any widget renders so the saved value is always valid.
+    if "model_choice" not in st.session_state:
+        st.session_state.model_choice = DEFAULT_MODEL_NAME
+    elif st.session_state.model_choice not in MODELS_BY_NAME:
+        st.session_state.model_choice = resolve_model(
+            st.session_state.model_choice
+        ).display_name
+    if "expert_domain"   not in st.session_state: st.session_state.expert_domain   = ""
+    if "target_audience" not in st.session_state: st.session_state.target_audience = ""
+    if "expert_exp"      not in st.session_state: st.session_state.expert_exp      = "20 years"
+    if "sidebar_aud_cat" not in st.session_state: st.session_state.sidebar_aud_cat = "Professional/Corporate"
+
     # Target User Configuration
     with st.sidebar.expander("🎯 Target & Model", expanded=True):
-        st.caption("Configure audience profile and AI model. Applied globally to all generations.")
+        st.caption("Configure the AI model and audience profile. Applied to all generations.")
+
+        # Build grouped model list: OpenAI first, Bedrock second
+        _all_model_names = (
+            [m.display_name for m in OPENAI_MODELS]
+            + [m.display_name for m in BEDROCK_MODELS]
+        )
+        _saved_model = st.session_state.get("model_choice", DEFAULT_MODEL_NAME)
+        _model_idx   = (
+            _all_model_names.index(_saved_model)
+            if _saved_model in _all_model_names
+            else 0
+        )
 
         with st.form(key="sidebar_target_form"):
-            # Model Selection
+            # Model selector — options driven by the catalog, no hardcoded strings
             model_choice = st.selectbox(
                 "LLM Model",
-                ["GPT-5.4", "Sonnet 4.5 (Bedrock)"],
-                index=0 if st.session_state.get("model_choice") == "GPT-5.4" else 1,
-                key="temp_model_choice"
+                _all_model_names,
+                index=_model_idx,
+                key="temp_model_choice",
+                help=(
+                    "OpenAI GPT models route via the OpenAI API.  "
+                    "Claude models route via AWS Bedrock."
+                ),
             )
             st.divider()
 
@@ -200,12 +341,31 @@ def main():
                 st.toast("✅ Configuration Applied!")
                 st.rerun()
 
-        # Ensure session defaults
-        if "expert_domain"   not in st.session_state: st.session_state.expert_domain   = ""
-        if "target_audience" not in st.session_state: st.session_state.target_audience = ""
-        if "model_choice"    not in st.session_state: st.session_state.model_choice    = "GPT-5.4"
-        if "expert_exp"      not in st.session_state: st.session_state.expert_exp      = "20 years"
-        if "sidebar_aud_cat" not in st.session_state: st.session_state.sidebar_aud_cat = "Professional/Corporate"
+        # ── Active model card (outside form so it always reflects applied state) ──
+        _active_m = MODELS_BY_NAME.get(st.session_state.get("model_choice", DEFAULT_MODEL_NAME))
+        if _active_m:
+            _prov_icon  = "🤖" if _active_m.provider == "openai" else "☁️"
+            _prov_label = "OpenAI GPT" if _active_m.provider == "openai" else "AWS Bedrock"
+            _tag_chips  = "".join(
+                f"<span style='background:#eef2ff;color:#4338ca;font-size:0.67rem;"
+                f"font-weight:700;padding:1px 8px;border-radius:10px;"
+                f"letter-spacing:.04em;margin-right:4px;'>{t}</span>"
+                for t in _active_m.tags
+            )
+            st.sidebar.markdown(
+                f"<div style='background:#f8faff;border:1.5px solid #c7d2fe;"
+                f"border-radius:10px;padding:10px 13px;margin-top:6px;'>"
+                f"<div style='font-size:0.68rem;font-weight:700;text-transform:uppercase;"
+                f"letter-spacing:.09em;color:#6366f1;margin-bottom:5px;'>"
+                f"{_prov_icon} {_prov_label}</div>"
+                f"<div style='font-weight:700;color:#111827;font-size:0.88rem;"
+                f"margin-bottom:3px;'>{_active_m.display_name}</div>"
+                f"<div style='font-size:0.77rem;color:#6b7280;margin-bottom:6px;"
+                f"line-height:1.45;'>{_active_m.description}</div>"
+                f"<div>{_tag_chips}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
     st.sidebar.divider()
     inject_premium_style()
@@ -334,6 +494,7 @@ def main():
         if _sf1.button("🔄 Refresh", use_container_width=True, key="sidebar_refresh"):
             st.rerun()
         if _sf2.button("🚪 Sign Out", use_container_width=True, key="sidebar_signout"):
+            _cm.delete(COOKIE_NAME, key="__logout_del")
             st.session_state.user = None
             st.rerun()
         db.close()

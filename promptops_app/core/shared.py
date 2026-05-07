@@ -2210,6 +2210,68 @@ def login_page():
     feat4.markdown(_feat_card("📊","Analytics","Track prompt quality, review scores, and system events in real-time dashboards."), unsafe_allow_html=True)
     feat5.markdown(_feat_card("📄","Multi-Format Export","Export to Markdown, JSON, HTML, or Word DOCX — ready for any LMS."), unsafe_allow_html=True)
     feat6.markdown(_feat_card("🔍","Full Observability","Every action is logged — generations, reviews, exports — for complete audit trails."), unsafe_allow_html=True)
+
+    # ── Available AI Models ────────────────────────────────────────────────
+    st.markdown(
+        "<hr style='border:none;border-top:1px solid #e4e7ef;margin:1.8rem 0 1.2rem;'>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div style='text-align:center;margin-bottom:1.2rem;'>"
+        "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.18em;"
+        "text-transform:uppercase;color:#4f46e5;margin-bottom:4px;'>AI Models</div>"
+        "<div style='font-size:1.15rem;font-weight:700;color:#111827;'>"
+        "Powered by leading AI providers</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    try:
+        from promptops_app.core.models import OPENAI_MODELS, BEDROCK_MODELS
+
+        def _model_card(m) -> str:
+            _chips = "".join(
+                f"<span style='background:#eef2ff;color:#4338ca;font-size:0.67rem;"
+                f"font-weight:700;padding:1px 8px;border-radius:10px;"
+                f"letter-spacing:.04em;margin-right:4px;'>{t}</span>"
+                for t in m.tags
+            )
+            return (
+                f"<div style='background:#ffffff;border:1px solid #e4e7ef;"
+                f"border-radius:10px;padding:1rem 1.1rem;height:100%;'>"
+                f"<div style='font-weight:700;color:#111827;font-size:0.9rem;"
+                f"margin-bottom:4px;'>{m.display_name}</div>"
+                f"<div style='font-size:0.8rem;color:#6b7280;line-height:1.5;"
+                f"margin-bottom:8px;'>{m.description}</div>"
+                f"<div>{_chips}</div>"
+                f"</div>"
+            )
+
+        # Group header + cards row for OpenAI
+        st.markdown(
+            "<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:.1em;color:#374151;margin-bottom:8px;'>🤖 OpenAI GPT Models</div>",
+            unsafe_allow_html=True,
+        )
+        _oi_cols = st.columns(max(1, len(OPENAI_MODELS)))
+        for _col, _m in zip(_oi_cols, OPENAI_MODELS):
+            _col.markdown(_model_card(_m), unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top:0.9rem;'></div>", unsafe_allow_html=True)
+
+        # Group header + cards row for Bedrock
+        st.markdown(
+            "<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:.1em;color:#374151;margin-bottom:8px;'>☁️ AWS Bedrock Models</div>",
+            unsafe_allow_html=True,
+        )
+        _bd_cols = st.columns(max(1, len(BEDROCK_MODELS)))
+        for _col, _m in zip(_bd_cols, BEDROCK_MODELS):
+            _col.markdown(_model_card(_m), unsafe_allow_html=True)
+
+    except Exception:
+        pass   # Model showcase is cosmetic — never block the login page
+
     db.close()
 
 

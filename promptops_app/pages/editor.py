@@ -419,13 +419,34 @@ def render_page(db, ctx):
                 # Col 1: Plagiarism (AI Authenticity)
                 with d_col1:
                     st.markdown("**🛡️ Plagiarism (AI Detect)**")
-                    if b.plagiarism_score is not None:
-                        p_color = "#ef4444" if b.plagiarism_score > 70 else "#f59e0b" if b.plagiarism_score > 30 else "#10b981"
-                        st.markdown(f"<h2 style='color:{p_color}; margin:0;'>{b.plagiarism_score}%</h2>", unsafe_allow_html=True)
-                        st.caption("AI Likelihood Score")
-                        st.info(f"{b.plagiarism_report}")
+                    _plag_report = b.plagiarism_report or ""
+                    _check_failed = (
+                        "could not be completed" in _plag_report.lower()
+                        or "evaluation error" in _plag_report.lower()
+                        or "deferred" in _plag_report.lower()
+                    )
+                    if b.plagiarism_score is None:
+                        if _check_failed:
+                            st.markdown(
+                                "<span style='color:#f59e0b;font-weight:700;'>⚠ Check failed</span>",
+                                unsafe_allow_html=True,
+                            )
+                            st.caption("Detection backend unavailable.")
+                        else:
+                            st.caption("Not checked yet — click 'Check Content Authenticity'.")
                     else:
-                        st.caption("No plagiarism data yet.")
+                        p_color = (
+                            "#ef4444" if b.plagiarism_score > 70
+                            else "#f59e0b" if b.plagiarism_score > 30
+                            else "#10b981"
+                        )
+                        st.markdown(
+                            f"<h2 style='color:{p_color}; margin:0;'>{b.plagiarism_score}%</h2>",
+                            unsafe_allow_html=True,
+                        )
+                        st.caption("AI Likelihood Score")
+                        if _plag_report:
+                            st.info(_plag_report)
 
                 # Col 2: Citations (RAG Sources)
                 with d_col2:
@@ -598,8 +619,11 @@ def render_page(db, ctx):
                     b.content = new_cnt
                     b.updated_at = datetime.now(timezone.utc)
                     plagi_res, eval_data, ai_rev_text = get_initial_quality_metadata(new_cnt, b.block_type)
-                    b.plagiarism_score = plagi_res.get("confidence_score")
-                    b.plagiarism_report = plagi_res.get("explanation")
+                    # Only persist a real plagiarism score; check_error=True means
+                    # both backends failed and the value (0) is not meaningful.
+                    if not plagi_res.get("check_error"):
+                        b.plagiarism_score  = plagi_res.get("confidence_score")
+                        b.plagiarism_report = plagi_res.get("explanation")
                     b.eval_score  = eval_data.get("structural_score", 0)
                     b.eval_report = json.dumps(eval_data)
                     b.ai_review   = ai_rev_text
@@ -891,8 +915,9 @@ def render_page(db, ctx):
                             b.content = new_out
                             b.updated_at = datetime.now(timezone.utc)
                             plagi_res, eval_data, ai_rev_text = get_initial_quality_metadata(new_out, b.block_type)
-                            b.plagiarism_score = plagi_res.get("confidence_score")
-                            b.plagiarism_report = plagi_res.get("explanation")
+                            if not plagi_res.get("check_error"):
+                                b.plagiarism_score  = plagi_res.get("confidence_score")
+                                b.plagiarism_report = plagi_res.get("explanation")
                             b.eval_score  = eval_data.get("structural_score", 0)
                             b.eval_report = json.dumps(eval_data)
                             b.ai_review   = ai_rev_text
@@ -985,18 +1010,47 @@ def render_page(db, ctx):
                         st.markdown(review_text)
 
                     if st.button("🤖 Check Content Authenticity", key=f"ai_plag_{b.id}", use_container_width=True):
-                        with st.spinner("Analyzing AI generation probability via Hugging Face..."):
+                        with st.spinner("Running AI-content detection (LLM analysis)…"):
                             plag_res = check_plagiarism_content(b.content)
-                        if plag_res.get("is_plagiarized"):
-                            st.error(f"⚠️ **AI Content Detected** (Probability: {plag_res.get('confidence_score', 0)}%)")
+
+                        if plag_res.get("check_error"):
+                            # Both LLM and HuggingFace backends failed — do NOT show
+                            # a false "0% / human-written" result; show a clear error.
+                            st.warning(
+                                "⚠️ **Plagiarism check could not be completed.** "
+                                "The detection backend returned an error. "
+                                "Check server logs for details."
+                            )
+                            st.caption(
+                                "Possible causes: LLM API key missing / rate-limited, "
+                                "or `transformers`/`torch` not installed for the local fallback."
+                            )
+                            st.info(plag_res.get("explanation", "No detail available."))
                         else:
-                            st.success(f"✅ **Content Appears Human/Original** (Fake Probability: {plag_res.get('confidence_score', 0)}%)")
-                        
-                        st.markdown("**Explanation:**")
-                        st.info(plag_res.get("explanation", "No explanation provided."))
-                        
-                        st.markdown("**Raw Detection Data:**")
-                        st.json(plag_res.get("raw_data", plag_res), expanded=False)
+                            score = plag_res.get("confidence_score", 0)
+                            if plag_res.get("is_plagiarized"):
+                                st.error(
+                                    f"⚠️ **High AI-content likelihood** — "
+                                    f"{score}% probability of AI-generated content."
+                                )
+                            else:
+                                st.success(
+                                    f"✅ **Likely original / human-written** — "
+                                    f"AI likelihood: {score}%"
+                                )
+
+                            st.markdown("**Analysis:**")
+                            st.info(plag_res.get("explanation", "No explanation provided."))
+
+                            if plag_res.get("raw_data"):
+                                st.markdown("**Raw Detection Data:**")
+                                st.json(plag_res["raw_data"], expanded=False)
+
+                            # Persist the result so the dashboard reflects the latest check.
+                            b.plagiarism_score  = plag_res.get("confidence_score")
+                            b.plagiarism_report = plag_res.get("explanation")
+                            db.commit()
+                            st.rerun()
 
             # ── Version History ───────────────────────────────────────────────
             with st.expander(f"⏱️ Version History — Block #{b.id}", expanded=False):

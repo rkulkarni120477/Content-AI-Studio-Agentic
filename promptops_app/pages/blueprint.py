@@ -299,18 +299,30 @@ def render_page(db, ctx):
             )
             bp_form_btn = st.form_submit_button("Confirm Module Selection", use_container_width=True)
 
-        # ── Inline Prompt Controls (near Generate button) ──────────────────
+        # ── Prompt configuration ────────────────────────────────────────────
+        st.divider()
         _bp_panel_sys, _bp_panel_usr, _bp_extra_instructions = render_inline_prompt_controls(
             db, "blueprint",
-            project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+            project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
             user_name=user_name, model_choice=model_choice,
             default_system=BLUEPRINT_SYSTEM_PROMPT,
             default_user=BLUEPRINT_USER_PROMPT_TEMPLATE,
             extra_placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
             project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+            user_role=user_role,
         )
 
-        bp_gen_btn = st.button(
+        # Generate (65 %) + Download Prompt (35 %) — same layout as Style tab
+        _bp_gen_c, _bp_dl_c = st.columns([0.65, 0.35])
+        with _bp_dl_c:
+            render_prompt_download_button(
+                db, "blueprint",
+                project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                button_label="⬇️ Download Prompt",
+                key="_bp_dl_prompt_btn",
+                use_container_width=True,
+            )
+        bp_gen_btn = _bp_gen_c.button(
             "🤖 Generate Blueprint with AI",
             use_container_width=True, type="primary",
             key="_bp_gen_btn",
