@@ -25,6 +25,10 @@ from promptops_app.ui.components import _section_badge
 from promptops_app.services.audit_service import log_audit_event
 from promptops_app.ui.notifications import notify_deferred
 from promptops_app.prompts.prompt_builder import build_prompt as _lib_build_prompt
+from promptops_app.prompt_templates import BLUEPRINT_SYSTEM_PROMPT, BLUEPRINT_USER_PROMPT_TEMPLATE
+from promptops_app.ui.prompt_panel import safe_format
+from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
+from promptops_app.ui.user_prompt_widget import auto_save_instructions
 
 
 def _build_blueprint_prompts(db, *, cdd_context, selected_module, extra_instructions,
@@ -218,13 +222,16 @@ def render_page(db, ctx):
                             (f"📋 {_etitle}", f"end_{_ei}")
                         )
 
+        # ── Source CDD selector (outside form so it drives module list) ──────
+        bp_linked_cdd = st.selectbox(
+            "📘 Source CDD",
+            list(cdd_bp_options.keys()),
+            index=default_cdd_idx,
+            help="Blueprint will be generated from this CDD.",
+            key="_bp_linked_cdd",
+        )
+
         with st.form("bp_create_form"):
-            bp_linked_cdd = st.selectbox(
-                "📘 Source CDD",
-                list(cdd_bp_options.keys()),
-                index=default_cdd_idx,
-                help="Blueprint will be generated from this CDD."
-            )
 
             # Module selector — show only if CDD has defined modules
             _selected_module_num = 1
@@ -285,26 +292,37 @@ def render_page(db, ctx):
             else:
                 st.caption("ℹ️ Module number will be 1 (no module structure detected in CDD).")
 
-            bp_extra_instructions = st.text_area(
-                "💬 Additional Prompts / Instructions",
-                placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
-                height=90,
-                help="Optional custom instructions guiding Blueprint generation."
-            )
             bp_doc_title = st.text_input(
                 "Blueprint Title (optional)",
-                placeholder=f"e.g. Module {_selected_module_num} — Patient Assessment Blueprint"
+                placeholder=f"e.g. Module {_selected_module_num} — Patient Assessment Blueprint",
+                key="_bp_doc_title",
             )
-            bp_gen_btn = st.form_submit_button(
-                "🤖 Generate Blueprint with AI",
-                use_container_width=True, type="primary"
-            )
+            bp_form_btn = st.form_submit_button("Confirm Module Selection", use_container_width=True)
+
+        # ── Inline Prompt Controls (near Generate button) ──────────────────
+        _bp_panel_sys, _bp_panel_usr, _bp_extra_instructions = render_inline_prompt_controls(
+            db, "blueprint",
+            project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+            user_name=user_name, model_choice=model_choice,
+            default_system=BLUEPRINT_SYSTEM_PROMPT,
+            default_user=BLUEPRINT_USER_PROMPT_TEMPLATE,
+            extra_placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
+            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+        )
+
+        bp_gen_btn = st.button(
+            "🤖 Generate Blueprint with AI",
+            use_container_width=True, type="primary",
+            key="_bp_gen_btn",
+        )
 
         if bp_gen_btn:
             if not rbac_gate(user_role, "blueprint.generate", "Generating a Blueprint"):
                 st.stop()
             model_choice  = st.session_state.get("model_choice", "GPT-5.4")
-            linked_cdd_id = cdd_bp_options.get(bp_linked_cdd)
+            linked_cdd_id = cdd_bp_options.get(st.session_state.get("_bp_linked_cdd", bp_linked_cdd))
+            bp_extra_instructions = _bp_extra_instructions
+            bp_doc_title = st.session_state.get("_bp_doc_title", "")
 
             # Show which style will be applied
             _pre_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
@@ -368,14 +386,29 @@ def render_page(db, ctx):
                 bp_status.write(f"🧠 Stage 3: Generating {'Teacher' if _bp_gen_mode == 'teacher' else 'Student'} Blueprint with AI...")
                 _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
                 _style_ctx_bp    = build_style_context(db, _active_style_bp) if _active_style_bp else ""
-                _bp_sys_prompt, user_p, _bp_tpl_name, _bp_tpl_ver = _build_blueprint_prompts(
-                    db,
-                    cdd_context=cdd_context_text,
-                    selected_module=_selected_module_ref,
-                    extra_instructions=_bp_extra_block,
-                    teacher_mode=(_bp_gen_mode == "teacher"),
-                    style_guidelines=_style_ctx_bp,
-                )
+                # Use the panel-resolved prompt (defaults to DB default_blueprint_prompt).
+                # Fall back to _build_blueprint_prompts only if panel returned empty strings.
+                if _bp_panel_sys and _bp_panel_usr:
+                    _bp_sys_prompt = _bp_panel_sys
+                    user_p = safe_format(
+                        _bp_panel_usr,
+                        cdd_context=cdd_context_text,
+                        selected_module=_selected_module_ref,
+                        extra_instructions_block=_bp_extra_block,
+                        extra_instructions=_bp_extra_block,
+                        style_guidelines=_style_ctx_bp,
+                        teacher_mode="Yes" if _bp_gen_mode == "teacher" else "No",
+                        student_mode="No"  if _bp_gen_mode == "teacher" else "Yes",
+                    )
+                else:
+                    _bp_sys_prompt, user_p, _, _ = _build_blueprint_prompts(
+                        db,
+                        cdd_context=cdd_context_text,
+                        selected_module=_selected_module_ref,
+                        extra_instructions=_bp_extra_block,
+                        teacher_mode=(_bp_gen_mode == "teacher"),
+                        style_guidelines=_style_ctx_bp,
+                    )
                 bp_output = call_llm(model_choice, _bp_sys_prompt, user_p, usage_ctx=UsageLogContext(
                     user_name=user_name,
                     project_id=st.session_state.get("selected_project_id"),
@@ -426,6 +459,12 @@ def render_page(db, ctx):
                     )
                     st.session_state["active_blueprint_id"] = new_bp.id
                     notify_deferred("bp_created", f"Blueprint '{_inferred_title}' created with {len(sections)} sections.")
+                    auto_save_instructions(
+                        db, "blueprint", bp_extra_instructions,
+                        name=f"M{_selected_module_num} — {_bp_cdd_title}"[:80],
+                        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                        user_name=user_name,
+                    )
                     st.rerun()
 
     with bp_right:
@@ -579,4 +618,13 @@ def render_page(db, ctx):
                     )
                 else:
                     _bpdl_c2.error(_bp_docx_r.error_message)
+
+                # ── Download Prompt Used ────────────────────────────────────
+                render_prompt_download_button(
+                    db, "blueprint",
+                    project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                    button_label="⬇️ Download Prompt Used (.md)",
+                    key=f"bp_dl_prompt_{sel_bp.id}",
+                    use_container_width=True,
+                )
 

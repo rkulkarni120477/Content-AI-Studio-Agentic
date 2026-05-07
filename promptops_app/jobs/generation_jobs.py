@@ -139,8 +139,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         user_name          = params.get("user_name", "")
         project_id         = params.get("project_id")
         course_id          = params.get("course_id")
-        selected_component = params.get("selected_component", {})
-        supp_files         = params.get("supplementary_files", [])
+        selected_component  = params.get("selected_component", {})
+        supp_files          = params.get("supplementary_files", [])
+        extra_instructions  = params.get("extra_instructions", "")
 
         # ── Stage 1 — Context ─────────────────────────────────────────
         set_running(db, job, *STAGE_CONTEXT)
@@ -233,6 +234,10 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 ver.user_prompt_template,
                 {"topic": topic, "block_type": b_type, "target_audience": target_audience},
             ) + context
+
+        # Append user's additional instructions if provided
+        if extra_instructions and extra_instructions.strip():
+            user_p += f"\n\n**Additional Instructions:**\n{extra_instructions.strip()}"
 
         # ── Stage 3 — LLM call ────────────────────────────────────────
         set_running(db, job, *STAGE_LLM)

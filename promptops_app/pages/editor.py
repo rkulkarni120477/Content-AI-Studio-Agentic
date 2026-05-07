@@ -47,6 +47,7 @@ from promptops_app.services import validation_service
 from promptops_app.core.constants import WorkflowState
 from promptops_app.ui import validation_panel
 from promptops_app.ui.components import status_badge, _section_badge
+from promptops_app.ui.generation_controls import render_prompt_download_button
 
 
 def render_page(db, ctx):
@@ -208,6 +209,14 @@ def render_page(db, ctx):
                         use_container_width=True,
                         key="dl_full_course_zip",
                     )
+        # ── Download Prompt Used for Generation ───────────────────────────
+        render_prompt_download_button(
+            db, "generate",
+            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+            button_label="⬇️ Download Prompt Used (.md)",
+            key="editor_dl_prompt_used",
+            use_container_width=False,
+        )
         st.divider()
 
     st.markdown(_section_badge("✏️", "Content Editor & Export",

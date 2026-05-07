@@ -8,6 +8,9 @@ import streamlit as st
 
 from promptops_app.prompt_templates import CDD_SYSTEM_PROMPT, CDD_USER_PROMPT_TEMPLATE
 from promptops_app.prompts.prompt_builder import build_prompt as _lib_build_prompt
+from promptops_app.ui.prompt_panel import safe_format
+from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
+from promptops_app.ui.user_prompt_widget import auto_save_instructions
 
 
 def _build_cdd_prompts(db, *, course_name, target_audience, expert_domain,
@@ -162,40 +165,52 @@ def render_page(db, ctx):
                 unsafe_allow_html=True
             )
 
-        with st.form("cdd_create_form"):
-            st.markdown(
-                "<label style='font-weight:600;font-size:0.875rem;'>Course Title "
-                "<span style='color:#ef4444;'>*</span></label>",
-                unsafe_allow_html=True
-            )
-            cdd_course_title = st.text_input(
-                "Course Title *", label_visibility="collapsed",
-                placeholder="e.g. Foundations of Clinical Nursing"
-            )
-            cdd_doc_title = st.text_input("Document Title",
-                placeholder="e.g. Nursing Foundations CDD v1",
-                help="Optional label for this CDD document.")
-            st.markdown(
-                "<label style='font-weight:600;font-size:0.875rem;'>Estimated Duration "
-                "<span style='color:#ef4444;'>*</span>"
-                "<span style='font-weight:400;color:#9ca3af;'> (hours)</span></label>",
-                unsafe_allow_html=True
-            )
-            cdd_duration_hours = st.number_input(
-                "Estimated Duration (hours) *", label_visibility="collapsed",
-                min_value=1, max_value=500, value=8, step=1,
-                help="Total course duration in hours (e.g. enter 8 for an 8-hour course)."
-            )
-            cdd_extra_instructions = st.text_area(
-                "💬 Additional Prompts / Instructions",
-                placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
-                height=100,
-                help="Optional custom instructions passed directly to the AI during CDD generation."
-            )
-            cdd_gen_btn = st.form_submit_button(
-                "🤖 Generate CDD with AI",
-                use_container_width=True, type="primary"
-            )
+        # ── Course fields ──────────────────────────────────────────────────
+        st.markdown(
+            "<label style='font-weight:600;font-size:0.875rem;'>Course Title "
+            "<span style='color:#ef4444;'>*</span></label>",
+            unsafe_allow_html=True
+        )
+        cdd_course_title = st.text_input(
+            "Course Title *", label_visibility="collapsed",
+            placeholder="e.g. Foundations of Clinical Nursing",
+            key="_cdd_course_title",
+        )
+        cdd_doc_title = st.text_input(
+            "Document Title",
+            placeholder="e.g. Nursing Foundations CDD v1",
+            help="Optional label for this CDD document.",
+            key="_cdd_doc_title",
+        )
+        st.markdown(
+            "<label style='font-weight:600;font-size:0.875rem;'>Estimated Duration "
+            "<span style='color:#ef4444;'>*</span>"
+            "<span style='font-weight:400;color:#9ca3af;'> (hours)</span></label>",
+            unsafe_allow_html=True
+        )
+        cdd_duration_hours = st.number_input(
+            "Estimated Duration (hours) *", label_visibility="collapsed",
+            min_value=1, max_value=500, value=8, step=1,
+            help="Total course duration in hours (e.g. enter 8 for an 8-hour course).",
+            key="_cdd_duration_hours",
+        )
+
+        # ── Inline Prompt Controls (near Generate button) ──────────────────
+        _cdd_panel_sys, _cdd_panel_usr, _cdd_extra_instructions = render_inline_prompt_controls(
+            db, "cdd",
+            project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+            user_name=user_name, model_choice=model_choice,
+            default_system=CDD_SYSTEM_PROMPT,
+            default_user=CDD_USER_PROMPT_TEMPLATE,
+            extra_placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
+            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+        )
+
+        cdd_gen_btn = st.button(
+            "🤖 Generate CDD with AI",
+            use_container_width=True, type="primary",
+            key="_cdd_gen_btn",
+        )
 
         if cdd_gen_btn and cdd_course_title:
             if not rbac_gate(user_role, "cdd.generate", "Generating a CDD"):
@@ -208,6 +223,9 @@ def render_page(db, ctx):
             # Use the style selected in the dropdown (already resolved above)
             if _cdd_selected_style:
                 st.info(f"🎨 **Style '{_cdd_selected_style.name}'** will be applied to this CDD.", icon="🎨")
+
+            # Read instructions from the panel (outside the form, persisted in session state)
+            cdd_extra_instructions = _cdd_extra_instructions
 
             # Build the extra instructions block (blank if none provided)
             _cdd_extra_block = (
@@ -227,16 +245,34 @@ def render_page(db, ctx):
 
             with st.status("📋 Generating Course Design Document...", expanded=True) as cdd_status:
                 cdd_status.write("🧠 Stage 1: Generating CDD content with AI...")
-                _cdd_sys, _cdd_usr, _cdd_tpl, _cdd_ver = _build_cdd_prompts(
-                    db,
-                    course_name=cdd_course_title,
-                    target_audience=target_audience,
-                    expert_domain=expert_domain,
-                    audience_level=aud_cat,
-                    estimated_duration=cdd_duration_hours,
-                    extra_instructions=_cdd_extra_block,
-                    style_guidelines=_style_context_cdd if _cdd_selected_style else "",
-                )
+                # Use the panel-resolved prompt (defaults to DB default_cdd_prompt).
+                # Fall back to _build_cdd_prompts only if the panel returned empty strings.
+                if _cdd_panel_sys and _cdd_panel_usr:
+                    _cdd_sys = _cdd_panel_sys
+                    _cdd_usr = safe_format(
+                        _cdd_panel_usr,
+                        course_title=cdd_course_title,
+                        course_name=cdd_course_title,
+                        target_audience=target_audience,
+                        expert_domain=expert_domain,
+                        audience_level=aud_cat,
+                        estimated_duration=str(cdd_duration_hours),
+                        extra_instructions_block=_cdd_extra_block,
+                        extra_instructions=_cdd_extra_block,
+                        style_guidelines=_style_context_cdd if _cdd_selected_style else "",
+                        grade_level=target_audience,
+                    )
+                else:
+                    _cdd_sys, _cdd_usr, _, _ = _build_cdd_prompts(
+                        db,
+                        course_name=cdd_course_title,
+                        target_audience=target_audience,
+                        expert_domain=expert_domain,
+                        audience_level=aud_cat,
+                        estimated_duration=cdd_duration_hours,
+                        extra_instructions=_cdd_extra_block,
+                        style_guidelines=_style_context_cdd if _cdd_selected_style else "",
+                    )
                 cdd_output = call_llm(model_choice, _cdd_sys, _cdd_usr, usage_ctx=UsageLogContext(
                     user_name=user_name,
                     project_id=st.session_state.get("selected_project_id"),
@@ -291,6 +327,12 @@ def render_page(db, ctx):
                     cdd_status.update(label=f"✅ CDD '{doc_title}' created with {len(sections)} sections!", state="complete")
                     st.session_state["active_cdd_id"] = new_cdd.id
                     notify_deferred("cdd_created", f"CDD '{doc_title}' created successfully with {len(sections)} sections.")
+                    auto_save_instructions(
+                        db, "cdd", cdd_extra_instructions,
+                        name=cdd_course_title[:80],
+                        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                        user_name=user_name,
+                    )
                     st.rerun()
 
     with cdd_right:
@@ -463,4 +505,13 @@ def render_page(db, ctx):
                     )
                 else:
                     _dl_c2.error(_cdd_docx_r.error_message)
+
+                # ── Download Prompt Used ────────────────────────────────────
+                render_prompt_download_button(
+                    db, "cdd",
+                    project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                    button_label="⬇️ Download Prompt Used (.md)",
+                    key=f"cdd_dl_prompt_{sel_cdd_id}",
+                    use_container_width=True,
+                )
 

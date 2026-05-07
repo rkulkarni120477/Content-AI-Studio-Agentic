@@ -52,6 +52,9 @@ from promptops_app.repositories import (
     blueprint_repository, cdd_repository, document_repository, prompt_repository,
 )
 from promptops_app.ui.components import fill_template, _section_badge
+from promptops_app.ui.prompt_panel import render_prompt_panel
+from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
+from promptops_app.ui.user_prompt_widget import auto_save_instructions
 
 
 def render_page(db, ctx):
@@ -225,6 +228,20 @@ def render_page(db, ctx):
             f"Content Type dropdown auto-populated.</div>",
             unsafe_allow_html=True
         )
+
+    # ── Inline Prompt Controls (near Generate button) ────────────────────────
+    _gen_sys_p, _gen_usr_p, _gen_extra_instructions = render_inline_prompt_controls(
+        db, "generate",
+        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+        user_name=user_name, model_choice=model_choice,
+        default_system=LESSON_WITH_CONTEXT_SYSTEM,
+        default_user=LESSON_WITH_CONTEXT_USER,
+        extra_placeholder=(
+            "e.g. Use real-world case studies. Add a scenario-based opener. "
+            "Include knowledge check questions at the end of each section."
+        ),
+        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+    )
 
     # ── Completion gate: check if selected component type is allowed ────────
     _gen_allowed   = True
@@ -412,6 +429,7 @@ def render_page(db, ctx):
                     })
 
         # ── Build request params and submit job ───────────────────────────
+        _extra_instr = _gen_extra_instructions
         _req_params = {
             "topic":               _eff_topic,
             "b_type":              b_type,
@@ -429,6 +447,7 @@ def render_page(db, ctx):
             "course_id":           st.session_state.get("selected_course_id"),
             "selected_component":  _selected_component or {},
             "supplementary_files": _supp_files,
+            "extra_instructions":  _extra_instr,
         }
 
         _job_id = job_repository.create_job(
@@ -439,6 +458,12 @@ def render_page(db, ctx):
             course_id=st.session_state.get("selected_course_id"),
         )
         job_runner.submit(generation_jobs.run_generation_job, _job_id)
+        auto_save_instructions(
+            db, "generate", _extra_instr,
+            name=_eff_topic[:80] if _eff_topic else "Generate Instructions",
+            project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+            user_name=user_name,
+        )
         st.session_state["active_gen_job_id"] = _job_id
         st.toast("🚀 Generation queued — running in background...")
         st.rerun()

@@ -12,9 +12,10 @@ _log = logging.getLogger(__name__)
 from promptops_app.database import SessionLocal, CourseDesignDocument, get_active_style, init_db_with_seed
 from promptops_app.core.context import PageContext
 from promptops_app.core.shared import (
-    login_page, project_dashboard_page, course_selection_page, _sidebar_brand,
+    login_page, project_dashboard_page, cluster_selection_page,
+    course_selection_page, _sidebar_brand,
 )
-from promptops_app.pages import style, cdd, blueprint, prompts, generate, editor, workflow, analytics
+from promptops_app.pages import style, cdd, blueprint, generate, editor, workflow, analytics
 from promptops_app.repositories import cdd_repository
 from promptops_app.ui.components import inject_premium_style
 from promptops_app.ui.notifications import notify_check
@@ -23,7 +24,6 @@ PAGE_RENDERERS = {
     "Style": style.render_page,
     "CDD": cdd.render_page,
     "Blueprint": blueprint.render_page,
-    "Prompts": prompts.render_page,
     "Generate": generate.render_page,
     "Editor": editor.render_page,
     "Workflow": workflow.render_page,
@@ -40,47 +40,61 @@ def main():
     user_role = st.session_state.user['role']
     user_name = st.session_state.user['username']
 
-    # ── Project / Course selection gates ─────────────────────────────────────
+    # ── Project / Cluster / Course selection gates ────────────────────────────
     if not st.session_state.get('selected_project_id'):
         project_dashboard_page(); return
+    if not st.session_state.get('selected_cluster_id'):
+        cluster_selection_page(); return
     if not st.session_state.get('selected_course_id'):
         course_selection_page(); return
 
     # Convenience vars for context
-    _proj_id   = st.session_state.selected_project_id
-    _proj_name = st.session_state.selected_project_name
-    _crs_id    = st.session_state.selected_course_id
-    _crs_name  = st.session_state.selected_course_name
-    _is_admin  = (user_role == "admin")
-    _is_lead   = (user_role == "reviewer")  # Lead role
+    _proj_id    = st.session_state.selected_project_id
+    _proj_name  = st.session_state.selected_project_name
+    _clus_id    = st.session_state.selected_cluster_id
+    _clus_name  = st.session_state.selected_cluster_name
+    _crs_id     = st.session_state.selected_course_id
+    _crs_name   = st.session_state.selected_course_name
+    _is_admin   = (user_role == "admin")
+    _is_lead    = (user_role == "reviewer")  # Lead role
 
     # ── Sidebar brand + user pill ─────────────────────────────────────────────
     _sidebar_brand(user_name, user_role)
 
-    # ── Project / Course context pill ─────────────────────────────────────────
+    # ── Project / Cluster / Course context pill ───────────────────────────────
     st.sidebar.markdown(
         f"<div style='background:rgba(255,255,255,0.12);border:1px solid rgba(165,180,252,0.22);border-radius:8px;"
         f"padding:9px 12px;margin:4px 0;font-size:0.75rem;'>"
         f"<div style='color:#c7d2fe;font-weight:700;text-transform:uppercase;"
         f"letter-spacing:.07em;margin-bottom:6px;'>Workspace</div>"
-        f"<div style='color:#e0e7ff;margin-bottom:4px;'>📁 <strong style='color:#ffffff;font-weight:700;'>{_proj_name}</strong></div>"
+        f"<div style='color:#e0e7ff;margin-bottom:3px;'>📁 <strong style='color:#ffffff;font-weight:700;'>{_proj_name}</strong></div>"
+        f"<div style='color:#e0e7ff;margin-bottom:3px;'>🗂️ <strong style='color:#ffffff;font-weight:700;'>{_clus_name}</strong></div>"
         f"<div style='color:#e0e7ff;'>📖 <strong style='color:#ffffff;font-weight:700;'>{_crs_name}</strong></div>"
         f"</div>",
         unsafe_allow_html=True
     )
-    _nav_back1, _nav_back2 = st.sidebar.columns(2)
-    if _nav_back1.button("← Projects", use_container_width=True, key="back_to_projects_btn"):
-        st.session_state.pop("selected_project_id", None)
+    _nb1, _nb2, _nb3 = st.sidebar.columns(3)
+    if _nb1.button("← Projects", use_container_width=True, key="back_to_projects_btn"):
+        st.session_state.pop("selected_project_id",   None)
         st.session_state.pop("selected_project_name", None)
-        st.session_state.pop("selected_course_id", None)
-        st.session_state.pop("selected_course_name", None)
+        st.session_state.pop("selected_cluster_id",   None)
+        st.session_state.pop("selected_cluster_name", None)
+        st.session_state.pop("selected_course_id",    None)
+        st.session_state.pop("selected_course_name",  None)
         st.rerun()
-    if _nav_back2.button("← Courses", use_container_width=True, key="back_to_courses_btn"):
-        st.session_state.pop("selected_course_id", None)
+    if _nb2.button("← Clusters", use_container_width=True, key="back_to_clusters_btn"):
+        st.session_state.pop("selected_cluster_id",   None)
+        st.session_state.pop("selected_cluster_name", None)
+        st.session_state.pop("selected_course_id",    None)
+        st.session_state.pop("selected_course_name",  None)
+        st.session_state.pop("active_cdd_id",         None)
+        st.session_state.pop("active_blueprint_id",   None)
+        st.rerun()
+    if _nb3.button("← Courses", use_container_width=True, key="back_to_courses_btn"):
+        st.session_state.pop("selected_course_id",   None)
         st.session_state.pop("selected_course_name", None)
-        # Clear course-scoped pinned context to avoid stale state
-        st.session_state.pop("active_cdd_id", None)
-        st.session_state.pop("active_blueprint_id", None)
+        st.session_state.pop("active_cdd_id",        None)
+        st.session_state.pop("active_blueprint_id",  None)
         st.rerun()
 
     st.sidebar.divider()
@@ -197,15 +211,12 @@ def main():
     inject_premium_style()
 
     # ── Sidebar navigation — role-based ───────────────────────────────────────
-    # Admin: full pipeline.
-    # Lead (reviewer): full pipeline except Prompts (same scope as admin within assigned project).
-    # ID (author): full pipeline except Prompts admin.
+    # Admin / Lead / ID: same pipeline. Prompt management is embedded in each tab.
     if _is_admin:
         NAV_ITEMS = [
             ("🎨", "Style"),
             ("📘", "CDD"),
             ("🧩", "Blueprint"),
-            ("📚", "Prompts"),
             ("⚙️", "Generate"),
             ("✏️", "Editor"),
             ("🚦", "Workflow"),
@@ -283,6 +294,8 @@ def main():
         user_name=user_name,
         project_id=_proj_id,
         project_name=_proj_name,
+        cluster_id=_clus_id,
+        cluster_name=_clus_name,
         course_id=_crs_id,
         course_name=_crs_name,
         is_admin=_is_admin,
@@ -300,15 +313,15 @@ def main():
         _exc_name = type(_page_exc).__name__
         if "Rerun" not in _exc_name and "Stop" not in _exc_name:
             _log.error(
-                "page_render FAILED  page=%r  user=%r  project_id=%r  course_id=%r  duration=%.3fs",
-                _page, user_name, _proj_id, _crs_id, time.monotonic() - _page_start,
+                "page_render FAILED  page=%r  user=%r  project_id=%r  cluster_id=%r  course_id=%r  duration=%.3fs",
+                _page, user_name, _proj_id, _clus_id, _crs_id, time.monotonic() - _page_start,
                 exc_info=True,
             )
         raise
     else:
         _log.info(
-            "page_render  page=%r  user=%r  project_id=%r  course_id=%r  duration=%.3fs",
-            _page, user_name, _proj_id, _crs_id, time.monotonic() - _page_start,
+            "page_render  page=%r  user=%r  project_id=%r  cluster_id=%r  course_id=%r  duration=%.3fs",
+            _page, user_name, _proj_id, _clus_id, _crs_id, time.monotonic() - _page_start,
         )
     finally:
         st.sidebar.divider()
