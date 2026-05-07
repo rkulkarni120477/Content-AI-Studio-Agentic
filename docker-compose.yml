@@ -6,4 +6,4 @@ services:
       - "5001:8501"
     env_file:
       - .env
-    restart: always
+    restart: unless-stopped
