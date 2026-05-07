@@ -196,171 +196,30 @@ def evaluate_readability(text: str) -> dict:
 
 # ---------------------------------------------------------------------------
 # Plagiarism / AI-content detection
+# DEPRECATED — detection is now async via Copyleaks (plagiarism_service.py).
+# These stubs remain so that old call-sites (shared.py imports) don't crash.
 # ---------------------------------------------------------------------------
 
-@st.cache_resource(show_spinner=False)
 def get_plagi_model():
-    """Load and cache the AI detector model (Hello-SimpleAI/chatgpt-detector-roberta).
-
-    Returns (tokenizer, model) or (None, None) on failure.
-    Replace @st.cache_resource with functools.lru_cache for FastAPI migration.
-    """
-    try:
-        from transformers import AutoTokenizer, AutoModelForSequenceClassification
-        model_name = "Hello-SimpleAI/chatgpt-detector-roberta"
-        tokenizer  = AutoTokenizer.from_pretrained(model_name)
-        model      = AutoModelForSequenceClassification.from_pretrained(model_name)
-        return tokenizer, model
-    except Exception:
-        return None, None
+    """Removed — HuggingFace local model replaced by Copyleaks async API."""
+    return None, None
 
 
 def check_plagiarism_content(text: str) -> dict:
-    """Detect AI-generated vs human text.
+    """DEPRECATED — synchronous plagiarism check removed.
 
-    Tries in order:
-      1. LLM-based originality analysis (primary, uses the active model).
-      2. Local Hugging Face model (Hello-SimpleAI/chatgpt-detector-roberta),
-         only if ``transformers`` and ``torch`` are installed.
-
-    All return dicts include a ``check_error`` boolean (False = real result,
-    True = both backends failed and the score is not meaningful).  Callers
-    MUST check this flag before using ``confidence_score``.
-
-    Returns
-    -------
-    dict with keys:
-        is_plagiarized   (bool)
-        confidence_score (int 0-100, AI-likelihood; 0 is meaningless if check_error)
-        matched_sources  (list[str])
-        explanation      (str)
-        raw_data         (dict)
-        check_error      (bool)  True → result unreliable; do not persist the score
+    Plagiarism is now handled asynchronously via Copyleaks
+    (``services/plagiarism_service.py`` + ``jobs/plagiarism_jobs.py``).
+    This stub is kept so legacy import sites don't crash at startup.
+    It returns a deferred result so no score is stored on existing callers.
     """
-    if not text or not text.strip():
-        _log_plagiarism.debug("check_plagiarism_content called with empty text")
-        return {
-            "is_plagiarized":   False,
-            "confidence_score": 0,
-            "matched_sources":  [],
-            "explanation":      "No content provided for analysis.",
-            "raw_data":         {},
-            "check_error":      True,
-        }
-
-    # ── Path 1: LLM-based check ─────────────────────────────────────────────
-    # The active model (OpenAI / Bedrock) reads the content and returns a
-    # structured JSON verdict.  generate_text() never raises — it returns
-    # "ERROR: ..." on failure so we check the prefix explicitly.
-    try:
-        llm_res = _llm(_EVAL_MODEL, PLAGIARISM_PROMPT, f"CONTENT TO CHECK:\n{text[:4000]}")
-        if llm_res.startswith("ERROR"):
-            _log_plagiarism.warning(
-                "LLM plagiarism check returned an error response: %.120s", llm_res
-            )
-        else:
-            plag_data = safe_json_loads(llm_res)
-            if plag_data and "is_plagiarized" in plag_data:
-                plag_data.setdefault("matched_sources", [])
-                plag_data["matched_sources"] = (
-                    plag_data["matched_sources"] + ["LLM Originality Engine"]
-                )
-                plag_data.setdefault("raw_data", {})
-                plag_data["check_error"] = False
-                _log_plagiarism.debug(
-                    "LLM plagiarism check succeeded: is_ai=%s score=%s",
-                    plag_data.get("is_plagiarized"), plag_data.get("confidence_score"),
-                )
-                return plag_data
-            _log_plagiarism.warning(
-                "LLM plagiarism check returned non-JSON or missing 'is_plagiarized': %.80s",
-                llm_res,
-            )
-    except Exception as exc:
-        _log_plagiarism.warning("LLM plagiarism check raised unexpectedly: %s", exc, exc_info=True)
-
-    # ── Path 2: Hugging Face local model ────────────────────────────────────
-    # Requires:  transformers>=4.40.0  torch>=2.2.0
-    # (currently commented-out in requirements.txt to keep Docker image small;
-    #  uncomment those two lines to enable this path in production).
-    _hf_error: str = ""
-    try:
-        tokenizer, model = get_plagi_model()
-        if not tokenizer or not model:
-            raise ImportError(
-                "Hugging Face model not loaded — "
-                "install 'transformers' and 'torch' to enable local detection."
-            )
-
-        import torch
-        chunk_size = 512
-        chunks     = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-        total_ai_score = 0.0
-        valid_chunks   = 0
-        for c in chunks:
-            if not c.strip():
-                continue
-            inputs = tokenizer(c, return_tensors="pt", truncation=True)
-            with torch.no_grad():
-                outputs = model(**inputs)
-                probs   = torch.softmax(outputs.logits, dim=1)
-            total_ai_score += probs[0][1].item()
-            valid_chunks   += 1
-
-        if valid_chunks == 0:
-            raise ValueError("No valid text chunks could be analysed.")
-
-        avg   = total_ai_score / valid_chunks
-        is_ai = avg > 0.5
-        _log_plagiarism.debug(
-            "HuggingFace plagiarism check succeeded: avg=%.3f is_ai=%s chunks=%d",
-            avg, is_ai, valid_chunks,
-        )
-        return {
-            "is_plagiarized":   is_ai,
-            "confidence_score": int(avg * 100),
-            "matched_sources":  [
-                f"Local Model: Hello-SimpleAI/chatgpt-detector-roberta "
-                f"(avg over {valid_chunks} chunk(s))"
-            ],
-            "explanation": (
-                "High probability of AI-generated content."
-                if is_ai
-                else "Content appears largely human-written."
-            ),
-            "raw_data":    {"average_ai_score": round(avg, 4), "chunks_analyzed": valid_chunks},
-            "check_error": False,
-        }
-
-    except ImportError as exc:
-        _hf_error = str(exc)
-        _log_plagiarism.info("HuggingFace plagiarism backend unavailable: %s", exc)
-    except Exception as exc:
-        _hf_error = str(exc)
-        _log_plagiarism.error(
-            "HuggingFace plagiarism check failed: %s", exc, exc_info=True
-        )
-
-    # ── Both paths failed ────────────────────────────────────────────────────
-    _log_plagiarism.warning(
-        "Plagiarism check could not be completed — "
-        "LLM check failed and HuggingFace backend is unavailable (%s). "
-        "Set PROMPTOPS_DEFAULT_MODEL to a working model or install "
-        "transformers + torch.",
-        _hf_error or "not installed",
-    )
+    _log_plagiarism.debug("check_plagiarism_content called — returning deferred stub")
     return {
-        "is_plagiarized":   False,
-        "confidence_score": 0,
-        "matched_sources":  [],
+        "confidence_score": None,
         "explanation": (
-            "Plagiarism check could not be completed. "
-            "The LLM backend returned an error and the local Hugging Face model "
-            "is not installed. "
-            "Check server logs for details."
+            "Plagiarism is now checked asynchronously via Copyleaks. "
+            "Use the Editor panel to trigger a scan."
         ),
-        "raw_data":    {"llm_error": "non-JSON or ERROR response", "hf_error": _hf_error},
         "check_error": True,
     }
 
@@ -376,16 +235,14 @@ def get_initial_quality_metadata(content: str, block_type: str) -> tuple:
       PROMPTOPS_SYNC_PLAGIARISM_CHECKS=true
       PROMPTOPS_SYNC_QUALITY_CHECKS=true
     """
-    if SYNC_PLAGIARISM_CHECKS:
-        plagi_res = check_plagiarism_content(content)
-    else:
-        # check_error=True signals callers to store NULL (not 0) for the score,
-        # so the dashboard correctly shows "not checked yet" instead of "0% AI".
-        plagi_res = {
-            "confidence_score": None,
-            "explanation":      "Deferred — open the Editor and click 'Check Content Authenticity'.",
-            "check_error":      True,
-        }
+    # Plagiarism is always deferred — Copyleaks async scan is triggered
+    # separately after blocks are saved (see generation_jobs.py).
+    plagi_res = {
+        "confidence_score": None,
+        "explanation":      "Async Copyleaks scan queued — results appear in the Editor.",
+        "check_error":      True,
+    }
+    _ = SYNC_PLAGIARISM_CHECKS   # config flag kept for reference; not used anymore
 
     if SYNC_QUALITY_CHECKS:
         eval_data  = evaluate_text(content, block_type)

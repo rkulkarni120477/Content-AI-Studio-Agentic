@@ -53,6 +53,7 @@ from promptops_app.services.llm_service import generate_text as call_llm
 from promptops_app.services.usage_service import UsageLogContext
 from promptops_app.core.shared import render_cdd_content
 from promptops_app.repositories import cdd_repository, style_repository
+from promptops_app.repositories.course_repository import set_active_cdd
 from promptops_app.parsers.cdd_parser import (
     parse_cdd_flat, parse_sections_from_text, _strip_ui_hidden_text,
 )
@@ -195,157 +196,7 @@ def render_page(db, ctx):
             key="_cdd_duration_hours",
         )
 
-        # ── Prompt configuration ────────────────────────────────────────────
-        st.divider()
-        _cdd_panel_sys, _cdd_panel_usr, _cdd_extra_instructions = render_inline_prompt_controls(
-            db, "cdd",
-            project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
-            user_name=user_name, model_choice=model_choice,
-            default_system=CDD_SYSTEM_PROMPT,
-            default_user=CDD_USER_PROMPT_TEMPLATE,
-            extra_placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
-            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-            user_role=user_role,
-        )
-
-        # Generate (65 %) + Download Prompt (35 %) — same layout as Style tab
-        _cdd_gen_c, _cdd_dl_c = st.columns([0.65, 0.35])
-        with _cdd_dl_c:
-            render_prompt_download_button(
-                db, "cdd",
-                project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-                button_label="⬇️ Download Prompt",
-                key="_cdd_dl_prompt_btn",
-                use_container_width=True,
-            )
-        cdd_gen_btn = _cdd_gen_c.button(
-            "🤖 Generate CDD with AI",
-            use_container_width=True, type="primary",
-            key="_cdd_gen_btn",
-        )
-
-        if cdd_gen_btn and cdd_course_title:
-            if not rbac_gate(user_role, "cdd.generate", "Generating a CDD"):
-                st.stop()
-            model_choice = st.session_state.get("model_choice", "GPT-5.4")
-            target_audience = st.session_state.get("target_audience", "")
-            expert_domain = st.session_state.get("expert_domain", "")
-            aud_cat = st.session_state.get("sidebar_aud_cat", "Professional/Corporate")
-
-            # Use the style selected in the dropdown (already resolved above)
-            if _cdd_selected_style:
-                st.info(f"🎨 **Style '{_cdd_selected_style.name}'** will be applied to this CDD.", icon="🎨")
-
-            # Read instructions from the panel (outside the form, persisted in session state)
-            cdd_extra_instructions = _cdd_extra_instructions
-
-            # Build the extra instructions block (blank if none provided)
-            _cdd_extra_block = (
-                f"**Additional Instructions:**\n{cdd_extra_instructions.strip()}"
-                if cdd_extra_instructions and cdd_extra_instructions.strip()
-                else ""
-            )
-
-            # Inject selected style (from dropdown) instead of global active style
-            _style_context_cdd = ""
-            if _cdd_selected_style:
-                _style_context_cdd = build_style_context(db, _cdd_selected_style)
-                _cdd_extra_block = (
-                    f"**ACTIVE STYLE — Apply throughout this CDD:**\n{_style_context_cdd}\n\n"
-                    + _cdd_extra_block
-                )
-
-            with st.status("📋 Generating Course Design Document...", expanded=True) as cdd_status:
-                cdd_status.write("🧠 Stage 1: Generating CDD content with AI...")
-                # Use the panel-resolved prompt (defaults to DB default_cdd_prompt).
-                # Fall back to _build_cdd_prompts only if the panel returned empty strings.
-                if _cdd_panel_sys and _cdd_panel_usr:
-                    _cdd_sys = _cdd_panel_sys
-                    _cdd_usr = safe_format(
-                        _cdd_panel_usr,
-                        course_title=cdd_course_title,
-                        course_name=cdd_course_title,
-                        target_audience=target_audience,
-                        expert_domain=expert_domain,
-                        audience_level=aud_cat,
-                        estimated_duration=str(cdd_duration_hours),
-                        extra_instructions_block=_cdd_extra_block,
-                        extra_instructions=_cdd_extra_block,
-                        style_guidelines=_style_context_cdd if _cdd_selected_style else "",
-                        grade_level=target_audience,
-                    )
-                else:
-                    _cdd_sys, _cdd_usr, _, _ = _build_cdd_prompts(
-                        db,
-                        course_name=cdd_course_title,
-                        target_audience=target_audience,
-                        expert_domain=expert_domain,
-                        audience_level=aud_cat,
-                        estimated_duration=cdd_duration_hours,
-                        extra_instructions=_cdd_extra_block,
-                        style_guidelines=_style_context_cdd if _cdd_selected_style else "",
-                    )
-                cdd_output = call_llm(model_choice, _cdd_sys, _cdd_usr, usage_ctx=UsageLogContext(
-                    user_name=user_name,
-                    project_id=st.session_state.get("selected_project_id"),
-                    course_id=st.session_state.get("selected_course_id"),
-                    entity_type="cdd",
-                ))
-
-                if cdd_output.startswith("ERROR"):
-                    cdd_status.update(label="❌ CDD Generation Failed", state="error")
-                    st.error(cdd_output)
-                else:
-                    cdd_status.write("📦 Stage 2: Parsing CDD sections...")
-                    # Parse with both parsers:
-                    # - parse_sections_from_text for legacy ## header compat
-                    # - parse_cdd_flat for new schema-driven rendering
-                    sections = parse_sections_from_text(cdd_output)
-                    _flat_parsed = parse_cdd_flat(cdd_output)
-                    # Merge flat-parsed blocks into sections for storage
-                    for _fk, _fv in _flat_parsed.items():
-                        if _fk.startswith("_"):  # hidden fields like _validation, _raw
-                            continue
-                        if _fv.strip():
-                            sections[_fk] = _fv
-
-                    doc_title = cdd_doc_title or f"{cdd_course_title} — CDD"
-                    new_cdd = CourseDesignDocument(
-                        title=doc_title, course_title=cdd_course_title,
-                        description="", active_version="v1",
-                        workflow_state="draft", created_by=user_name,
-                        project_id=st.session_state.get("selected_project_id"),
-                        course_id=st.session_state.get("selected_course_id"),
-                    )
-                    db.add(new_cdd); db.commit(); db.refresh(new_cdd)
-
-                    gen_params = {
-                        "course_title": cdd_course_title,
-                        "target_audience": target_audience,
-                        "expert_domain": expert_domain,
-                        "estimated_duration_hours": cdd_duration_hours,
-                        "extra_instructions": cdd_extra_instructions or "",
-                    }
-                    v1 = CDDVersion(
-                        cdd_id=new_cdd.id, version="v1", full_content=cdd_output,
-                        sections=json.dumps(sections), generation_params=json.dumps(gen_params),
-                        change_reason="Initial AI generation", is_active=True, created_by=user_name
-                    )
-                    db.add(v1); db.commit()
-                    log_event(db, "cdd_created", user_name, f"CDD '{doc_title}' created (v1)", {"cdd_id": new_cdd.id})
-                    log_audit_event(db, user_name, "cdd.created", entity_type="cdd", entity_id=new_cdd.id,
-                                    project_id=_proj_id, course_id=_crs_id,
-                                    metadata={"title": doc_title, "sections": len(sections)})
-                    cdd_status.update(label=f"✅ CDD '{doc_title}' created with {len(sections)} sections!", state="complete")
-                    st.session_state["active_cdd_id"] = new_cdd.id
-                    notify_deferred("cdd_created", f"CDD '{doc_title}' created successfully with {len(sections)} sections.")
-                    auto_save_instructions(
-                        db, "cdd", cdd_extra_instructions,
-                        name=cdd_course_title[:80],
-                        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
-                        user_name=user_name,
-                    )
-                    st.rerun()
+    # ── prompt section + generate button moved below — see end of function ──
 
     with cdd_right:
         st.markdown("#### 📂 Your Course Design Documents")
@@ -437,6 +288,7 @@ def render_page(db, ctx):
             st.divider()
             if st.button("📌 Set as Active CDD for Generation", key="pin_cdd", use_container_width=True, type="primary"):
                 st.session_state["active_cdd_id"] = sel_cdd_id
+                set_active_cdd(db, _crs_id, sel_cdd_id)   # Req 3: persist pin to DB
                 st.toast(f"✅ '{sel_cdd.title}' set as active CDD. It will be injected into all new lesson generations.")
 
             # ── Download CDD ──────────────────────────────────────────────
@@ -527,3 +379,161 @@ def render_page(db, ctx):
                     use_container_width=True,
                 )
 
+    # =========================================================================
+    # Req 2: Prompt Configuration + Generate — full width below both panels
+    # Moved out of the narrow left column so the prompt controls are not
+    # squeezed into 40 % of the page (matches the Style tab layout).
+    # =========================================================================
+    st.divider()
+    st.markdown(
+        "<div style='font-size:0.78rem;color:#6b7280;margin-bottom:10px;'>"
+        "📝 Fill in the course fields on the left, then configure the prompt "
+        "and generate your CDD below.</div>",
+        unsafe_allow_html=True,
+    )
+
+    _cdd_panel_sys, _cdd_panel_usr, _cdd_extra_instructions = render_inline_prompt_controls(
+        db, "cdd",
+        project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
+        user_name=user_name, model_choice=model_choice,
+        default_system=CDD_SYSTEM_PROMPT,
+        default_user=CDD_USER_PROMPT_TEMPLATE,
+        extra_placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
+        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+        user_role=user_role,
+    )
+
+    # Generate (65 %) + Download Prompt (35 %)
+    _cdd_gen_c, _cdd_dl_c = st.columns([0.65, 0.35])
+    with _cdd_dl_c:
+        render_prompt_download_button(
+            db, "cdd",
+            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+            button_label="⬇️ Download Prompt",
+            key="_cdd_dl_prompt_btn",
+            use_container_width=True,
+        )
+    cdd_gen_btn = _cdd_gen_c.button(
+        "🤖 Generate CDD with AI",
+        use_container_width=True, type="primary",
+        key="_cdd_gen_btn",
+    )
+
+    if cdd_gen_btn and not cdd_course_title:
+        st.warning("⚠️ Please enter a **Course Title** in the left panel before generating.")
+
+    if cdd_gen_btn and cdd_course_title:
+        if not rbac_gate(user_role, "cdd.generate", "Generating a CDD"):
+            st.stop()
+        model_choice = st.session_state.get("model_choice", "GPT-5.4")
+        target_audience = st.session_state.get("target_audience", "")
+        expert_domain = st.session_state.get("expert_domain", "")
+        aud_cat = st.session_state.get("sidebar_aud_cat", "Professional/Corporate")
+
+        if _cdd_selected_style:
+            st.info(f"🎨 **Style '{_cdd_selected_style.name}'** will be applied to this CDD.", icon="🎨")
+
+        cdd_extra_instructions = _cdd_extra_instructions
+        _cdd_extra_block = (
+            f"**Additional Instructions:**\n{cdd_extra_instructions.strip()}"
+            if cdd_extra_instructions and cdd_extra_instructions.strip()
+            else ""
+        )
+        _style_context_cdd = ""
+        if _cdd_selected_style:
+            _style_context_cdd = build_style_context(db, _cdd_selected_style)
+            _cdd_extra_block = (
+                f"**ACTIVE STYLE — Apply throughout this CDD:**\n{_style_context_cdd}\n\n"
+                + _cdd_extra_block
+            )
+
+        with st.status("📋 Generating Course Design Document...", expanded=True) as cdd_status:
+            cdd_status.write("🧠 Stage 1: Generating CDD content with AI...")
+            if _cdd_panel_sys and _cdd_panel_usr:
+                _cdd_sys = _cdd_panel_sys
+                _cdd_usr = safe_format(
+                    _cdd_panel_usr,
+                    course_title=cdd_course_title,
+                    course_name=cdd_course_title,
+                    target_audience=target_audience,
+                    expert_domain=expert_domain,
+                    audience_level=aud_cat,
+                    estimated_duration=str(cdd_duration_hours),
+                    extra_instructions_block=_cdd_extra_block,
+                    extra_instructions=_cdd_extra_block,
+                    style_guidelines=_style_context_cdd if _cdd_selected_style else "",
+                    grade_level=target_audience,
+                )
+            else:
+                _cdd_sys, _cdd_usr, _, _ = _build_cdd_prompts(
+                    db,
+                    course_name=cdd_course_title,
+                    target_audience=target_audience,
+                    expert_domain=expert_domain,
+                    audience_level=aud_cat,
+                    estimated_duration=cdd_duration_hours,
+                    extra_instructions=_cdd_extra_block,
+                    style_guidelines=_style_context_cdd if _cdd_selected_style else "",
+                )
+            cdd_output = call_llm(model_choice, _cdd_sys, _cdd_usr, usage_ctx=UsageLogContext(
+                user_name=user_name,
+                project_id=st.session_state.get("selected_project_id"),
+                course_id=st.session_state.get("selected_course_id"),
+                entity_type="cdd",
+            ))
+
+            if cdd_output.startswith("ERROR"):
+                cdd_status.update(label="❌ CDD Generation Failed", state="error")
+                st.error(cdd_output)
+            else:
+                cdd_status.write("📦 Stage 2: Parsing CDD sections...")
+                sections = parse_sections_from_text(cdd_output)
+                _flat_parsed = parse_cdd_flat(cdd_output)
+                for _fk, _fv in _flat_parsed.items():
+                    if _fk.startswith("_"):
+                        continue
+                    if _fv.strip():
+                        sections[_fk] = _fv
+
+                doc_title = cdd_doc_title or f"{cdd_course_title} — CDD"
+                new_cdd = CourseDesignDocument(
+                    title=doc_title, course_title=cdd_course_title,
+                    description="", active_version="v1",
+                    workflow_state="draft", created_by=user_name,
+                    project_id=st.session_state.get("selected_project_id"),
+                    course_id=st.session_state.get("selected_course_id"),
+                )
+                db.add(new_cdd); db.commit(); db.refresh(new_cdd)
+
+                gen_params = {
+                    "course_title": cdd_course_title,
+                    "target_audience": target_audience,
+                    "expert_domain": expert_domain,
+                    "estimated_duration_hours": cdd_duration_hours,
+                    "extra_instructions": cdd_extra_instructions or "",
+                }
+                v1 = CDDVersion(
+                    cdd_id=new_cdd.id, version="v1", full_content=cdd_output,
+                    sections=json.dumps(sections), generation_params=json.dumps(gen_params),
+                    change_reason="Initial AI generation", is_active=True, created_by=user_name
+                )
+                db.add(v1); db.commit()
+                log_event(db, "cdd_created", user_name, f"CDD '{doc_title}' created (v1)", {"cdd_id": new_cdd.id})
+                log_audit_event(db, user_name, "cdd.created", entity_type="cdd", entity_id=new_cdd.id,
+                                project_id=_proj_id, course_id=_crs_id,
+                                metadata={"title": doc_title, "sections": len(sections)})
+                cdd_status.update(
+                    label=f"✅ CDD '{doc_title}' created with {len(sections)} sections!",
+                    state="complete",
+                )
+                # Auto-pin the new CDD and persist to DB (Req 3)
+                st.session_state["active_cdd_id"] = new_cdd.id
+                set_active_cdd(db, _crs_id, new_cdd.id)
+                notify_deferred("cdd_created", f"CDD '{doc_title}' created successfully with {len(sections)} sections.")
+                auto_save_instructions(
+                    db, "cdd", cdd_extra_instructions,
+                    name=cdd_course_title[:80],
+                    project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                    user_name=user_name,
+                )
+                st.rerun()

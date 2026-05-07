@@ -16,6 +16,7 @@ from promptops_app.services.llm_service import generate_text as call_llm
 from promptops_app.services.usage_service import UsageLogContext
 from promptops_app.core.shared import render_blueprint_content, extract_module_count_from_cdd
 from promptops_app.repositories import blueprint_repository, cdd_repository
+from promptops_app.repositories.course_repository import set_active_blueprint
 from promptops_app.parsers.cdd_parser import (
     parse_cdd_flat, parse_sections_from_text, _strip_ui_hidden_text, extract_cdd_summary,
 )
@@ -299,185 +300,8 @@ def render_page(db, ctx):
             )
             bp_form_btn = st.form_submit_button("Confirm Module Selection", use_container_width=True)
 
-        # ── Prompt configuration ────────────────────────────────────────────
-        st.divider()
-        _bp_panel_sys, _bp_panel_usr, _bp_extra_instructions = render_inline_prompt_controls(
-            db, "blueprint",
-            project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
-            user_name=user_name, model_choice=model_choice,
-            default_system=BLUEPRINT_SYSTEM_PROMPT,
-            default_user=BLUEPRINT_USER_PROMPT_TEMPLATE,
-            extra_placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
-            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-            user_role=user_role,
-        )
+        # ── prompt section + generate button moved below — see end of function ──
 
-        # Generate (65 %) + Download Prompt (35 %) — same layout as Style tab
-        _bp_gen_c, _bp_dl_c = st.columns([0.65, 0.35])
-        with _bp_dl_c:
-            render_prompt_download_button(
-                db, "blueprint",
-                project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-                button_label="⬇️ Download Prompt",
-                key="_bp_dl_prompt_btn",
-                use_container_width=True,
-            )
-        bp_gen_btn = _bp_gen_c.button(
-            "🤖 Generate Blueprint with AI",
-            use_container_width=True, type="primary",
-            key="_bp_gen_btn",
-        )
-
-        if bp_gen_btn:
-            if not rbac_gate(user_role, "blueprint.generate", "Generating a Blueprint"):
-                st.stop()
-            model_choice  = st.session_state.get("model_choice", "GPT-5.4")
-            linked_cdd_id = cdd_bp_options.get(st.session_state.get("_bp_linked_cdd", bp_linked_cdd))
-            bp_extra_instructions = _bp_extra_instructions
-            bp_doc_title = st.session_state.get("_bp_doc_title", "")
-
-            # Show which style will be applied
-            _pre_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
-            if _pre_style_bp:
-                st.info(f"🎨 **Style '{_pre_style_bp.name}'** will be applied to this Blueprint.", icon="🎨")
-
-            cdd_context_text = ""
-            _bp_cdd_title    = "Standalone Blueprint"
-            if linked_cdd_id:
-                cdd_ver = get_active_cdd_version(db, linked_cdd_id)
-                if cdd_ver:
-                    # Use full CDD content for Blueprint generation — not just summary
-                    # Strip validation/backend-only blocks before passing to Blueprint prompt
-                    _flat_cdd_bp = parse_cdd_flat(cdd_ver.full_content or "")
-                    _cdd_ui_parts = []
-                    for _ck in ["Course Details", "Course Structure", "Course Level Assessment"]:
-                        _cv = _flat_cdd_bp.get(_ck, "").strip()
-                        if _cv:
-                            _cdd_ui_parts.append(f"### {_ck}\n{_cv}")
-                    cdd_context_text = "\n\n".join(_cdd_ui_parts) or extract_cdd_summary(cdd_ver, max_chars=8000)
-                _cdd_obj = cdd_repository.get_cdd_by_id(db, linked_cdd_id)
-                if _cdd_obj:
-                    _bp_cdd_title = _cdd_obj.course_title or _cdd_obj.title
-
-            if not linked_cdd_id and not cdd_context_text:
-                st.warning("⚠️ No CDD linked — generating standalone. Link a CDD for best results.")
-
-            # Build extra block — different framing for course-end vs module
-            if _selected_is_course_end and _selected_course_end_label:
-                _bp_extra_block = (
-                    f"**This is a Course-Level End item: '{_selected_course_end_label}'.**\n"
-                    f"Generate the Blueprint specifically for this course-end item. "
-                    f"It should align to all modules in the course."
-                    + (f"\n\n**Additional Instructions:**\n{bp_extra_instructions.strip()}"
-                       if bp_extra_instructions and bp_extra_instructions.strip() else "")
-                )
-            else:
-                _bp_extra_block = (
-                    f"**This is Module {_selected_module_num} of the course.**\n"
-                    f"Generate the Blueprint specifically for Module {_selected_module_num}. "
-                    f"Lesson numbering should start from Lesson 1 within this module."
-                    + (f"\n\n**Additional Instructions:**\n{bp_extra_instructions.strip()}"
-                       if bp_extra_instructions and bp_extra_instructions.strip() else "")
-                )
-
-            # Inject active style if available
-            _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
-            if _active_style_bp:
-                _style_ctx_bp = build_style_context(db, _active_style_bp)
-                _bp_extra_block = (
-                    f"**ACTIVE STYLE — Maintain throughout this Blueprint:**\n{_style_ctx_bp}\n\n"
-                    + _bp_extra_block
-                )
-
-            _gen_label = _selected_course_end_label if _selected_is_course_end else f"Module {_selected_module_num}"
-            _selected_module_ref = _selected_course_end_label if _selected_is_course_end else f"Module {_selected_module_num}"
-            _bp_gen_mode = st.session_state.get("bp_generation_mode", "student")
-            with st.status(f"🗂️ Generating Blueprint: {_gen_label}...", expanded=True) as bp_status:
-                bp_status.write("🔗 Stage 1: Injecting CDD context...")
-                bp_status.write(f"🧩 Stage 2: Scoping to {_gen_label}...")
-                bp_status.write(f"🧠 Stage 3: Generating {'Teacher' if _bp_gen_mode == 'teacher' else 'Student'} Blueprint with AI...")
-                _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
-                _style_ctx_bp    = build_style_context(db, _active_style_bp) if _active_style_bp else ""
-                # Use the panel-resolved prompt (defaults to DB default_blueprint_prompt).
-                # Fall back to _build_blueprint_prompts only if panel returned empty strings.
-                if _bp_panel_sys and _bp_panel_usr:
-                    _bp_sys_prompt = _bp_panel_sys
-                    user_p = safe_format(
-                        _bp_panel_usr,
-                        cdd_context=cdd_context_text,
-                        selected_module=_selected_module_ref,
-                        extra_instructions_block=_bp_extra_block,
-                        extra_instructions=_bp_extra_block,
-                        style_guidelines=_style_ctx_bp,
-                        teacher_mode="Yes" if _bp_gen_mode == "teacher" else "No",
-                        student_mode="No"  if _bp_gen_mode == "teacher" else "Yes",
-                    )
-                else:
-                    _bp_sys_prompt, user_p, _, _ = _build_blueprint_prompts(
-                        db,
-                        cdd_context=cdd_context_text,
-                        selected_module=_selected_module_ref,
-                        extra_instructions=_bp_extra_block,
-                        teacher_mode=(_bp_gen_mode == "teacher"),
-                        style_guidelines=_style_ctx_bp,
-                    )
-                bp_output = call_llm(model_choice, _bp_sys_prompt, user_p, usage_ctx=UsageLogContext(
-                    user_name=user_name,
-                    project_id=st.session_state.get("selected_project_id"),
-                    course_id=st.session_state.get("selected_course_id"),
-                    entity_type="blueprint",
-                ))
-
-                if bp_output.startswith("ERROR"):
-                    bp_status.update(label="❌ Blueprint Generation Failed", state="error")
-                    st.error(bp_output)
-                else:
-                    bp_status.write("📦 Stage 4: Parsing sections...")
-                    sections = parse_sections_from_text(bp_output)
-                    _inferred_title = bp_doc_title or f"{_gen_label} — {_bp_cdd_title} Blueprint"
-                    new_bp = ModuleBlueprint(
-                        cdd_id=linked_cdd_id, title=_inferred_title,
-                        module_title=f"Module {_selected_module_num}",
-                        module_number=_selected_module_num,
-                        module_objective="See Blueprint Module Overview section.",
-                        active_version="v1", workflow_state="draft", created_by=user_name,
-                        project_id=st.session_state.get("selected_project_id"),
-                        course_id=st.session_state.get("selected_course_id"),
-                    )
-                    db.add(new_bp); db.commit(); db.refresh(new_bp)
-                    gen_params = {
-                        "cdd_id": linked_cdd_id, "cdd_title": _bp_cdd_title,
-                        "module_number": _selected_module_num,
-                        "extra_instructions": bp_extra_instructions or "",
-                        "mode": _bp_gen_mode,
-                    }
-                    v1 = BlueprintVersion(
-                        blueprint_id=new_bp.id, version="v1", full_content=bp_output,
-                        sections=json.dumps(sections), generation_params=json.dumps(gen_params),
-                        change_reason="Initial AI generation", is_active=True, created_by=user_name
-                    )
-                    db.add(v1); db.commit()
-                    log_event(db, "blueprint_created", user_name,
-                              f"Blueprint '{_inferred_title}' created (v1)",
-                              {"blueprint_id": new_bp.id, "cdd_id": linked_cdd_id,
-                               "module_number": _selected_module_num})
-                    log_audit_event(db, user_name, "blueprint.generated", entity_type="blueprint", entity_id=new_bp.id,
-                                    project_id=_proj_id, course_id=_crs_id,
-                                    metadata={"title": _inferred_title, "module": _selected_module_num,
-                                              "cdd_id": linked_cdd_id, "mode": _bp_gen_mode})
-                    bp_status.update(
-                        label=f"✅ Module {_selected_module_num} Blueprint '{_inferred_title}' created — {len(sections)} sections!",
-                        state="complete"
-                    )
-                    st.session_state["active_blueprint_id"] = new_bp.id
-                    notify_deferred("bp_created", f"Blueprint '{_inferred_title}' created with {len(sections)} sections.")
-                    auto_save_instructions(
-                        db, "blueprint", bp_extra_instructions,
-                        name=f"M{_selected_module_num} — {_bp_cdd_title}"[:80],
-                        project_id=_proj_id, cluster_id=None, course_id=_crs_id,
-                        user_name=user_name,
-                    )
-                    st.rerun()
 
     with bp_right:
         st.markdown("#### 📂 Your Module Blueprints")
@@ -559,6 +383,7 @@ def render_page(db, ctx):
             st.divider()
             if st.button("📌 Set as Active Blueprint for Generation", key="pin_bp", use_container_width=True, type="primary"):
                 st.session_state["active_blueprint_id"] = sel_bp_id
+                set_active_blueprint(db, _crs_id, sel_bp_id)   # Req 3: persist pin to DB
                 st.toast(f"✅ '{sel_bp.title}' set as active Blueprint for lesson generation.")
 
             # ── Download Blueprint ────────────────────────────────────────
@@ -640,3 +465,185 @@ def render_page(db, ctx):
                     use_container_width=True,
                 )
 
+    # =========================================================================
+    # Req 2: Prompt Configuration + Generate — full width below both panels
+    # =========================================================================
+    st.divider()
+    st.markdown(
+        "<div style='font-size:0.78rem;color:#6b7280;margin-bottom:10px;'>"
+        "📝 Select the source CDD and module on the left, then configure the "
+        "prompt and generate your Blueprint below.</div>",
+        unsafe_allow_html=True,
+    )
+
+    _bp_panel_sys, _bp_panel_usr, _bp_extra_instructions = render_inline_prompt_controls(
+        db, "blueprint",
+        project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
+        user_name=user_name, model_choice=model_choice,
+        default_system=BLUEPRINT_SYSTEM_PROMPT,
+        default_user=BLUEPRINT_USER_PROMPT_TEMPLATE,
+        extra_placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
+        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+        user_role=user_role,
+    )
+
+    _bp_gen_c, _bp_dl_c = st.columns([0.65, 0.35])
+    with _bp_dl_c:
+        render_prompt_download_button(
+            db, "blueprint",
+            project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+            button_label="⬇️ Download Prompt",
+            key="_bp_dl_prompt_btn",
+            use_container_width=True,
+        )
+    bp_gen_btn = _bp_gen_c.button(
+        "🤖 Generate Blueprint with AI",
+        use_container_width=True, type="primary",
+        key="_bp_gen_btn",
+    )
+
+    if bp_gen_btn:
+        if not rbac_gate(user_role, "blueprint.generate", "Generating a Blueprint"):
+            st.stop()
+        model_choice  = st.session_state.get("model_choice", "GPT-5.4")
+        linked_cdd_id = cdd_bp_options.get(st.session_state.get("_bp_linked_cdd", bp_linked_cdd))
+        bp_extra_instructions = _bp_extra_instructions
+        bp_doc_title = st.session_state.get("_bp_doc_title", "")
+
+        _pre_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
+        if _pre_style_bp:
+            st.info(f"🎨 **Style '{_pre_style_bp.name}'** will be applied to this Blueprint.", icon="🎨")
+
+        cdd_context_text = ""
+        _bp_cdd_title    = "Standalone Blueprint"
+        if linked_cdd_id:
+            cdd_ver = get_active_cdd_version(db, linked_cdd_id)
+            if cdd_ver:
+                _flat_cdd_bp = parse_cdd_flat(cdd_ver.full_content or "")
+                _cdd_ui_parts = []
+                for _ck in ["Course Details", "Course Structure", "Course Level Assessment"]:
+                    _cv = _flat_cdd_bp.get(_ck, "").strip()
+                    if _cv:
+                        _cdd_ui_parts.append(f"### {_ck}\n{_cv}")
+                cdd_context_text = "\n\n".join(_cdd_ui_parts) or extract_cdd_summary(cdd_ver, max_chars=8000)
+            _cdd_obj = cdd_repository.get_cdd_by_id(db, linked_cdd_id)
+            if _cdd_obj:
+                _bp_cdd_title = _cdd_obj.course_title or _cdd_obj.title
+
+        if not linked_cdd_id and not cdd_context_text:
+            st.warning("⚠️ No CDD linked — generating standalone. Link a CDD for best results.")
+
+        if _selected_is_course_end and _selected_course_end_label:
+            _bp_extra_block = (
+                f"**This is a Course-Level End item: '{_selected_course_end_label}'.**\n"
+                f"Generate the Blueprint specifically for this course-end item. "
+                f"It should align to all modules in the course."
+                + (f"\n\n**Additional Instructions:**\n{bp_extra_instructions.strip()}"
+                   if bp_extra_instructions and bp_extra_instructions.strip() else "")
+            )
+        else:
+            _bp_extra_block = (
+                f"**This is Module {_selected_module_num} of the course.**\n"
+                f"Generate the Blueprint specifically for Module {_selected_module_num}. "
+                f"Lesson numbering should start from Lesson 1 within this module."
+                + (f"\n\n**Additional Instructions:**\n{bp_extra_instructions.strip()}"
+                   if bp_extra_instructions and bp_extra_instructions.strip() else "")
+            )
+
+        _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
+        if _active_style_bp:
+            _style_ctx_bp = build_style_context(db, _active_style_bp)
+            _bp_extra_block = (
+                f"**ACTIVE STYLE — Maintain throughout this Blueprint:**\n{_style_ctx_bp}\n\n"
+                + _bp_extra_block
+            )
+
+        _gen_label = _selected_course_end_label if _selected_is_course_end else f"Module {_selected_module_num}"
+        _selected_module_ref = _selected_course_end_label if _selected_is_course_end else f"Module {_selected_module_num}"
+        _bp_gen_mode = st.session_state.get("bp_generation_mode", "student")
+        with st.status(f"🗂️ Generating Blueprint: {_gen_label}...", expanded=True) as bp_status:
+            bp_status.write("🔗 Stage 1: Injecting CDD context...")
+            bp_status.write(f"🧩 Stage 2: Scoping to {_gen_label}...")
+            bp_status.write(f"🧠 Stage 3: Generating {'Teacher' if _bp_gen_mode == 'teacher' else 'Student'} Blueprint with AI...")
+            _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
+            _style_ctx_bp    = build_style_context(db, _active_style_bp) if _active_style_bp else ""
+            if _bp_panel_sys and _bp_panel_usr:
+                _bp_sys_prompt = _bp_panel_sys
+                user_p = safe_format(
+                    _bp_panel_usr,
+                    cdd_context=cdd_context_text,
+                    selected_module=_selected_module_ref,
+                    extra_instructions_block=_bp_extra_block,
+                    extra_instructions=_bp_extra_block,
+                    style_guidelines=_style_ctx_bp,
+                    teacher_mode="Yes" if _bp_gen_mode == "teacher" else "No",
+                    student_mode="No"  if _bp_gen_mode == "teacher" else "Yes",
+                )
+            else:
+                _bp_sys_prompt, user_p, _, _ = _build_blueprint_prompts(
+                    db,
+                    cdd_context=cdd_context_text,
+                    selected_module=_selected_module_ref,
+                    extra_instructions=_bp_extra_block,
+                    teacher_mode=(_bp_gen_mode == "teacher"),
+                    style_guidelines=_style_ctx_bp,
+                )
+            bp_output = call_llm(model_choice, _bp_sys_prompt, user_p, usage_ctx=UsageLogContext(
+                user_name=user_name,
+                project_id=st.session_state.get("selected_project_id"),
+                course_id=st.session_state.get("selected_course_id"),
+                entity_type="blueprint",
+            ))
+
+            if bp_output.startswith("ERROR"):
+                bp_status.update(label="❌ Blueprint Generation Failed", state="error")
+                st.error(bp_output)
+            else:
+                bp_status.write("📦 Stage 4: Parsing sections...")
+                sections = parse_sections_from_text(bp_output)
+                _inferred_title = bp_doc_title or f"{_gen_label} — {_bp_cdd_title} Blueprint"
+                new_bp = ModuleBlueprint(
+                    cdd_id=linked_cdd_id, title=_inferred_title,
+                    module_title=f"Module {_selected_module_num}",
+                    module_number=_selected_module_num,
+                    module_objective="See Blueprint Module Overview section.",
+                    active_version="v1", workflow_state="draft", created_by=user_name,
+                    project_id=st.session_state.get("selected_project_id"),
+                    course_id=st.session_state.get("selected_course_id"),
+                )
+                db.add(new_bp); db.commit(); db.refresh(new_bp)
+                gen_params = {
+                    "cdd_id": linked_cdd_id, "cdd_title": _bp_cdd_title,
+                    "module_number": _selected_module_num,
+                    "extra_instructions": bp_extra_instructions or "",
+                    "mode": _bp_gen_mode,
+                }
+                v1 = BlueprintVersion(
+                    blueprint_id=new_bp.id, version="v1", full_content=bp_output,
+                    sections=json.dumps(sections), generation_params=json.dumps(gen_params),
+                    change_reason="Initial AI generation", is_active=True, created_by=user_name
+                )
+                db.add(v1); db.commit()
+                log_event(db, "blueprint_created", user_name,
+                          f"Blueprint '{_inferred_title}' created (v1)",
+                          {"blueprint_id": new_bp.id, "cdd_id": linked_cdd_id,
+                           "module_number": _selected_module_num})
+                log_audit_event(db, user_name, "blueprint.generated", entity_type="blueprint",
+                                entity_id=new_bp.id, project_id=_proj_id, course_id=_crs_id,
+                                metadata={"title": _inferred_title, "module": _selected_module_num,
+                                          "cdd_id": linked_cdd_id, "mode": _bp_gen_mode})
+                bp_status.update(
+                    label=f"✅ Module {_selected_module_num} Blueprint '{_inferred_title}' created — {len(sections)} sections!",
+                    state="complete",
+                )
+                # Auto-pin the new Blueprint and persist to DB (Req 3)
+                st.session_state["active_blueprint_id"] = new_bp.id
+                set_active_blueprint(db, _crs_id, new_bp.id)
+                notify_deferred("bp_created", f"Blueprint '{_inferred_title}' created with {len(sections)} sections.")
+                auto_save_instructions(
+                    db, "blueprint", bp_extra_instructions,
+                    name=f"M{_selected_module_num} — {_bp_cdd_title}"[:80],
+                    project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+                    user_name=user_name,
+                )
+                st.rerun()

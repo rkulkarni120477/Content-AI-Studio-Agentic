@@ -159,6 +159,26 @@ def main():
     if not st.session_state.get('selected_course_id'):
         course_selection_page(); return
 
+    # ── Req 1 + 3: Load per-course config from DB when course changes ─────────
+    # Runs once per course switch (not on every rerun).  The flag
+    # _cfg_loaded_for tracks which course_id was last loaded so we skip
+    # subsequent reruns for the same course and avoid overwriting config
+    # that the user applied in this session.
+    _curr_crs = st.session_state.get("selected_course_id")
+    if _curr_crs and st.session_state.get("_cfg_loaded_for") != _curr_crs:
+        _cfg_db = SessionLocal()
+        try:
+            from promptops_app.repositories.course_repository import get_course_config
+            _saved_cfg = get_course_config(_cfg_db, _curr_crs)
+            for _k, _v in _saved_cfg.items():
+                if _v is not None:       # never overwrite with None
+                    st.session_state[_k] = _v
+        except Exception:
+            pass
+        finally:
+            _cfg_db.close()
+        st.session_state._cfg_loaded_for = _curr_crs
+
     # Convenience vars for context
     _proj_id    = st.session_state.selected_project_id
     _proj_name  = st.session_state.selected_project_name
@@ -338,6 +358,22 @@ def main():
                 st.session_state.expert_domain    = expert_domain
                 st.session_state.sidebar_aud_cat  = aud_cat
                 st.session_state.target_audience  = target_audience
+                # ── Req 1: Persist config to DB for the active course ─────────
+                _save_crs = st.session_state.get("selected_course_id")
+                if _save_crs:
+                    try:
+                        from promptops_app.repositories.course_repository import save_course_target_config
+                        _save_db = SessionLocal()
+                        save_course_target_config(
+                            _save_db, _save_crs,
+                            model_choice=model_choice,
+                            expert_domain=expert_domain,
+                            target_audience=target_audience,
+                            audience_category=aud_cat,
+                        )
+                        _save_db.close()
+                    except Exception:
+                        pass   # config save failure must never block the UI
                 st.toast("✅ Configuration Applied!")
                 st.rerun()
 

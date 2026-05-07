@@ -41,6 +41,26 @@ class AppSettings(BaseSettings):
         alias="DATABASE_URL",
     )
 
+    # ── Redis / Celery ────────────────────────────────────────────────────────
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        alias="REDIS_URL",
+    )
+
+    # ── Copyleaks plagiarism API ───────────────────────────────────────────────
+    copyleaks_email: str = Field(
+        default="",
+        alias="COPYLEAKS_EMAIL",
+    )
+    copyleaks_api_key: SecretStr = Field(
+        default="",
+        alias="COPYLEAKS_API_KEY",
+    )
+    copyleaks_product: str = Field(
+        default="businesses",
+        alias="COPYLEAKS_PRODUCT",   # "businesses" or "education"
+    )
+
     # ── Security ──────────────────────────────────────────────────────────────
     jwt_secret_key: SecretStr = Field(
         default="monolith_secret_key_hardcoded",
@@ -191,6 +211,11 @@ class AppSettings(BaseSettings):
     def jwt_secret_value(self) -> str:
         """Plain-text JWT signing secret."""
         return self.jwt_secret_key.get_secret_value()
+
+    @property
+    def copyleaks_api_key_value(self) -> str:
+        """Plain-text Copyleaks API key."""
+        return self.copyleaks_api_key.get_secret_value() if self.copyleaks_api_key else ""
 
 
 # Module-level singleton — import and use this everywhere.
