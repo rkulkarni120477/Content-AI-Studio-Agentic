@@ -233,6 +233,167 @@ def _display_label(p: Prompt) -> str:
     return p.name
 
 
+# ---------------------------------------------------------------------------
+# "View Prompt" modal
+# ---------------------------------------------------------------------------
+
+@st.dialog("🔍 Prompt Details", width="large")
+def _prompt_viewer_dialog(
+    *,
+    component: str,
+    prompt_name: str,
+    prompt_version: str,
+    prompt_owner: str,
+    prompt_updated,           # datetime | None
+    is_default: bool,
+    project_name: str,
+    cluster_name: str,
+    course_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    extra_instructions: str,
+    is_ai_override: bool,
+    edit_session_key: str,    # session_state key that opens the Edit panel
+    dl_md: str,               # pre-built Markdown download string
+    dl_filename: str,
+) -> None:
+    """Read-only full-screen modal showing the complete active prompt.
+
+    Actions
+    -------
+    ⬇️ Download  — exports the prompt as a Markdown file (pre-built by the caller).
+    ✏️ Edit      — sets the inline-edit panel flag and reruns (dialog closes automatically).
+    ✕  Close     — dismisses the dialog via st.rerun().
+    """
+    comp_label = _COMP_LABELS.get(component, component.title())
+
+    # Scope breadcrumb
+    _scope_parts: list[str] = []
+    if project_name:
+        _scope_parts.append(f"Project: <strong>{project_name}</strong>")
+    if cluster_name:
+        _scope_parts.append(f"Cluster: <strong>{cluster_name}</strong>")
+    if course_name:
+        _scope_parts.append(f"Course: <strong>{course_name}</strong>")
+    _scope_html = " &nbsp;›&nbsp; ".join(_scope_parts) if _scope_parts else "—"
+
+    _updated_str = "—"
+    if prompt_updated:
+        try:
+            _updated_str = prompt_updated.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    _default_badge = (
+        " <span style='background:#eef2ff;color:#4338ca;font-size:0.72rem;"
+        "font-weight:700;padding:1px 8px;border-radius:12px;letter-spacing:.04em;'>"
+        "default</span>"
+        if is_default else ""
+    )
+    _ai_badge = (
+        " <span style='background:#eff6ff;color:#1d4ed8;font-size:0.72rem;"
+        "font-weight:700;padding:1px 8px;border-radius:12px;letter-spacing:.04em;'>"
+        "AI-improved · not saved</span>"
+        if is_ai_override else ""
+    )
+
+    # ── Metadata card ─────────────────────────────────────────────────────────
+    st.markdown(
+        f"<div style='background:#f8faff;border:1.5px solid #c7d2fe;border-radius:12px;"
+        f"padding:16px 22px;margin-bottom:20px;'>"
+        f"<div style='display:grid;grid-template-columns:110px 1fr;row-gap:10px;"
+        f"font-size:0.875rem;align-items:baseline;'>"
+        f"<span style='color:#6b7280;font-weight:500;'>Name</span>"
+        f"<span style='font-weight:700;color:#111827;'>{prompt_name}{_default_badge}</span>"
+        f"<span style='color:#6b7280;font-weight:500;'>Component</span>"
+        f"<span style='color:#4f46e5;font-weight:700;'>{comp_label}</span>"
+        f"<span style='color:#6b7280;font-weight:500;'>Version</span>"
+        f"<span><code style='background:#eef2ff;color:#4338ca;padding:2px 9px;"
+        f"border-radius:5px;font-size:0.82rem;font-weight:600;'>{prompt_version}</code>"
+        f"{_ai_badge}</span>"
+        f"<span style='color:#6b7280;font-weight:500;'>Owner</span>"
+        f"<span style='color:#374151;'>{prompt_owner}</span>"
+        f"<span style='color:#6b7280;font-weight:500;'>Updated</span>"
+        f"<span style='color:#374151;'>{_updated_str}</span>"
+        f"<span style='color:#6b7280;font-weight:500;'>Scope</span>"
+        f"<span style='color:#374151;font-size:0.83rem;'>{_scope_html}</span>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    if is_ai_override:
+        st.info(
+            "🤖 **AI-improved prompt is active.** "
+            "The prompts shown here reflect the in-session AI version and have not been saved to the database.",
+            icon="🤖",
+        )
+
+    # ── System prompt ──────────────────────────────────────────────────────────
+    st.markdown(
+        "<p style='font-size:0.82rem;font-weight:700;color:#374151;"
+        "margin:0 0 4px;'>System Prompt</p>",
+        unsafe_allow_html=True,
+    )
+    st.code(
+        system_prompt.strip() if system_prompt and system_prompt.strip() else "(empty)",
+        language="text",
+        wrap_lines=True,
+    )
+
+    # ── User prompt template ───────────────────────────────────────────────────
+    st.markdown(
+        "<p style='font-size:0.82rem;font-weight:700;color:#374151;"
+        "margin:12px 0 4px;'>User Prompt Template</p>",
+        unsafe_allow_html=True,
+    )
+    st.code(
+        user_prompt.strip() if user_prompt and user_prompt.strip() else "(empty)",
+        language="text",
+        wrap_lines=True,
+    )
+
+    # ── Additional instructions (only when present) ────────────────────────────
+    if extra_instructions and extra_instructions.strip():
+        st.markdown(
+            "<p style='font-size:0.82rem;font-weight:700;color:#374151;"
+            "margin:12px 0 4px;'>Additional Instructions</p>",
+            unsafe_allow_html=True,
+        )
+        st.code(extra_instructions.strip(), language="text", wrap_lines=True)
+
+    st.divider()
+
+    # ── Actions ────────────────────────────────────────────────────────────────
+    _ac1, _ac2, _ac3 = st.columns([0.36, 0.36, 0.28])
+
+    _ac1.download_button(
+        "⬇️ Download Prompt",
+        data=dl_md,
+        file_name=dl_filename,
+        mime="text/markdown",
+        use_container_width=True,
+        key=f"_vpd_dl_{component}",
+        help="Download the complete prompt + metadata as a Markdown file.",
+    )
+
+    if _ac2.button(
+        "✏️ Edit Prompt",
+        key=f"_vpd_edit_{component}",
+        use_container_width=True,
+        help="Close this view and open the inline edit panel.",
+    ):
+        st.session_state[edit_session_key] = True
+        st.rerun()   # closes the dialog; edit panel opens on the next render
+
+    if _ac3.button(
+        "✕ Close",
+        key=f"_vpd_close_{component}",
+        use_container_width=True,
+        type="primary",
+    ):
+        st.rerun()
+
+
 def _improve_prompt_with_llm(cur_sys: str, cur_usr: str, instructions: str, model_choice: str) -> dict:
     """Call the active LLM to improve an existing prompt.
 
@@ -289,11 +450,18 @@ def render_inline_prompt_controls(
     project_name: str = "",
     cluster_name: str = "",
     course_name: str = "",
+    user_role: str = "author",
 ) -> tuple[str, str, str]:
     """Render inline prompt controls and return (system_prompt, user_prompt_template, extra_instructions).
 
     Place this call OUTSIDE any ``st.form``, directly above the Generate button.
     All action buttons (Create, Edit, Improve, Save, Download) work without form constraints.
+
+    Parameters
+    ----------
+    user_role:
+        DB role string — ``"admin"``, ``"reviewer"`` (Lead), or ``"author"`` (ID).
+        Controls whether the selector is editable and whether the Fix panel is shown.
     """
     _PFX            = f"_gc_{component}"
     _SEL_KEY        = f"{_PFX}_sel"
@@ -305,25 +473,27 @@ def render_inline_prompt_controls(
     _SHOW_IMPR      = f"{_PFX}_show_improve"
     _SHOW_SAVE      = f"{_PFX}_show_save"
     _SHOW_NEW_ASSET = f"{_PFX}_show_new_asset"
+    _SHOW_FIX       = f"{_PFX}_show_fix"
     _OVRD_SYS       = f"{_PFX}_override_sys"   # "Use Now" overrides — not persisted to DB
     _OVRD_USR       = f"{_PFX}_override_usr"
+    _DB_SAVED_SEL   = f"{_PFX}_db_saved_sel"   # tracks last label persisted to DB (Priority 4)
 
-    # ── Load prompt assets ────────────────────────────────────────────────────
-    comp_prompts = prompt_repository.list_prompts_by_component(db, component)
-    tagged_other = [
-        p for p in prompt_repository.list_prompts_tagged(db, component)
-        if p.component_type != component
-    ]
-    all_ids  = {p.id for p in comp_prompts} | {p.id for p in tagged_other}
-    rest     = [p for p in prompt_repository.list_all_prompts(db) if p.id not in all_ids]
-    all_prompts: list[Prompt] = comp_prompts + tagged_other + rest
+    _is_admin        = user_role == "admin"
+    _is_lead         = user_role == "reviewer"
+    _can_manage_fix  = _is_admin or _is_lead
+
+    # ── Load prompt assets — strict component filter ───────────────────────────
+    # Only prompts whose component_type matches this tab are shown.
+    # Previous code also loaded cross-tagged + all-remaining prompts, which caused
+    # every component's prompts to appear in every tab's selector.
+    all_prompts: list[Prompt] = prompt_repository.list_prompts_by_component(db, component)
 
     if not all_prompts:
         if _EXTRA_KEY not in st.session_state:
             st.session_state[_EXTRA_KEY] = ""
         return default_system, default_user, st.session_state.get(_EXTRA_KEY, "")
 
-    opt_labels: list[str]           = []
+    opt_labels: list[str]              = []
     label_to_prompt: dict[str, Prompt] = {}
     for p in all_prompts:
         lbl = _display_label(p)
@@ -332,14 +502,61 @@ def render_inline_prompt_controls(
         opt_labels.append(lbl)
         label_to_prompt[lbl] = p
 
-    # Auto-select default on first open
-    saved_label = st.session_state.get(_SEL_KEY)
-    if saved_label not in label_to_prompt:
-        _def = prompt_repository.get_default_prompt(db, component)
-        if _def:
-            saved_label = _display_label(_def)
-        elif opt_labels:
-            saved_label = opt_labels[0]
+    # ── Resolve any scope-fixed prompt ───────────────────────────────────────
+    _fixing      = prompt_repository.resolve_fixed_prompt(
+        db, component,
+        project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+    )
+    _fixed_p: Prompt | None = None
+    _fixed_role_label       = ""
+    if _fixing and _fixing.prompt_id:
+        _fixed_p = db.query(Prompt).filter(Prompt.id == _fixing.prompt_id).first()
+        if _fixed_p and _display_label(_fixed_p) not in label_to_prompt:
+            # Fixed prompt exists but belongs to a different component — ignore
+            _fixed_p = None
+        if _fixed_p:
+            _fixed_role_label = "Admin" if _fixing.fixed_by_role == "admin" else "Lead"
+
+    # Selector is read-only for authors/IDs when a prompt is fixed
+    _selector_locked = bool(_fixed_p and not _can_manage_fix)
+
+    # ── Auto-select — full 5-level priority chain ─────────────────────────────
+    #
+    #   1. Course-level fixed prompt   ┐
+    #   2. Cluster-level fixed prompt  ├─ resolved by resolve_fixed_prompt()
+    #   3. Project-level fixed prompt  ┘
+    #   4. User's last selected prompt   (DB-persisted via UserPromptPreference)
+    #   5. Component default prompt      (is_default=True for this component_type)
+    #
+    saved_label = st.session_state.get(_SEL_KEY)   # current in-session selection
+
+    if _fixed_p:
+        # Priorities 1–3: a scope-fixed prompt exists
+        _fixed_lbl = _display_label(_fixed_p)
+        if not _can_manage_fix:
+            # Authors/IDs: always land on the fixed prompt; cannot override
+            saved_label = _fixed_lbl
+            st.session_state[_SEL_KEY] = _fixed_lbl
+        elif saved_label not in label_to_prompt:
+            # Admin/Lead: default to fixed on first open; they can still switch per-session
+            saved_label = _fixed_lbl
+    elif saved_label not in label_to_prompt:
+        # Priority 4: user's last DB-persisted selection for this component+course
+        _pref_p = prompt_repository.get_user_prompt_preference(
+            db, user_name, component, course_id
+        )
+        if _pref_p:
+            _pref_lbl = _display_label(_pref_p)
+            if _pref_lbl in label_to_prompt:
+                saved_label = _pref_lbl
+
+        if saved_label not in label_to_prompt:
+            # Priority 5: system-seeded default for this component_type
+            _def = prompt_repository.get_default_prompt(db, component)
+            if _def:
+                saved_label = _display_label(_def)
+            elif opt_labels:
+                saved_label = opt_labels[0]
 
     if _EXTRA_KEY not in st.session_state:
         st.session_state[_EXTRA_KEY] = ""
@@ -355,24 +572,53 @@ def render_inline_prompt_controls(
         unsafe_allow_html=True,
     )
 
-    # ── Prompt template selector ──────────────────────────────────────────────
-    sel_label: str = st.selectbox(
-        "Prompt Template",
-        opt_labels,
-        index=opt_labels.index(saved_label) if saved_label in opt_labels else 0,
-        key=_SEL_KEY,
-        help=(
-            "**🏷️ Default** = system-seeded prompt.  "
-            "Edits always create a new version — v1 is preserved."
-        ),
-    )
+    # ── Prompt template selector + View button ────────────────────────────────
+    _sel_col, _view_col = st.columns([0.82, 0.18])
+
+    with _sel_col:
+        sel_label: str = st.selectbox(
+            "Prompt Template",
+            opt_labels,
+            index=opt_labels.index(saved_label) if saved_label in opt_labels else 0,
+            key=_SEL_KEY,
+            disabled=_selector_locked,
+            help=(
+                "**🏷️ Default** = system-seeded prompt.  "
+                "Edits always create a new version — v1 is preserved."
+                + ("  \n**🔒 Locked** — this prompt has been fixed by an Admin or Lead "
+                   "and cannot be changed." if _selector_locked else "")
+            ),
+        )
+
     sel_p: Prompt = label_to_prompt[sel_label]
     sel_ver: PromptVersion | None = prompt_repository.get_active_version(db, sel_p.id)
 
     cur_sys: str = (sel_ver.system_prompt          or default_system) if sel_ver else default_system
     cur_usr: str = (sel_ver.user_prompt_template   or default_user)   if sel_ver else default_user
 
-    # Metadata badge
+    # ── Persist Priority-4 preference (user's last selection) ────────────────
+    # We compare against _DB_SAVED_SEL (the last label we wrote to the DB in THIS
+    # session) to avoid a DB write on every rerun.  We skip saving when the
+    # selector is locked (i.e. the selection was forced by a scope fix, not the
+    # user's own choice).
+    if (
+        not _selector_locked
+        and sel_label != st.session_state.get(_DB_SAVED_SEL)
+    ):
+        try:
+            prompt_repository.save_user_prompt_preference(
+                db,
+                user_name=user_name,
+                component=component,
+                course_id=course_id,
+                prompt_id=sel_p.id,
+                project_id=project_id,
+            )
+            st.session_state[_DB_SAVED_SEL] = sel_label
+        except Exception:
+            pass   # preference save must never block generation
+
+    # Metadata badge — rendered below the selector, inside the left column
     _meta = [f"📦 **{sel_p.name}**", f"v`{sel_p.active_version or '—'}`"]
     if sel_p.is_default:
         _meta.append("🏷️ `default`")
@@ -383,7 +629,176 @@ def render_inline_prompt_controls(
             _meta.append(f"updated: `{sel_p.updated_at.strftime('%Y-%m-%d')}`")
         except Exception:
             pass
-    st.caption("  ·  ".join(_meta))
+    with _sel_col:
+        st.caption("  ·  ".join(_meta))
+
+    # ── 👁 View Prompt button (right column, aligned with selectbox) ──────────
+    with _view_col:
+        # A small top-margin matches the label height that Streamlit adds above
+        # every input widget so the button sits at the same vertical centre.
+        st.markdown("<div style='height:1.78rem;'></div>", unsafe_allow_html=True)
+        if st.button(
+            "👁 View",
+            key=f"{_PFX}_btn_view",
+            use_container_width=True,
+            help="Preview the complete prompt template, metadata, and current instructions.",
+        ):
+            _is_ai_ov   = _OVRD_SYS in st.session_state or _OVRD_USR in st.session_state
+            _view_sys   = st.session_state.get(_OVRD_SYS, cur_sys)
+            _view_usr   = st.session_state.get(_OVRD_USR, cur_usr)
+            _view_extra = st.session_state.get(_EXTRA_KEY, "")
+            _safe_ver   = (sel_p.active_version or "v1").replace("/", "-").replace(" ", "_")
+            _prompt_viewer_dialog(
+                component=component,
+                prompt_name=sel_p.name,
+                prompt_version=sel_p.active_version or "v1",
+                prompt_owner=sel_p.owner or "—",
+                prompt_updated=sel_p.updated_at,
+                is_default=sel_p.is_default,
+                project_name=project_name,
+                cluster_name=cluster_name,
+                course_name=course_name,
+                system_prompt=_view_sys,
+                user_prompt=_view_usr,
+                extra_instructions=_view_extra,
+                is_ai_override=_is_ai_ov,
+                edit_session_key=_SHOW_EDIT,
+                dl_md=_build_prompt_md(
+                    project_name=project_name,
+                    cluster_name=cluster_name,
+                    course_name=course_name,
+                    component=component,
+                    prompt_name=sel_p.name,
+                    prompt_version=sel_p.active_version or "v1",
+                    system_prompt=_view_sys,
+                    user_prompt_template=_view_usr,
+                    extra_instructions=_view_extra,
+                    is_ai_override=_is_ai_ov,
+                ),
+                dl_filename=f"prompt_{component}_{_safe_ver}.md",
+            )
+
+    # ── Fixed-prompt indicator ────────────────────────────────────────────────
+    # Shown to everyone when a prompt is fixed; admin/lead also get Fix/Unfix controls.
+    if _fixed_p:
+        if _selector_locked:
+            # Author/ID view — read-only notice
+            st.markdown(
+                f"<div style='background:#fff7ed;border:1.5px solid #fb923c;"
+                f"border-radius:8px;padding:7px 12px;font-size:0.8rem;color:#92400e;"
+                f"display:flex;align-items:center;gap:8px;margin-top:4px;'>"
+                f"<span style='font-size:1rem;'>📌</span>"
+                f"<div><strong>Fixed by {_fixed_role_label}:</strong> "
+                f"<em>{_fixed_p.name}</em> &nbsp;·&nbsp; scope: "
+                f"<code style='background:#fed7aa;padding:1px 5px;border-radius:4px;'>"
+                f"{_fixing.scope_level}</code></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            # Admin/Lead view — notice + Unfix button inline
+            _fi_c1, _fi_c2 = st.columns([0.78, 0.22])
+            _fi_c1.markdown(
+                f"<div style='background:#fef9c3;border:1.5px solid #fde047;"
+                f"border-radius:8px;padding:6px 12px;font-size:0.78rem;color:#78350f;"
+                f"display:flex;align-items:center;gap:7px;'>"
+                f"<span>📌</span>"
+                f"<span><strong>Fixed by {_fixed_role_label}:</strong> "
+                f"<em>{_fixed_p.name}</em> · scope: <code style='background:#fef08a;"
+                f"padding:1px 5px;border-radius:4px;'>{_fixing.scope_level}</code>"
+                f"<br><span style='font-size:0.72rem;color:#92400e;'>"
+                f"You can still change the selection for this session.</span></span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if _fi_c2.button("🔓 Unfix", key=f"{_PFX}_unfix_quick",
+                             use_container_width=True,
+                             help=f"Remove the fix for scope '{_fixing.scope_level}'."):
+                prompt_repository.unset_fixed_prompt(
+                    db,
+                    component=component,
+                    scope_level=_fixing.scope_level,
+                    project_id=_fixing.project_id,
+                    cluster_id=_fixing.cluster_id,
+                    course_id=_fixing.course_id,
+                )
+                st.toast(f"🔓 Prompt fix removed for scope '{_fixing.scope_level}'.")
+                st.rerun()
+
+    # Admin/Lead: Fix panel (toggle) — shown even when nothing is currently fixed
+    if _can_manage_fix:
+        if st.button(
+            "📌 Fix Prompt for a Scope",
+            key=f"{_PFX}_btn_fix",
+            use_container_width=False,
+            help="Lock the currently selected prompt as the default for a project/cluster/course scope.",
+        ):
+            st.session_state[_SHOW_FIX] = not st.session_state.get(_SHOW_FIX, False)
+            st.rerun()
+
+        if st.session_state.get(_SHOW_FIX):
+            with st.container():
+                st.markdown(
+                    "<div style='background:#f0f9ff;border:1.5px solid #7dd3fc;"
+                    "border-radius:10px;padding:12px 16px;margin:6px 0;'>"
+                    "<div style='font-size:0.78rem;font-weight:700;color:#0369a1;"
+                    "margin-bottom:8px;'>📌 Fix <em>\"" + sel_p.name + "\"</em> as the "
+                    "default prompt for a scope</div>"
+                    "<div style='font-size:0.74rem;color:#0c4a6e;'>"
+                    "All users at the chosen scope will see this prompt pre-selected "
+                    "and locked. Admins and Leads can still change it per-session.</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                # Build scope options based on available IDs and user role
+                _scope_opts: list[tuple[str, str, int | None, int | None, int | None]] = []
+                if course_id:
+                    _scope_opts.append((f"This Course (id {course_id})", "course",
+                                        project_id, cluster_id, course_id))
+                if cluster_id:
+                    _scope_opts.append((f"This Cluster (id {cluster_id})", "cluster",
+                                        project_id, cluster_id, None))
+                if project_id:
+                    _scope_opts.append((f"This Project (id {project_id})", "project",
+                                        project_id, None, None))
+                if _is_admin:
+                    _scope_opts.append(("Global (all projects)", "global", None, None, None))
+
+                if not _scope_opts:
+                    st.info("Open a project / cluster / course first to use scoped fixing.")
+                else:
+                    _fix_c1, _fix_c2, _fix_c3 = st.columns([0.52, 0.24, 0.24])
+                    _scope_labels = [o[0] for o in _scope_opts]
+                    _scope_sel_lbl = _fix_c1.selectbox(
+                        "Scope",
+                        _scope_labels,
+                        key=f"{_PFX}_fix_scope_sel",
+                        label_visibility="collapsed",
+                    )
+                    _chosen = next(o for o in _scope_opts if o[0] == _scope_sel_lbl)
+                    _, _ch_level, _ch_pid, _ch_cid, _ch_crsid = _chosen
+
+                    if _fix_c2.button("📌 Fix", key=f"{_PFX}_fix_confirm",
+                                      use_container_width=True, type="primary"):
+                        prompt_repository.set_fixed_prompt(
+                            db,
+                            component=component,
+                            scope_level=_ch_level,
+                            project_id=_ch_pid,
+                            cluster_id=_ch_cid,
+                            course_id=_ch_crsid,
+                            prompt_id=sel_p.id,
+                            fixed_by=user_name,
+                            fixed_by_role=user_role,
+                        )
+                        st.session_state[_SHOW_FIX] = False
+                        st.toast(f"✅ '{sel_p.name}' fixed for {_scope_sel_lbl}.")
+                        st.rerun()
+
+                    if _fix_c3.button("✕ Cancel", key=f"{_PFX}_fix_cancel",
+                                      use_container_width=True):
+                        st.session_state[_SHOW_FIX] = False
+                        st.rerun()
 
     # ── "Use Now" override indicator ──────────────────────────────────────────
     _has_override = _OVRD_SYS in st.session_state or _OVRD_USR in st.session_state
@@ -596,40 +1011,56 @@ def render_inline_prompt_controls(
         key=_EXTRA_KEY,
     )
 
-    # ── Action buttons ────────────────────────────────────────────────────────
-    _b = st.columns(5)
+    # ── Action buttons — two rows so labels stay readable in narrow columns ──────
+    # Row 1 — primary prompt actions (used most often)
+    _br1, _br2 = st.columns(2)
 
-    # ➕ New Prompt
-    if _b[0].button("➕ New", key=f"{_PFX}_btn_new", use_container_width=True,
-                    help="Create a new custom prompt asset for this component."):
-        st.session_state[_SHOW_CREATE] = not st.session_state.get(_SHOW_CREATE, False)
-        st.session_state[_SHOW_EDIT]   = False
-        st.session_state[_SHOW_IMPR]   = False
-        st.rerun()
-
-    # ✏️ Edit
-    if _b[1].button("✏️ Edit", key=f"{_PFX}_btn_edit", use_container_width=True,
-                    help="Edit the selected prompt and save as a new version."):
-        st.session_state[_SHOW_EDIT]   = not st.session_state.get(_SHOW_EDIT, False)
-        st.session_state[_SHOW_CREATE] = False
-        st.session_state[_SHOW_IMPR]   = False
-        st.rerun()
-
-    # 🤖 Improve
-    if _b[2].button("🤖 Improve", key=f"{_PFX}_btn_impr", use_container_width=True,
-                    help="Use AI to rewrite the selected prompt based on your instructions."):
+    if _br1.button(
+        "🤖 Improve with AI",
+        key=f"{_PFX}_btn_impr",
+        use_container_width=True,
+        help="Use AI to rewrite the selected prompt based on your instructions.",
+    ):
         st.session_state[_SHOW_IMPR]   = not st.session_state.get(_SHOW_IMPR, False)
         st.session_state[_SHOW_CREATE] = False
         st.session_state[_SHOW_EDIT]   = False
         st.rerun()
 
-    # 💾 Save instructions
-    if _b[3].button("💾 Save", key=f"{_PFX}_btn_save", use_container_width=True,
-                    help="Save the current Additional Instructions for reuse."):
+    if _br2.button(
+        "💾 Save Instructions",
+        key=f"{_PFX}_btn_save",
+        use_container_width=True,
+        help="Save the current Additional Instructions text for reuse across generations.",
+    ):
         st.session_state[_SHOW_SAVE] = not st.session_state.get(_SHOW_SAVE, False)
         st.rerun()
 
-    # ⬇️ Download (prompt + instructions as Markdown)
+    # Row 2 — asset management + download (lighter-weight; less frequently used)
+    _br3, _br4, _br5 = st.columns(3)
+
+    if _br3.button(
+        "➕ New Prompt",
+        key=f"{_PFX}_btn_new",
+        use_container_width=True,
+        help="Create a new custom prompt asset for this component.",
+    ):
+        st.session_state[_SHOW_CREATE] = not st.session_state.get(_SHOW_CREATE, False)
+        st.session_state[_SHOW_EDIT]   = False
+        st.session_state[_SHOW_IMPR]   = False
+        st.rerun()
+
+    if _br4.button(
+        "✏️ Edit Prompt",
+        key=f"{_PFX}_btn_edit",
+        use_container_width=True,
+        help="Edit the selected prompt template and save as a new version.",
+    ):
+        st.session_state[_SHOW_EDIT]   = not st.session_state.get(_SHOW_EDIT, False)
+        st.session_state[_SHOW_CREATE] = False
+        st.session_state[_SHOW_IMPR]   = False
+        st.rerun()
+
+    # ⬇️ Download — prompt + instructions as Markdown
     _dl_md = _build_prompt_md(
         project_name=project_name,
         cluster_name=cluster_name,
@@ -643,14 +1074,14 @@ def render_inline_prompt_controls(
         is_ai_override=_has_override,
     )
     _safe_ver = (sel_p.active_version or "v1").replace("/", "-").replace(" ", "_")
-    _b[4].download_button(
+    _br5.download_button(
         "⬇️ Download",
         data=_dl_md,
         file_name=f"prompt_{component}_{_safe_ver}.md",
         mime="text/markdown",
         use_container_width=True,
         key=f"{_PFX}_btn_dl",
-        help="Download the active prompt + context + your instructions as a Markdown file.",
+        help="Download the active prompt + your instructions as a Markdown file.",
     )
 
     # ── Save instructions panel ───────────────────────────────────────────────

@@ -76,14 +76,11 @@ def call_openai(system_prompt: str, user_prompt: str) -> str:
     """Send a prompt to OpenAI and return the response text. No truncation applied."""
     if not settings.openai_api_key:
         return "ERROR: OpenAI API Key not configured."
-    url = "https://api.openai.com/v1/chat/completions"
-
-    # Model Mapping: Redirect non-existent gpt-5.4 to gpt-4o
+    url     = "https://api.openai.com/v1/chat/completions"
+    # Use the config's openai_model (defaults to "gpt-4o"); display names like
+    # "GPT-5.4" should never reach this legacy function — route through
+    # generate_text() → _invoke_primary() → _call_openai_raw() instead.
     target_model = settings.openai_model
-    if target_model == "gpt-5.4":
-        target_model = "gpt-4o"
-
-    # max_tokens=16384 prevents truncation on long CDD/Blueprint outputs
     data = {
         "model": target_model,
         "messages": [
@@ -114,13 +111,15 @@ def _call_openai_raw(
     """Call OpenAI and return LLMResponse. Raises LLM*Error on failure.
 
     Used by llm_service for the retry/fallback reliability layer.
+    ``model`` should be the actual OpenAI API model ID (e.g. "gpt-4o"),
+    resolved by the model catalog before this call is made.
     """
     if not settings.openai_api_key:
         raise LLMAuthError("OpenAI API key not configured.")
 
+    # Use the provided model ID directly; the catalog maps display names to
+    # real API IDs before reaching this function — no silent redirect needed.
     target_model = model or settings.openai_model
-    if target_model == "gpt-5.4":
-        target_model = "gpt-4o"
 
     url = "https://api.openai.com/v1/chat/completions"
     data = {
@@ -182,11 +181,16 @@ def _get_bedrock_client():
     )
 
 
-def call_bedrock(system_prompt: str, user_prompt: str) -> str:
-    """Send a prompt to AWS Bedrock and return the response text."""
+def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] = None) -> str:
+    """Send a prompt to AWS Bedrock and return the response text.
+
+    ``model_id`` should be the actual Bedrock model ID (e.g.
+    "global.anthropic.claude-sonnet-4-6-20250929-v1:0"), resolved by the
+    model catalog.  Falls back to ``settings.bedrock_model_id`` when omitted.
+    """
     try:
         client = _get_bedrock_client()
-
+        target_model_id = model_id or settings.bedrock_model_id
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 16384,
@@ -194,32 +198,30 @@ def call_bedrock(system_prompt: str, user_prompt: str) -> str:
             "messages": [{"role": "user", "content": user_prompt}],
             "temperature": 0.3,
         })
-
-        # Model Mapping: Redirect non-existent Sonnet 4.5 to Claude 3.5 Sonnet
-        target_model_id = settings.bedrock_model_id
-        if "sonnet-4-5" in target_model_id.lower():
-            target_model_id = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-
         response = client.invoke_model(modelId=target_model_id, body=body)
         response_body = json.loads(response.get("body").read())
         return response_body.get("content", [{}])[0].get("text", "ERROR: Empty response from Bedrock")
     except Exception as e:
-        return f"ERROR (Bedrock - {settings.bedrock_model_id}): {e}"
+        return f"ERROR (Bedrock - {model_id or settings.bedrock_model_id}): {e}"
 
 
-def _call_bedrock_raw(system_prompt: str, user_prompt: str) -> LLMResponse:
+def _call_bedrock_raw(
+    system_prompt: str,
+    user_prompt: str,
+    model_id: Optional[str] = None,
+) -> LLMResponse:
     """Call AWS Bedrock and return LLMResponse. Raises LLM*Error on failure.
 
     Used by llm_service for the retry/fallback reliability layer.
+    ``model_id`` should be the actual Bedrock model ID resolved by the catalog;
+    falls back to ``settings.bedrock_model_id`` when omitted.
     """
     try:
         client = _get_bedrock_client()
     except Exception as exc:
         raise LLMProviderError(f"Bedrock client init failed: {exc}") from exc
 
-    target_model_id = settings.bedrock_model_id
-    if "sonnet-4-5" in target_model_id.lower():
-        target_model_id = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    target_model_id = model_id or settings.bedrock_model_id
 
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
@@ -260,9 +262,15 @@ def _call_bedrock_raw(system_prompt: str, user_prompt: str) -> LLMResponse:
 # =============================================================================
 
 def call_llm(model_choice: str, system_prompt: str, user_prompt: str) -> str:
-    """Route the LLM call to the appropriate provider based on model_choice."""
-    if model_choice == "Sonnet 4.5 (Bedrock)":
-        return call_bedrock(system_prompt, user_prompt)
+    """Route the LLM call to the appropriate provider based on model_choice.
+
+    Uses the model catalog for routing; falls back to OpenAI for unrecognised
+    model names so that legacy call sites are not broken.
+    """
+    from promptops_app.core.models import resolve_model
+    m = resolve_model(model_choice)
+    if m.provider == "bedrock":
+        return call_bedrock(system_prompt, user_prompt, model_id=m.api_model_id)
     return call_openai(system_prompt, user_prompt)
 
 

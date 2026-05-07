@@ -195,18 +195,30 @@ def render_page(db, ctx):
             key="_cdd_duration_hours",
         )
 
-        # ── Inline Prompt Controls (near Generate button) ──────────────────
+        # ── Prompt configuration ────────────────────────────────────────────
+        st.divider()
         _cdd_panel_sys, _cdd_panel_usr, _cdd_extra_instructions = render_inline_prompt_controls(
             db, "cdd",
-            project_id=_proj_id, cluster_id=None, course_id=_crs_id,
+            project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
             user_name=user_name, model_choice=model_choice,
             default_system=CDD_SYSTEM_PROMPT,
             default_user=CDD_USER_PROMPT_TEMPLATE,
             extra_placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
             project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+            user_role=user_role,
         )
 
-        cdd_gen_btn = st.button(
+        # Generate (65 %) + Download Prompt (35 %) — same layout as Style tab
+        _cdd_gen_c, _cdd_dl_c = st.columns([0.65, 0.35])
+        with _cdd_dl_c:
+            render_prompt_download_button(
+                db, "cdd",
+                project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+                button_label="⬇️ Download Prompt",
+                key="_cdd_dl_prompt_btn",
+                use_container_width=True,
+            )
+        cdd_gen_btn = _cdd_gen_c.button(
             "🤖 Generate CDD with AI",
             use_container_width=True, type="primary",
             key="_cdd_gen_btn",

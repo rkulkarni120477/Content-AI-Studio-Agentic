@@ -321,7 +321,13 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 block_label=f"{bt.title()} - {topic}",
                 content=cnt,
                 sources=json.dumps(list(set(srcs))) if srcs else None,
-                plagiarism_score=plagi_res.get("confidence_score", 0),
+                # Only store a real score; if check_error=True the score is
+                # meaningless (0) and storing it would make the dashboard show
+                # a misleading green "0%" instead of "not checked yet".
+                plagiarism_score=(
+                    None if plagi_res.get("check_error")
+                    else plagi_res.get("confidence_score")
+                ),
                 plagiarism_report=plagi_res.get("explanation", ""),
                 eval_score=eval_data.get("structural_score", 0),
                 eval_report=json.dumps(eval_data),

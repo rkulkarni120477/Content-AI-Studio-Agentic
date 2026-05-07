@@ -222,6 +222,59 @@ class PromptVersion(Base):
     prompt = relationship("Prompt", back_populates="versions")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
+
+class PromptFixing(Base):
+    """Records an admin/lead decision to lock a prompt template to a scope.
+
+    Scope resolution priority (most specific wins):
+        course → cluster → project → global
+
+    Uniqueness per (component, scope_level, project_id, cluster_id, course_id) is
+    enforced at the application layer (upsert in prompt_repository) because
+    PostgreSQL's unique constraints treat two NULL values as distinct.
+    """
+    __tablename__ = "prompt_fixings"
+
+    id            = Column(Integer,     primary_key=True, autoincrement=True)
+    component     = Column(String(50),  nullable=False, index=True)   # style|cdd|blueprint|generate
+    scope_level   = Column(String(20),  nullable=False)               # global|project|cluster|course
+    project_id    = Column(Integer,     nullable=True,  index=True)
+    cluster_id    = Column(Integer,     nullable=True,  index=True)
+    course_id     = Column(Integer,     nullable=True,  index=True)
+    prompt_id     = Column(Integer,     ForeignKey("prompts.id", ondelete="SET NULL"), nullable=True)
+    fixed_by      = Column(String(100), nullable=False)
+    fixed_by_role = Column(String(20),  nullable=False)               # admin|reviewer
+    fixed_at      = Column(DateTime,    default=datetime.utcnow)
+
+    prompt = relationship("Prompt", foreign_keys=[prompt_id])
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class UserPromptPreference(Base):
+    """Persists a user's last-chosen prompt per component + course.
+
+    Implements Priority 4 in the prompt selection hierarchy:
+      (1) Course-fixed  (2) Cluster-fixed  (3) Project-fixed
+      (4) User's last selected  ← this model
+      (5) Component default
+
+    Scoped to course_id because users typically work inside one course at a time.
+    project_id is stored for context / bulk cleanup only and is not used for lookup.
+    """
+    __tablename__ = "user_prompt_preferences"
+
+    id         = Column(Integer,     primary_key=True, autoincrement=True)
+    user_name  = Column(String(100), nullable=False, index=True)
+    component  = Column(String(50),  nullable=False)          # style|cdd|blueprint|generate
+    course_id  = Column(Integer,     nullable=True,  index=True)
+    project_id = Column(Integer,     nullable=True)           # for context / cleanup only
+    prompt_id  = Column(Integer,     ForeignKey("prompts.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime,    default=datetime.utcnow)
+
+    prompt = relationship("Prompt", foreign_keys=[prompt_id])
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 class Generation(Base):
     __tablename__ = "generations"
     id = Column(Integer, primary_key=True)

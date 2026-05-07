@@ -56,6 +56,10 @@ _PERMISSIONS: dict[str, list[str]] = {
     "style.upload":          [_A, _L],
     "style.understand":      [_A, _L],   # generate / refine style intelligence
 
+    # ── Prompt fixing (scope-level default locking) ───────────────────────────
+    "prompt.fix":            [_A, _L],   # admin: any scope; lead: project/cluster/course only
+    "prompt.unfix":          [_A, _L],
+
     # ── CDD ──────────────────────────────────────────────────────────────────
     "cdd.generate":          [_A, _L, _ID],
     "cdd.edit":              [_A, _L, _ID],
