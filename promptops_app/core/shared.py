@@ -2161,16 +2161,23 @@ def login_page():
     username_input = st.sidebar.text_input("Username", placeholder="Enter username", key="login_username")
     password_input = st.sidebar.text_input("Password", type="password", placeholder="Enter password", key="login_password")
     if st.sidebar.button("Sign In", type="primary", use_container_width=True):
-        user = db.query(User).filter(User.username == username_input).first()
-        if user and (user.is_active is None or user.is_active) and verify_password(password_input, user.password_hash):
-            st.session_state.user = {"username": user.username, "role": user.role}
-            log_event(db, "login", user.username, f"User '{user.username}' logged in (role: {user.role})")
-            notify_deferred("login", f"Welcome back, {user.username}! Signed in as {role_label(user.role)}.")
-            st.rerun()
-        elif user and not (user.is_active is None or user.is_active):
-            st.sidebar.error("Your account has been deactivated. Contact an Admin.")
+        if not username_input.strip():
+            st.sidebar.error("Username is required.")
+        elif not password_input:
+            st.sidebar.error("Password is required.")
         else:
-            st.sidebar.error("Invalid credentials.")
+            user = db.query(User).filter(User.username == username_input.strip()).first()
+            if user and (user.is_active is None or user.is_active) and verify_password(password_input, user.password_hash):
+                st.session_state.pop("login_username", None)
+                st.session_state.pop("login_password", None)
+                st.session_state.user = {"username": user.username, "role": user.role}
+                log_event(db, "login", user.username, f"User '{user.username}' logged in (role: {user.role})")
+                notify_deferred("login", f"Welcome back, {user.username}! Signed in as {role_label(user.role)}.")
+                st.rerun()
+            elif user and not (user.is_active is None or user.is_active):
+                st.sidebar.error("Your account has been deactivated. Contact an Admin.")
+            else:
+                st.sidebar.error("Invalid credentials.")
 
     # --- Main Area: Branding & Feature Overview ---
     _logo = _logo_b64()
@@ -2336,6 +2343,7 @@ def project_dashboard_page():
                         st.error("Project name is required.")
 
     if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+        st.session_state._logout_pending = True
         st.session_state.user = None
         st.rerun()
 
@@ -2516,6 +2524,7 @@ def cluster_selection_page():
                         st.error("Cluster name is required.")
 
     if st.sidebar.button("🚪 Sign Out", use_container_width=True, key="cluster_signout"):
+        st.session_state._logout_pending = True
         st.session_state.user = None
         st.rerun()
 
@@ -2692,6 +2701,7 @@ def course_selection_page():
                         st.error("Course name is required.")
 
     if st.sidebar.button("🚪 Sign Out", use_container_width=True, key="course_signout"):
+        st.session_state._logout_pending = True
         st.session_state.user = None
         st.rerun()
 

@@ -48,6 +48,12 @@ def main():
     _cm = stx.CookieManager(key="__contentai_cm")
     _all_cookies = _cm.get_all() or {}
 
+    # Handle explicit logout from shared pages (they set a flag since they lack _cm access)
+    if st.session_state.pop("_logout_pending", False):
+        _cm.delete(COOKIE_NAME, key="__logout_del_shared")
+        st.session_state.clear()
+        st.rerun()
+
     # Restore auth from cookie when session_state has no user (fresh / refreshed session)
     if not st.session_state.get("user"):
         _token = _all_cookies.get(COOKIE_NAME)
@@ -531,7 +537,7 @@ def main():
             st.rerun()
         if _sf2.button("🚪 Sign Out", use_container_width=True, key="sidebar_signout"):
             _cm.delete(COOKIE_NAME, key="__logout_del")
-            st.session_state.user = None
+            st.session_state.clear()
             st.rerun()
         db.close()
 
