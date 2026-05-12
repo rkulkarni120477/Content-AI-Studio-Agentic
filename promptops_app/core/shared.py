@@ -2342,12 +2342,48 @@ def project_dashboard_page():
                     else:
                         st.error("Project name is required.")
 
+        # ── Central Repository shortcut (admin only) ──────────────────────────
+        _in_repo = st.session_state.get("dashboard_view") == "repository"
+        _repo_label = "← Back to Projects" if _in_repo else "🗄️  Repository"
+        if st.sidebar.button(_repo_label, use_container_width=True, key="dash_repo_btn"):
+            if _in_repo:
+                st.session_state.pop("dashboard_view", None)
+            else:
+                st.session_state["dashboard_view"] = "repository"
+            st.rerun()
+
     if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+        st.session_state.pop("dashboard_view", None)
         st.session_state._logout_pending = True
         st.session_state.user = None
         st.rerun()
 
     # ── Main area ─────────────────────────────────────────────────────────────
+
+    # Repository view — admin only, replaces the project grid when active
+    if user_role == "admin" and st.session_state.get("dashboard_view") == "repository":
+        from promptops_app.pages import central as _central_page
+        from promptops_app.core.context import PageContext
+        _ctx = PageContext(
+            user_role=user_role,
+            user_name=user_name,
+            project_id=0,
+            project_name="",
+            cluster_id=0,
+            cluster_name="",
+            course_id=0,
+            course_name="",
+            is_admin=True,
+            is_lead=False,
+            model_choice="",
+            expert_domain="",
+            target_audience="",
+            audience_category="",
+        )
+        _central_page.render_page(db, _ctx)
+        db.close()
+        return
+
     st.markdown(
         "<div style='padding:2rem 0 1rem 0;'>"
         "<h1 style='font-size:2rem;font-weight:800;color:#111827;margin-bottom:0.25rem;'>Project Dashboard</h1>"

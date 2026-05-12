@@ -860,6 +860,30 @@ class CourseUserAssignment(Base):
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class CentralRepository(Base):
+    """Admin-managed central repository — single source of truth for reusable prompts, assets, and learnings."""
+    __tablename__ = "central_repositories"
+    id            = Column(Integer, primary_key=True)
+    title         = Column(String(255), nullable=False)
+    item_type     = Column(String(50), nullable=False, default="Prompt")  # Prompt | Asset | Learning
+    content       = Column(Text, nullable=False)
+    description   = Column(Text)
+    source_module = Column(String(100))   # Project | Cluster | Course | Component | Style | CDD | Blueprint | Generate
+    project_id    = Column(Integer, ForeignKey("projects.id"), nullable=True)
+    cluster_id    = Column(Integer, ForeignKey("clusters.id"), nullable=True)
+    course_id     = Column(Integer, ForeignKey("courses.id"), nullable=True)
+    client_name   = Column(String(255))   # denormalized for display
+    cluster_name  = Column(String(255))   # denormalized for display
+    tags          = Column(String(500))
+    status        = Column(String(20), default="active")  # active | archived
+    usage_count   = Column(Integer, default=0)
+    created_by    = Column(String(100))
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    updated_at    = Column(DateTime, default=datetime.utcnow)
+    last_used_at  = Column(DateTime, nullable=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 # =============================================================================
 # Database Initialization & Migrations
 # =============================================================================
@@ -989,6 +1013,17 @@ def init_db():
         "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
         # prompt_versions — authorship tracking
         "ALTER TABLE prompt_versions ADD COLUMN IF NOT EXISTS created_by VARCHAR(100)",
+        # central_repositories — admin central repo (Phase CR)
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS description TEXT",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS source_module VARCHAR(100)",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS project_id INTEGER",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS course_id INTEGER",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS client_name VARCHAR(255)",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS cluster_name VARCHAR(255)",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS tags VARCHAR(500)",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS usage_count INTEGER DEFAULT 0",
+        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
@@ -1034,6 +1069,11 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_block_versions_block_id ON block_versions(block_id, version_num DESC)",
             "CREATE INDEX IF NOT EXISTS idx_blocks_assigned_reviewer ON blocks(assigned_reviewer)",
             "CREATE INDEX IF NOT EXISTS idx_blocks_review_requested ON blocks(review_requested_at DESC)",
+            # Central Repository — admin repo indexes
+            "CREATE INDEX IF NOT EXISTS idx_central_repo_status ON central_repositories(status, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_central_repo_type ON central_repositories(item_type, status)",
+            "CREATE INDEX IF NOT EXISTS idx_central_repo_project ON central_repositories(project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_central_repo_cluster ON central_repositories(cluster_id)",
             # Task 16 — LLM usage cost tracking
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_user_created ON llm_usage_logs(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_project_created ON llm_usage_logs(project_id, created_at DESC)",
