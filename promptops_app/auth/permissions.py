@@ -123,6 +123,13 @@ _PERMISSIONS: dict[str, list[str]] = {
     "course.edit":            [_A, _L],
     "course.delete":          [_A],
 
+    # ── Central Repository ───────────────────────────────────────────────────
+    "central.view":           [_A],
+    "central.create":         [_A],
+    "central.edit":           [_A],
+    "central.delete":         [_A],
+    "central.reuse":          [_A],
+
     # ── System ───────────────────────────────────────────────────────────────
     "system.clear_db":        [_A],
     "system.view_logs":       [_A, _L],
@@ -141,6 +148,11 @@ _LEAD_BLOCKED: frozenset[str] = frozenset({
     "system.clear_db",
     "analytics.view_all",
     "llm_usage.view_all",
+    "central.view",
+    "central.create",
+    "central.edit",
+    "central.delete",
+    "central.reuse",
 })
 
 

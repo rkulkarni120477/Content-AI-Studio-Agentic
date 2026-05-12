@@ -50,14 +50,30 @@ def main():
 
     # Handle explicit logout from shared pages (they set a flag since they lack _cm access)
     if st.session_state.pop("_logout_pending", False):
+        _blocked = _all_cookies.get(COOKIE_NAME, "")          # capture before clear
         _cm.delete(COOKIE_NAME, key="__logout_del_shared")
         st.session_state.clear()
+        if _blocked:
+            st.session_state["_blocked_token"] = _blocked     # persist across reruns
         st.rerun()
 
-    # Restore auth from cookie when session_state has no user (fresh / refreshed session)
+    # Restore auth from cookie when session_state has no user (fresh / refreshed session).
+    #
+    # _blocked_token: the exact JWT string from the session that was explicitly logged out.
+    # _cm.delete() is asynchronous — the browser cookie is still present in _all_cookies
+    # for several reruns after logout (one per keystroke in the login form is enough to
+    # trigger re-authentication with the stale cookie).  We reject any cookie that matches
+    # the blocked token on every rerun, re-issuing the delete each time, until the browser
+    # confirms the cookie is gone.  A new login creates a fresh JWT (new iat) that will
+    # never equal the blocked token, so legitimate re-authentication is unaffected.
     if not st.session_state.get("user"):
+        _blocked_token = st.session_state.get("_blocked_token")
         _token = _all_cookies.get(COOKIE_NAME)
-        if _token:
+        if _token and _token == _blocked_token:
+            # Stale cookie from the session we logged out of — deletion still propagating.
+            # Re-issue the delete on every rerun until the browser confirms it is gone.
+            _cm.delete(COOKIE_NAME, key="__del_blocked_reissue")
+        elif _token:
             _sd = decode_token(_token)
             if _sd:
                 _db_chk = SessionLocal()
@@ -78,6 +94,7 @@ def main():
                         for _k, _v in (_sd.get("cfg") or {}).items():
                             if _v:
                                 st.session_state[_k] = _v
+                        st.session_state.pop("_blocked_token", None)  # clean up on success
                         st.rerun()
                     else:
                         # Account deactivated or deleted — drop the stale cookie
@@ -536,8 +553,11 @@ def main():
         if _sf1.button("🔄 Refresh", use_container_width=True, key="sidebar_refresh"):
             st.rerun()
         if _sf2.button("🚪 Sign Out", use_container_width=True, key="sidebar_signout"):
+            _blocked = _all_cookies.get(COOKIE_NAME, "")      # capture before clear
             _cm.delete(COOKIE_NAME, key="__logout_del")
             st.session_state.clear()
+            if _blocked:
+                st.session_state["_blocked_token"] = _blocked  # persist across reruns
             st.rerun()
         db.close()
 
