@@ -566,9 +566,16 @@ def render_inline_prompt_controls(
     )
 
     # ── Section header ────────────────────────────────────────────────────────
+    _header_labels = {
+        "cdd": "CDD Prompt Library",
+        "blueprint": "Blueprint Prompt Library",
+        "generation": "Generation Prompt Library",
+        "style": "Style Prompt Library",
+    }
+    _header_text = _header_labels.get(component, f"{component.upper()} Prompt Library")
     st.markdown(
-        "<div style='font-size:0.72rem;font-weight:700;text-transform:uppercase;"
-        "letter-spacing:.09em;color:#4f46e5;margin:10px 0 6px;'>🎯 Prompt Configuration</div>",
+        f"<div style='font-size:0.9rem;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:.09em;color:#4f46e5;margin:10px 0 6px;'>🎯 {_header_text}</div>",
         unsafe_allow_html=True,
     )
 
@@ -761,8 +768,6 @@ def render_inline_prompt_controls(
                 if project_id:
                     _scope_opts.append((f"This Project (id {project_id})", "project",
                                         project_id, None, None))
-                if _is_admin:
-                    _scope_opts.append(("Global (all projects)", "global", None, None, None))
 
                 if not _scope_opts:
                     st.info("Open a project / cluster / course first to use scoped fixing.")

@@ -62,10 +62,12 @@ def generate_style_understanding(
     style,
     model_choice: str,
     extra_instructions: str = "",
+    system_prompt: str | None = None,
 ) -> str:
     """Generate a unified Style Intelligence Layer from linked documents + custom instructions.
 
     Uses the strict WHAT THIS IS / WHAT I LEARNED / HOW I WILL WORK / WHAT I WILL NOT DO format.
+    If *system_prompt* is provided it overrides the DB/file/inline fallback chain.
     """
     unified_docs = _build_unified_style_docs(db, style)
     if not unified_docs.strip():
@@ -78,7 +80,10 @@ def generate_style_understanding(
             "Add documents or custom instructions first."
         )
 
-    system_prompt, _tpl_name, _tpl_ver = _load_system_prompt(db=db)
+    if system_prompt:
+        _tpl_name, _tpl_ver = "selected_style_prompt", "active"
+    else:
+        system_prompt, _tpl_name, _tpl_ver = _load_system_prompt(db=db)
 
     user_p = (
         "Here are the documents and instructions that define this instructional style. "
@@ -114,12 +119,14 @@ def regenerate_style_understanding(
     style,
     model_choice: str,
     correction_instructions: str,
+    system_prompt: str | None = None,
 ) -> str:
     """Refine the Style Intelligence Layer using previous output + user corrections."""
     unified_docs = _build_unified_style_docs(db, style)
     prev_summary = style.generated_summary or "(no previous understanding generated)"
 
-    system_prompt, _tpl_name, _tpl_ver = _load_system_prompt(db=db)
+    if not system_prompt:
+        system_prompt, _tpl_name, _tpl_ver = _load_system_prompt(db=db)
 
     user_p = (
         "TASK: Refine the Style Understanding based on correction instructions.\n\n"

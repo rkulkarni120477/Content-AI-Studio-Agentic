@@ -83,7 +83,8 @@ from promptops_app.database import (
     Generation, Block, BlockComment, BlockVersion, WorkflowEvent,
     ABTestRun, Review, SystemLog, FeedbackSignal,
     CourseDesignDocument, CDDVersion, ModuleBlueprint, BlueprintVersion,
-    Project, Cluster, Course, ProjectUserAssignment, CourseUserAssignment,
+    Project, Cluster, ClusterPrompt, Course, ProjectUserAssignment, CourseUserAssignment,
+    get_cluster_prompts, create_cluster_prompt,
     init_db, init_db_with_seed, seed_data,
     hash_password, verify_password,
     log_event,
@@ -167,6 +168,7 @@ def generate_for_version(db, prompt_name: str, version_name: str, topic: str, in
 
 # File parsing moved to parsers/file_parser.py (Phase 3 refactoring)
 from promptops_app.parsers.file_parser import _parse_uploaded_file, parse_uploaded_file
+from promptops_app.repositories import prompt_repository as _prompt_repo
 
 
 # Config constants moved to core/config.py (Phase 3 refactoring)
@@ -2548,10 +2550,44 @@ def cluster_selection_page():
             with st.form("create_cluster_form"):
                 cl_name = st.text_input("Cluster Name *")
                 cl_desc = st.text_area("Description", height=60)
+                # ── Choose Cluster Prompts (optional) ──────────────────────
+                _lib_prompts = _prompt_repo.list_all_prompts(db)
+                _lib_labels  = [
+                    f"{p.name} [{p.component_type or 'general'}]"
+                    for p in _lib_prompts
+                ]
+                _lib_map = {
+                    f"{p.name} [{p.component_type or 'general'}]": p
+                    for p in _lib_prompts
+                }
+                cl_sel_prompt_labels = st.multiselect(
+                    "Choose Cluster Prompts",
+                    _lib_labels,
+                    help=(
+                        "Selected prompts will be auto-injected into the Style context "
+                        "for every course in this cluster. Optional."
+                    ),
+                )
                 if st.form_submit_button("Create Cluster", use_container_width=True):
                     if cl_name.strip():
-                        db.add(Cluster(project_id=proj_id, name=cl_name.strip(),
-                                       description=cl_desc, created_by=user_name))
+                        new_cl = Cluster(project_id=proj_id, name=cl_name.strip(),
+                                         description=cl_desc, created_by=user_name)
+                        db.add(new_cl)
+                        db.flush()  # obtain new_cl.id within transaction
+                        # Add ClusterPrompt copies for each selected prompt (single commit below)
+                        for _lbl in cl_sel_prompt_labels:
+                            _src_p = _lib_map.get(_lbl)
+                            if _src_p:
+                                _src_ver = _prompt_repo.get_active_version(db, _src_p.id)
+                                db.add(ClusterPrompt(
+                                    cluster_id=new_cl.id,
+                                    name=_src_p.name,
+                                    description=_src_p.description,
+                                    system_prompt=_src_ver.system_prompt if _src_ver else None,
+                                    user_prompt_template=_src_ver.user_prompt_template if _src_ver else None,
+                                    created_by=user_name,
+                                    is_active=True,
+                                ))
                         db.commit()
                         log_event(db, "cluster_created", user_name, f"Cluster '{cl_name}' created in project {proj_id}")
                         st.toast(f"✅ Cluster '{cl_name}' created!")
@@ -2577,6 +2613,92 @@ def cluster_selection_page():
     clusters = db.query(Cluster).filter(
         Cluster.project_id == proj_id, Cluster.is_active == True
     ).order_by(Cluster.created_at.asc()).all()
+
+    # ── + Cluster Prompt button (Admin / Lead only) ───────────────────────────
+    if _can_manage:
+        _hdr_col, _cp_btn_col = st.columns([0.72, 0.28])
+        with _cp_btn_col:
+            if st.button("➕ Cluster Prompt", key="open_cluster_prompt_mgr",
+                         use_container_width=True):
+                st.session_state["_cp_mgr_open"] = not st.session_state.get("_cp_mgr_open", False)
+
+        if st.session_state.get("_cp_mgr_open"):
+            with st.expander("🗂️ Cluster Prompt Manager", expanded=True):
+                _cp_tabs = st.tabs(["➕ Create", "📋 View / Manage"])
+
+                with _cp_tabs[0]:
+                    _cp_cluster_labels = [c.name for c in clusters]
+                    _cp_cluster_map    = {c.name: c for c in clusters}
+                    if not clusters:
+                        st.info("Create a cluster first before adding cluster prompts.")
+                    else:
+                        with st.form("create_cluster_prompt_form"):
+                            _cp_target = st.selectbox(
+                                "Assign to Cluster *",
+                                _cp_cluster_labels,
+                                help="The prompt will be auto-injected into courses under this cluster."
+                            )
+                            _cp_name   = st.text_input("Prompt Name *")
+                            _cp_desc   = st.text_input("Description", placeholder="What does this prompt do?")
+                            _cp_sys    = st.text_area("System Prompt", height=120,
+                                                       placeholder="You are an expert instructional designer…")
+                            _cp_usr    = st.text_area("User Prompt Template", height=80,
+                                                       placeholder="Apply the following guidelines: {style_context}")
+                            if st.form_submit_button("💾 Create Cluster Prompt", use_container_width=True,
+                                                      type="primary"):
+                                if not _cp_name.strip():
+                                    st.error("Prompt name is required.")
+                                elif not (_cp_sys.strip() or _cp_usr.strip()):
+                                    st.error("Provide at least a System Prompt or User Prompt Template.")
+                                else:
+                                    _tgt_cl = _cp_cluster_map[_cp_target]
+                                    create_cluster_prompt(
+                                        db, _tgt_cl.id,
+                                        name=_cp_name.strip(),
+                                        description=_cp_desc.strip() or None,
+                                        system_prompt=_cp_sys.strip() or None,
+                                        user_prompt_template=_cp_usr.strip() or None,
+                                        created_by=user_name,
+                                    )
+                                    log_event(db, "cluster_prompt_created", user_name,
+                                              f"Cluster prompt '{_cp_name}' created for cluster '{_cp_target}'")
+                                    st.success(f"✅ Cluster prompt '{_cp_name.strip()}' created!")
+                                    st.rerun()
+
+                with _cp_tabs[1]:
+                    if not clusters:
+                        st.info("No clusters available.")
+                    else:
+                        _view_cl_sel = st.selectbox(
+                            "Select Cluster to View Prompts",
+                            [c.name for c in clusters],
+                            key="cp_view_cluster_sel"
+                        )
+                        _view_cl = next((c for c in clusters if c.name == _view_cl_sel), None)
+                        if _view_cl:
+                            _view_cps = get_cluster_prompts(db, _view_cl.id)
+                            if not _view_cps:
+                                st.info(f"No cluster prompts assigned to **{_view_cl.name}** yet.")
+                            else:
+                                for _vcp in _view_cps:
+                                    with st.container():
+                                        _vc1, _vc2 = st.columns([0.82, 0.18])
+                                        _vc1.markdown(
+                                            f"**{_vcp.name}**"
+                                            + (f" — {_vcp.description}" if _vcp.description else ""),
+                                        )
+                                        if _vc2.button("🗑️ Remove", key=f"cp_del_{_vcp.id}",
+                                                        use_container_width=True):
+                                            _vcp.is_active = False
+                                            db.commit()
+                                            st.toast(f"Removed cluster prompt '{_vcp.name}'.")
+                                            st.rerun()
+                                        if _vcp.system_prompt:
+                                            st.caption(f"System: {_vcp.system_prompt[:120]}…" if len(_vcp.system_prompt) > 120 else f"System: {_vcp.system_prompt}")
+                                        st.markdown(
+                                            "<hr style='margin:6px 0;border:none;border-top:1px solid #f1f5f9;'>",
+                                            unsafe_allow_html=True
+                                        )
 
     if not clusters:
         if _can_manage:

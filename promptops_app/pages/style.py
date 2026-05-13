@@ -24,14 +24,27 @@ from promptops_app.services.style_service import (
     generate_style_understanding, regenerate_style_understanding,
 )
 from promptops_app.core.config import DOCUMENT_PAGE_SIZE
-from promptops_app.repositories import document_repository
+from promptops_app.repositories import document_repository, prompt_repository
+from promptops_app.database import get_cluster_prompts
 from promptops_app.services.audit_service import log_audit_event
 from promptops_app.ui.components import _section_badge
 from promptops_app.ui.pagination import paginate as _paginate_docs
-from promptops_app.ui.prompt_panel import render_prompt_panel
 from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
 from promptops_app.ui.user_prompt_widget import auto_save_instructions
 from promptops_app.prompt_templates import CDD_SYSTEM_PROMPT
+
+
+def _resolve_style_sys(db) -> str | None:
+    """Return the system prompt for the currently-selected style prompt, or None to use the service default."""
+    sel_label = st.session_state.get("_gc_style_sel")
+    if not sel_label:
+        return None
+    for p in prompt_repository.list_prompts_by_component(db, "style"):
+        p_label = f"🏷️ Default Style Prompt" if p.is_default else p.name
+        if p_label == sel_label:
+            ver = prompt_repository.get_active_version(db, p.id)
+            return (ver.system_prompt or None) if ver else None
+    return None
 
 
 def render_page(db, ctx):
@@ -98,6 +111,39 @@ def render_page(db, ctx):
     # TAB 1 — STYLE MANAGEMENT
     # =====================================================================
     with ctx_tab1:
+        # ── Auto-Injected Cluster Prompts (read-only visibility) ─────────────
+        _cluster_prompts = get_cluster_prompts(db, ctx.cluster_id) if ctx.cluster_id else []
+        if _cluster_prompts:
+            st.markdown(
+                "<div style='background:#f0f9ff;border:1.5px solid #7dd3fc;border-radius:10px;"
+                "padding:12px 16px;margin-bottom:12px;'>"
+                "<div style='font-size:0.7rem;font-weight:700;text-transform:uppercase;"
+                "letter-spacing:.08em;color:#0369a1;margin-bottom:6px;'>"
+                "⚡ Auto-Injected Cluster Prompts</div>"
+                "<div style='font-size:0.8rem;color:#0c4a6e;margin-bottom:8px;'>"
+                "These prompts are inherited from this cluster and automatically prepended "
+                "to the Style context for every course here.</div>",
+                unsafe_allow_html=True,
+            )
+            for _cp in _cluster_prompts:
+                st.markdown(
+                    f"<div style='background:#e0f2fe;border-radius:6px;padding:6px 12px;"
+                    f"margin-bottom:4px;font-size:0.82rem;color:#0369a1;'>"
+                    f"🔒 <strong>{_cp.name}</strong>"
+                    + (f" — {_cp.description}" if _cp.description else "")
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+        elif ctx.cluster_id:
+            st.markdown(
+                "<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;"
+                "padding:8px 14px;font-size:0.8rem;color:#6b7280;margin-bottom:10px;'>"
+                "⚡ No cluster prompts assigned to this cluster. "
+                "Admins/Leads can add them on the Cluster page.</div>",
+                unsafe_allow_html=True,
+            )
+
         sty_left, sty_right = st.columns([0.42, 0.58], gap="large")
 
         # ── LEFT PANEL: Create / Edit Style ──────────────────────────────
@@ -503,14 +549,6 @@ def render_page(db, ctx):
                                     st.warning("⚠️ No documents or instructions linked to this style. Add content before generating understanding.")
                                 else:
                                     st.caption(f"📎 {_doc_count} document(s) + {'custom instructions' if sty.custom_instructions else 'no custom instructions'} will be processed as unified context.")
-                                    _sty_sys, _sty_usr, _gen_extra = render_inline_prompt_controls(
-                                        db, "style",
-                                        project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
-                                        user_name=user_name, model_choice=model_choice,
-                                        extra_placeholder="e.g. Pay extra attention to clinical terminology usage…",
-                                        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-                                        user_role=user_role,
-                                    )
                                     _sty_gen_col, _sty_dl_col = st.columns([0.65, 0.35])
                                     with _sty_dl_col:
                                         render_prompt_download_button(
@@ -524,7 +562,11 @@ def render_page(db, ctx):
                                         if rbac_gate(user_role, "style.understand", "Generating Style Understanding"):
                                             _mc = st.session_state.get("model_choice", "GPT-5.4")
                                             with st.spinner("Processing all documents as unified context…"):
-                                                _understanding = generate_style_understanding(db, sty, _mc, _gen_extra)
+                                                _gen_extra = st.session_state.get("_gc_style_extra", "")
+                                                _sel_sys = _resolve_style_sys(db)
+                                                _understanding = generate_style_understanding(
+                                                    db, sty, _mc, _gen_extra, system_prompt=_sel_sys
+                                                )
                                             if _understanding.startswith("ERROR"):
                                                 st.error(_understanding)
                                             else:
@@ -568,7 +610,10 @@ def render_page(db, ctx):
                                         elif rbac_gate(user_role, "style.understand", "Refining Style Understanding"):
                                             _mc2 = st.session_state.get("model_choice", "GPT-5.4")
                                             with st.spinner("Refining style intelligence…"):
-                                                _new_und = regenerate_style_understanding(db, sty, _mc2, _corr)
+                                                _sel_sys2 = _resolve_style_sys(db)
+                                                _new_und = regenerate_style_understanding(
+                                                    db, sty, _mc2, _corr, system_prompt=_sel_sys2
+                                                )
                                             if _new_und.startswith("ERROR"):
                                                 st.error(_new_und)
                                             else:
@@ -822,27 +867,14 @@ The system will detect the filename, retrieve the content, and inject it as stru
                 _ref_lines.append(f"… and {_doc_active - 100} more (use filters above to find them)")
             st.code("\n".join(_ref_lines), language=None)
 
-    # ── Prompt Management ─────────────────────────────────────────────────
+    # ── Style Prompt Library ──────────────────────────────────────────────
     st.divider()
-    st.markdown(
-        "<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
-        "letter-spacing:.1em;color:#6366f1;margin-bottom:4px;'>📚 Prompt Library</div>"
-        "<p style='font-size:0.82rem;color:#6b7280;margin-bottom:8px;'>"
-        "Create, edit, version, and improve prompt assets tagged <code>style</code>. "
-        "These are available across all generation components.</p>",
-        unsafe_allow_html=True,
-    )
-    render_prompt_panel(
-        db,
-        component="style",
-        user_name=user_name,
-        model_choice=model_choice,
-        default_system=(
-            "You are an expert instructional designer with deep expertise in instructional style "
-            "and tone. Analyse the provided style guidelines and documents."
-        ),
-        default_user=(
-            "Apply the following style guidelines to the content generation task:\n\n{style_context}"
-        ),
+    render_inline_prompt_controls(
+        db, "style",
+        project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
+        user_name=user_name, model_choice=model_choice,
+        extra_placeholder="e.g. Pay extra attention to clinical terminology usage…",
+        project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
+        user_role=user_role,
     )
 

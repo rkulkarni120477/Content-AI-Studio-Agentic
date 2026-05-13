@@ -552,7 +552,7 @@ def render_page(db, ctx):
 
         _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
         if _active_style_bp:
-            _style_ctx_bp = build_style_context(db, _active_style_bp)
+            _style_ctx_bp = build_style_context(db, _active_style_bp, cluster_id=ctx.cluster_id)
             _bp_extra_block = (
                 f"**ACTIVE STYLE — Maintain throughout this Blueprint:**\n{_style_ctx_bp}\n\n"
                 + _bp_extra_block
@@ -566,7 +566,7 @@ def render_page(db, ctx):
             bp_status.write(f"🧩 Stage 2: Scoping to {_gen_label}...")
             bp_status.write(f"🧠 Stage 3: Generating {'Teacher' if _bp_gen_mode == 'teacher' else 'Student'} Blueprint with AI...")
             _active_style_bp = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
-            _style_ctx_bp    = build_style_context(db, _active_style_bp) if _active_style_bp else ""
+            _style_ctx_bp    = build_style_context(db, _active_style_bp, cluster_id=ctx.cluster_id) if _active_style_bp else ""
             if _bp_panel_sys and _bp_panel_usr:
                 _bp_sys_prompt = _bp_panel_sys
                 user_p = safe_format(
