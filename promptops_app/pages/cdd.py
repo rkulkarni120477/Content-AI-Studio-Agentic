@@ -441,7 +441,7 @@ def render_page(db, ctx):
         )
         _style_context_cdd = ""
         if _cdd_selected_style:
-            _style_context_cdd = build_style_context(db, _cdd_selected_style)
+            _style_context_cdd = build_style_context(db, _cdd_selected_style, cluster_id=ctx.cluster_id)
             _cdd_extra_block = (
                 f"**ACTIVE STYLE — Apply throughout this CDD:**\n{_style_context_cdd}\n\n"
                 + _cdd_extra_block

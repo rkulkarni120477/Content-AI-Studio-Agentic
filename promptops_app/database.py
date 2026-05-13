@@ -810,9 +810,35 @@ class Cluster(Base):
     created_at  = Column(DateTime, default=datetime.utcnow)
     is_active   = Column(Boolean, default=True)
     # Relationships — no cascade on courses; Project.courses handles hard-delete cascade
-    courses     = relationship("Course", back_populates="cluster")
-    project     = relationship("Project", back_populates="clusters")
+    courses         = relationship("Course", back_populates="cluster")
+    project         = relationship("Project", back_populates="clusters")
+    cluster_prompts = relationship("ClusterPrompt", back_populates="cluster",
+                                   cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ClusterPrompt(Base):
+    """Prompt content scoped to a single cluster, auto-injected into course style context.
+
+    Hierarchy: Project → Cluster → ClusterPrompt (auto-injected into every Course style).
+    """
+    __tablename__ = "cluster_prompts"
+    id                   = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_id           = Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE"),
+                                  nullable=False, index=True)
+    name                 = Column(String(255), nullable=False)
+    description          = Column(Text)
+    system_prompt        = Column(Text)
+    user_prompt_template = Column(Text)
+    created_by           = Column(String(100))
+    created_at           = Column(DateTime, default=datetime.utcnow)
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active            = Column(Boolean, default=True)
+
+    cluster = relationship("Cluster", back_populates="cluster_prompts")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
 
 class Course(Base):
@@ -1362,15 +1388,65 @@ def _build_unified_style_docs(db, style: "Style") -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def build_style_context(db, style: "Style") -> str:
+def get_cluster_prompts(db, cluster_id: int) -> list:
+    """Return all active ClusterPrompts for *cluster_id*, ordered by creation date."""
+    return (
+        db.query(ClusterPrompt)
+        .filter(ClusterPrompt.cluster_id == cluster_id, ClusterPrompt.is_active == True)  # noqa: E712
+        .order_by(ClusterPrompt.created_at.asc())
+        .all()
+    )
+
+
+def create_cluster_prompt(
+    db,
+    cluster_id: int,
+    name: str,
+    description: str | None,
+    system_prompt: str | None,
+    user_prompt_template: str | None,
+    created_by: str,
+) -> "ClusterPrompt":
+    """Create and persist a new ClusterPrompt."""
+    cp = ClusterPrompt(
+        cluster_id=cluster_id,
+        name=name,
+        description=description,
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt_template,
+        created_by=created_by,
+        is_active=True,
+    )
+    db.add(cp)
+    db.commit()
+    db.refresh(cp)
+    return cp
+
+
+def build_style_context(db, style: "Style", cluster_id: int | None = None) -> str:
     """
     Assemble the style context string for injection into LLM generation prompts.
-    If a generated_summary (Style Intelligence) exists, use that — it is the
-    validated, consolidated understanding. Otherwise fall back to raw docs + instructions.
+
+    Injection order:
+      1. Auto-injected cluster prompts (when cluster_id is provided)
+      2. Active style intelligence layer / docs / instructions
+
+    Backward-compatible: cluster_id defaults to None, preserving existing call sites.
     """
+    parts: list[str] = []
+
+    # 1. Auto-injected cluster prompts
+    if cluster_id:
+        for cp in get_cluster_prompts(db, cluster_id):
+            content = cp.system_prompt or cp.user_prompt_template or ""
+            if content:
+                parts.append(f"## Cluster Prompt: {cp.name}\n{content[:3000]}")
+
     if not style:
-        return ""
-    parts = [f"## Active Instructional Style: {style.name}"]
+        return "\n\n".join(parts)
+
+    # 2. Active style
+    parts.append(f"## Active Instructional Style: {style.name}")
     if style.generated_summary:
         parts.append(f"### Style Intelligence Layer (validated understanding)\n{style.generated_summary}")
     else:
