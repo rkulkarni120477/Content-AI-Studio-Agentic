@@ -507,21 +507,30 @@ def render_page(db, ctx):
                                 if sty.generated_summary:
                                     st.markdown("---")
                                     st.markdown("**🧠 Style Intelligence Layer (stored understanding):**")
-                                    # Render the 4-section format as distinct blocks
                                     _und_text = sty.generated_summary
                                     _und_sections = {
-                                        "WHAT THIS IS": ("#eef2ff", "#4338ca", "📌"),
-                                        "WHAT I LEARNED": ("#f0fdf4", "#166534", "📖"),
+                                        "WHAT THIS IS":    ("#eef2ff", "#4338ca", "📌"),
+                                        "WHAT I LEARNED":  ("#f0fdf4", "#166534", "📖"),
                                         "HOW I WILL WORK": ("#fff7ed", "#92400e", "⚙️"),
                                         "WHAT I WILL NOT DO": ("#fef2f2", "#991b1b", "🚫"),
                                     }
-                                    import re as _re_sty
+                                    # Flexible pattern: handles plain, **bold**, ## heading, trailing colon
+                                    _ANY_HDR = r"(?:WHAT THIS IS|WHAT I LEARNED|HOW I WILL WORK|WHAT I WILL NOT DO)"
+                                    _HDR_PREFIX = r"(?:#{1,3}\s*|\*{1,2})?"
+                                    _HDR_SUFFIX = r"(?:\*{1,2})?:?"
+                                    _sections_found = 0
                                     for _sec_name, (_sbg, _sfg, _sico) in _und_sections.items():
-                                        _pat = rf"{re.escape(_sec_name)}\s*(.*?)(?=WHAT THIS IS|WHAT I LEARNED|HOW I WILL WORK|WHAT I WILL NOT DO|$)"
-                                        _match = _re_sty.search(_pat, _und_text, _re_sty.DOTALL)
+                                        _esc = re.escape(_sec_name)
+                                        _pat = (
+                                            rf"{_HDR_PREFIX}{_esc}{_HDR_SUFFIX}"
+                                            rf"\s*(.*?)"
+                                            rf"(?={_HDR_PREFIX}{_ANY_HDR}|$)"
+                                        )
+                                        _match = re.search(_pat, _und_text, re.DOTALL | re.IGNORECASE)
                                         if _match:
                                             _body = _match.group(1).strip()
                                             if _body:
+                                                _sections_found += 1
                                                 st.markdown(
                                                     f"<div style='background:{_sbg};border-left:4px solid {_sfg};"
                                                     f"border-radius:0 8px 8px 0;padding:10px 14px;margin:6px 0;'>"
@@ -532,6 +541,9 @@ def render_page(db, ctx):
                                                     f"{_body}</div></div>",
                                                     unsafe_allow_html=True
                                                 )
+                                    # Fallback: if no structured sections found, show raw output
+                                    if _sections_found == 0:
+                                        st.markdown(_und_text)
                                 else:
                                     st.info("No understanding generated yet. Click **🧠 Understand** to generate.")
 
