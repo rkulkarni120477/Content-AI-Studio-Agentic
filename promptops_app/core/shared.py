@@ -2551,21 +2551,25 @@ def cluster_selection_page():
                 cl_name = st.text_input("Cluster Name *")
                 cl_desc = st.text_area("Description", height=60)
                 # ── Choose Cluster Prompts (optional) ──────────────────────
-                _lib_prompts = _prompt_repo.list_all_prompts(db)
-                _lib_labels  = [
-                    f"{p.name} [{p.component_type or 'general'}]"
-                    for p in _lib_prompts
+                # Show only cluster prompts created in the Cluster Prompt section (Req 3)
+                _all_cp = (
+                    db.query(ClusterPrompt)
+                    .filter(ClusterPrompt.is_active == True)  # noqa: E712
+                    .order_by(ClusterPrompt.created_at.asc())
+                    .all()
+                )
+                _cp_labels = [
+                    p.name + (f" — {p.description[:40]}" if p.description else "")
+                    for p in _all_cp
                 ]
-                _lib_map = {
-                    f"{p.name} [{p.component_type or 'general'}]": p
-                    for p in _lib_prompts
-                }
+                _cp_map = {lbl: p for lbl, p in zip(_cp_labels, _all_cp)}
                 cl_sel_prompt_labels = st.multiselect(
                     "Choose Cluster Prompts",
-                    _lib_labels,
+                    _cp_labels,
                     help=(
-                        "Selected prompts will be auto-injected into the Style context "
-                        "for every course in this cluster. Optional."
+                        "Select cluster prompts to auto-inject into the Style context "
+                        "for every course in this cluster. Create new cluster prompts "
+                        "using the '➕ Cluster Prompt' button. Optional."
                     ),
                 )
                 if st.form_submit_button("Create Cluster", use_container_width=True):
@@ -2574,17 +2578,16 @@ def cluster_selection_page():
                                          description=cl_desc, created_by=user_name)
                         db.add(new_cl)
                         db.flush()  # obtain new_cl.id within transaction
-                        # Add ClusterPrompt copies for each selected prompt (single commit below)
+                        # Copy selected ClusterPrompts into the new cluster (Req 3)
                         for _lbl in cl_sel_prompt_labels:
-                            _src_p = _lib_map.get(_lbl)
-                            if _src_p:
-                                _src_ver = _prompt_repo.get_active_version(db, _src_p.id)
+                            _src_cp = _cp_map.get(_lbl)
+                            if _src_cp:
                                 db.add(ClusterPrompt(
                                     cluster_id=new_cl.id,
-                                    name=_src_p.name,
-                                    description=_src_p.description,
-                                    system_prompt=_src_ver.system_prompt if _src_ver else None,
-                                    user_prompt_template=_src_ver.user_prompt_template if _src_ver else None,
+                                    name=_src_cp.name,
+                                    description=_src_cp.description,
+                                    system_prompt=_src_cp.system_prompt,
+                                    user_prompt_template=_src_cp.user_prompt_template,
                                     created_by=user_name,
                                     is_active=True,
                                 ))
@@ -2627,53 +2630,207 @@ def cluster_selection_page():
                 _cp_tabs = st.tabs(["➕ Create", "📋 View / Manage"])
 
                 with _cp_tabs[0]:
-                    _cp_cluster_labels = [c.name for c in clusters]
-                    _cp_cluster_map    = {c.name: c for c in clusters}
-                    if not clusters:
-                        st.info("Create a cluster first before adding cluster prompts.")
-                    else:
-                        with st.form("create_cluster_prompt_form"):
-                            _cp_target = st.selectbox(
-                                "Assign to Cluster *",
-                                _cp_cluster_labels,
-                                help="The prompt will be auto-injected into courses under this cluster."
+                    _cp_cluster_map = {c.name: c for c in clusters}
+
+                    # ── AI Generate / Refine (Req 1) — outside form ───────────────────
+                    with st.expander("🤖 Generate or Refine with AI", expanded=False):
+                        st.caption(
+                            "Use AI to generate a fresh cluster prompt or to refine your draft. "
+                            "Review the result below, then it will be pre-filled in the form."
+                        )
+                        _cp_ai_mode = st.radio(
+                            "AI Action",
+                            ["Generate Fresh Prompt", "Refine My Draft"],
+                            horizontal=True,
+                            key="cp_ai_mode",
+                        )
+                        _cp_ai_ctx = st.text_area(
+                            "Context / Instructions",
+                            placeholder=(
+                                "e.g. For clinical nursing courses. Focus on Bloom's levels 4–6. "
+                                "Emphasise simulation-based learning and patient safety."
+                            ),
+                            height=80,
+                            key="cp_ai_context",
+                        )
+                        if _cp_ai_mode == "Refine My Draft":
+                            st.caption("Paste your drafts below for the AI to refine:")
+                            st.text_area(
+                                "Draft System Prompt",
+                                height=70,
+                                key="cp_ai_draft_sys",
+                                placeholder="Paste your current system prompt here…",
                             )
-                            _cp_name   = st.text_input("Prompt Name *")
-                            _cp_desc   = st.text_input("Description", placeholder="What does this prompt do?")
-                            _cp_sys    = st.text_area("System Prompt", height=120,
-                                                       placeholder="You are an expert instructional designer…")
-                            _cp_usr    = st.text_area("User Prompt Template", height=80,
-                                                       placeholder="Apply the following guidelines: {style_context}")
-                            if st.form_submit_button("💾 Create Cluster Prompt", use_container_width=True,
-                                                      type="primary"):
-                                if not _cp_name.strip():
-                                    st.error("Prompt name is required.")
-                                elif not (_cp_sys.strip() or _cp_usr.strip()):
-                                    st.error("Provide at least a System Prompt or User Prompt Template.")
-                                else:
-                                    _tgt_cl = _cp_cluster_map[_cp_target]
-                                    create_cluster_prompt(
-                                        db, _tgt_cl.id,
-                                        name=_cp_name.strip(),
-                                        description=_cp_desc.strip() or None,
-                                        system_prompt=_cp_sys.strip() or None,
-                                        user_prompt_template=_cp_usr.strip() or None,
-                                        created_by=user_name,
-                                    )
-                                    log_event(db, "cluster_prompt_created", user_name,
-                                              f"Cluster prompt '{_cp_name}' created for cluster '{_cp_target}'")
-                                    st.success(f"✅ Cluster prompt '{_cp_name.strip()}' created!")
-                                    st.rerun()
+                            st.text_area(
+                                "Draft User Prompt Template",
+                                height=60,
+                                key="cp_ai_draft_usr",
+                                placeholder="Paste your current user prompt here…",
+                            )
+                        if st.button("✨ Generate with AI", key="cp_ai_generate",
+                                     use_container_width=True, type="primary"):
+                            if _cp_ai_ctx.strip():
+                                with st.spinner("Generating cluster prompt with AI…"):
+                                    try:
+                                        from promptops_app.services.llm_service import generate_text as _cp_llm_call
+                                        _cp_mc = st.session_state.get("model_choice", "GPT-5.4")
+                                        if _cp_ai_mode == "Refine My Draft":
+                                            _cp_ai_sys_p = (
+                                                "You are an expert prompt engineer for eLearning. "
+                                                "Refine the provided system and user prompts based on the instructions. "
+                                                "Respond with ONLY a raw JSON object — no markdown, no code fences, no extra text. "
+                                                "Format: {\"system_prompt\": \"...\", \"user_prompt_template\": \"...\"}"
+                                            )
+                                            _cp_ai_usr_p = (
+                                                f"Instructions: {_cp_ai_ctx}\n\n"
+                                                f"Current System Prompt:\n"
+                                                f"{st.session_state.get('cp_ai_draft_sys', '(none)')}\n\n"
+                                                f"Current User Prompt:\n"
+                                                f"{st.session_state.get('cp_ai_draft_usr', '(none)')}\n\n"
+                                                "Return ONLY the JSON object with refined prompts."
+                                            )
+                                        else:
+                                            _cp_ai_sys_p = (
+                                                "You are an expert prompt engineer for eLearning content generation. "
+                                                "Create a cluster-level system prompt and user prompt template based on the context. "
+                                                "These prompts will be auto-injected into AI generation for all courses in a cluster. "
+                                                "Respond with ONLY a raw JSON object — no markdown, no code fences, no extra text. "
+                                                "Format: {\"system_prompt\": \"...\", \"user_prompt_template\": \"...\"}"
+                                            )
+                                            _cp_ai_usr_p = (
+                                                f"Context / Instructions: {_cp_ai_ctx}\n\n"
+                                                "Return ONLY the JSON object with system_prompt and user_prompt_template."
+                                            )
+                                        _cp_ai_raw = _cp_llm_call(_cp_mc, _cp_ai_sys_p, _cp_ai_usr_p)
+                                        if _cp_ai_raw.startswith("ERROR"):
+                                            st.error(f"LLM error: {_cp_ai_raw}")
+                                        else:
+                                            _cp_ai_parsed = safe_json_loads(_cp_ai_raw)
+                                            if isinstance(_cp_ai_parsed, dict) and (
+                                                "system_prompt" in _cp_ai_parsed
+                                                or "user_prompt_template" in _cp_ai_parsed
+                                            ):
+                                                st.session_state["_cp_form_sys"] = _cp_ai_parsed.get("system_prompt", "")
+                                                st.session_state["_cp_form_usr"] = _cp_ai_parsed.get("user_prompt_template", "")
+                                                st.success("✅ AI suggestion applied — review in the form below.")
+                                            else:
+                                                # Treat the raw response as the system prompt (plain text fallback)
+                                                st.session_state["_cp_form_sys"] = _cp_ai_raw.strip()
+                                                st.session_state["_cp_form_usr"] = ""
+                                                st.warning(
+                                                    "AI returned plain text instead of JSON — loaded as System Prompt. "
+                                                    "Edit as needed before saving."
+                                                )
+                                    except Exception as _cp_ai_exc:
+                                        st.error(f"AI generation error: {_cp_ai_exc}")
+                            else:
+                                st.warning("Provide context or instructions before generating.")
+
+                    # ── Cluster prompt creation form (Req 2: cluster is optional) ──────
+                    _cp_cluster_opts = ["— None (unassigned) —"] + [c.name for c in clusters]
+                    with st.form("create_cluster_prompt_form"):
+                        _cp_target = st.selectbox(
+                            "Assign to Cluster",
+                            _cp_cluster_opts,
+                            help=(
+                                "Optional. Prompt will be auto-injected into courses under the "
+                                "selected cluster. Choose 'None' to save without cluster assignment."
+                            ),
+                        )
+                        _cp_name = st.text_input("Prompt Name *")
+                        _cp_desc = st.text_input(
+                            "Description", placeholder="What does this prompt do?"
+                        )
+                        _cp_sys = st.text_area(
+                            "System Prompt",
+                            height=120,
+                            placeholder="You are an expert instructional designer…",
+                            key="_cp_form_sys",
+                        )
+                        _cp_usr = st.text_area(
+                            "User Prompt Template",
+                            height=80,
+                            placeholder="Apply the following guidelines: {style_context}",
+                            key="_cp_form_usr",
+                        )
+                        if st.form_submit_button(
+                            "💾 Create Cluster Prompt", use_container_width=True, type="primary"
+                        ):
+                            if not _cp_name.strip():
+                                st.error("Prompt name is required.")
+                            elif not (_cp_sys.strip() or _cp_usr.strip()):
+                                st.error("Provide at least a System Prompt or User Prompt Template.")
+                            else:
+                                _tgt_cl_id   = None
+                                _tgt_cl_name = "Unassigned"
+                                if _cp_target != "— None (unassigned) —":
+                                    _tgt_cl_obj = _cp_cluster_map.get(_cp_target)
+                                    if _tgt_cl_obj:
+                                        _tgt_cl_id   = _tgt_cl_obj.id
+                                        _tgt_cl_name = _tgt_cl_obj.name
+                                create_cluster_prompt(
+                                    db, _tgt_cl_id,
+                                    name=_cp_name.strip(),
+                                    description=_cp_desc.strip() or None,
+                                    system_prompt=_cp_sys.strip() or None,
+                                    user_prompt_template=_cp_usr.strip() or None,
+                                    created_by=user_name,
+                                )
+                                log_event(
+                                    db, "cluster_prompt_created", user_name,
+                                    f"Cluster prompt '{_cp_name}' created for cluster '{_tgt_cl_name}'"
+                                )
+                                # Clear AI suggestion after successful save
+                                st.session_state.pop("_cp_form_sys", None)
+                                st.session_state.pop("_cp_form_usr", None)
+                                st.success(f"✅ Cluster prompt '{_cp_name.strip()}' created!")
+                                st.rerun()
 
                 with _cp_tabs[1]:
-                    if not clusters:
-                        st.info("No clusters available.")
-                    else:
-                        _view_cl_sel = st.selectbox(
-                            "Select Cluster to View Prompts",
-                            [c.name for c in clusters],
-                            key="cp_view_cluster_sel"
+                    # View by cluster; also show unassigned prompts
+                    _view_opts = ["— Unassigned —"] + [c.name for c in clusters]
+                    _view_cl_sel = st.selectbox(
+                        "Select Cluster to View Prompts",
+                        _view_opts,
+                        key="cp_view_cluster_sel",
+                    )
+                    if _view_cl_sel == "— Unassigned —":
+                        _view_cps = (
+                            db.query(ClusterPrompt)
+                            .filter(
+                                ClusterPrompt.cluster_id == None,  # noqa: E711
+                                ClusterPrompt.is_active == True,   # noqa: E712
+                            )
+                            .order_by(ClusterPrompt.created_at.asc())
+                            .all()
                         )
+                        if not _view_cps:
+                            st.info("No unassigned cluster prompts yet.")
+                        else:
+                            for _vcp in _view_cps:
+                                with st.container():
+                                    _vc1, _vc2 = st.columns([0.82, 0.18])
+                                    _vc1.markdown(
+                                        f"**{_vcp.name}**"
+                                        + (f" — {_vcp.description}" if _vcp.description else ""),
+                                    )
+                                    if _vc2.button("🗑️ Remove", key=f"cp_del_{_vcp.id}",
+                                                   use_container_width=True):
+                                        _vcp.is_active = False
+                                        db.commit()
+                                        st.toast(f"Removed cluster prompt '{_vcp.name}'.")
+                                        st.rerun()
+                                    if _vcp.system_prompt:
+                                        st.caption(
+                                            f"System: {_vcp.system_prompt[:120]}…"
+                                            if len(_vcp.system_prompt) > 120
+                                            else f"System: {_vcp.system_prompt}"
+                                        )
+                                    st.markdown(
+                                        "<hr style='margin:6px 0;border:none;border-top:1px solid #f1f5f9;'>",
+                                        unsafe_allow_html=True,
+                                    )
+                    else:
                         _view_cl = next((c for c in clusters if c.name == _view_cl_sel), None)
                         if _view_cl:
                             _view_cps = get_cluster_prompts(db, _view_cl.id)

@@ -11,6 +11,10 @@ from promptops_app.prompts.prompt_builder import build_prompt as _lib_build_prom
 from promptops_app.ui.prompt_panel import safe_format
 from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
 from promptops_app.ui.user_prompt_widget import auto_save_instructions
+from promptops_app.repositories.user_prompt_history_repository import (
+    list_latest_for_component as _list_saved_instrs,
+    save_prompt as _save_instr_fn,
+)
 
 
 def _build_cdd_prompts(db, *, course_name, target_audience, expert_domain,
@@ -196,6 +200,87 @@ def render_page(db, ctx):
             key="_cdd_duration_hours",
         )
 
+        # ── Additional Instructions — directly below estimation (Req 4) ──────
+        st.markdown(
+            "<div style='font-size:0.8rem;font-weight:600;color:#374151;"
+            "margin-top:10px;margin-bottom:2px;'>"
+            "💬 Additional Instructions "
+            "<span style='font-weight:400;font-size:0.75rem;color:#9ca3af;'>"
+            "(optional)</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.text_area(
+            "Additional Instructions",
+            placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
+            height=90,
+            label_visibility="collapsed",
+            key="_gc_cdd_extra",
+        )
+
+        # ── Load saved instructions ───────────────────────────────────────────
+        _cdd_saved = _list_saved_instrs(
+            db, "cdd",
+            project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
+        )
+        if _cdd_saved:
+            _cdd_il1, _cdd_il2 = st.columns([0.72, 0.28])
+            _cdd_instr_map = {r.name: r for r in _cdd_saved}
+            _cdd_sel_instr = _cdd_il1.selectbox(
+                "Saved instructions",
+                ["— Start fresh —"] + [r.name for r in _cdd_saved],
+                key="_cdd_top_instr_sel",
+                label_visibility="collapsed",
+            )
+            if _cdd_il2.button("📥 Load", key="_cdd_top_load_instr", use_container_width=True):
+                if _cdd_sel_instr != "— Start fresh —":
+                    _cdd_rec = _cdd_instr_map.get(_cdd_sel_instr)
+                    if _cdd_rec:
+                        st.session_state["_gc_cdd_extra"] = _cdd_rec.content
+                        st.rerun()
+                else:
+                    st.session_state["_gc_cdd_extra"] = ""
+                    st.rerun()
+
+        # ── Save instructions ─────────────────────────────────────────────────
+        if st.button("💾 Save Instructions", key="_cdd_top_save_btn", use_container_width=True):
+            st.session_state["_cdd_top_show_save"] = not st.session_state.get("_cdd_top_show_save", False)
+            st.rerun()
+
+        if st.session_state.get("_cdd_top_show_save"):
+            _cdd_cur_extra = st.session_state.get("_gc_cdd_extra", "")
+            st.caption("**Name and save these instructions for reuse:**")
+            _cdd_sn1, _cdd_sn2, _cdd_sn3 = st.columns([0.46, 0.26, 0.28])
+            _cdd_save_name = _cdd_sn1.text_input(
+                "Name",
+                placeholder="e.g. Clinical simulation focus",
+                key="_cdd_top_save_name",
+                label_visibility="collapsed",
+            )
+            _cdd_as_new = _cdd_sn2.checkbox(
+                "New version", key="_cdd_top_save_nv",
+                help="Keep previous save and create a new version.",
+            )
+            if _cdd_sn3.button("Confirm", key="_cdd_top_save_ok", use_container_width=True):
+                if _cdd_save_name.strip() and _cdd_cur_extra.strip():
+                    _save_instr_fn(
+                        db,
+                        name=_cdd_save_name.strip(),
+                        component="cdd",
+                        content=_cdd_cur_extra.strip(),
+                        project_id=_proj_id,
+                        cluster_id=ctx.cluster_id,
+                        course_id=_crs_id,
+                        created_by=user_name,
+                        as_new_version=_cdd_as_new,
+                    )
+                    st.success(f"✅ Saved as **'{_cdd_save_name.strip()}'**")
+                    st.session_state["_cdd_top_show_save"] = False
+                    st.rerun()
+                elif not _cdd_cur_extra.strip():
+                    st.warning("Write some instructions before saving.")
+                else:
+                    st.warning("Enter a name to save.")
+
     # ── prompt section + generate button moved below — see end of function ──
 
     with cdd_right:
@@ -295,7 +380,6 @@ def render_page(db, ctx):
             st.markdown("**📥 Download CDD**")
             _dl_ver = cdd_repository.get_cdd_version(db, sel_cdd_id, sel_cdd.active_version)
             if _dl_ver:
-                _dl_c1, _dl_c2 = st.columns(2)
                 # Build download content from the same UI-visible blocks as the renderer
                 # This ensures download = exact mirror of what user sees on screen
                 _cdd_dl_parsed = parse_cdd_flat(_dl_ver.full_content or "")
@@ -334,7 +418,7 @@ def render_page(db, ctx):
                 _md_dl = "\n\n---\n\n".join(_dl_parts_md) if _dl_parts_md else (_dl_ver.full_content or "")
                 _cdd_blocks = _dl_blocks_docx if _dl_blocks_docx else [("CDD Content", _md_dl)]
                 _cdd_exp_base = ExportRequest(
-                    fmt="md",
+                    fmt="docx",
                     topic=sel_cdd.title,
                     blocks=_cdd_blocks,
                     user_name=user_name,
@@ -343,23 +427,11 @@ def render_page(db, ctx):
                     entity_id=sel_cdd.id,
                     project_id=st.session_state.get("selected_project_id"),
                     course_id=st.session_state.get("selected_course_id"),
-                    file_name=f"CDD_{sel_cdd.title.replace(' ','_')}_{sel_cdd.active_version}.md",
-                )
-                _dl_c1.download_button(
-                    "⬇️ Markdown (.md)",
-                    data=_md_dl,
-                    file_name=f"CDD_{sel_cdd.title.replace(' ','_')}_{sel_cdd.active_version}.md",
-                    mime="text/markdown",
-                    use_container_width=True,
-                    key="cdd_dl_md"
-                )
-                _cdd_docx_r = export_content(db, _dc_replace(
-                    _cdd_exp_base,
-                    fmt="docx",
                     file_name=f"CDD_{sel_cdd.title.replace(' ','_')}_{sel_cdd.active_version}.docx",
-                ))
+                )
+                _cdd_docx_r = export_content(db, _cdd_exp_base)
                 if _cdd_docx_r.success:
-                    _dl_c2.download_button(
+                    st.download_button(
                         "⬇️ Word (.docx)",
                         data=_cdd_docx_r.data,
                         file_name=_cdd_docx_r.file_name,
@@ -368,13 +440,13 @@ def render_page(db, ctx):
                         key="cdd_dl_docx"
                     )
                 else:
-                    _dl_c2.error(_cdd_docx_r.error_message)
+                    st.error(_cdd_docx_r.error_message)
 
                 # ── Download Prompt Used ────────────────────────────────────
                 render_prompt_download_button(
                     db, "cdd",
                     project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-                    button_label="⬇️ Download Prompt Used (.md)",
+                    button_label="⬇️ Download Prompt Used (.doc)",
                     key=f"cdd_dl_prompt_{sel_cdd_id}",
                     use_container_width=True,
                 )
@@ -401,6 +473,8 @@ def render_page(db, ctx):
         extra_placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6.",
         project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
         user_role=user_role,
+        show_extra_instructions=False,
+        show_save_btn=False,
     )
 
     # Generate (65 %) + Download Prompt (35 %)
