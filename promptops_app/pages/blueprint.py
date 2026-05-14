@@ -30,6 +30,10 @@ from promptops_app.prompt_templates import BLUEPRINT_SYSTEM_PROMPT, BLUEPRINT_US
 from promptops_app.ui.prompt_panel import safe_format
 from promptops_app.ui.generation_controls import render_inline_prompt_controls, render_prompt_download_button
 from promptops_app.ui.user_prompt_widget import auto_save_instructions
+from promptops_app.repositories.user_prompt_history_repository import (
+    list_latest_for_component as _list_saved_instrs,
+    save_prompt as _save_instr_fn,
+)
 
 
 def _build_blueprint_prompts(db, *, cdd_context, selected_module, extra_instructions,
@@ -300,6 +304,87 @@ def render_page(db, ctx):
             )
             bp_form_btn = st.form_submit_button("Confirm Module Selection", use_container_width=True)
 
+        # ── Additional Instructions — directly below Confirm Module Selection (Req 5) ──
+        st.markdown(
+            "<div style='font-size:0.8rem;font-weight:600;color:#374151;"
+            "margin-top:10px;margin-bottom:2px;'>"
+            "💬 Additional Instructions "
+            "<span style='font-weight:400;font-size:0.75rem;color:#9ca3af;'>"
+            "(optional)</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.text_area(
+            "Additional Instructions",
+            placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
+            height=90,
+            label_visibility="collapsed",
+            key="_gc_blueprint_extra",
+        )
+
+        # ── Load saved instructions ───────────────────────────────────────────
+        _bp_saved = _list_saved_instrs(
+            db, "blueprint",
+            project_id=_proj_id, cluster_id=ctx.cluster_id, course_id=_crs_id,
+        )
+        if _bp_saved:
+            _bp_il1, _bp_il2 = st.columns([0.72, 0.28])
+            _bp_instr_map = {r.name: r for r in _bp_saved}
+            _bp_sel_instr = _bp_il1.selectbox(
+                "Saved instructions",
+                ["— Start fresh —"] + [r.name for r in _bp_saved],
+                key="_bp_top_instr_sel",
+                label_visibility="collapsed",
+            )
+            if _bp_il2.button("📥 Load", key="_bp_top_load_instr", use_container_width=True):
+                if _bp_sel_instr != "— Start fresh —":
+                    _bp_rec = _bp_instr_map.get(_bp_sel_instr)
+                    if _bp_rec:
+                        st.session_state["_gc_blueprint_extra"] = _bp_rec.content
+                        st.rerun()
+                else:
+                    st.session_state["_gc_blueprint_extra"] = ""
+                    st.rerun()
+
+        # ── Save instructions ─────────────────────────────────────────────────
+        if st.button("💾 Save Instructions", key="_bp_top_save_btn", use_container_width=True):
+            st.session_state["_bp_top_show_save"] = not st.session_state.get("_bp_top_show_save", False)
+            st.rerun()
+
+        if st.session_state.get("_bp_top_show_save"):
+            _bp_cur_extra = st.session_state.get("_gc_blueprint_extra", "")
+            st.caption("**Name and save these instructions for reuse:**")
+            _bp_sn1, _bp_sn2, _bp_sn3 = st.columns([0.46, 0.26, 0.28])
+            _bp_save_name = _bp_sn1.text_input(
+                "Name",
+                placeholder="e.g. Simulation-based lessons",
+                key="_bp_top_save_name",
+                label_visibility="collapsed",
+            )
+            _bp_as_new = _bp_sn2.checkbox(
+                "New version", key="_bp_top_save_nv",
+                help="Keep previous save and create a new version.",
+            )
+            if _bp_sn3.button("Confirm", key="_bp_top_save_ok", use_container_width=True):
+                if _bp_save_name.strip() and _bp_cur_extra.strip():
+                    _save_instr_fn(
+                        db,
+                        name=_bp_save_name.strip(),
+                        component="blueprint",
+                        content=_bp_cur_extra.strip(),
+                        project_id=_proj_id,
+                        cluster_id=ctx.cluster_id,
+                        course_id=_crs_id,
+                        created_by=user_name,
+                        as_new_version=_bp_as_new,
+                    )
+                    st.success(f"✅ Saved as **'{_bp_save_name.strip()}'**")
+                    st.session_state["_bp_top_show_save"] = False
+                    st.rerun()
+                elif not _bp_cur_extra.strip():
+                    st.warning("Write some instructions before saving.")
+                else:
+                    st.warning("Enter a name to save.")
+
         # ── prompt section + generate button moved below — see end of function ──
 
 
@@ -390,14 +475,12 @@ def render_page(db, ctx):
             st.markdown("**📥 Download Blueprint**")
             _bp_dl_ver = blueprint_repository.get_blueprint_version(db, sel_bp_id, sel_bp.active_version)
             if _bp_dl_ver:
-                _bpdl_c1, _bpdl_c2 = st.columns(2)
                 # Build download from the same UI-visible sections as the renderer
                 # (filtered through _is_bp_section_hidden + _strip_ui_hidden_text)
                 _bp_raw_secs = safe_json_loads(_bp_dl_ver.sections) if _bp_dl_ver.sections else {}
                 if not _bp_raw_secs and _bp_dl_ver.full_content:
                     _bp_raw_secs = parse_sections_from_text(_bp_dl_ver.full_content)
 
-                _bp_dl_parts_md    = []
                 _bp_dl_blocks_docx = []
                 import re as _re_bpdl
 
@@ -419,19 +502,9 @@ def render_page(db, ctx):
                         _bp_dl = 'Lesson Structure (Topics)'
                     _bp_dl = _bp_dl.replace("Purpose", "Goal")
 
-                    _bp_dl_parts_md.append(f"## {_bp_dl}\n\n{_bp_sc}")
                     _bp_dl_blocks_docx.append((_bp_dl, _bp_sc))
 
-                _bp_md_dl = "\n\n---\n\n".join(_bp_dl_parts_md) if _bp_dl_parts_md else (_bp_dl_ver.full_content or "")
-                _bp_blocks = _bp_dl_blocks_docx if _bp_dl_blocks_docx else [("Blueprint Content", _bp_md_dl)]
-                _bpdl_c1.download_button(
-                    "⬇️ Markdown (.md)",
-                    data=_bp_md_dl,
-                    file_name=f"Blueprint_{sel_bp.module_title.replace(' ','_')}_{sel_bp.active_version}.md",
-                    mime="text/markdown",
-                    use_container_width=True,
-                    key="bp_dl_md"
-                )
+                _bp_blocks = _bp_dl_blocks_docx if _bp_dl_blocks_docx else [("Blueprint Content", _bp_dl_ver.full_content or "")]
                 _bp_docx_r = export_content(db, ExportRequest(
                     fmt="docx",
                     topic=sel_bp.title,
@@ -445,7 +518,7 @@ def render_page(db, ctx):
                     file_name=f"Blueprint_{sel_bp.module_title.replace(' ','_')}_{sel_bp.active_version}.docx",
                 ))
                 if _bp_docx_r.success:
-                    _bpdl_c2.download_button(
+                    st.download_button(
                         "⬇️ Word (.docx)",
                         data=_bp_docx_r.data,
                         file_name=_bp_docx_r.file_name,
@@ -454,13 +527,13 @@ def render_page(db, ctx):
                         key="bp_dl_docx"
                     )
                 else:
-                    _bpdl_c2.error(_bp_docx_r.error_message)
+                    st.error(_bp_docx_r.error_message)
 
                 # ── Download Prompt Used ────────────────────────────────────
                 render_prompt_download_button(
                     db, "blueprint",
                     project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
-                    button_label="⬇️ Download Prompt Used (.md)",
+                    button_label="⬇️ Download Prompt Used (.doc)",
                     key=f"bp_dl_prompt_{sel_bp.id}",
                     use_container_width=True,
                 )
@@ -485,6 +558,8 @@ def render_page(db, ctx):
         extra_placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson.",
         project_name=_proj_name, cluster_name=ctx.cluster_name, course_name=_crs_name,
         user_role=user_role,
+        show_extra_instructions=False,
+        show_save_btn=False,
     )
 
     _bp_gen_c, _bp_dl_c = st.columns([0.65, 0.35])

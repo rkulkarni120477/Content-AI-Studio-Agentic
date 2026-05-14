@@ -213,13 +213,13 @@ def render_prompt_download_button(
     )
     _safe_ver  = (prompt_version or "v1").replace("/", "-").replace(" ", "_")
     _safe_comp = component.lower()
-    _fname     = f"prompt_{_safe_comp}_{_safe_ver}.md"
+    _fname     = f"prompt_{_safe_comp}_{_safe_ver}.doc"
 
     st.download_button(
         button_label,
         data=_md,
         file_name=_fname,
-        mime="text/markdown",
+        mime="application/msword",
         use_container_width=use_container_width,
         key=key or f"{_PFX}_standalone_dl",
         help=help_text,
@@ -370,10 +370,10 @@ def _prompt_viewer_dialog(
         "⬇️ Download Prompt",
         data=dl_md,
         file_name=dl_filename,
-        mime="text/markdown",
+        mime="application/msword",
         use_container_width=True,
         key=f"_vpd_dl_{component}",
-        help="Download the complete prompt + metadata as a Markdown file.",
+        help="Download the complete prompt + metadata as a Word file.",
     )
 
     if _ac2.button(
@@ -451,6 +451,8 @@ def render_inline_prompt_controls(
     cluster_name: str = "",
     course_name: str = "",
     user_role: str = "author",
+    show_extra_instructions: bool = True,
+    show_save_btn: bool = True,
 ) -> tuple[str, str, str]:
     """Render inline prompt controls and return (system_prompt, user_prompt_template, extra_instructions).
 
@@ -682,7 +684,7 @@ def render_inline_prompt_controls(
                     extra_instructions=_view_extra,
                     is_ai_override=_is_ai_ov,
                 ),
-                dl_filename=f"prompt_{component}_{_safe_ver}.md",
+                dl_filename=f"prompt_{component}_{_safe_ver}.doc",
             )
 
     # ── Fixed-prompt indicator ────────────────────────────────────────────────
@@ -979,42 +981,47 @@ def render_inline_prompt_controls(
                     st.rerun()
 
     # ── Additional instructions ───────────────────────────────────────────────
-    st.markdown(
-        "<div style='font-size:0.8rem;font-weight:600;color:#374151;margin-top:10px;margin-bottom:2px;'>"
-        "💬 Additional Instructions "
-        "<span style='font-weight:400;font-size:0.75rem;color:#9ca3af;'>(optional)</span>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    # Compact saved-instructions loader
-    if saved_instrs:
-        _il1, _il2 = st.columns([0.75, 0.25])
-        _instr_opts = ["— Start fresh —"] + [r.name for r in saved_instrs]
-        _instr_map  = {r.name: r for r in saved_instrs}
-        _sel_instr  = _il1.selectbox(
-            "Saved instructions",
-            _instr_opts,
-            key=_INSTR_SEL,
-            label_visibility="collapsed",
+    if show_extra_instructions:
+        st.markdown(
+            "<div style='font-size:0.8rem;font-weight:600;color:#374151;margin-top:10px;margin-bottom:2px;'>"
+            "💬 Additional Instructions "
+            "<span style='font-weight:400;font-size:0.75rem;color:#9ca3af;'>(optional)</span>"
+            "</div>",
+            unsafe_allow_html=True,
         )
-        if _il2.button("📥 Load", key=f"{_PFX}_load_instr", use_container_width=True):
-            if _sel_instr != "— Start fresh —":
-                _rec = _instr_map.get(_sel_instr)
-                if _rec:
-                    st.session_state[_EXTRA_KEY] = _rec.content
-                    st.rerun()
-            else:
-                st.session_state[_EXTRA_KEY] = ""
-                st.rerun()
 
-    extra_instr: str = st.text_area(
-        "Additional Instructions",
-        placeholder=extra_placeholder,
-        height=90,
-        label_visibility="collapsed",
-        key=_EXTRA_KEY,
-    )
+        # Compact saved-instructions loader
+        if saved_instrs:
+            _il1, _il2 = st.columns([0.75, 0.25])
+            _instr_opts = ["— Start fresh —"] + [r.name for r in saved_instrs]
+            _instr_map  = {r.name: r for r in saved_instrs}
+            _sel_instr  = _il1.selectbox(
+                "Saved instructions",
+                _instr_opts,
+                key=_INSTR_SEL,
+                label_visibility="collapsed",
+            )
+            if _il2.button("📥 Load", key=f"{_PFX}_load_instr", use_container_width=True):
+                if _sel_instr != "— Start fresh —":
+                    _rec = _instr_map.get(_sel_instr)
+                    if _rec:
+                        st.session_state[_EXTRA_KEY] = _rec.content
+                        st.rerun()
+                else:
+                    st.session_state[_EXTRA_KEY] = ""
+                    st.rerun()
+
+        extra_instr: str = st.text_area(
+            "Additional Instructions",
+            placeholder=extra_placeholder,
+            height=90,
+            label_visibility="collapsed",
+            key=_EXTRA_KEY,
+        )
+    else:
+        # Textarea rendered externally (e.g. in CDD/Blueprint left column).
+        # Read the current value from session state without rendering a duplicate widget.
+        extra_instr = st.session_state.get(_EXTRA_KEY, "")
 
     # ── Action buttons — two rows so labels stay readable in narrow columns ──────
     # Row 1 — primary prompt actions (used most often)
@@ -1031,14 +1038,15 @@ def render_inline_prompt_controls(
         st.session_state[_SHOW_EDIT]   = False
         st.rerun()
 
-    if _br2.button(
-        "💾 Save Instructions",
-        key=f"{_PFX}_btn_save",
-        use_container_width=True,
-        help="Save the current Additional Instructions text for reuse across generations.",
-    ):
-        st.session_state[_SHOW_SAVE] = not st.session_state.get(_SHOW_SAVE, False)
-        st.rerun()
+    if show_save_btn:
+        if _br2.button(
+            "💾 Save Instructions",
+            key=f"{_PFX}_btn_save",
+            use_container_width=True,
+            help="Save the current Additional Instructions text for reuse across generations.",
+        ):
+            st.session_state[_SHOW_SAVE] = not st.session_state.get(_SHOW_SAVE, False)
+            st.rerun()
 
     # Row 2 — asset management + download (lighter-weight; less frequently used)
     _br3, _br4, _br5 = st.columns(3)
@@ -1082,15 +1090,15 @@ def render_inline_prompt_controls(
     _br5.download_button(
         "⬇️ Download",
         data=_dl_md,
-        file_name=f"prompt_{component}_{_safe_ver}.md",
-        mime="text/markdown",
+        file_name=f"prompt_{component}_{_safe_ver}.doc",
+        mime="application/msword",
         use_container_width=True,
         key=f"{_PFX}_btn_dl",
-        help="Download the active prompt + your instructions as a Markdown file.",
+        help="Download the active prompt + your instructions as a Word file.",
     )
 
     # ── Save instructions panel ───────────────────────────────────────────────
-    if st.session_state.get(_SHOW_SAVE):
+    if show_save_btn and st.session_state.get(_SHOW_SAVE):
         with st.container():
             st.caption("**Name and save the current instructions for reuse:**")
             _sn1, _sn2, _sn3 = st.columns([0.48, 0.26, 0.26])

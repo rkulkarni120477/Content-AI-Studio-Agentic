@@ -825,7 +825,7 @@ class ClusterPrompt(Base):
     __tablename__ = "cluster_prompts"
     id                   = Column(Integer, primary_key=True, autoincrement=True)
     cluster_id           = Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE"),
-                                  nullable=False, index=True)
+                                  nullable=True, index=True)
     name                 = Column(String(255), nullable=False)
     description          = Column(Text)
     system_prompt        = Column(Text)
@@ -1050,6 +1050,8 @@ def init_db():
         "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS tags VARCHAR(500)",
         "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS usage_count INTEGER DEFAULT 0",
         "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP",
+        # cluster_prompts — make cluster assignment optional (Req 2)
+        "ALTER TABLE cluster_prompts ALTER COLUMN cluster_id DROP NOT NULL",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
@@ -1400,7 +1402,7 @@ def get_cluster_prompts(db, cluster_id: int) -> list:
 
 def create_cluster_prompt(
     db,
-    cluster_id: int,
+    cluster_id: int | None,
     name: str,
     description: str | None,
     system_prompt: str | None,
