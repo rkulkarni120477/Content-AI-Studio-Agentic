@@ -1,0 +1,254 @@
+"""
+Admin router — system administration endpoints.
+
+Streamlit equivalent: Admin-only sections in ``pages/analytics.py``
+and the Central Repository page (``pages/central.py``).
+
+All endpoints in this router require Admin role.
+
+Includes:
+  - RBAC permission matrix (read-only)
+  - LLM model catalog
+  - Database table clear (emergency use)
+  - Central repository management
+  - Saved instructions CRUD
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.exceptions import NotFoundError, ValidationError
+from app.schemas.common import MessageResponse, PaginatedResponse
+
+_log = logging.getLogger(__name__)
+router = APIRouter()
+
+# Tables allowed to be cleared via the API.
+# Explicit allowlist prevents accidental deletion of core data.
+_CLEARABLE_TABLES = {"system_logs", "audit_logs", "generation_jobs"}
+
+
+@router.get(
+    "/permissions",
+    summary="Get the full RBAC permission matrix",
+    description="Returns the complete permission catalog with role assignments. Used to render the permissions table.",
+)
+def get_permission_matrix(
+    current_user=Depends(require_permission("system.analytics")),
+) -> list[dict]:
+    """
+    Return the RBAC permission matrix.
+
+    Replicates get_matrix_rows() from auth/permission_matrix.py.
+    The React frontend uses this to render the permissions reference table.
+    """
+    from promptops_app.auth.permission_matrix import get_matrix_rows
+    return get_matrix_rows()
+
+
+@router.get(
+    "/model-catalog",
+    summary="Get available LLM models",
+    description="Returns all configured models and the default. Used to populate the model selector.",
+)
+def get_model_catalog(current_user=Depends(get_current_user)) -> dict:
+    """Return the LLM model catalog from core/models.py."""
+    from promptops_app.core.models import MODEL_CATALOG, DEFAULT_MODEL_NAME
+
+    models = [
+        {
+            "name":         m["name"],
+            "display_name": m.get("display_name", m["name"]),
+            "provider":     m.get("provider", "unknown"),
+        }
+        for m in MODEL_CATALOG
+    ]
+    return {"models": models, "default": DEFAULT_MODEL_NAME}
+
+
+@router.delete(
+    "/data/{table_name}",
+    response_model=MessageResponse,
+    summary="Clear a database table",
+    description=(
+        f"Emergency admin tool. Allowed tables: {', '.join(sorted(_CLEARABLE_TABLES))}. "
+        "Core data tables (users, projects, blocks, etc.) cannot be cleared via this endpoint."
+    ),
+)
+def clear_table(
+    table_name: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.clear_db")),
+) -> MessageResponse:
+    """
+    Delete all rows from an allowed table.
+
+    Replicates the "Clear Database Table" admin action in the Streamlit Analytics tab.
+    Only tables in _CLEARABLE_TABLES are accessible to prevent accidental data loss.
+    """
+    if table_name not in _CLEARABLE_TABLES:
+        raise ValidationError(
+            f"Table '{table_name}' cannot be cleared via the API. "
+            f"Allowed: {', '.join(sorted(_CLEARABLE_TABLES))}"
+        )
+
+    from sqlalchemy import text
+    result = db.execute(text(f"DELETE FROM {table_name}"))
+    db.commit()
+
+    rows_deleted = result.rowcount
+    _log.warning("table_cleared  by=%s  table=%s  rows=%d",
+                 current_user.username, table_name, rows_deleted)
+
+    return MessageResponse(message=f"Cleared {rows_deleted} rows from '{table_name}'.")
+
+
+# ---------------------------------------------------------------------------
+# Saved instructions (user prompt history)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/instructions",
+    summary="List saved instruction snippets",
+    description="Returns instructions saved for a given component (cdd | blueprint | generate).",
+)
+def list_instructions(
+    component: str = Query(..., description="Component type: cdd | blueprint | generate"),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[dict]:
+    """
+    List saved instruction snippets for a component.
+
+    Replicates list_latest_for_component() from user_prompt_history_repository.py.
+    Used to populate the "Load saved instructions" dropdown in CDD/Blueprint/Generate pages.
+    """
+    from promptops_app.repositories.user_prompt_history_repository import list_latest_for_component
+
+    records = list_latest_for_component(
+        db, component,
+        project_id=project_id,
+        course_id=course_id,
+    )
+    return [{"id": r.id, "name": r.name, "content": r.content, "created_at": str(r.created_at)} for r in records]
+
+
+@router.post(
+    "/instructions",
+    response_model=MessageResponse,
+    status_code=201,
+    summary="Save an instruction snippet for reuse",
+)
+def save_instruction(
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> MessageResponse:
+    """
+    Save a reusable instruction snippet.
+
+    Replicates save_prompt() from user_prompt_history_repository.py.
+    Called after generation to save the extra_instructions for future reuse.
+    """
+    from promptops_app.repositories.user_prompt_history_repository import save_prompt
+
+    save_prompt(
+        db,
+        name=request.get("name", "").strip(),
+        component=request.get("component", ""),
+        content=request.get("content", "").strip(),
+        project_id=request.get("project_id"),
+        cluster_id=request.get("cluster_id"),
+        course_id=request.get("course_id"),
+        created_by=current_user.username,
+        as_new_version=request.get("as_new_version", False),
+    )
+    return MessageResponse(message="Instruction saved.")
+
+
+# ---------------------------------------------------------------------------
+# Central repository
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/central",
+    summary="List Central Repository items",
+    description="Admin-curated reusable prompts and assets. Admin only.",
+)
+def list_central_items(
+    project_id: int | None = Query(default=None),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("central.view")),
+) -> dict:
+    """Return Central Repository items with optional filters."""
+    from promptops_app.repositories import central_repository
+
+    items = central_repository.list_items(db, project_id=project_id, status=status, search=search)
+    total = len(items)
+    start = (page - 1) * page_size
+    return {
+        "items": [
+            {"id": i.id, "title": i.title, "tags": i.tags, "status": i.status, "created_at": str(i.created_at)}
+            for i in items[start: start + page_size]
+        ],
+        "total": total, "page": page, "page_size": page_size,
+    }
+
+
+@router.post(
+    "/central",
+    response_model=MessageResponse,
+    status_code=201,
+    summary="Create a Central Repository item",
+)
+def create_central_item(
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("central.create")),
+) -> MessageResponse:
+    """Create a new curated item in the Central Repository."""
+    from promptops_app.repositories import central_repository
+
+    central_repository.create_item(
+        db,
+        title=request.get("title", ""),
+        content=request.get("content", ""),
+        project_id=request.get("project_id"),
+        course_id=request.get("course_id"),
+        tags=request.get("tags", ""),
+        created_by=current_user.username,
+    )
+    _log.info("central_item_created  user=%s", current_user.username)
+    return MessageResponse(message="Central Repository item created.")
+
+
+@router.post(
+    "/central/{item_id}/archive",
+    response_model=MessageResponse,
+    summary="Archive a Central Repository item",
+)
+def archive_central_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("central.delete")),
+) -> MessageResponse:
+    """Archive (soft-delete) a Central Repository item."""
+    from promptops_app.repositories import central_repository
+
+    ok = central_repository.archive_item(db, item_id)
+    if not ok:
+        raise NotFoundError("CentralRepositoryItem", item_id)
+
+    _log.info("central_item_archived  user=%s  item_id=%d", current_user.username, item_id)
+    return MessageResponse(message=f"Item {item_id} archived.")

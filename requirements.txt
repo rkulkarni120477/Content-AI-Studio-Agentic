@@ -1,0 +1,43 @@
+# =============================================================================
+# Content AI Studio — Python dependencies
+# =============================================================================
+# Install all:  pip install -r requirements.txt
+# Install dev:  pip install -e ".[dev]"   (uses pyproject.toml)
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.9          # file uploads
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy>=2.0.0
+alembic>=1.14
+psycopg2-binary>=2.9.9
+
+# ── Config & validation ───────────────────────────────────────────────────────
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+python-dotenv>=1.0.1
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+PyJWT>=2.8.0
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
+requests>=2.32.0
+boto3>=1.34.0
+botocore>=1.34.0
+json-repair>=0.25.0
+
+# ── Background jobs ───────────────────────────────────────────────────────────
+celery>=5.4.0
+redis>=5.0.4
+
+# ── Export (DOCX, PDF) ────────────────────────────────────────────────────────
+python-docx>=1.1.0
+pypdf>=4.2.0
+openpyxl>=3.1.2
+
+# ── Data utilities ────────────────────────────────────────────────────────────
+pandas>=2.2.0
+
+# Streamlit removed — FastAPI + React replaces it entirely.
