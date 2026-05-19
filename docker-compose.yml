@@ -1,9 +1,115 @@
+# =============================================================================
+# Content AI Studio — Docker Compose
+#
+# Services:
+#   api           FastAPI backend (port 8000)
+#   celery-worker Background job processor (no exposed port)
+#   redis         Celery broker + result backend (port 6379)
+#   postgres      Local dev database (port 5432) — prod uses AWS RDS
+#
+# Usage:
+#   Start all:         docker-compose up -d --build
+#   View API logs:     docker-compose logs -f api
+#   View worker logs:  docker-compose logs -f celery-worker
+#   Stop all:          docker-compose down
+#
+# During Streamlit → FastAPI transition, the legacy Streamlit app can be
+# run manually on a separate port alongside this stack.
+# =============================================================================
+
 services:
-  promptops:
-    build: .
-    container_name: promptops_app
+
+  # ---------------------------------------------------------------------------
+  # FastAPI backend
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      target: production
+    container_name: contentai_api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
-      - "5001:8501"
+      - "8000:8000"
     env_file:
       - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Celery background worker (generation jobs + plagiarism scans)
+  # ---------------------------------------------------------------------------
+  celery-worker:
+    build:
+      context: .
+      target: production
+    container_name: contentai_worker
+    command: >
+      celery -A promptops_app.celery_app worker
+      --loglevel=info
+      --concurrency=2
+      --queues=default
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — Celery broker and result backend
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: contentai_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — local development only
+  # Production uses AWS RDS; comment this service out on the prod server.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: contentai_postgres
+    environment:
+      POSTGRES_DB: contentai
+      POSTGRES_USER: contentai
+      POSTGRES_PASSWORD: contentai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contentai -d contentai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

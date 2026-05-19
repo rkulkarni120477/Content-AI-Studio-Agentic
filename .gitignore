@@ -1,7 +1,30 @@
+# Secrets
 .env
+.env.local
 *.pem
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.env1
+*.egg-info/
+.venv/
+venv/
+
+# Test / coverage artefacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
 CLAUDE.md
+.env1

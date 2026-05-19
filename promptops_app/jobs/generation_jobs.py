@@ -46,7 +46,7 @@ from promptops_app.prompt_templates import (
 )
 from promptops_app.services.llm_service import generate_with_metadata as _llm_call
 from promptops_app.services.usage_service import UsageLogContext, log_llm_usage
-from promptops_app.core.shared import (
+from promptops_app.core.content_utils import (
     build_context_injection,
     fill_template,
     make_source_context,

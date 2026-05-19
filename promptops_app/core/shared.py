@@ -34,7 +34,8 @@ import base64
 import json_repair
 from concurrent.futures import ThreadPoolExecutor
 # --- Third-Party Imports ---
-import streamlit as st               # Web UI framework
+# NOTE: streamlit removed — this file is no longer imported by FastAPI.
+# It remains only for backward compat with legacy Streamlit pages (being deleted).
 import jwt                            # JSON Web Token for auth
 import requests                       # HTTP client for API calls
 import pandas as pd                   # Excel/CSV data handling
@@ -99,11 +100,23 @@ from promptops_app.database import (
     _get_user_projects,
 )
 
-# UI helpers moved to promptops_app/ui/components.py (Phase 1 refactoring)
-from promptops_app.ui.components import (
-    status_badge, fill_template, inject_premium_style, _req, _logo_b64,
-    _section_badge, _info_card, _load_css,
-)
+# UI helpers — imported lazily so shared.py doesn't crash when ui/ is deleted.
+# FastAPI never calls these; only the legacy Streamlit pages did.
+try:
+    from promptops_app.ui.components import (
+        status_badge, fill_template, inject_premium_style, _req, _logo_b64,
+        _section_badge, _info_card, _load_css,
+    )
+except ImportError:
+    # ui/ has been deleted — provide no-op stubs so any residual import survives.
+    def status_badge(s, *a, **k): return s
+    def fill_template(t, p): return t
+    def inject_premium_style(): pass
+    def _req(l): return l
+    def _logo_b64(): return ""
+    def _section_badge(*a, **k): return ""
+    def _info_card(*a, **k): return ""
+    def _load_css(): pass
 
 # Constants — core/constants.py (Phase 3 refactoring)
 from promptops_app.core.constants import WorkflowState, UserRole, DocumentStatus, FeedbackScope, ChangeSource
@@ -213,7 +226,12 @@ def get_cached_active_document_names() -> list[str]:
 from promptops_app.services.export_service import export_html, export_docx
 
 # Notification helpers moved to ui/notifications.py (Phase 3 refactoring)
-from promptops_app.ui.notifications import notify, notify_deferred, notify_check
+try:
+    from promptops_app.ui.notifications import notify, notify_deferred, notify_check
+except ImportError:
+    def notify(*a, **k): pass
+    def notify_deferred(*a, **k): pass
+    def notify_check(*a, **k): pass
 
 
 # RBAC logic moved to promptops_app/auth/permissions.py (Phase 1 refactoring)

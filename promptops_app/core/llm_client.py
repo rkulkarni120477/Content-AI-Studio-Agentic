@@ -13,17 +13,16 @@ Usage:
 For new code use the reliability layer instead:
     from promptops_app.services.llm_service import generate_text
 
-Note: @st.cache_resource is used here for connection reuse.
-      Replace with functools.lru_cache or DI pattern before FastAPI migration.
+Note: module-level singletons are used for connection reuse (thread-safe lazy init).
 """
 
 import json
+import threading
 import requests
 import boto3
 from botocore.config import Config
 from dataclasses import dataclass
 from typing import Optional
-import streamlit as st
 import json_repair
 from promptops_app.database import settings
 from promptops_app.core.config import settings as _cfg
@@ -65,11 +64,27 @@ class LLMProviderError(Exception):
 # OpenAI API Client
 # =============================================================================
 
-@st.cache_resource(show_spinner=False)
+# ---------------------------------------------------------------------------
+# Module-level singletons — replaces @st.cache_resource from the Streamlit app.
+# Initialised once on first use; thread-safe via a lock.
+# ---------------------------------------------------------------------------
+_openai_session: Optional[requests.Session] = None
+_openai_lock = threading.Lock()
+
+_bedrock_client = None
+_bedrock_lock = threading.Lock()
+
+
 def _get_openai_session() -> requests.Session:
-    sess = requests.Session()
-    sess.headers.update({"Content-Type": "application/json"})
-    return sess
+    """Return the shared OpenAI HTTP session, creating it on first call."""
+    global _openai_session
+    if _openai_session is None:
+        with _openai_lock:
+            if _openai_session is None:
+                sess = requests.Session()
+                sess.headers.update({"Content-Type": "application/json"})
+                _openai_session = sess
+    return _openai_session
 
 
 def call_openai(system_prompt: str, user_prompt: str) -> str:
@@ -168,17 +183,21 @@ def _call_openai_raw(
 # AWS Bedrock API Client
 # =============================================================================
 
-@st.cache_resource(show_spinner=False)
 def _get_bedrock_client():
-    """Create the Boto3 Bedrock client once and reuse it across all calls."""
-    boto_config = Config(read_timeout=600, connect_timeout=30)
-    return boto3.client(
-        service_name="bedrock-runtime",
-        region_name=settings.aws_region,
-        aws_access_key_id=settings.aws_access_key,
-        aws_secret_access_key=settings.aws_secret_key,
-        config=boto_config,
-    )
+    """Return the shared Boto3 Bedrock client, creating it on first call."""
+    global _bedrock_client
+    if _bedrock_client is None:
+        with _bedrock_lock:
+            if _bedrock_client is None:
+                boto_config = Config(read_timeout=600, connect_timeout=30)
+                _bedrock_client = boto3.client(
+                    service_name="bedrock-runtime",
+                    region_name=settings.aws_region,
+                    aws_access_key_id=settings.aws_access_key,
+                    aws_secret_access_key=settings.aws_secret_key,
+                    config=boto_config,
+                )
+    return _bedrock_client
 
 
 def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] = None) -> str:

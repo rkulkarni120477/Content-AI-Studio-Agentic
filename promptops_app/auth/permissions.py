@@ -13,7 +13,16 @@ the Streamlit error banner and is suitable for button / form handlers.
 
 import logging
 
-import streamlit as st
+# Streamlit is imported lazily — only when rbac_gate() is called from the
+# Streamlit app. FastAPI code uses require_permission() from app/core/dependencies.py
+# and never calls rbac_gate(), so the import never triggers in the API process.
+try:
+    import streamlit as _st
+    _STREAMLIT_AVAILABLE = True
+except ImportError:
+    _st = None
+    _STREAMLIT_AVAILABLE = False
+
 from promptops_app.database import can_modify_style, _is_lead_for_project, _is_lead_for_course
 
 _log = logging.getLogger(__name__)
@@ -173,7 +182,8 @@ def rbac_gate(role: str, permission: str, action_label: str = "This action") -> 
     """Check permission and render a blocking error banner if denied.
 
     Returns True if allowed, False (+ st.error) if denied.
-    Suitable for use inside button / form handlers.
+    Only call this from Streamlit pages. FastAPI code uses
+    require_permission() from app/core/dependencies.py instead.
     """
     if rbac_check(role, permission):
         return True
@@ -182,11 +192,12 @@ def rbac_gate(role: str, permission: str, action_label: str = "This action") -> 
         role, permission, action_label,
     )
     disp = role_label(role)
-    st.error(
-        f"🔒 **Access Denied** — {action_label} requires a higher permission level.\n\n"
-        f"Your role: **{disp}**.  "
-        f"Contact an Admin to request access."
-    )
+    if _STREAMLIT_AVAILABLE and _st is not None:
+        _st.error(
+            f"🔒 **Access Denied** — {action_label} requires a higher permission level.\n\n"
+            f"Your role: **{disp}**.  "
+            f"Contact an Admin to request access."
+        )
     return False
 
 

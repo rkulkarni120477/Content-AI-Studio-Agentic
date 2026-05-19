@@ -8,7 +8,6 @@ Extracted from core/shared.py (Phase 3 refactoring).
 """
 
 import logging
-import streamlit as st
 
 from promptops_app.prompt_templates import EVAL_PROMPT, SCORING_PROMPT, META_PROMPT, REVIEW_PROMPT, PLAGIARISM_PROMPT
 from promptops_app.core.llm_client import safe_json_loads
