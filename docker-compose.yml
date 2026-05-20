@@ -1,4 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: contentai_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   promptops:
     build: .
     container_name: promptops_app
@@ -6,4 +13,16 @@ services:
       - "5001:8501"
     env_file:
       - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  celery_worker:
+    build: .
+    container_name: contentai_celery
+    command: celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - .env
+    depends_on:
+      - redis
     restart: unless-stopped

@@ -68,27 +68,40 @@ def render_page(db, ctx):
         "and manage the Context Document Database."),
         unsafe_allow_html=True)
 
-    # ── Active Style Banner (scoped to current course/project) ───────────
+    # ── Active Style data fetch (needed for _can_modify_style below) ────────
     _active_style = get_active_style(db, project_id=_proj_id, course_id=_crs_id)
-    if _active_style:
+
+    # ── Cluster Prompt Injected (shown first, above tabs) ─────────────────
+    _cluster_prompts = get_cluster_prompts(db, ctx.cluster_id) if ctx.cluster_id else []
+    if _cluster_prompts:
         st.markdown(
-            f"<div style='background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;"
-            f"padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px;'>"
-            f"<span style='font-size:1.2rem;'>🎨</span>"
-            f"<div><span style='font-size:0.7rem;font-weight:700;text-transform:uppercase;"
-            f"letter-spacing:.08em;color:#166534;'>Active Style</span><br>"
-            f"<strong style='color:#15803d;font-size:0.95rem;'>{_active_style.name}</strong>"
-            f"<span style='font-size:0.78rem;color:#6b7280;margin-left:10px;'>"
-            f"Auto-injected into CDD → Blueprint → Generate</span></div></div>",
-            unsafe_allow_html=True
+            "<div style='background:#f0f9ff;border:1.5px solid #7dd3fc;border-radius:10px;"
+            "padding:12px 16px;margin-bottom:12px;'>"
+            "<div style='font-size:0.7rem;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:.08em;color:#0369a1;margin-bottom:6px;'>"
+            "⚡ Auto-Injected Cluster Prompts</div>"
+            "<div style='font-size:0.8rem;color:#0c4a6e;margin-bottom:8px;'>"
+            "These prompts are inherited from this cluster and automatically prepended "
+            "to the Style context for every course here.</div>",
+            unsafe_allow_html=True,
         )
-    else:
+        for _cp in _cluster_prompts:
+            st.markdown(
+                f"<div style='background:#e0f2fe;border-radius:6px;padding:6px 12px;"
+                f"margin-bottom:4px;font-size:0.82rem;color:#0369a1;'>"
+                f"🔒 <strong>{_cp.name}</strong>"
+                + (f" — {_cp.description}" if _cp.description else "")
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+    elif ctx.cluster_id:
         st.markdown(
-            "<div style='background:#fef9c3;border:1px solid #fde047;border-radius:8px;"
-            "padding:8px 14px;font-size:0.82rem;color:#854d0e;margin-bottom:12px;'>"
-            "⚠️ <strong>No active style.</strong> Create and activate a Style below for consistent "
-            "tone and structure across all generations.</div>",
-            unsafe_allow_html=True
+            "<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;"
+            "padding:8px 14px;font-size:0.8rem;color:#6b7280;margin-bottom:10px;'>"
+            "⚡ No cluster prompts assigned to this cluster. "
+            "Admins/Leads can add them on the Cluster page.</div>",
+            unsafe_allow_html=True,
         )
 
     _can_modify_style = can_modify_style(db, user_name, user_role, project_id=_proj_id)
@@ -111,37 +124,26 @@ def render_page(db, ctx):
     # TAB 1 — STYLE MANAGEMENT
     # =====================================================================
     with ctx_tab1:
-        # ── Auto-Injected Cluster Prompts (read-only visibility) ─────────────
-        _cluster_prompts = get_cluster_prompts(db, ctx.cluster_id) if ctx.cluster_id else []
-        if _cluster_prompts:
+        # ── Active Style Banner (shown first inside tab, after Cluster Prompts above) ──
+        if _active_style:
             st.markdown(
-                "<div style='background:#f0f9ff;border:1.5px solid #7dd3fc;border-radius:10px;"
-                "padding:12px 16px;margin-bottom:12px;'>"
-                "<div style='font-size:0.7rem;font-weight:700;text-transform:uppercase;"
-                "letter-spacing:.08em;color:#0369a1;margin-bottom:6px;'>"
-                "⚡ Auto-Injected Cluster Prompts</div>"
-                "<div style='font-size:0.8rem;color:#0c4a6e;margin-bottom:8px;'>"
-                "These prompts are inherited from this cluster and automatically prepended "
-                "to the Style context for every course here.</div>",
-                unsafe_allow_html=True,
+                f"<div style='background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;"
+                f"padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px;'>"
+                f"<span style='font-size:1.2rem;'>🎨</span>"
+                f"<div><span style='font-size:0.7rem;font-weight:700;text-transform:uppercase;"
+                f"letter-spacing:.08em;color:#166534;'>Active Style</span><br>"
+                f"<strong style='color:#15803d;font-size:0.95rem;'>{_active_style.name}</strong>"
+                f"<span style='font-size:0.78rem;color:#6b7280;margin-left:10px;'>"
+                f"Auto-injected into CDD → Blueprint → Generate</span></div></div>",
+                unsafe_allow_html=True
             )
-            for _cp in _cluster_prompts:
-                st.markdown(
-                    f"<div style='background:#e0f2fe;border-radius:6px;padding:6px 12px;"
-                    f"margin-bottom:4px;font-size:0.82rem;color:#0369a1;'>"
-                    f"🔒 <strong>{_cp.name}</strong>"
-                    + (f" — {_cp.description}" if _cp.description else "")
-                    + "</div>",
-                    unsafe_allow_html=True,
-                )
-            st.markdown("</div>", unsafe_allow_html=True)
-        elif ctx.cluster_id:
+        else:
             st.markdown(
-                "<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;"
-                "padding:8px 14px;font-size:0.8rem;color:#6b7280;margin-bottom:10px;'>"
-                "⚡ No cluster prompts assigned to this cluster. "
-                "Admins/Leads can add them on the Cluster page.</div>",
-                unsafe_allow_html=True,
+                "<div style='background:#fef9c3;border:1px solid #fde047;border-radius:8px;"
+                "padding:8px 14px;font-size:0.82rem;color:#854d0e;margin-bottom:12px;'>"
+                "⚠️ <strong>No active style.</strong> Create and activate a Style below for consistent "
+                "tone and structure across all generations.</div>",
+                unsafe_allow_html=True
             )
 
         sty_left, sty_right = st.columns([0.42, 0.58], gap="large")
