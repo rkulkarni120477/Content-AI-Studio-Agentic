@@ -472,16 +472,36 @@ def render_page(db, ctx):
                             _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
 
                     elif _cl_report.status == "pending":
-                        st.info("⏳ Scan queued…")
-                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
-                                     use_container_width=True):
-                            st.rerun()
+                        _plag_age = (datetime.now(timezone.utc) - _cl_report.created_at.replace(tzinfo=timezone.utc)).total_seconds() if _cl_report.created_at else 9999
+                        if _plag_age > 300:
+                            st.warning("⚠️ Scan stuck (queued > 5 min). Celery worker may not be running.")
+                            if st.button("🔁 Reset & Retry", key=f"plag_reset_{b.id}",
+                                         use_container_width=True):
+                                _cl_report.status = "failed"
+                                _cl_report.error_message = "Reset: stuck in pending state."
+                                db.commit()
+                                _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
+                        else:
+                            st.info("⏳ Scan queued…")
+                            if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                         use_container_width=True):
+                                st.rerun()
 
                     elif _cl_report.status == "processing":
-                        st.info("🔄 Checking via Copyleaks…")
-                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
-                                     use_container_width=True):
-                            st.rerun()
+                        _plag_age = (datetime.now(timezone.utc) - _cl_report.submitted_at.replace(tzinfo=timezone.utc)).total_seconds() if _cl_report.submitted_at else 9999
+                        if _plag_age > 700:
+                            st.warning("⚠️ Scan timed out (processing > 11 min).")
+                            if st.button("🔁 Reset & Retry", key=f"plag_reset_{b.id}",
+                                         use_container_width=True):
+                                _cl_report.status = "failed"
+                                _cl_report.error_message = "Reset: timed out in processing state."
+                                db.commit()
+                                _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
+                        else:
+                            st.info("🔄 Checking via Copyleaks…")
+                            if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                         use_container_width=True):
+                                st.rerun()
 
                     elif _cl_report.status == "completed":
                         _sim  = _cl_report.similarity_score or 0

@@ -56,6 +56,7 @@ from promptops_app.core.shared import (
 from promptops_app.jobs.job_status import (
     JobStatus,
     STAGE_CONTEXT,
+    STAGE_CE_VALIDATION,
     STAGE_LLM,
     STAGE_PROMPT,
     STAGE_SAVE,
@@ -275,7 +276,24 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         out = re.sub(r'  +', ' ', out)
         out = re.sub(r'(?m)^ +$', '', out)
 
-        # ── Stage 4 — Split into blocks ───────────────────────────────
+        # ── Stage 4 — CE Validation ───────────────────────────────────
+        set_running(db, job, *STAGE_CE_VALIDATION)
+        try:
+            from promptops_app.services.ce_validation_service import run_ce_validation
+            out = run_ce_validation(
+                out,
+                db,
+                active_style=_active_style,
+                model_choice=model_choice,
+                llm_call_fn=_llm_call,
+            )
+        except Exception as _ce_exc:
+            _log.warning(
+                "Job %s CE validation failed (non-fatal) — using original output: %s",
+                job_id, _ce_exc,
+            )
+
+        # ── Stage 5 — Split into blocks ───────────────────────────────
         set_running(db, job, *STAGE_SPLIT)
         blocks = (
             split_into_blocks(out)
@@ -283,7 +301,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             else [(b_type or "Body", 1, out, re.findall(r"\[Source:\s*(.*?)\]", out))]
         )
 
-        # ── Stage 5 — Persist ─────────────────────────────────────────
+        # ── Stage 6 — Persist ─────────────────────────────────────────
         set_running(db, job, *STAGE_SAVE)
 
         used_cdd_ver = None
