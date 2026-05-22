@@ -36,6 +36,7 @@ from app.api.v1.routers.auth import router as auth_router
 from app.api.v1.routers.blocks import router as blocks_router
 from app.api.v1.routers.blueprints import router as blueprints_router
 from app.api.v1.routers.cdd import router as cdd_router
+from app.api.v1.routers.clusters import router as clusters_router
 from app.api.v1.routers.courses import router as courses_router
 from app.api.v1.routers.documents import router as documents_router
 from app.api.v1.routers.generations import router as generations_router
@@ -61,6 +62,7 @@ api_v1_router.include_router(workspace_router, prefix="/workspace",   tags=["Wor
 
 # ── Project hierarchy ─────────────────────────────────────────────────────────
 api_v1_router.include_router(projects_router,  prefix="/projects",   tags=["Projects"])
+api_v1_router.include_router(clusters_router,                        tags=["Clusters"])
 api_v1_router.include_router(courses_router,                         tags=["Courses"])
 
 # ── User management ───────────────────────────────────────────────────────────
