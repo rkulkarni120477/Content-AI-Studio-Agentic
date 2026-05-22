@@ -83,6 +83,10 @@ def list_documents_filtered(
 
 # ── Lookups ───────────────────────────────────────────────────────────────────
 
+def get_document_by_id(db, document_id: int):
+    return db.query(Document).filter(Document.id == document_id).first()
+
+
 def get_document_by_filename(db, filename: str):
     return db.query(Document).filter(Document.filename == filename).first()
 

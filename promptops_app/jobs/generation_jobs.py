@@ -166,6 +166,26 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         if _ref_names:
             context += _ref_ctx
 
+        # Source document linked to the active CDD — prepended so it takes priority
+        if eff_cdd_id:
+            try:
+                _cdd_ver_for_src = get_active_cdd_version(db, eff_cdd_id)
+                if _cdd_ver_for_src and _cdd_ver_for_src.generation_params:
+                    _cdd_gp = json.loads(_cdd_ver_for_src.generation_params)
+                    _src_doc_id = _cdd_gp.get("source_document_id")
+                    if _src_doc_id:
+                        _src_doc = document_repository.get_document_by_id(db, _src_doc_id)
+                        if _src_doc and _src_doc.content:
+                            context = (
+                                make_source_context(_src_doc.filename, _src_doc.content)
+                                + context
+                            )
+            except Exception as _src_exc:
+                _log.warning(
+                    "Job %s could not load CDD source document (non-fatal): %s",
+                    job_id, _src_exc,
+                )
+
         if context:
             context = trim_generation_context(context)
 

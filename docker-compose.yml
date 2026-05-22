@@ -5,6 +5,13 @@ services:
     restart: unless-stopped
     ports:
       - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   promptops:
     build: .
@@ -14,5 +21,20 @@ services:
     env_file:
       - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+  celery_worker:
+    build: .
+    container_name: contentai_dev_celery
+    command: celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis_data:

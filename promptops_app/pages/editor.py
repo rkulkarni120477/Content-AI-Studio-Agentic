@@ -54,12 +54,14 @@ from promptops_app.ui.generation_controls import render_prompt_download_button
 def _trigger_copyleaks_scan(db, block, project_id, course_id) -> None:
     """Create a PlagiarismReport row and enqueue the Celery scan task.
 
-    Non-blocking — returns immediately after enqueueing.
-    Errors are shown as st.warning so they never block the page.
+    Falls back to the thread-pool job_runner when Redis/Celery is unavailable
+    (e.g. local dev without Docker).  Errors are shown as st.warning.
     """
     import streamlit as _st
     try:
-        from promptops_app.services.plagiarism_service import generate_scan_id
+        from promptops_app.services.plagiarism_service import (
+            generate_scan_id, CopyleaksNotConfigured,
+        )
         from promptops_app.jobs.plagiarism_jobs import run_plagiarism_scan
 
         report = PlagiarismReport(
@@ -73,17 +75,30 @@ def _trigger_copyleaks_scan(db, block, project_id, course_id) -> None:
         db.commit()
         db.refresh(report)
 
-        task = run_plagiarism_scan.delay(report.id, block.content)
-        report.celery_task_id = task.id
-        db.commit()
+        report_id = report.id
+        content   = block.content
+
+        try:
+            task = run_plagiarism_scan.delay(report_id, content)
+            report.celery_task_id = task.id
+            db.commit()
+        except Exception:
+            # Redis / Celery not reachable — run in background thread instead.
+            # Use .apply() so Celery handles the bind=True self argument correctly.
+            from promptops_app.jobs import job_runner
+            job_runner.submit(run_plagiarism_scan.apply, args=[report_id, content])
 
         _st.toast("🔍 Copyleaks plagiarism scan queued.")
         _st.rerun()
 
+    except CopyleaksNotConfigured as _exc:
+        _st.warning(
+            f"Copyleaks not configured: {_exc}  \n"
+            "Add **COPYLEAKS_EMAIL** and **COPYLEAKS_API_KEY** to your .env file."
+        )
     except Exception as _exc:
         _st.warning(
-            f"Could not start plagiarism scan: {_exc}  "
-            "Check that Celery worker and Redis are running."
+            f"Could not start plagiarism scan: {_exc}"
         )
 
 
