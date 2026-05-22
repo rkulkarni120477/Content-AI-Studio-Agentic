@@ -10,7 +10,7 @@ services:
     build: .
     container_name: promptops_dev_app
     ports:
-      - "5001:8501"
+      - "5002:8501"
     env_file:
       - .env
     depends_on:
