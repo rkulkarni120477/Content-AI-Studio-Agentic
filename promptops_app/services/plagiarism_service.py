@@ -35,10 +35,10 @@ _AUTH_URL  = "https://id.copyleaks.com/v3/account/login/api"
 _API_BASE  = "https://api.copyleaks.com"
 
 # ── Polling parameters ────────────────────────────────────────────────────────
-_POLL_INITIAL_WAIT = 20    # seconds before first poll
-_POLL_MAX_WAIT     = 60    # max seconds between polls
+_POLL_INITIAL_WAIT = 10    # seconds before first poll
+_POLL_MAX_WAIT     = 30    # max seconds between polls
 _POLL_BACKOFF      = 1.5   # multiplier per retry
-_POLL_TIMEOUT      = 600   # total seconds before giving up (~10 min)
+_POLL_TIMEOUT      = 300   # total seconds before giving up (~5 min)
 
 # ── Token cache (module-level, process-wide) ──────────────────────────────────
 _token_cache: dict = {"token": None, "expires_at": None}
@@ -176,11 +176,13 @@ def _get_status(scan_id: str) -> Optional[str]:
         return None
 
     data = resp.json()
-    # Response is a list of {id, status} objects
-    if isinstance(data, list):
-        for item in data:
-            if item.get("id") == scan_id:
-                return str(item.get("status", ""))
+    # Response may be a list or a dict wrapping a list
+    items = data if isinstance(data, list) else (
+        data.get("scans") or data.get("data") or data.get("results") or []
+    )
+    for item in items:
+        if item.get("id") == scan_id:
+            return str(item.get("status", ""))
     return None
 
 
@@ -205,11 +207,11 @@ def poll_until_done(scan_id: str) -> None:
             attempt, scan_id, status, elapsed,
         )
 
-        if status in ("Completed", "2", 2):
+        if status in ("Completed", "3", 3):   # 3 = Completed in Copyleaks API
             _log.info("Scan %s completed after %.0fs (%d polls)", scan_id, elapsed, attempt)
             return
 
-        if status in ("Error", "Deleted", "4", 4):
+        if status in ("Error", "Deleted", "4", 4, "5", 5):   # 4 = Error, 5 = Deleted
             raise CopyleaksError(f"Scan {scan_id} ended with terminal status '{status}'")
 
         # Back-off up to the cap
