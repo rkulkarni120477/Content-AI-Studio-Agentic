@@ -4,7 +4,7 @@ services:
     container_name: contentai_dev_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -17,7 +17,7 @@ services:
     build: .
     container_name: promptops_dev_app
     ports:
-      - "5001:8501"
+      - "5002:8501"
     env_file:
       - .env
     depends_on:
@@ -27,7 +27,7 @@ services:
 
   celery_worker:
     build: .
-    container_name: contentai_celery
+    container_name: contentai_dev_celery
     command: celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
     env_file:
       - .env
