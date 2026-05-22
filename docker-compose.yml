@@ -1,7 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: contentai_redis
+    container_name: contentai_dev_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -15,7 +15,7 @@ services:
 
   promptops:
     build: .
-    container_name: promptops_app
+    container_name: promptops_dev_app
     ports:
       - "5001:8501"
     env_file:
