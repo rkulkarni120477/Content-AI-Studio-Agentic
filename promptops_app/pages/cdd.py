@@ -193,47 +193,56 @@ def render_page(db, ctx):
         st.markdown(
             "<div style='font-size:0.8rem;font-weight:600;color:#374151;"
             "margin-top:10px;margin-bottom:4px;'>"
-            "📄 Source File "
+            "📄 Source Files "
             "<span style='font-weight:400;font-size:0.75rem;color:#9ca3af;'>"
             "(optional — PDF, DOCX, PPTX, TXT)</span></div>"
             "<div style='font-size:0.75rem;color:#6b7280;margin-bottom:6px;'>"
-            "Upload a source document to use as the primary reference for CDD and "
+            "Upload one or more source documents to use as the primary reference for CDD and "
             "content generation. The AI will align module topics and lesson "
             "objectives with this material.</div>",
             unsafe_allow_html=True,
         )
-        _cdd_src_upload = st.file_uploader(
-            "Source File",
+        _cdd_src_uploads = st.file_uploader(
+            "Source Files",
             type=["pdf", "docx", "pptx", "txt"],
+            accept_multiple_files=True,
             label_visibility="collapsed",
             key="_cdd_source_upload",
         )
-        if _cdd_src_upload is not None:
-            _current_src_name = st.session_state.get("_cdd_source_file_name", "")
-            if _cdd_src_upload.name != _current_src_name:
-                _sfname, _sfcontent, _sferr = _parse_source_file(_cdd_src_upload)
-                if _sferr:
-                    st.error(f"⚠️ Could not parse **{_sfname}**: {_sferr}")
-                    st.session_state.pop("_cdd_source_file_content", None)
-                    st.session_state.pop("_cdd_source_file_name", None)
-                else:
-                    st.session_state["_cdd_source_file_content"] = _sfcontent
-                    st.session_state["_cdd_source_file_name"] = _sfname
-            _loaded_src_name = st.session_state.get("_cdd_source_file_name", "")
-            _loaded_src_chars = len(st.session_state.get("_cdd_source_file_content", ""))
-            if _loaded_src_name:
+        if _cdd_src_uploads:
+            _cached_src_files = st.session_state.get("_cdd_source_files", [])
+            _cached_src_names = {f["name"] for f in _cached_src_files}
+            _upload_names = {uf.name for uf in _cdd_src_uploads}
+            # Drop any cached files no longer in the widget
+            _cached_src_files = [f for f in _cached_src_files if f["name"] in _upload_names]
+            # Parse newly added files
+            for _uf in _cdd_src_uploads:
+                if _uf.name not in _cached_src_names:
+                    _sfname, _sfcontent, _sferr = _parse_source_file(_uf)
+                    if _sferr:
+                        st.error(f"⚠️ Could not parse **{_sfname}**: {_sferr}")
+                    elif _sfcontent:
+                        _cached_src_files.append({"name": _sfname, "content": _sfcontent})
+            st.session_state["_cdd_source_files"] = _cached_src_files
+            if _cached_src_files:
+                _total_src_chars = sum(len(f["content"]) for f in _cached_src_files)
+                _files_rows_html = "".join(
+                    f"<div>✅ <strong>{f['name']}</strong> — {len(f['content']):,} chars</div>"
+                    for f in _cached_src_files
+                )
                 st.markdown(
                     f"<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:8px;"
                     f"padding:6px 12px;font-size:0.78rem;color:#166534;margin-top:4px;'>"
-                    f"✅ <strong>{_loaded_src_name}</strong> — "
-                    f"{_loaded_src_chars:,} characters extracted. "
-                    f"Will be used as primary reference during generation.</div>",
+                    f"{_files_rows_html}"
+                    f"<div style='margin-top:4px;border-top:1px solid #86efac;padding-top:4px;color:#6b7280;'>"
+                    f"{len(_cached_src_files)} file(s) · {_total_src_chars:,} total characters — "
+                    f"all will be used as primary references during generation.</div>"
+                    f"</div>",
                     unsafe_allow_html=True,
                 )
         else:
-            # Widget cleared — remove cached content
-            st.session_state.pop("_cdd_source_file_content", None)
-            st.session_state.pop("_cdd_source_file_name", None)
+            # Widget cleared — remove cached files
+            st.session_state.pop("_cdd_source_files", None)
 
         st.markdown(
             "<label style='font-weight:600;font-size:0.875rem;'>Estimated Duration "
@@ -569,24 +578,31 @@ def render_page(db, ctx):
                 + _cdd_extra_block
             )
 
-        # Inject source file as primary reference (appended so it's freshest in context)
-        _src_content_for_gen = st.session_state.get("_cdd_source_file_content", "")
-        _src_fname_for_gen = st.session_state.get("_cdd_source_file_name", "")
-        if _src_content_for_gen:
-            _src_truncated = _src_content_for_gen[:15000]
-            if len(_src_content_for_gen) > 15000:
-                _src_truncated += "\n\n[Source content truncated for prompt length.]"
-            _src_block = (
-                f"**SOURCE DOCUMENT — '{_src_fname_for_gen}' (Primary Reference):**\n"
-                f"Use this document as the authoritative source of truth for the CDD. "
-                f"Base module structure, lesson topics, and learning objectives on the "
-                f"content found in this file. Do not invent topics absent from this source.\n\n"
-                f"{_src_truncated}\n\n"
-                f"--- END SOURCE DOCUMENT ---"
-            )
-            _cdd_extra_block = (
-                _cdd_extra_block + ("\n\n" if _cdd_extra_block else "") + _src_block
-            )
+        # Inject source files as primary references (appended so freshest in context)
+        _src_files_for_gen = st.session_state.get("_cdd_source_files", [])
+        if _src_files_for_gen:
+            _src_blocks = []
+            _chars_budget = 15000  # shared budget across all files
+            for _sf in _src_files_for_gen:
+                if _chars_budget <= 0:
+                    break
+                _sf_snippet = _sf["content"][:_chars_budget]
+                _chars_budget -= len(_sf_snippet)
+                if len(_sf["content"]) > len(_sf_snippet):
+                    _sf_snippet += "\n\n[Content truncated for prompt length.]"
+                _src_blocks.append(
+                    f"**SOURCE DOCUMENT — '{_sf['name']}' (Primary Reference):**\n"
+                    f"Use this document as the authoritative source of truth for the CDD. "
+                    f"Base module structure, lesson topics, and learning objectives on the "
+                    f"content found in this file. Do not invent topics absent from this source.\n\n"
+                    f"{_sf_snippet}\n\n"
+                    f"--- END SOURCE DOCUMENT ---"
+                )
+            if _src_blocks:
+                _cdd_extra_block = (
+                    _cdd_extra_block + ("\n\n" if _cdd_extra_block else "")
+                    + "\n\n".join(_src_blocks)
+                )
 
         with st.status("📋 Generating Course Design Document...", expanded=True) as cdd_status:
             cdd_status.write("🧠 Stage 1: Generating CDD content with AI...")
@@ -646,27 +662,25 @@ def render_page(db, ctx):
                 )
                 db.add(new_cdd); db.commit(); db.refresh(new_cdd)
 
-                # Persist source document and link its ID for downstream generation
-                _src_doc_id_for_params = None
-                _src_content_to_save = st.session_state.get("_cdd_source_file_content", "")
-                _src_fname_to_save = st.session_state.get("_cdd_source_file_name", "")
-                if _src_content_to_save and _src_fname_to_save:
-                    _src_doc_ext = (
-                        _src_fname_to_save.rsplit(".", 1)[-1].lower()
-                        if "." in _src_fname_to_save else "txt"
+                # Persist source documents and link their IDs for downstream generation
+                _src_doc_ids_for_params = []
+                for _sf_save in st.session_state.get("_cdd_source_files", []):
+                    _sf_ext = (
+                        _sf_save["name"].rsplit(".", 1)[-1].lower()
+                        if "." in _sf_save["name"] else "txt"
                     )
                     _src_doc_record = Document(
-                        filename=_src_fname_to_save,
-                        file_type=_src_doc_ext,
+                        filename=_sf_save["name"],
+                        file_type=_sf_ext,
                         doc_tag="cdd_source",
-                        content=_src_content_to_save,
+                        content=_sf_save["content"],
                         uploaded_by=user_name,
                         status="active",
                     )
                     db.add(_src_doc_record)
                     db.commit()
                     db.refresh(_src_doc_record)
-                    _src_doc_id_for_params = _src_doc_record.id
+                    _src_doc_ids_for_params.append(_src_doc_record.id)
 
                 gen_params = {
                     "course_title": cdd_course_title,
@@ -674,7 +688,7 @@ def render_page(db, ctx):
                     "expert_domain": expert_domain,
                     "estimated_duration_hours": cdd_duration_hours,
                     "extra_instructions": cdd_extra_instructions or "",
-                    "source_document_id": _src_doc_id_for_params,
+                    "source_document_ids": _src_doc_ids_for_params,
                 }
                 v1 = CDDVersion(
                     cdd_id=new_cdd.id, version="v1", full_content=cdd_output,

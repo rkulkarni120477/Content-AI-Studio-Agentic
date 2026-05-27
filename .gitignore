@@ -5,3 +5,4 @@ __pycache__/
 *.pyo
 .env1
 CLAUDE.md
+docker.env
