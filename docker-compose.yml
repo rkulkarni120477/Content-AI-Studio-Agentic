@@ -1,40 +1,61 @@
 services:
+ 
   redis:
     image: redis:7-alpine
-    container_name: contentai_dev_redis
+ 
+    container_name: ${REDIS_CONTAINER_NAME}
+ 
     restart: unless-stopped
+ 
     ports:
-      - "6380:6379"
+      - "${REDIS_PORT}:6379"
+ 
     volumes:
-      - redis_data:/data
+      - ${REDIS_VOLUME}:/data
+ 
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
-
+ 
+ 
   promptops:
     build: .
-    container_name: promptops_dev_app
+ 
+    container_name: ${APP_CONTAINER_NAME}
+ 
     ports:
-      - "5002:8501"
+      - "${APP_PORT}:8501"
+ 
     env_file:
       - .env
+ 
     depends_on:
       redis:
         condition: service_healthy
+ 
     restart: unless-stopped
-
+ 
+ 
   celery_worker:
     build: .
-    container_name: contentai_dev_celery
+ 
+    container_name: ${CELERY_CONTAINER_NAME}
+ 
     command: celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
+ 
     env_file:
       - .env
+ 
     depends_on:
       redis:
         condition: service_healthy
+ 
     restart: unless-stopped
-
+ 
+ 
 volumes:
+  redis_local_data:
   redis_data:
+  redis_dev_data:
