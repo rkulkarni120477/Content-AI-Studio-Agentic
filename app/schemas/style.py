@@ -52,12 +52,13 @@ class StyleRead(BaseModel):
     is_active: bool = False
     understanding: Optional[str] = Field(
         default=None,
+        validation_alias="generated_summary",
         description="AI-generated style intelligence. May be long.",
     )
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class StyleListItem(BaseModel):

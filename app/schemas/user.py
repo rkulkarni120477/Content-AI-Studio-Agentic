@@ -43,7 +43,7 @@ class UserRead(BaseModel):
     id: int
     username: str
     role: str
-    role_display: str
+    role_display: str = ""
     is_active: bool
     created_at: Optional[datetime] = None
 
@@ -56,7 +56,7 @@ class UserListItem(BaseModel):
     id: int
     username: str
     role: str
-    role_display: str
+    role_display: str = ""
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
