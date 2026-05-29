@@ -6,3 +6,4 @@ __pycache__/
 .env1
 CLAUDE.md
 docker.env
+test_copyleaks.py
