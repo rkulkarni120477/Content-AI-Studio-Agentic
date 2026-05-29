@@ -1,25 +1,25 @@
 """Copyleaks API client for plagiarism and AI-content detection.
 
-Scan flow
----------
+Scan flow (webhook-based)
+--------------------------
 1. ``_get_access_token()``  — login once, cache JWT until near-expiry
-2. ``submit_scan()``        — POST base64-encoded content with a UUID scan_id
-3. ``poll_until_done()``    — GET scan status with exponential back-off
-4. ``fetch_results()``      — GET full result payload
-5. ``parse_results()``      — extract similarity_score, ai_score, sources, highlights
+2. ``submit_scan()``        — PUT base64-encoded content; Copyleaks calls
+                              COPYLEAKS_WEBHOOK_URL when done
+3. Results are delivered to ``POST /api/plagiarism/webhook/{status}/{scan_id}``
+   and stored there — no polling needed.
 
 Environment variables (never hardcoded)
 ----------------------------------------
-COPYLEAKS_EMAIL     – account email
-COPYLEAKS_API_KEY   – account API key
-COPYLEAKS_PRODUCT   – "businesses" (default) or "education"
+COPYLEAKS_EMAIL         – account email
+COPYLEAKS_API_KEY       – account API key
+COPYLEAKS_PRODUCT       – "businesses" (default) or "education"
+COPYLEAKS_WEBHOOK_URL   – template URL sent to Copyleaks, e.g.
+                          https://yourserver.com/api/plagiarism/webhook/{status}/{scanId}
 """
 from __future__ import annotations
 
 import base64
-import json
 import logging
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -33,12 +33,6 @@ _log = logging.getLogger(__name__)
 # ── Copyleaks endpoint constants ──────────────────────────────────────────────
 _AUTH_URL  = "https://id.copyleaks.com/v3/account/login/api"
 _API_BASE  = "https://api.copyleaks.com"
-
-# ── Polling parameters ────────────────────────────────────────────────────────
-_POLL_INITIAL_WAIT = 10    # seconds before first poll
-_POLL_MAX_WAIT     = 30    # max seconds between polls
-_POLL_BACKOFF      = 1.5   # multiplier per retry
-_POLL_TIMEOUT      = 300   # total seconds before giving up (~5 min)
 
 # ── Token cache (module-level, process-wide) ──────────────────────────────────
 _token_cache: dict = {"token": None, "expires_at": None}
@@ -117,18 +111,34 @@ def _product() -> str:
 # ---------------------------------------------------------------------------
 
 def generate_scan_id() -> str:
-    """UUID hex — unique identifier sent to Copyleaks and stored in the DB."""
-    return uuid.uuid4().hex
+    """Standard UUID — unique identifier sent to Copyleaks and stored in the DB."""
+    return str(uuid.uuid4())
 
 
 def submit_scan(content: str, scan_id: str) -> None:
     """Encode and submit *content* for scanning under *scan_id*.
 
-    Copyleaks accepts base-64 encoded plain-text files.
-    The scan begins asynchronously on Copyleaks' side.
+    Uses PUT (Copyleaks changed from POST to PUT in their v3 API).
+    Results are delivered asynchronously to COPYLEAKS_WEBHOOK_URL.
     """
-    url  = f"{_API_BASE}/v3/{_product()}/submit/file/{scan_id}"
-    b64  = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    url      = f"{_API_BASE}/v3/{_product()}/submit/file/{scan_id}"
+    # Limit to 200 words — free trial allows 250 words per credit.
+    # Scanning a sample is enough to detect plagiarism patterns.
+    words    = content.split()
+    sample   = " ".join(words[:200]) if len(words) > 200 else content
+    b64      = base64.b64encode(sample.encode("utf-8")).decode("ascii")
+    wh_url   = settings.copyleaks_webhook_url
+
+    if not wh_url:
+        _log.warning(
+            "COPYLEAKS_WEBHOOK_URL not set — Copyleaks results will not be "
+            "delivered. Set it to https://yourserver.com/api/plagiarism/webhook/{status}/{scanId}"
+        )
+        wh_url = f"https://placeholder.invalid/webhook/{{status}}/{scan_id}"
+
+    # Copyleaks only replaces {status} in the URL — {scanId} must be filled in
+    # by us before submitting so each scan has its own unique callback URL.
+    wh_url = wh_url.replace("{scanId}", scan_id)
 
     payload = {
         "base64":   b64,
@@ -139,10 +149,13 @@ def submit_scan(content: str, scan_id: str) -> None:
                 "internet":     True,
                 "ai_detection": True,
             },
+            "webhooks": {
+                "status": wh_url,
+            },
         },
     }
     try:
-        resp = requests.post(url, json=payload, headers=_headers(), timeout=60)
+        resp = requests.put(url, json=payload, headers=_headers(), timeout=60)
     except requests.RequestException as exc:
         raise CopyleaksError(f"Submit request failed: {exc}") from exc
 
@@ -150,104 +163,15 @@ def submit_scan(content: str, scan_id: str) -> None:
         raise CopyleaksError(
             f"Submit failed (HTTP {resp.status_code}) for scan {scan_id}: {resp.text[:300]}"
         )
-    _log.info("Copyleaks scan submitted: scan_id=%s", scan_id)
+    _log.info("Copyleaks scan submitted: scan_id=%s (awaiting webhook)", scan_id)
 
 
 # ---------------------------------------------------------------------------
-# Status polling
-# ---------------------------------------------------------------------------
-
-def _get_status(scan_id: str) -> Optional[str]:
-    """Return the status string for *scan_id*, or None if not yet visible."""
-    url = f"{_API_BASE}/v3/{_product()}/scans/status"
-    try:
-        resp = requests.post(
-            url,
-            json={"scansIds": [scan_id]},
-            headers=_headers(),
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        _log.warning("Status request failed for %s: %s", scan_id, exc)
-        return None
-
-    if resp.status_code != 200:
-        _log.warning("Status HTTP %d for %s: %s", resp.status_code, scan_id, resp.text[:200])
-        return None
-
-    data = resp.json()
-    # Response may be a list or a dict wrapping a list
-    items = data if isinstance(data, list) else (
-        data.get("scans") or data.get("data") or data.get("results") or []
-    )
-    for item in items:
-        if item.get("id") == scan_id:
-            return str(item.get("status", ""))
-    return None
-
-
-def poll_until_done(scan_id: str) -> None:
-    """Block (inside a Celery task) until the scan completes or times out.
-
-    Uses exponential back-off so we don't hammer the API.
-    Raises ``CopyleaksError`` on terminal failure or timeout.
-    """
-    wait      = _POLL_INITIAL_WAIT
-    elapsed   = 0.0
-    attempt   = 0
-
-    while elapsed < _POLL_TIMEOUT:
-        time.sleep(wait)
-        elapsed += wait
-        attempt += 1
-
-        status = _get_status(scan_id)
-        _log.debug(
-            "Poll %d — scan_id=%s status=%r elapsed=%.0fs",
-            attempt, scan_id, status, elapsed,
-        )
-
-        if status in ("Completed", "3", 3):   # 3 = Completed in Copyleaks API
-            _log.info("Scan %s completed after %.0fs (%d polls)", scan_id, elapsed, attempt)
-            return
-
-        if status in ("Error", "Deleted", "4", 4, "5", 5):   # 4 = Error, 5 = Deleted
-            raise CopyleaksError(f"Scan {scan_id} ended with terminal status '{status}'")
-
-        # Back-off up to the cap
-        wait = min(wait * _POLL_BACKOFF, _POLL_MAX_WAIT)
-
-    raise CopyleaksError(
-        f"Scan {scan_id} did not complete within {_POLL_TIMEOUT}s "
-        f"({attempt} polls). Try again or check the Copyleaks dashboard."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Result retrieval
-# ---------------------------------------------------------------------------
-
-def fetch_results(scan_id: str) -> dict:
-    """Fetch the full result payload for a completed scan."""
-    url = f"{_API_BASE}/v3/{_product()}/scans/{scan_id}/result"
-    try:
-        resp = requests.get(url, headers=_headers(), timeout=30)
-    except requests.RequestException as exc:
-        raise CopyleaksError(f"Result fetch request failed: {exc}") from exc
-
-    if resp.status_code != 200:
-        raise CopyleaksError(
-            f"Result fetch failed (HTTP {resp.status_code}) for {scan_id}: {resp.text[:300]}"
-        )
-    return resp.json()
-
-
-# ---------------------------------------------------------------------------
-# Result parsing
+# Result parsing  (called by the webhook handler in plagiarism_api.py)
 # ---------------------------------------------------------------------------
 
 def parse_results(raw: dict) -> dict:
-    """Extract structured fields from the raw Copyleaks result payload.
+    """Extract structured fields from the Copyleaks webhook payload.
 
     Returns
     -------
@@ -255,9 +179,9 @@ def parse_results(raw: dict) -> dict:
         similarity_score  float 0-100
         ai_score          float 0-100 | None
         source_urls       list[{url, similarity, title}]
-        highlights        list[{text, source_url}]   (top matches only)
+        highlights        list[{text, source_url}]
     """
-    results = raw.get("results", {})
+    results = raw.get("results", raw)   # webhook may send results at top level
 
     # ── Similarity ───────────────────────────────────────────────────────────
     similarity = float(
@@ -281,32 +205,39 @@ def parse_results(raw: dict) -> dict:
     # ── Source URLs ───────────────────────────────────────────────────────────
     sources: list[dict] = []
     for result in results.get("internet", []):
-        url_ = (
-            result.get("url")
-            or result.get("metadata", {}).get("url", "")
-        )
-        if url_:
-            sources.append({
-                "url":        url_,
-                "similarity": round(float(
-                    result.get("score", {}).get("percentSimilar", 0)
-                ), 2),
-                "title": result.get("metadata", {}).get("title", ""),
-            })
+        url_ = result.get("url", "")
+        if not url_:
+            continue
+        matched = float(result.get("matchedWords") or result.get("identicalWords") or 0)
+        total   = float(result.get("totalWords") or 1)
+        sim     = round((matched / total) * 100, 2)
+        sources.append({
+            "url":        url_,
+            "similarity": sim,
+            "title":      result.get("title", ""),
+        })
 
-    # ── Sentence-level highlights (top-5 sources, top-10 matches each) ───────
+    # ── Highlights — use introduction text each source provides ───────────────
     highlights: list[dict] = []
     for result in results.get("internet", [])[:5]:
-        src_url = result.get("url") or result.get("metadata", {}).get("url", "")
-        for match in result.get("matches", [])[:10]:
+        src_url = result.get("url", "")
+        # Use introduction snippet if available
+        intro = (result.get("introduction") or "").strip()
+        if intro and src_url:
+            highlights.append({
+                "text":       intro[:300],
+                "source_url": src_url,
+            })
+        # Also check nested matches array if present
+        for match in result.get("matches", [])[:5]:
             text_val = (
                 match.get("text", {}).get("value")
                 or match.get("comparison", {}).get("value")
                 or ""
-            )
-            if text_val.strip():
+            ).strip()
+            if text_val and src_url:
                 highlights.append({
-                    "text":       text_val.strip(),
+                    "text":       text_val,
                     "source_url": src_url,
                 })
 
@@ -316,20 +247,3 @@ def parse_results(raw: dict) -> dict:
         "source_urls":      sources[:20],
         "highlights":       highlights[:50],
     }
-
-
-# ---------------------------------------------------------------------------
-# High-level helper (used by the Celery task)
-# ---------------------------------------------------------------------------
-
-def run_full_scan(content: str, scan_id: str) -> dict:
-    """Submit, wait, fetch, and parse in one call.
-
-    Returns ``{"parsed": {...}, "raw": {...}}``.
-    Raises ``CopyleaksError`` on any failure.
-    """
-    submit_scan(content, scan_id)
-    poll_until_done(scan_id)
-    raw    = fetch_results(scan_id)
-    parsed = parse_results(raw)
-    return {"parsed": parsed, "raw": raw}

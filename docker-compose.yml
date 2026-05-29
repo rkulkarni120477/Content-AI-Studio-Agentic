@@ -40,21 +40,41 @@ services:
  
   celery_worker:
     build: .
- 
+
     container_name: ${CELERY_CONTAINER_NAME}
- 
+
     command: celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
- 
+
     env_file:
       - .env
- 
+
     depends_on:
       redis:
         condition: service_healthy
- 
+
     restart: unless-stopped
- 
- 
+
+
+  api_server:
+    build: .
+
+    container_name: ${API_CONTAINER_NAME}
+
+    command: uvicorn api_server:app --host 0.0.0.0 --port 8502
+
+    env_file:
+      - .env
+
+    ports:
+      - "${API_PORT}:8502"
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
 volumes:
   redis_local_data:
   redis_data:

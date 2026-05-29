@@ -60,6 +60,12 @@ class AppSettings(BaseSettings):
         default="businesses",
         alias="COPYLEAKS_PRODUCT",   # "businesses" or "education"
     )
+    copyleaks_webhook_url: str = Field(
+        default="",
+        alias="COPYLEAKS_WEBHOOK_URL",
+        # Template URL with {status} and {scanId} placeholders filled by Copyleaks.
+        # Example: https://yourserver.com/api/plagiarism/webhook/{status}/{scanId}
+    )
 
     # ── Security ──────────────────────────────────────────────────────────────
     jwt_secret_key: SecretStr = Field(
