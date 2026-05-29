@@ -1,0 +1,137 @@
+.headerActions { @include flex-start; gap: $space-2; }
+
+.completionBanner {
+  padding: $space-4 $space-6;
+  background: $color-success-bg;
+  border: 1px solid $color-success-light;
+  border-radius: $radius-xl;
+  font-size: $font-size-sm;
+  color: $color-success;
+  margin-bottom: $space-6;
+}
+
+.validation {
+  padding: $space-4;
+  border-radius: $radius-lg;
+  margin-bottom: $space-6;
+
+  &--pass { background: $color-success-bg; color: $color-success; border: 1px solid $color-success-light; }
+  &--fail { background: $color-danger-bg; color: $color-danger; border: 1px solid $color-danger-light; }
+
+  &__issues {
+    list-style: disc;
+    padding-left: $space-5;
+    margin-top: $space-2;
+    font-size: $font-size-sm;
+    li { margin-bottom: $space-1; }
+  }
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: $space-6;
+
+  &:has(.detailPanel) {
+    grid-template-columns: 1fr 420px;
+  }
+
+  @include max-lg { grid-template-columns: 1fr !important; }
+}
+
+.tablePanel { min-width: 0; }
+
+.blockLink {
+  background: none;
+  border: none;
+  color: $color-primary;
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: $font-size-sm;
+  text-align: left;
+  padding: 0;
+
+  &:hover { color: $color-primary-dark; }
+}
+
+.badge {
+  @include badge($color-gray-100, $color-gray-600);
+
+  &__draft     { background: $color-gray-100; color: $color-gray-600; }
+  &__review    { background: $color-warning-bg; color: $color-warning; }
+  &__changes   { background: #f3e8ff; color: #7c3aed; }
+  &__approved  { background: $color-success-bg; color: $color-success; }
+  &__published { background: $color-info-bg; color: $color-info; }
+  &__archived  { background: $color-gray-100; color: $color-gray-400; }
+  &__type      { @include badge($color-primary-soft, $color-primary); }
+}
+
+.detailPanel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+  position: sticky;
+  top: calc($header-height + $space-6);
+  max-height: calc(100vh - $header-height - #{$space-12});
+  overflow-y: auto;
+  @include custom-scrollbar;
+
+  &__header { @include flex-between; }
+  &__title  { font-size: $font-size-base; font-weight: $font-weight-semibold; }
+  &__actions { @include flex-start; gap: $space-2; }
+  &__meta   { @include flex-start; gap: $space-2; flex-wrap: wrap; }
+  &__type   { font-size: $font-size-xs; color: $color-gray-500; }
+}
+
+.workflowActions { @include flex-start; gap: $space-2; flex-wrap: wrap; }
+
+.editForm {
+  @include flex-col;
+  gap: $space-3;
+
+  &__textarea {
+    @include form-field-base;
+    font-family: $font-family-mono;
+    font-size: $font-size-xs;
+    resize: vertical;
+    min-height: 240px;
+  }
+
+  &__input { @include form-field-base; height: 36px; }
+  &__error { font-size: $font-size-xs; color: $color-danger; }
+}
+
+.form__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+
+.contentView {
+  max-height: 400px;
+  overflow-y: auto;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+  padding: $space-4;
+  @include custom-scrollbar;
+
+  &__text {
+    font-family: $font-family-mono;
+    font-size: $font-size-xs;
+    color: $color-gray-700;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: $line-height-relaxed;
+  }
+}
+
+.versionList { @include flex-col; gap: $space-2; }
+
+.versionItem {
+  @include flex-between;
+  padding: $space-3 $space-4;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+
+  &__ver    { font-size: $font-size-sm; font-weight: $font-weight-semibold; margin-right: $space-3; }
+  &__date   { font-size: $font-size-xs; color: $color-gray-500; margin-right: $space-3; }
+  &__reason { font-size: $font-size-xs; color: $color-gray-600; }
+}
+
+.emptyText { font-size: $font-size-sm; color: $color-gray-500; text-align: center; padding: $space-8; }

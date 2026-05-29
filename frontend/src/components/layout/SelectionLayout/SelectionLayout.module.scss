@@ -1,0 +1,16 @@
+.layout {
+  display: flex;
+  min-height: 100vh;
+  background: #ffffff;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: $space-8 $space-10;
+  min-width: 0;
+}
+
+@media (max-width: $bp-lg) {
+  .main { padding: $space-6; }
+}

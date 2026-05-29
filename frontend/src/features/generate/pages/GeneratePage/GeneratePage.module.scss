@@ -1,0 +1,124 @@
+.steps {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  padding: $space-4 $space-6;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-xl;
+  margin-bottom: $space-6;
+  overflow-x: auto;
+  flex-wrap: wrap;
+
+  &__connector { color: $color-gray-300; font-size: $font-size-lg; }
+}
+
+.step {
+  @include flex-start;
+  gap: $space-3;
+  padding: $space-3;
+  border-radius: $radius-lg;
+  min-width: 160px;
+
+  &__icon { font-size: 1.5rem; }
+  &__label { font-size: $font-size-xs; color: $color-gray-500; text-transform: uppercase; letter-spacing: 0.05em; }
+  &__value { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-800; @include text-truncate; }
+
+  &--done  { background: $color-success-bg; }
+  &--ready { background: $color-primary-soft; }
+  &--pending { opacity: 0.6; }
+}
+
+.notReady {
+  padding: $space-4;
+  background: $color-warning-bg;
+  border: 1px solid $color-warning-light;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-warning;
+  margin-bottom: $space-6;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: $space-6;
+  align-items: start;
+
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+
+  &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+
+  &__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+
+  &__textarea { @include flex-col; gap: $space-1; }
+
+  &__textareaInput {
+    @include form-field-base;
+    resize: vertical;
+    min-height: 96px;
+  }
+}
+
+.jobProgress {
+  @include flex-col;
+  gap: $space-3;
+
+  &__status {
+    @include flex-start;
+    gap: $space-2;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    color: $color-gray-700;
+  }
+
+  &__stage {
+    font-size: $font-size-xs;
+    color: $color-gray-600;
+    padding: $space-2 $space-3;
+    background: $color-gray-50;
+    border-radius: $radius-md;
+    border-left: 3px solid $color-primary;
+  }
+}
+
+.results {
+  @include flex-col;
+  gap: $space-3;
+
+  &__count { font-size: $font-size-sm; color: $color-gray-500; }
+}
+
+.blockCard {
+  @include card($space-4);
+  @include flex-col;
+  gap: $space-2;
+
+  &__header { @include flex-between; }
+  &__label  { font-size: $font-size-sm; font-weight: $font-weight-semibold; }
+  &__type   { @include badge($color-primary-soft, $color-primary); }
+  &__preview { font-size: $font-size-sm; color: $color-gray-600; line-height: $line-height-relaxed; }
+}
+
+.empty {
+  @include flex-col;
+  align-items: center;
+  gap: $space-3;
+  padding: $space-12;
+  color: $color-gray-400;
+  font-size: $font-size-sm;
+  text-align: center;
+
+  span { font-size: 2.5rem; }
+}

@@ -1,0 +1,91 @@
+.dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: $space-6;
+}
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+
+  &__header {
+    @include flex-between;
+    padding-bottom: $space-4;
+    border-bottom: 1px solid $color-gray-100;
+  }
+
+  &__title {
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+  }
+
+  &__subtitle {
+    font-size: inherit;
+    font-weight: $font-weight-normal;
+    color: $color-gray-500;
+  }
+
+  &__list {
+    @include flex-col;
+    gap: $space-2;
+    max-height: 520px;
+    overflow-y: auto;
+    @include custom-scrollbar;
+  }
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  padding: $space-4;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: all $transition-fast;
+
+  &:hover {
+    border-color: $color-primary-light;
+    background: $color-primary-soft;
+  }
+
+  &--active {
+    border-color: $color-primary;
+    background: $color-primary-soft;
+  }
+
+  &:focus-visible { @include focus-ring; }
+
+  &__icon { font-size: 1.5rem; flex-shrink: 0; }
+
+  &__info {
+    @include flex-col;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__name {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    @include text-truncate;
+  }
+
+  &__meta {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    @include text-truncate;
+  }
+
+  &__check {
+    color: $color-primary;
+    font-weight: $font-weight-bold;
+    flex-shrink: 0;
+  }
+}

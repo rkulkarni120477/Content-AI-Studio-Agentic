@@ -1,0 +1,152 @@
+.sidebar {
+  @include flex-col;
+  width: $sidebar-width;
+  height: 100vh;
+  background: $color-gray-900;
+  color: $color-gray-100;
+  transition: width $transition-slow;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  overflow: hidden;
+
+  &--collapsed { width: $sidebar-collapsed; }
+
+  &__logo {
+    @include flex-start;
+    gap: $space-3;
+    padding: $space-5 $space-4;
+    border-bottom: 1px solid rgb(255 255 255 / 0.08);
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  &__logoIcon { font-size: 1.5rem; flex-shrink: 0; }
+  &__logoText {
+    font-size: $font-size-base;
+    font-weight: $font-weight-bold;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  &__toggle {
+    position: absolute;
+    right: -12px;
+    top: $space-5;
+    width: 24px;
+    height: 24px;
+    background: $color-gray-700;
+    border: 2px solid $color-gray-900;
+    border-radius: $radius-full;
+    color: $color-gray-300;
+    font-size: $font-size-sm;
+    cursor: pointer;
+    @include flex-center;
+    z-index: 10;
+    transition: all $transition-fast;
+
+    &:hover { background: $color-primary; color: $color-white; }
+    &:focus-visible { @include focus-ring($color-primary); }
+  }
+
+  &__nav {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: $space-4 0;
+    @include custom-scrollbar(4px);
+  }
+
+  &__footer {
+    @include flex-between;
+    padding: $space-4;
+    border-top: 1px solid rgb(255 255 255 / 0.08);
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  &__logout {
+    background: none;
+    border: none;
+    font-size: 1.25rem;
+    cursor: pointer;
+    padding: $space-2;
+    border-radius: $radius-md;
+    transition: background $transition-fast;
+    flex-shrink: 0;
+
+    &:hover { background: rgb(255 255 255 / 0.1); }
+    &:focus-visible { @include focus-ring($color-primary); }
+  }
+}
+
+.nav {
+  &__section {
+    padding: $space-4 $space-4 $space-1;
+    font-size: 10px;
+    font-weight: $font-weight-semibold;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: $color-gray-500;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  &__list { list-style: none; }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: $space-3;
+    padding: $space-2 $space-4;
+    margin: 2px $space-2;
+    border-radius: $radius-lg;
+    color: $color-gray-400;
+    text-decoration: none;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    transition: all $transition-fast;
+    white-space: nowrap;
+    overflow: hidden;
+
+    &:hover { background: rgb(255 255 255 / 0.07); color: $color-gray-100; }
+
+    &--active {
+      background: $color-primary;
+      color: $color-white;
+      &:hover { background: $color-primary-dark; }
+    }
+  }
+
+  &__icon { font-size: 1.1rem; flex-shrink: 0; }
+  &__label { overflow: hidden; text-overflow: ellipsis; }
+}
+
+.user {
+  @include flex-start;
+  gap: $space-3;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+
+  &__avatar { font-size: 1.25rem; flex-shrink: 0; }
+
+  &__info {
+    @include flex-col;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  &__name {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    color: $color-gray-200;
+    @include text-truncate;
+  }
+
+  &__role {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    text-transform: capitalize;
+  }
+}

@@ -1,0 +1,17 @@
+.page {
+  @include flex-col;
+  flex: 1;
+  min-height: 100vh;
+
+  &__content {
+    flex: 1;
+    padding: $space-6;
+    max-width: $content-max-width;
+    width: 100%;
+    margin: 0 auto;
+
+    &--noPad { padding: 0; max-width: none; }
+
+    @include max-md { padding: $space-4; }
+  }
+}

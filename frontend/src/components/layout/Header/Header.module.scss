@@ -1,0 +1,67 @@
+.header {
+  @include flex-between;
+  height: $header-height;
+  padding: 0 $space-6;
+  background: $color-white;
+  border-bottom: 1px solid $color-gray-200;
+  flex-shrink: 0;
+  gap: $space-4;
+  position: sticky;
+  top: 0;
+  z-index: $z-sticky;
+
+  &__left {
+    @include flex-col;
+    gap: $space-1;
+    min-width: 0;
+  }
+
+  &__title {
+    font-size: $font-size-lg;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    @include text-truncate;
+  }
+
+  &__right {
+    @include flex-start;
+    gap: $space-3;
+    flex-shrink: 0;
+  }
+
+  &__user {
+    @include flex-start;
+    gap: $space-2;
+  }
+
+  &__username {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    color: $color-gray-600;
+  }
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: $space-1;
+  list-style: none;
+
+  &__item {
+    @include flex-start;
+    gap: $space-1;
+    &:not(:last-child)::after { content: '/'; color: $color-gray-400; font-size: $font-size-xs; }
+  }
+
+  &__link {
+    font-size: $font-size-xs;
+    color: $color-primary;
+    text-decoration: none;
+    &:hover { text-decoration: underline; }
+  }
+
+  &__current {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+  }
+}

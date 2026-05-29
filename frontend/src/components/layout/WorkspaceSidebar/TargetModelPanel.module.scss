@@ -1,0 +1,46 @@
+.panel {
+  margin: $space-2 0;
+
+  &__toggle {
+    width: 100%;
+    text-align: left;
+    background: rgba(255, 255, 255, 0.06);
+    border: none;
+    color: #e0e7ff;
+    padding: $space-2 $space-3;
+    font-size: $font-size-sm;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: $radius-md;
+  }
+}
+
+.caption {
+  font-size: 0.72rem;
+  color: #a5b4fc;
+  margin-bottom: $space-3;
+  line-height: 1.4;
+}
+
+.form {
+  @include flex-col;
+  gap: $space-3;
+  padding: $space-3 0;
+}
+
+.field {
+  @include flex-col;
+  gap: $space-1;
+  font-size: 0.8rem;
+  color: #c7d2fe;
+  font-weight: 500;
+}
+
+.input, .select {
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  border: 1px solid rgba(165, 180, 252, 0.55);
+  border-radius: 6px;
+  padding: $space-2 $space-3;
+  font-size: $font-size-sm;
+}

@@ -1,0 +1,32 @@
+.empty {
+  @include flex-col;
+  align-items: center;
+  justify-content: center;
+  padding: $space-16 $space-8;
+  text-align: center;
+  gap: $space-3;
+
+  &__icon {
+    font-size: 3rem;
+    line-height: 1;
+    color: $color-gray-300;
+    margin-bottom: $space-2;
+  }
+
+  &__title {
+    font-size: $font-size-lg;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-700;
+  }
+
+  &__message {
+    font-size: $font-size-sm;
+    color: $color-gray-500;
+    max-width: 360px;
+    line-height: $line-height-relaxed;
+  }
+
+  &__action {
+    margin-top: $space-2;
+  }
+}

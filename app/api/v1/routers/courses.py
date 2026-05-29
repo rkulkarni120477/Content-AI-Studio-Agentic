@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import NotFoundError
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.course import (
     CourseCreateRequest,
     CourseListItem,
     CourseRead,
     CourseUpdateRequest,
+    CourseUserAssignRequest,
+    CourseUserListItem,
 )
 
 _log = logging.getLogger(__name__)
@@ -123,6 +125,8 @@ def update_course(
 
     if request_body.name is not None:
         course.name = request_body.name
+    if request_body.description is not None:
+        course.description = request_body.description.strip() or None
     if request_body.cluster_id is not None:
         course.cluster_id = request_body.cluster_id
 
@@ -142,8 +146,77 @@ def delete_course(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.delete")),
 ) -> None:
-    """Delete a course. Admin only."""
+    """Archive a course. Admin only."""
     course = _get_course_or_404(db, course_id)
-    db.delete(course)
+    course.is_active = False
     db.commit()
     _log.info("course_deleted  user=%s  course_id=%d", current_user.username, course_id)
+
+
+@router.get(
+    "/courses/{course_id}/users",
+    response_model=list[CourseUserListItem],
+    summary="List users assigned to a course",
+)
+def list_course_users(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("users.assign")),
+) -> list[CourseUserListItem]:
+    """Return usernames with course-level access."""
+    from promptops_app.repositories import course_assignment_repository
+
+    _get_course_or_404(db, course_id)
+    usernames = sorted(course_assignment_repository.get_assigned_usernames(db, course_id))
+    return [CourseUserListItem(username=u) for u in usernames]
+
+
+@router.post(
+    "/courses/{course_id}/users",
+    response_model=MessageResponse,
+    status_code=201,
+    summary="Assign a user to a course",
+)
+def assign_user_to_course(
+    course_id: int,
+    request_body: CourseUserAssignRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("users.assign")),
+) -> MessageResponse:
+    """Grant course-level access by username."""
+    from promptops_app.database import User
+    from promptops_app.repositories import course_assignment_repository
+
+    _get_course_or_404(db, course_id)
+    user = db.query(User).filter(
+        User.username == request_body.username,
+        User.is_active == True,  # noqa: E712
+        User.role != "admin",
+    ).first()
+    if user is None:
+        raise NotFoundError("User", request_body.username)
+
+    course_assignment_repository.assign_user_to_course(db, course_id, request_body.username)
+    _log.info("course_user_assigned  by=%s  username=%s  course_id=%d",
+              current_user.username, request_body.username, course_id)
+    return MessageResponse(message=f"User '{request_body.username}' assigned to course {course_id}.")
+
+
+@router.delete(
+    "/courses/{course_id}/users/{username}",
+    status_code=204,
+    summary="Remove a user from a course",
+)
+def unassign_user_from_course(
+    course_id: int,
+    username: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("users.assign")),
+) -> None:
+    """Revoke course-level access."""
+    from promptops_app.repositories import course_assignment_repository
+
+    _get_course_or_404(db, course_id)
+    course_assignment_repository.unassign_user_from_course(db, course_id, username)
+    _log.info("course_user_unassigned  by=%s  username=%s  course_id=%d",
+              current_user.username, username, course_id)

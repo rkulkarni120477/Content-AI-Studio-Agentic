@@ -27,6 +27,7 @@ from app.schemas.project import (
     ProjectRead,
     ProjectUpdateRequest,
     ProjectUserAssignRequest,
+    ProjectUserListItem,
 )
 
 _log = logging.getLogger(__name__)
@@ -152,11 +153,29 @@ def delete_project(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("project.delete")),
 ) -> None:
-    """Soft-delete a project. Admin only."""
+    """Soft-delete (archive) a project. Admin only."""
     project = _get_project_or_404(db, project_id)
-    db.delete(project)
+    project.is_active = False
     db.commit()
     _log.info("project_deleted  user=%s  project_id=%d", current_user.username, project_id)
+
+
+@router.get(
+    "/{project_id}/users",
+    response_model=list[ProjectUserListItem],
+    summary="List users assigned to a project",
+)
+def list_project_users(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("users.assign")),
+) -> list[ProjectUserListItem]:
+    """Return usernames assigned to this project."""
+    from promptops_app.repositories import project_repository
+
+    _get_project_or_404(db, project_id)
+    usernames = sorted(project_repository.get_assigned_usernames(db, project_id))
+    return [ProjectUserListItem(username=u) for u in usernames]
 
 
 @router.post(
@@ -171,27 +190,40 @@ def assign_user_to_project(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
 ) -> MessageResponse:
-    """Assign a user to a project with a specific role."""
-    from promptops_app.database import ProjectUserAssignment
+    """Assign a user to a project by username."""
+    from promptops_app.database import User
+    from promptops_app.repositories import project_repository
 
     _get_project_or_404(db, project_id)
-
-    # Upsert: update if assignment already exists.
-    existing = db.query(ProjectUserAssignment).filter(
-        ProjectUserAssignment.project_id == project_id,
-        ProjectUserAssignment.user_id == request_body.user_id,
+    user = db.query(User).filter(
+        User.username == request_body.username,
+        User.is_active == True,  # noqa: E712
+        User.role != "admin",
     ).first()
+    if user is None:
+        raise NotFoundError("User", request_body.username)
 
-    if existing:
-        existing.role = request_body.role
-    else:
-        db.add(ProjectUserAssignment(
-            project_id=project_id,
-            user_id=request_body.user_id,
-            role=request_body.role,
-        ))
+    project_repository.assign_user_to_project(db, project_id, request_body.username)
+    _log.info("user_assigned  by=%s  username=%s  project_id=%d",
+              current_user.username, request_body.username, project_id)
+    return MessageResponse(message=f"User '{request_body.username}' assigned to project {project_id}.")
 
-    db.commit()
-    _log.info("user_assigned  by=%s  user_id=%d  project_id=%d  role=%s",
-              current_user.username, request_body.user_id, project_id, request_body.role)
-    return MessageResponse(message=f"User assigned to project {project_id} as {request_body.role}.")
+
+@router.delete(
+    "/{project_id}/users/{username}",
+    status_code=204,
+    summary="Remove a user from a project",
+)
+def unassign_user_from_project(
+    project_id: int,
+    username: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("users.assign")),
+) -> None:
+    """Remove a user's project assignment."""
+    from promptops_app.repositories import project_repository
+
+    _get_project_or_404(db, project_id)
+    project_repository.unassign_user_from_project(db, project_id, username)
+    _log.info("user_unassigned  by=%s  username=%s  project_id=%d",
+              current_user.username, username, project_id)

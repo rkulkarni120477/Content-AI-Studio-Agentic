@@ -1,0 +1,70 @@
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 2px solid $color-gray-200;
+  margin-bottom: $space-5;
+}
+
+.tab {
+  padding: $space-3 $space-5;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  color: $color-gray-600;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  transition: all $transition-fast;
+  &:hover   { color: $color-primary; }
+  &--active { color: $color-primary; border-bottom-color: $color-primary; }
+  &:focus-visible { @include focus-ring; }
+}
+
+.globalFilter {
+  @include flex-start;
+  gap: $space-3;
+  margin-bottom: $space-6;
+}
+
+.dateRangeSelect { width: 200px; }
+
+.center { @include flex-center; padding: $space-20; }
+
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: $space-4;
+  margin-bottom: $space-6;
+}
+
+.kpiCard {
+  @include card($space-5);
+  @include flex-start;
+  gap: $space-4;
+
+  &__icon { font-size: 2rem; flex-shrink: 0; }
+  &__value { font-size: $font-size-xl; font-weight: $font-weight-bold; color: $color-gray-900; }
+  &__label { font-size: $font-size-xs; color: $color-gray-500; margin-top: 2px; }
+}
+
+.chartsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: $space-6;
+}
+
+.card {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+  margin-bottom: $space-6;
+
+  &__header { @include flex-between; }
+  &__title  { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+}
+
+.form { @include flex-col; gap: $space-4; }
+
+.badge__active   { @include badge($color-success-bg, $color-success, $color-success-light); }
+.badge__inactive { @include badge($color-gray-100, $color-gray-500); }

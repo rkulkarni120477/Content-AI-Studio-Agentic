@@ -12,7 +12,16 @@ def get_course_by_id(db, course_id: int):
 def list_courses_for_project(db, project_id: int):
     return (
         db.query(Course)
-        .filter(Course.project_id == project_id)
+        .filter(Course.project_id == project_id, Course.is_active == True)  # noqa: E712
+        .order_by(Course.name)
+        .all()
+    )
+
+
+def list_courses_for_cluster(db, cluster_id: int):
+    return (
+        db.query(Course)
+        .filter(Course.cluster_id == cluster_id, Course.is_active == True)  # noqa: E712
         .order_by(Course.name)
         .all()
     )

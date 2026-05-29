@@ -48,10 +48,10 @@ class ProjectListItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ProjectUserAssignRequest(BaseModel):
-    """Assign a user to a project with a specific role."""
+    """Assign a user to a project (matches Streamlit checkbox assignment)."""
 
-    user_id: int = Field(description="ID of the user to assign.")
-    role: str = Field(
-        description="Role within this project: admin | reviewer | author",
-        examples=["author"],
-    )
+    username: str = Field(..., min_length=1, max_length=150)
+
+
+class ProjectUserListItem(BaseModel):
+    username: str

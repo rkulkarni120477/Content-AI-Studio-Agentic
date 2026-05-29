@@ -1,0 +1,132 @@
+.layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: $space-6;
+  align-items: start;
+
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+
+  &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+  &__header { @include flex-between; }
+}
+
+.cddBadge {
+  @include flex-start;
+  gap: $space-2;
+  padding: $space-3 $space-4;
+  background: $color-primary-soft;
+  border: 1px solid $color-primary-light;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-primary-dark;
+}
+
+.warning {
+  padding: $space-3 $space-4;
+  background: $color-warning-bg;
+  border: 1px solid $color-warning-light;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-warning;
+}
+
+.modeToggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-2;
+}
+
+.modeBtn {
+  padding: $space-2 $space-3;
+  border: 2px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-white;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: all $transition-fast;
+  color: $color-gray-600;
+
+  &--active {
+    border-color: $color-primary;
+    background: $color-primary-soft;
+    color: $color-primary;
+  }
+
+  &:hover:not(&--active) { border-color: $color-gray-300; }
+  &:focus-visible { @include focus-ring; }
+}
+
+.form { @include flex-col; gap: $space-4; }
+
+.center { @include flex-center; padding: $space-8; }
+
+.list {
+  @include flex-col;
+  gap: $space-2;
+  max-height: 280px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.listItem {
+  @include flex-between;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  transition: all $transition-fast;
+
+  &:hover   { border-color: $color-gray-300; }
+  &--active { border-color: $color-primary; background: $color-primary-soft; }
+
+  &__info { @include flex-col; gap: 2px; flex: 1; min-width: 0; }
+  &__title { font-size: $font-size-sm; font-weight: $font-weight-medium; @include text-truncate; }
+  &__meta  { font-size: $font-size-xs; color: $color-gray-500; }
+}
+
+.badge__active { @include badge($color-success-bg, $color-success, $color-success-light); }
+
+.activeContent {
+  @include flex-col;
+  gap: $space-3;
+  padding-top: $space-4;
+  border-top: 1px solid $color-gray-100;
+
+  &__title { font-size: $font-size-base; font-weight: $font-weight-semibold; }
+}
+
+.versions { @include flex-start; gap: $space-2; flex-wrap: wrap; }
+
+.versionTag {
+  padding: 2px $space-2;
+  font-size: $font-size-xs;
+  background: $color-gray-100;
+  border-radius: $radius-full;
+  color: $color-gray-600;
+  &--active { background: $color-primary; color: $color-white; }
+}
+
+.contentPreview {
+  max-height: 400px;
+  overflow-y: auto;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+  padding: $space-4;
+  @include custom-scrollbar;
+
+  &__text {
+    font-family: $font-family-mono;
+    font-size: $font-size-xs;
+    color: $color-gray-700;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+}

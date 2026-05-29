@@ -1,0 +1,119 @@
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 2px solid $color-gray-200;
+  margin-bottom: $space-6;
+}
+
+.tab {
+  padding: $space-3 $space-5;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  color: $color-gray-600;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover { color: $color-primary; }
+
+  &--active {
+    color: $color-primary;
+    border-bottom-color: $color-primary;
+  }
+
+  &:focus-visible { @include focus-ring; }
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: $space-6;
+  align-items: start;
+
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+
+  &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+
+  &__field { @include flex-col; gap: $space-1; }
+  &__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+  &__textarea { @include form-field-base; resize: vertical; }
+}
+
+.activeIndicator {
+  @include flex-start;
+  gap: $space-2;
+  padding: $space-3 $space-4;
+  background: $color-primary-soft;
+  border: 1px solid $color-primary-light;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-primary-dark;
+}
+
+.center { @include flex-center; padding: $space-8; }
+
+.list {
+  @include flex-col;
+  gap: $space-2;
+  max-height: 500px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.styleItem {
+  @include flex-between;
+  gap: $space-3;
+  padding: $space-4;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  transition: all $transition-fast;
+
+  &:hover   { border-color: $color-gray-300; }
+  &--active { border-color: $color-primary; background: $color-primary-soft; }
+
+  &__info { @include flex-col; gap: 2px; flex: 1; min-width: 0; }
+  &__name  { font-size: $font-size-sm; font-weight: $font-weight-semibold; @include text-truncate; }
+  &__desc  { font-size: $font-size-xs; color: $color-gray-600; @include text-clamp(2); }
+  &__date  { font-size: $font-size-xs; color: $color-gray-400; }
+  &__actions { @include flex-start; gap: $space-2; flex-shrink: 0; }
+}
+
+.badge__active { @include badge($color-success-bg, $color-success, $color-success-light); }
+
+.docPicker {
+  @include flex-col;
+  gap: $space-2;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  padding: $space-3;
+  @include custom-scrollbar;
+
+  &__item {
+    @include flex-start;
+    gap: $space-2;
+    font-size: $font-size-sm;
+    cursor: pointer;
+    &:hover { color: $color-primary; }
+  }
+}
+
+.fileList { @include flex-start; gap: $space-2; flex-wrap: wrap; }
+
+.fileTag { @include badge($color-primary-soft, $color-primary); }

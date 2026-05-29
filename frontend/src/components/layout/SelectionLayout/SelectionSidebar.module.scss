@@ -1,0 +1,159 @@
+.sidebar {
+  @include flex-col;
+  width: $sidebar-width;
+  min-height: 100vh;
+  background: #1e1b4b;
+  border-right: 1px solid rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+  flex-shrink: 0;
+  padding: $space-4;
+  gap: $space-3;
+}
+
+.brand {
+  @include flex-start;
+  gap: $space-3;
+  padding: $space-4 0 $space-2;
+  text-align: left;
+
+  &__logo { font-size: 1.75rem; }
+
+  &__title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: $color-white;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  &__tag {
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #a5b4fc;
+    margin-top: 2px;
+  }
+}
+
+.userPill {
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(165, 180, 252, 0.25);
+  border-radius: $radius-lg;
+  padding: $space-3;
+
+  &__label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: #a5b4fc;
+    margin-bottom: 2px;
+  }
+
+  &__name {
+    color: $color-white;
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  &__role {
+    display: inline-block;
+    margin-top: $space-2;
+    color: $color-white;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
+.contextPill {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(165, 180, 252, 0.22);
+  border-radius: $radius-lg;
+  padding: $space-3;
+  font-size: 0.75rem;
+  color: #e0e7ff;
+  line-height: 1.6;
+
+  &__label {
+    color: #a5b4fc;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: $space-2;
+  }
+
+  strong { color: $color-white; font-weight: 700; }
+}
+
+.navRow, .navRow3 {
+  display: flex;
+  gap: $space-2;
+}
+
+.navRow3 {
+  flex-wrap: wrap;
+  button { flex: 1; min-width: 0; font-size: 0.72rem !important; padding: $space-2 !important; }
+}
+
+.divider {
+  height: 1px;
+  background: rgba(165, 180, 252, 0.2);
+  margin: $space-2 0;
+}
+
+.expander {
+  &__toggle {
+    width: 100%;
+    text-align: left;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(165, 180, 252, 0.25);
+    border-radius: $radius-md;
+    color: #e0e7ff;
+    padding: $space-3;
+    font-size: $font-size-sm;
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover { background: rgba(255, 255, 255, 0.1); }
+  }
+}
+
+.form {
+  @include flex-col;
+  gap: $space-3;
+  margin-top: $space-3;
+  padding: $space-3;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: $radius-md;
+}
+
+.textareaLabel {
+  @include flex-col;
+  gap: $space-1;
+  font-size: $font-size-sm;
+  color: #a5b4fc;
+  font-weight: 500;
+}
+
+.textarea {
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  border: 1px solid rgba(165, 180, 252, 0.55);
+  border-radius: 6px;
+  padding: $space-2 $space-3;
+  font-family: inherit;
+  font-size: $font-size-sm;
+  resize: vertical;
+}
+
+.repoBtn { margin-top: $space-1; }
+
+.footer {
+  margin-top: auto;
+  padding-top: $space-4;
+}

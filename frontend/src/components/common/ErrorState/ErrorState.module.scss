@@ -1,0 +1,25 @@
+.error {
+  @include flex-col;
+  align-items: center;
+  justify-content: center;
+  padding: $space-16 $space-8;
+  text-align: center;
+  gap: $space-3;
+
+  &__icon { font-size: 3rem; margin-bottom: $space-2; }
+
+  &__title {
+    font-size: $font-size-lg;
+    font-weight: $font-weight-semibold;
+    color: $color-danger;
+  }
+
+  &__message {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    max-width: 400px;
+    line-height: $line-height-relaxed;
+  }
+
+  &__action { margin-top: $space-2; }
+}

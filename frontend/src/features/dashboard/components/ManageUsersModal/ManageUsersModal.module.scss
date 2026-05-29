@@ -1,0 +1,45 @@
+.hint {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+  margin-bottom: $space-3;
+}
+
+.error {
+  color: $color-danger;
+  font-size: $font-size-sm;
+  margin-bottom: $space-3;
+}
+
+.empty {
+  color: $color-gray-500;
+  font-size: $font-size-sm;
+}
+
+.list {
+  @include flex-col;
+  gap: $space-2;
+  max-height: 360px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.row {
+  padding: $space-2 0;
+  border-bottom: 1px solid $color-gray-100;
+
+  &:last-child { border-bottom: none; }
+}
+
+.label {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  cursor: pointer;
+  font-size: $font-size-sm;
+  color: $color-gray-800;
+}
+
+.badge {
+  color: $color-primary;
+  font-size: $font-size-xs;
+}

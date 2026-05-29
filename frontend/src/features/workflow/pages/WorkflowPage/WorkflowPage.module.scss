@@ -1,0 +1,114 @@
+.pendingBanner {
+  padding: $space-3 $space-4;
+  background: $color-info-bg;
+  border: 1px solid $color-info-light;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-info;
+  margin-bottom: $space-5;
+}
+
+.filters {
+  display: flex;
+  gap: $space-3;
+  flex-wrap: wrap;
+  margin-bottom: $space-5;
+  align-items: flex-end;
+
+  &__search { flex: 1; min-width: 220px; }
+  &__select { width: 200px; }
+}
+
+.loading { @include flex-center; padding: $space-20; }
+
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: $space-4;
+  overflow-x: auto;
+  padding-bottom: $space-4;
+
+  @include max-lg { grid-template-columns: repeat(3, 1fr); }
+  @include max-md { grid-template-columns: repeat(2, 1fr); }
+}
+
+.column {
+  @include flex-col;
+  gap: $space-3;
+  min-width: 200px;
+
+  &__header {
+    @include flex-between;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-700;
+    padding: $space-2 0;
+    border-bottom: 2px solid $color-gray-200;
+  }
+
+  &__count {
+    @include badge($color-gray-100, $color-gray-600);
+  }
+
+  &__cards {
+    @include flex-col;
+    gap: $space-2;
+    min-height: 100px;
+  }
+}
+
+.blockCard {
+  @include card($space-3);
+  @include flex-col;
+  gap: $space-2;
+  position: relative;
+  cursor: default;
+
+  &--overdue { border-color: $color-danger-light; background: $color-danger-bg; }
+
+  &__check {
+    position: absolute;
+    top: $space-3;
+    right: $space-3;
+    width: 16px;
+    height: 16px;
+    accent-color: $color-primary;
+  }
+
+  &__header { @include flex-between; gap: $space-2; }
+
+  &__label {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    color: $color-gray-800;
+    @include text-clamp(2);
+    flex: 1;
+  }
+
+  &__meta {
+    @include flex-start;
+    gap: $space-1;
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+  }
+
+  &__actions {
+    @include flex-start;
+    gap: $space-1;
+    flex-wrap: wrap;
+  }
+}
+
+.slaBadge {
+  @include badge($color-warning-bg, $color-warning);
+  font-size: 10px;
+
+  &--overdue { background: $color-danger-bg; color: $color-danger; }
+}
+
+.emptyCol {
+  font-size: $font-size-xs;
+  color: $color-gray-400;
+  text-align: center;
+  padding: $space-4;
+}

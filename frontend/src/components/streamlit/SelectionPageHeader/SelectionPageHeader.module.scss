@@ -1,0 +1,24 @@
+.header {
+  padding: 2rem 0 1rem;
+
+  &__eyebrow {
+    font-size: 0.78rem;
+    color: #4b5563;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+  }
+
+  &__title {
+    font-size: 2rem;
+    font-weight: 800;
+    color: #111827;
+    margin-bottom: 0.25rem;
+  }
+
+  &__subtitle {
+    color: #374151;
+    font-size: 0.95rem;
+  }
+}

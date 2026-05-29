@@ -1,0 +1,32 @@
+import { api } from '@services/apiClient';
+import { PROJECTS, CLUSTERS, COURSES, MODELS, USERS } from '@services/endpoints';
+
+export const dashboardService = {
+  listProjects:    ()              => api.get(PROJECTS.LIST),
+  getProject:      (id)           => api.get(PROJECTS.GET(id)),
+  createProject:   (data)         => api.post(PROJECTS.CREATE, data),
+  updateProject:   (id, data)     => api.put(PROJECTS.UPDATE(id), data),
+  deleteProject:   (id)           => api.delete(PROJECTS.DELETE(id)),
+  listProjectUsers:(id)           => api.get(PROJECTS.USERS(id)),
+  assignProjectUser:(id, username)=> api.post(PROJECTS.USERS(id), { username }),
+  unassignProjectUser:(id, user)  => api.delete(PROJECTS.UNASSIGN_USER(id, user)),
+
+  listClusters:    (projectId)    => api.get(PROJECTS.CLUSTERS(projectId)),
+  createCluster:   (projectId, data) => api.post(CLUSTERS.CREATE(projectId), data),
+  updateCluster:   (id, data)     => api.put(CLUSTERS.UPDATE(id), data),
+  deleteCluster:   (id)           => api.delete(CLUSTERS.DELETE(id)),
+
+  listCourses:     (clusterId)    => api.get(CLUSTERS.COURSES(clusterId)),
+  createCourse:    (projectId, data) => api.post(PROJECTS.COURSES(projectId), data),
+  getCourse:       (id)           => api.get(COURSES.GET(id)),
+  updateCourse:    (id, data)     => api.put(COURSES.UPDATE(id), data),
+  deleteCourse:    (id)           => api.delete(COURSES.DELETE(id)),
+  listCourseUsers: (id)           => api.get(COURSES.USERS(id)),
+  assignCourseUser:(id, username)=> api.post(COURSES.USERS(id), { username }),
+  unassignCourseUser:(id, user)   => api.delete(COURSES.UNASSIGN_USER(id, user)),
+
+  getCourseConfig: (courseId)     => api.get(COURSES.CONFIG(courseId)),
+  saveCourseConfig:(courseId, d)  => api.put(COURSES.UPDATE_CONFIG(courseId), d),
+  listModels:      ()             => api.get(MODELS.LIST),
+  listUsers:       ()             => api.get(USERS.LIST),
+};

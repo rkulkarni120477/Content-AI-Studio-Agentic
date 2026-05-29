@@ -1,0 +1,152 @@
+@use 'variables' as *;
+@use 'mixins' as *;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: $font-family-base;
+  font-size: $font-size-base;
+  font-weight: $font-weight-normal;
+  line-height: $line-height-normal;
+  color: $color-gray-900;
+  background: $color-gray-50;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: $color-primary;
+  text-decoration: none;
+  &:hover { text-decoration: underline; }
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input, textarea, select {
+  font-family: inherit;
+}
+
+img, svg {
+  display: block;
+  max-width: 100%;
+}
+
+ul, ol {
+  list-style: none;
+}
+
+code, pre {
+  font-family: $font-family-mono;
+}
+
+pre {
+  overflow-x: auto;
+  padding: $space-4;
+  background: $color-gray-900;
+  color: $color-gray-100;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: $color-gray-100; }
+::-webkit-scrollbar-thumb {
+  background: $color-gray-300;
+  border-radius: $radius-full;
+  &:hover { background: $color-gray-400; }
+}
+
+// ─── Utility Classes ─────────────────────────────────────────────────────────
+.sr-only { @include sr-only; }
+
+.text-truncate { @include text-truncate; }
+
+.markdown-content {
+  line-height: $line-height-relaxed;
+
+  h1, h2, h3, h4, h5, h6 {
+    margin-top: $space-6;
+    margin-bottom: $space-3;
+    font-weight: $font-weight-semibold;
+    line-height: $line-height-tight;
+    color: $color-gray-900;
+    &:first-child { margin-top: 0; }
+  }
+
+  h1 { font-size: $font-size-2xl; }
+  h2 { font-size: $font-size-xl; }
+  h3 { font-size: $font-size-lg; }
+  h4 { font-size: $font-size-md; }
+
+  p { margin-bottom: $space-4; }
+
+  ul, ol {
+    list-style: revert;
+    padding-left: $space-6;
+    margin-bottom: $space-4;
+    li { margin-bottom: $space-2; }
+  }
+
+  blockquote {
+    border-left: 4px solid $color-primary;
+    padding-left: $space-4;
+    color: $color-gray-600;
+    margin: $space-4 0;
+    font-style: italic;
+  }
+
+  code {
+    background: $color-gray-100;
+    padding: 2px $space-2;
+    border-radius: $radius-sm;
+    font-size: 0.875em;
+    color: $color-primary-dark;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: $space-4;
+
+    th, td {
+      padding: $space-2 $space-3;
+      border: 1px solid $color-gray-200;
+      text-align: left;
+    }
+
+    th {
+      background: $color-gray-50;
+      font-weight: $font-weight-semibold;
+      font-size: $font-size-sm;
+    }
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid $color-gray-200;
+    margin: $space-6 0;
+  }
+}

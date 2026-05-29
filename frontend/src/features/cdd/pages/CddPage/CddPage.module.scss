@@ -1,0 +1,120 @@
+.layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: $space-6;
+  align-items: start;
+
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+
+  &__title {
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+  }
+
+  &__header { @include flex-between; }
+}
+
+.styleIndicator {
+  @include flex-start;
+  gap: $space-2;
+  padding: $space-3 $space-4;
+  background: $color-primary-soft;
+  border: 1px solid $color-primary-light;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-primary-dark;
+}
+
+.form { @include flex-col; gap: $space-4; }
+
+.headerActions { @include flex-start; gap: $space-2; }
+
+.center { @include flex-center; padding: $space-8; }
+
+.list {
+  @include flex-col;
+  gap: $space-2;
+  max-height: 300px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.listItem {
+  @include flex-between;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  transition: all $transition-fast;
+
+  &:hover   { border-color: $color-gray-300; }
+  &--active { border-color: $color-primary; background: $color-primary-soft; }
+
+  &__info { @include flex-col; gap: 2px; min-width: 0; flex: 1; }
+  &__title { font-size: $font-size-sm; font-weight: $font-weight-medium; @include text-truncate; }
+  &__meta  { font-size: $font-size-xs; color: $color-gray-500; }
+}
+
+.badge__active {
+  @include badge($color-success-bg, $color-success, $color-success-light);
+}
+
+.activeContent {
+  @include flex-col;
+  gap: $space-4;
+  padding-top: $space-4;
+  border-top: 1px solid $color-gray-100;
+
+  &__header { @include flex-between; }
+  &__title {
+    font-size: $font-size-base;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+  }
+}
+
+.versions {
+  @include flex-start;
+  gap: $space-2;
+  flex-wrap: wrap;
+
+  &__label { font-size: $font-size-xs; color: $color-gray-500; }
+}
+
+.versionTag {
+  padding: 2px $space-2;
+  font-size: $font-size-xs;
+  background: $color-gray-100;
+  border-radius: $radius-full;
+  color: $color-gray-600;
+
+  &--active {
+    background: $color-primary;
+    color: $color-white;
+  }
+}
+
+.contentPreview {
+  max-height: 400px;
+  overflow-y: auto;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+  padding: $space-4;
+  @include custom-scrollbar;
+
+  &__text {
+    font-family: $font-family-mono;
+    font-size: $font-size-xs;
+    color: $color-gray-700;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+}
