@@ -1,4 +1,4 @@
-name: Deploy Content AI Studio DEV
+name: Deploy Content AI Studio Dev
 
 on:
   push:
