@@ -41,8 +41,6 @@ def _get_document_or_404(db: Session, document_id: int):
     description="Used to populate the 'Additional Source Materials' multiselect on the Generate page.",
 )
 def list_documents(
-    course_id: int | None = Query(default=None),
-    project_id: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -51,7 +49,7 @@ def list_documents(
     """Return documents in the library, optionally scoped to a course or project."""
     from promptops_app.repositories import document_repository
 
-    documents = document_repository.list_active_documents(db, course_id=course_id, project_id=project_id)
+    documents = document_repository.list_active_documents(db)
     total = len(documents)
     start = (page - 1) * page_size
     return PaginatedResponse.create(
@@ -71,8 +69,6 @@ def list_documents(
 )
 async def upload_document(
     file: UploadFile = File(...),
-    course_id: int = Form(...),
-    project_id: int = Form(...),
     source_type: str = Form(default="reference", description="reference | guidelines | chapter"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -83,39 +79,37 @@ async def upload_document(
     Replicates the file uploader in the Streamlit Style tab document registry.
     Uses the existing file_parser._parse_uploaded_file() for extraction.
     """
+    import io
     from promptops_app.database import Document
     from promptops_app.parsers.file_parser import _parse_uploaded_file
 
     raw_bytes = await file.read()
 
-    class _FakeFile:
-        name = file.filename
-        def read(self): return raw_bytes
-        def getvalue(self): return raw_bytes
+    class _NamedBytesIO(io.BytesIO):
+        def __init__(self, data, name):
+            super().__init__(data)
+            self.name = name
 
-    name, content, err = _parse_uploaded_file(_FakeFile())
+    name, content, err = _parse_uploaded_file(_NamedBytesIO(raw_bytes, file.filename))
 
     if err:
         from app.core.exceptions import ValidationError
         raise ValidationError(f"Could not parse file '{file.filename}': {err}")
 
     doc = Document(
-        name=name,
+        filename=name,
         content=content,
         file_type=(file.filename or "").rsplit(".", 1)[-1].lower(),
-        source_type=source_type,
-        char_count=len(content or ""),
-        course_id=course_id,
-        project_id=project_id,
-        is_active=True,
-        created_by=current_user.username,
+        doc_tag=source_type,
+        status="active",
+        uploaded_by=current_user.username,
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    _log.info("document_uploaded  user=%s  doc_id=%d  name=%s  chars=%d",
-              current_user.username, doc.id, doc.name, doc.char_count or 0)
+    _log.info("document_uploaded  user=%s  doc_id=%d  name=%s",
+              current_user.username, doc.id, doc.filename)
     return DocumentRead.model_validate(doc)
 
 
@@ -146,7 +140,7 @@ def get_document_content(
 ) -> DocumentContentResponse:
     """Return the full parsed text of a document."""
     doc = _get_document_or_404(db, document_id)
-    return DocumentContentResponse(id=doc.id, name=doc.name, content=doc.content or "")
+    return DocumentContentResponse(id=doc.id, name=doc.filename, content=doc.content or "")
 
 
 @router.delete(
@@ -161,6 +155,6 @@ def delete_document(
 ) -> None:
     """Soft-archive a document by marking it inactive."""
     doc = _get_document_or_404(db, document_id)
-    doc.is_active = False
+    doc.status = "archived"
     db.commit()
     _log.info("document_archived  user=%s  doc_id=%d", current_user.username, document_id)

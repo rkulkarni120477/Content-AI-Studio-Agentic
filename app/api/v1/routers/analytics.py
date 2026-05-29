@@ -199,9 +199,19 @@ def get_usage_summary(
     """Return token counts and cost estimates from the LLMUsageLog table."""
     from promptops_app.repositories import usage_repository
 
-    summary = usage_repository.get_usage_summary(
+    scoped_user = current_user.username if current_user.role != "admin" else None
+
+    summary = usage_repository.get_summary(
         db,
-        user_name=current_user.username if current_user.role != "admin" else None,
+        user_name=scoped_user,
+        project_id=project_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    by_model_rows = usage_repository.cost_by_model(
+        db,
+        user_name=scoped_user,
         project_id=project_id,
         date_from=date_from,
         date_to=date_to,
@@ -209,18 +219,18 @@ def get_usage_summary(
 
     by_model = [
         UsageByModelItem(
-            model=row["model"],
-            prompt_tokens=row.get("prompt_tokens", 0),
-            completion_tokens=row.get("completion_tokens", 0),
-            cost_usd=row.get("cost_usd", 0.0),
+            model=row["Model"],
+            prompt_tokens=row.get("Tokens", 0),
+            completion_tokens=0,
+            cost_usd=row.get("Cost ($)", 0.0),
         )
-        for row in (summary.get("by_model") or [])
+        for row in by_model_rows
     ]
 
     return UsageSummaryResponse(
-        total_prompt_tokens=summary.get("total_prompt_tokens", 0),
-        total_completion_tokens=summary.get("total_completion_tokens", 0),
-        estimated_cost_usd=summary.get("estimated_cost_usd", 0.0),
+        total_prompt_tokens=summary.get("total_input_tokens", 0),
+        total_completion_tokens=summary.get("total_output_tokens", 0),
+        estimated_cost_usd=summary.get("total_cost", 0.0),
         by_model=by_model,
     )
 
