@@ -76,9 +76,8 @@ def list_styles(
     items = []
     for s in styles[start: start + page_size]:
         item = StyleListItem.model_validate(s)
-        # Truncate understanding to a short preview for list responses.
-        if s.understanding:
-            item.understanding_preview = s.understanding[:200]
+        if s.generated_summary:
+            item.understanding_preview = s.generated_summary[:200]
         items.append(item)
 
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
@@ -96,9 +95,12 @@ def create_style(
     current_user=Depends(require_permission("style.create")),
 ) -> StyleRead:
     """Create a style metadata shell. Documents are uploaded separately."""
+    import re
     from promptops_app.database import Style
 
+    slug = re.sub(r"[^a-z0-9]+", "_", request_body.name.lower()).strip("_")[:120]
     style = Style(
+        style_id=slug,
         name=request_body.name,
         description=request_body.description,
         is_active=False,
@@ -260,7 +262,7 @@ def generate_style_intelligence(
     style = _get_style_or_404(db, style_id)
 
     # Use regenerate if understanding already exists, otherwise generate fresh.
-    if style.understanding:
+    if style.generated_summary:
         result = regenerate_style_understanding(
             db,
             style,
@@ -286,7 +288,7 @@ def generate_style_intelligence(
 
     # Persist the result.
     understanding_text = result if isinstance(result, str) else str(result)
-    style.understanding = understanding_text
+    style.generated_summary = understanding_text
     db.commit()
 
     _log.info("style_understood  user=%s  style_id=%d  model=%s",

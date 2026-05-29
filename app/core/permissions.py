@@ -126,10 +126,13 @@ _PERMISSIONS: dict[str, list[str]] = {
     "users.toggle":          [_ADMIN],
     "users.assign":          [_ADMIN, _REVIEWER],
 
-    # ── Project and course management ─────────────────────────────────────────
+    # ── Project, cluster, and course management ───────────────────────────────
     "project.create":        [_ADMIN],
     "project.edit":          [_ADMIN],
     "project.delete":        [_ADMIN],
+    "cluster.create":        [_ADMIN],
+    "cluster.edit":          [_ADMIN],
+    "cluster.delete":        [_ADMIN],
     "course.create":         [_ADMIN, _REVIEWER],
     "course.edit":           [_ADMIN, _REVIEWER],
     "course.delete":         [_ADMIN],
@@ -155,6 +158,9 @@ _REVIEWER_BLOCKLIST: frozenset[str] = frozenset({
     "users.toggle",
     "project.create",
     "project.delete",
+    "cluster.create",
+    "cluster.edit",
+    "cluster.delete",
     "course.delete",
     "workflow.bulk_approve",
     "workflow.archive",
