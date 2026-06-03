@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -25,10 +26,22 @@ from app.core.dependencies import get_current_user, get_db, require_permission
 from app.schemas.analytics import (
     AnalyticsSummaryResponse,
     AuditEventRead,
+    AuditTrailFiltersResponse,
+    AuditTrailQuery,
+    CddBlueprintEventRow,
+    DocumentUploadHistoryRow,
+    FeedbackItemRead,
+    FeedbackSummaryResponse,
     GenerationHistoryRow,
+    LlmCostDashboardResponse,
+    LlmCostSummary,
     ProjectAnalyticsRow,
     PromptPerformanceItem,
+    PromptVersionHistoryRow,
     QualityTrendsResponse,
+    ReviewAnalyticsResponse,
+    ReviewItemRead,
+    SystemLogRead,
     UsageByModelItem,
     UsageSummaryResponse,
 )
@@ -235,67 +248,176 @@ def get_usage_summary(
     )
 
 
+def _parse_audit_date(value: str | None, *, end_of_day: bool = False):
+    from datetime import datetime as dt
+
+    if not value:
+        return None
+    try:
+        parsed = dt.strptime(value[:10], "%Y-%m-%d")
+        if end_of_day:
+            return parsed.replace(hour=23, minute=59, second=59)
+        return parsed
+    except ValueError:
+        return None
+
+
+def _audit_event_row(record) -> AuditEventRead:
+    from app.schemas.analytics import _parse_audit_metadata
+    from promptops_app.services.audit_service import get_event_meta
+
+    meta = get_event_meta(record.action)
+    return AuditEventRead(
+        id=record.id,
+        actor=record.user_id,
+        action=record.action,
+        label=meta.get("label", record.action),
+        icon=meta.get("icon", "📌"),
+        entity_type=record.entity_type,
+        entity_id=record.entity_id,
+        project_id=record.project_id,
+        course_id=record.course_id,
+        ip_address=record.ip_address,
+        metadata=_parse_audit_metadata(record.metadata_json),
+        created_at=record.created_at,
+    )
+
+
+@router.get(
+    "/audit-trail/filters",
+    response_model=AuditTrailFiltersResponse,
+    summary="Audit trail filter options",
+)
+def get_audit_trail_filters(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> AuditTrailFiltersResponse:
+    """Dropdown values for the Audit Trail tab (Streamlit parity)."""
+    from app.core.permissions import rbac_check
+    from promptops_app.repositories import analytics_repository
+    from promptops_app.services.audit_service import (
+        get_actors, get_all_actions, get_entity_types,
+    )
+
+    actors = get_actors(db)
+    if not rbac_check(current_user.role, "analytics.view_all"):
+        actors = [current_user.username]
+
+    projects = []
+    if rbac_check(current_user.role, "analytics.view_all"):
+        projects = [
+            {"id": p.id, "name": p.name}
+            for p in analytics_repository.list_active_projects_for_analytics(db)
+        ]
+
+    return AuditTrailFiltersResponse(
+        actors=actors,
+        actions=get_all_actions(db),
+        entity_types=get_entity_types(db),
+        projects=projects,
+    )
+
+
+def _resolve_audit_trail_query(query: AuditTrailQuery, current_user) -> tuple[dict, AuditTrailQuery]:
+    """Apply role scoping and parse dates for audit trail queries."""
+    from app.core.permissions import rbac_check
+
+    actor = query.actor
+    if not rbac_check(current_user.role, "analytics.view_all"):
+        actor = current_user.username
+
+    parsed_from = _parse_audit_date(query.date_from)
+    parsed_to = _parse_audit_date(query.date_to, end_of_day=True)
+
+    trail_kw = dict(
+        user_id=actor,
+        action=query.action,
+        entity_type=query.entity_type,
+        project_id=query.project_id,
+        date_from=parsed_from,
+        date_to=parsed_to,
+    )
+    return trail_kw, query.model_copy(update={"actor": actor})
+
+
 @router.get(
     "/audit-trail",
     response_model=PaginatedResponse[AuditEventRead],
     summary="Paginated audit trail",
-    description="Admin and Lead only. Searchable log of all user actions.",
+    description=(
+        "Admin and Lead only. Searchable log of all user actions. "
+        "Pass query parameters: entity_type, actor, action, project_id, "
+        "date_from, date_to, page, page_size."
+    ),
 )
-def get_audit_trail(
-    entity_type: str | None = Query(default=None),
-    actor: str | None = Query(default=None),
-    date_from: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
+def list_audit_trail(
+    query: Annotated[AuditTrailQuery, Query()],
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("system.view_logs")),
+    current_user=Depends(require_permission("system.analytics")),
 ) -> PaginatedResponse[AuditEventRead]:
     """Return paginated audit log events with optional filters."""
-    from promptops_app.services.audit_service import get_audit_trail
+    from promptops_app.services.audit_service import count_trail, get_audit_trail as fetch_audit_trail
 
-    events, total = get_audit_trail(
+    trail_kw, q = _resolve_audit_trail_query(query, current_user)
+    offset = (q.page - 1) * q.page_size
+    total = count_trail(db, **trail_kw)
+    events = fetch_audit_trail(
         db,
-        entity_type=entity_type,
-        actor=actor,
-        date_from=date_from,
-        page=page,
-        page_size=page_size,
+        actor=q.actor,
+        event_type=q.action,
+        entity=q.entity_type,
+        project_id=q.project_id,
+        date_from=trail_kw["date_from"],
+        date_to=trail_kw["date_to"],
+        limit=q.page_size,
+        offset=offset,
     )
 
     return PaginatedResponse.create(
-        items=[AuditEventRead.model_validate(e) for e in events],
-        total=total, page=page, page_size=page_size,
+        items=[_audit_event_row(e) for e in events],
+        total=total, page=q.page, page_size=q.page_size,
     )
 
 
 @router.get(
     "/audit-trail/export",
     summary="Export audit trail as CSV",
-    description="Downloads the full audit trail as a CSV file.",
+    description="Downloads audit events as CSV using the same filters as GET /audit-trail.",
 )
 def export_audit_trail(
+    query: Annotated[AuditTrailQuery, Query()],
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.audit_log")),
 ) -> Response:
     """
-    Export all audit events as a CSV download.
+    Export audit events as a CSV download (respects current filters).
 
     Replicates the "Export Audit Log" button in the Streamlit Analytics tab.
     """
-    from promptops_app.services.audit_service import get_audit_trail
+    from promptops_app.repositories.audit_repository import export_to_csv_rows
 
-    events, _ = get_audit_trail(db, page=1, page_size=100_000)
+    trail_kw, q = _resolve_audit_trail_query(query, current_user)
+    rows = export_to_csv_rows(
+        db,
+        user_id=trail_kw["user_id"],
+        action=trail_kw["action"],
+        entity_type=trail_kw["entity_type"],
+        project_id=trail_kw["project_id"],
+        date_from=trail_kw["date_from"],
+        date_to=trail_kw["date_to"],
+        limit=100_000,
+    )
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "actor", "action", "entity_type", "entity_id", "project_id", "course_id", "created_at"])
+    if rows:
+        writer.writerow(list(rows[0].keys()))
+        for row in rows:
+            writer.writerow(list(row.values()))
+    else:
+        writer.writerow(["id", "user_id", "action", "entity_type", "entity_id", "project_id", "course_id", "created_at"])
 
-    for e in events:
-        writer.writerow([e.id, e.actor, e.action, e.entity_type, e.entity_id,
-                         e.project_id, e.course_id,
-                         e.created_at.isoformat() if e.created_at else ""])
-
-    _log.info("audit_trail_exported  user=%s  rows=%d", current_user.username, len(events))
+    _log.info("audit_trail_exported  user=%s  rows=%d", current_user.username, len(rows))
     return Response(
         content=output.getvalue(),
         media_type="text/csv",
@@ -312,7 +434,7 @@ def get_generation_history(
     limit: int = Query(default=20, ge=1, le=100),
     project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("analytics.view_own")),
+    current_user=Depends(require_permission("system.analytics")),
 ) -> list[GenerationHistoryRow]:
     """Return recent generations with CDD and Blueprint labels for the history tab."""
     from promptops_app.repositories import (
@@ -337,3 +459,255 @@ def get_generation_history(
             cdd_label=cdd_lbl, blueprint_label=bp_lbl, created_at=g.created_at,
         ))
     return rows
+
+
+@router.get(
+    "/history/prompt-versions",
+    response_model=list[PromptVersionHistoryRow],
+    summary="Recent prompt registry commits",
+)
+def get_prompt_version_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> list[PromptVersionHistoryRow]:
+    from promptops_app.repositories import analytics_repository
+
+    versions = analytics_repository.list_recent_prompt_versions(db, limit=limit)
+    return [
+        PromptVersionHistoryRow(
+            prompt_id=v.prompt_id,
+            version=v.version or "",
+            notes=v.change_reason or "",
+            created_at=v.created_at,
+        )
+        for v in versions
+    ]
+
+
+@router.get(
+    "/history/document-uploads",
+    response_model=list[DocumentUploadHistoryRow],
+    summary="Recent document uploads",
+)
+def get_document_upload_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> list[DocumentUploadHistoryRow]:
+    from promptops_app.repositories import analytics_repository
+
+    docs = analytics_repository.list_recent_doc_uploads(db, limit=limit)
+    return [
+        DocumentUploadHistoryRow(
+            filename=d.filename,
+            tag=d.doc_tag or "general",
+            file_type=d.file_type,
+            user=d.uploaded_by,
+            created_at=d.uploaded_at,
+        )
+        for d in docs
+    ]
+
+
+@router.get(
+    "/history/cdd-blueprint-events",
+    response_model=list[CddBlueprintEventRow],
+    summary="CDD and Blueprint audit events",
+)
+def get_cdd_blueprint_history(
+    limit: int = Query(default=40, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> list[CddBlueprintEventRow]:
+    from promptops_app.repositories import analytics_repository
+
+    logs = analytics_repository.list_cdd_blueprint_events(db, limit=limit)
+    return [
+        CddBlueprintEventRow(
+            event=log.event_type.replace("_", " ").title(),
+            actor=log.actor,
+            details=log.details,
+            created_at=log.created_at,
+        )
+        for log in logs
+    ]
+
+
+@router.get(
+    "/feedback/summary",
+    response_model=FeedbackSummaryResponse,
+    summary="Feedback signal counts",
+)
+def get_feedback_summary(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("analytics.view_own")),
+) -> FeedbackSummaryResponse:
+    from promptops_app.repositories import generation_repository
+
+    return FeedbackSummaryResponse(
+        total=generation_repository.count_feedback_signals(db),
+        learning=generation_repository.count_feedback_signals_by_scope(db, "learning"),
+        one_time=generation_repository.count_feedback_signals_by_scope(db, "one_time"),
+    )
+
+
+@router.get(
+    "/feedback",
+    response_model=PaginatedResponse[FeedbackItemRead],
+    summary="Paginated feedback signals",
+)
+def list_feedback_signals(
+    scope: str | None = Query(default=None, description="learning | one_time"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("analytics.view_own")),
+) -> PaginatedResponse[FeedbackItemRead]:
+    from promptops_app.repositories import generation_repository
+
+    if scope == "learning":
+        total = generation_repository.count_feedback_signals_by_scope(db, "learning")
+    elif scope == "one_time":
+        total = generation_repository.count_feedback_signals_by_scope(db, "one_time")
+    else:
+        total = generation_repository.count_feedback_signals(db)
+
+    offset = (page - 1) * page_size
+    rows = generation_repository.list_feedback_signals_filtered(
+        db, scope=scope, limit=page_size, offset=offset,
+    )
+    items = [
+        FeedbackItemRead(
+            id=f.id,
+            source=(f.signal_source or "unknown").title(),
+            scope="Learning" if f.feedback_scope == "learning" else "One-time",
+            block_type=f.block_type,
+            instruction=(f.user_instruction or f.edit_reason or "—")[:500],
+            author=f.author,
+            created_at=f.created_at,
+        )
+        for f in rows
+    ]
+    return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get(
+    "/reviews",
+    response_model=ReviewAnalyticsResponse,
+    summary="Review analytics and recent reviews",
+)
+def get_review_analytics(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("analytics.view_own")),
+) -> ReviewAnalyticsResponse:
+    from promptops_app.repositories import analytics_repository, generation_repository
+
+    total = generation_repository.count_reviews(db)
+    if total == 0:
+        return ReviewAnalyticsResponse()
+
+    offset = (page - 1) * page_size
+    reviews = analytics_repository.list_recent_reviews(db, limit=page_size, offset=offset)
+    return ReviewAnalyticsResponse(
+        total=total,
+        approved=generation_repository.count_approved_reviews(db),
+        avg_score=round(generation_repository.avg_review_score(db), 1),
+        items=[
+            ReviewItemRead(
+                block_id=r.block_id,
+                reviewer=r.reviewer,
+                reviewer_role=r.reviewer_role,
+                score=r.score,
+                approved=bool(r.approved),
+                comments=(r.comments or "")[:500],
+                created_at=r.created_at,
+            )
+            for r in reviews
+        ],
+    )
+
+
+@router.get(
+    "/system-logs",
+    response_model=PaginatedResponse[SystemLogRead],
+    summary="System event log (observability)",
+)
+def list_system_logs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> PaginatedResponse[SystemLogRead]:
+    from promptops_app.repositories import analytics_repository
+
+    total = analytics_repository.count_system_logs(db)
+    offset = (page - 1) * page_size
+    logs = analytics_repository.list_system_logs(db, limit=page_size, offset=offset)
+    items = [SystemLogRead.model_validate(log) for log in logs]
+    return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get(
+    "/llm-cost",
+    response_model=LlmCostDashboardResponse,
+    summary="LLM cost dashboard (Streamlit parity)",
+)
+def get_llm_cost_dashboard(
+    project_id: int | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("llm_usage.view_own")),
+) -> LlmCostDashboardResponse:
+    from datetime import datetime as dt
+
+    from promptops_app.repositories import usage_repository
+
+    is_admin = current_user.role == "admin"
+    is_lead = current_user.role == "reviewer"
+    scoped_user = current_user.username if not is_admin else None
+    scoped_project = None if is_admin else project_id
+
+    parsed_from = dt.fromisoformat(date_from) if date_from else None
+    parsed_to = dt.fromisoformat(date_to) if date_to else None
+
+    kpi = usage_repository.get_summary(
+        db,
+        user_name=scoped_user if is_admin else (current_user.username if not is_lead else None),
+        project_id=scoped_project,
+        date_from=parsed_from,
+        date_to=parsed_to,
+    )
+
+    by_model = usage_repository.cost_by_model(
+        db,
+        user_name=scoped_user,
+        project_id=scoped_project,
+        date_from=parsed_from,
+        date_to=parsed_to,
+    )
+    monthly = usage_repository.monthly_usage(
+        db,
+        user_name=scoped_user,
+        project_id=scoped_project,
+    )
+
+    by_project = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to) if is_admin else []
+    by_course = usage_repository.cost_by_course(
+        db, project_id=scoped_project, date_from=parsed_from, date_to=parsed_to,
+    )
+    by_user = usage_repository.cost_by_user(
+        db, project_id=scoped_project, date_from=parsed_from, date_to=parsed_to,
+    ) if is_admin else []
+
+    return LlmCostDashboardResponse(
+        summary=LlmCostSummary(**kpi),
+        by_model=by_model,
+        monthly=monthly,
+        by_project=by_project,
+        by_course=by_course,
+        by_user=by_user,
+    )

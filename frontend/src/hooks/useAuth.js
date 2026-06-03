@@ -22,7 +22,8 @@ export function useAuth() {
   const isAuthor      = role === ROLES.AUTHOR;
   const canApprove    = isAdmin || isReviewer;
   const canGenerate   = Boolean(user);
-  const canManageUsers = isAdmin;
+  const canManageUsers = isAdmin || (user?.permissions?.includes('users.create') ?? false);
+  const canClearDb = isAdmin || (user?.permissions?.includes('system.clear_db') ?? false);
 
   function logout() {
     dispatch(logoutThunk());
@@ -43,6 +44,7 @@ export function useAuth() {
     canApprove,
     canGenerate,
     canManageUsers,
+    canClearDb,
     isLoading,
     logout,
     hasPermission,

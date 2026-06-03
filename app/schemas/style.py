@@ -43,18 +43,38 @@ class StyleUnderstandResponse(BaseModel):
 class StyleDocumentUploadResponse(BaseModel):
     uploaded: list[str] = Field(description="Filenames successfully parsed and saved.")
     errors: list[str] = Field(default_factory=list)
+    added: int = Field(default=0, description="Number of documents newly linked to the style.")
+
+
+class StyleReferenceDocument(BaseModel):
+    """Document linked to a style via style_documents."""
+
+    id: int
+    name: str
+    source_type: Optional[str] = Field(default="general", description="doc_tag from library")
+    file_type: Optional[str] = None
 
 
 class StyleRead(BaseModel):
     id: int
+    style_key: str = Field(
+        description="Unique slug identifier (Streamlit Style ID).",
+        alias="style_id",
+    )
     name: str
     description: Optional[str] = None
+    custom_instructions: Optional[str] = None
+    understanding_status: Optional[str] = Field(
+        default="fresh",
+        description='"fresh" | "stale" — stale when new files were added after last understand.',
+    )
     is_active: bool = False
     understanding: Optional[str] = Field(
         default=None,
-        validation_alias="generated_summary",
+        alias="generated_summary",
         description="AI-generated style intelligence. May be long.",
     )
+    reference_documents: list[StyleReferenceDocument] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

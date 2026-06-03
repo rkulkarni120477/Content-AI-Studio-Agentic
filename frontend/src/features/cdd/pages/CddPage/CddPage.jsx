@@ -90,10 +90,13 @@ export default function CddPage() {
     || (selectedStyleId === null && activeStyle)
     || null;
 
+  const projectId = selProject?.id ?? selCourse?.project_id;
+
   useEffect(() => {
+    if (!courseId) return;
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
-  }, [courseId, dispatch]);
+  }, [courseId, projectId, dispatch]);
 
   useEffect(() => {
     if (activeStyle?.id && selectedStyleId === null) {

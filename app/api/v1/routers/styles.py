@@ -35,6 +35,7 @@ from app.schemas.style import (
     StyleDocumentUploadResponse,
     StyleListItem,
     StyleRead,
+    StyleReferenceDocument,
     StyleUnderstandRequest,
     StyleUnderstandResponse,
     StyleUpdateRequest,
@@ -44,13 +45,32 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_style_or_404(db: Session, style_id: int):
+def _get_style_or_404(db: Session, style_id: int, *, with_documents: bool = False):
     """Fetch a style by ID or raise HTTP 404."""
     from promptops_app.repositories import style_repository
-    style = style_repository.get_style_by_id(db, style_id)
+    style = style_repository.get_style_by_id(db, style_id, with_documents=with_documents)
     if style is None:
         raise NotFoundError("Style", style_id)
     return style
+
+
+def _style_to_read(style) -> StyleRead:
+    """Build StyleRead including linked reference documents (Streamlit view parity)."""
+    ref_docs: list[StyleReferenceDocument] = []
+    for sd in getattr(style, "style_documents", None) or []:
+        doc = getattr(sd, "document", None)
+        if doc is None:
+            continue
+        ref_docs.append(
+            StyleReferenceDocument(
+                id=doc.id,
+                name=doc.filename,
+                source_type=doc.doc_tag or "general",
+                file_type=doc.file_type,
+            )
+        )
+    base = StyleRead.model_validate(style)
+    return base.model_copy(update={"reference_documents": ref_docs})
 
 
 @router.get(
@@ -112,7 +132,7 @@ def create_style(
 
     _log.info("style_created  user=%s  style_id=%d  name=%s",
               current_user.username, style.id, style.name)
-    return StyleRead.model_validate(style)
+    return _style_to_read(style)
 
 
 @router.get(
@@ -125,8 +145,9 @@ def get_style(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> StyleRead:
-    """Return full style details including the AI-generated understanding text."""
-    return StyleRead.model_validate(_get_style_or_404(db, style_id))
+    """Return full style details including linked documents (Streamlit view panel)."""
+    style = _get_style_or_404(db, style_id, with_documents=True)
+    return _style_to_read(style)
 
 
 @router.put(
@@ -151,7 +172,7 @@ def update_style(
     db.commit()
     db.refresh(style)
     _log.info("style_updated  user=%s  style_id=%d", current_user.username, style_id)
-    return StyleRead.model_validate(style)
+    return _style_to_read(style)
 
 
 @router.delete(
@@ -174,36 +195,59 @@ def delete_style(
 @router.post(
     "/{style_id}/documents",
     response_model=StyleDocumentUploadResponse,
-    summary="Upload reference documents to a style",
-    description="Accepts PDF, DOCX, XLSX, or TXT files. Files are parsed and stored for style intelligence generation.",
+    summary="Append reference documents to a style",
+    description=(
+        "Link documents from the library and/or upload new files. "
+        "Matches Streamlit 'Append Files' on the Style tab."
+    ),
 )
-async def upload_style_documents(
+async def append_style_documents(
     style_id: int,
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] | None = File(default=None),
+    document_ids: str = Form(
+        default="",
+        description="JSON array of document library IDs to link, e.g. [1, 2, 3]",
+    ),
+    additional_instructions: str = Form(
+        default="",
+        description="Optional instructions appended to the style (marks understanding stale).",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.upload")),
 ) -> StyleDocumentUploadResponse:
-    """
-    Parse and attach reference documents to a style.
+    """Append library documents and/or newly uploaded files to a style."""
+    import json
+    from datetime import datetime, timezone
 
-    Replicates the file uploader in the Streamlit Style tab.
-    Uses the existing file_parser.py to extract text from each file.
-    """
-    from promptops_app.database import add_files_to_style
+    from promptops_app.database import Document, add_files_to_style
     from promptops_app.parsers.file_parser import _parse_uploaded_file
+    from promptops_app.repositories import document_repository
 
-    _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, with_documents=True)
+    uploaded: list[str] = []
+    errors: list[str] = []
+    new_doc_ids: list[int] = []
 
-    uploaded, errors = [], []
+    if document_ids.strip():
+        try:
+            parsed = json.loads(document_ids)
+            if isinstance(parsed, list):
+                new_doc_ids.extend(int(x) for x in parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            from app.core.exceptions import ValidationError
+            raise ValidationError("document_ids must be a JSON array of integers.")
 
-    for upload in files:
+    for upload in files or []:
         raw_bytes = await upload.read()
 
-        # Wrap in a file-like object that matches what _parse_uploaded_file expects.
         class _FakeST:
             name = upload.filename
-            def read(self): return raw_bytes
-            def getvalue(self): return raw_bytes
+
+            def read(self):
+                return raw_bytes
+
+            def getvalue(self):
+                return raw_bytes
 
         name, content, err = _parse_uploaded_file(_FakeST())
 
@@ -211,26 +255,52 @@ async def upload_style_documents(
             errors.append(f"{upload.filename}: {err}")
             continue
 
-        if content:
-            from promptops_app.database import Document
-            doc = Document(
-                name=name,
-                content=content,
-                file_type=(upload.filename or "").rsplit(".", 1)[-1].lower(),
-                source_type="style",
-                char_count=len(content),
-                is_active=True,
-                created_by=current_user.username,
-            )
-            db.add(doc)
-            db.flush()
-            add_files_to_style(db, style_id, [doc])
+        if not content:
+            continue
+
+        existing = document_repository.get_document_by_filename(db, name)
+        if existing:
+            new_doc_ids.append(existing.id)
             uploaded.append(name)
+            continue
+
+        doc = Document(
+            filename=name,
+            content=content,
+            file_type=(upload.filename or "").rsplit(".", 1)[-1].lower(),
+            doc_tag="style_reference",
+            status="active",
+            uploaded_by=current_user.username,
+            uploaded_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(doc)
+        db.flush()
+        new_doc_ids.append(doc.id)
+        uploaded.append(name)
+
+    unique_ids = list(dict.fromkeys(new_doc_ids))
+    if not unique_ids:
+        from app.core.exceptions import ValidationError
+        raise ValidationError("No new files selected or uploaded.")
+
+    added = add_files_to_style(db, style, unique_ids)
+
+    if additional_instructions.strip():
+        prev = (style.custom_instructions or "").strip()
+        extra = additional_instructions.strip()
+        style.custom_instructions = f"{prev}\n{extra}".strip() if prev else extra
 
     db.commit()
-    _log.info("style_documents_uploaded  user=%s  style_id=%d  count=%d",
-              current_user.username, style_id, len(uploaded))
-    return StyleDocumentUploadResponse(uploaded=uploaded, errors=errors)
+
+    _log.info(
+        "style_documents_appended  user=%s  style_id=%d  added=%d  uploaded=%d",
+        current_user.username,
+        style_id,
+        added,
+        len(uploaded),
+    )
+    return StyleDocumentUploadResponse(uploaded=uploaded, errors=errors, added=added)
 
 
 @router.post(
@@ -266,19 +336,17 @@ def generate_style_intelligence(
         result = regenerate_style_understanding(
             db,
             style,
-            model_choice=request_body.model_choice,
-            extra_instructions=request_body.extra_instructions,
-            system_prompt_override=request_body.system_prompt_override,
-            user_name=current_user.username,
+            request_body.model_choice,
+            request_body.extra_instructions,
+            system_prompt=request_body.system_prompt_override,
         )
     else:
         result = generate_style_understanding(
             db,
             style,
-            model_choice=request_body.model_choice,
-            extra_instructions=request_body.extra_instructions,
-            system_prompt_override=request_body.system_prompt_override,
-            user_name=current_user.username,
+            request_body.model_choice,
+            request_body.extra_instructions,
+            system_prompt=request_body.system_prompt_override,
         )
 
     if not result or (isinstance(result, str) and result.startswith("ERROR")):
@@ -331,7 +399,7 @@ def activate_style(
     db.refresh(style)
 
     _log.info("style_activated  user=%s  style_id=%d", current_user.username, style_id)
-    return StyleRead.model_validate(style)
+    return _style_to_read(style)
 
 
 @router.post(
@@ -352,4 +420,4 @@ def deactivate_style(
     style = _get_style_or_404(db, style_id)
 
     _log.info("style_deactivated  user=%s  style_id=%d", current_user.username, style_id)
-    return StyleRead.model_validate(style)
+    return _style_to_read(style)

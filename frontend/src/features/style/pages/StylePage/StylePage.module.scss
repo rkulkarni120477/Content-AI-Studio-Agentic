@@ -349,13 +349,264 @@
   margin-bottom: $space-3;
 }
 
+.viewEmpty {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  line-height: 1.5;
+  padding: $space-4;
+  background: $color-gray-50;
+  border: 1px dashed $color-gray-300;
+  border-radius: $radius-lg;
+}
+
+.viewPanel {
+  @include flex-col;
+  gap: $space-4;
+  max-height: 70vh;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.viewMeta {
+  @include flex-col;
+  gap: $space-1;
+
+  &__label {
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  &__code {
+    font-family: $font-family-mono;
+    font-size: $font-size-sm;
+    color: #166534;
+    background: #f0fdf4;
+    padding: $space-1 $space-2;
+    border-radius: $radius-md;
+    width: fit-content;
+  }
+}
+
+.viewBlock {
+  @include flex-col;
+  gap: $space-2;
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+    margin: 0;
+  }
+}
+
+.viewRefList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  @include flex-col;
+  gap: $space-2;
+
+  &__item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: $space-2;
+    font-size: $font-size-sm;
+  }
+}
+
+.viewRefLink {
+  background: none;
+  border: none;
+  padding: 0;
+  color: $color-primary;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+
+  &:hover { opacity: 0.85; }
+  &:focus-visible { @include focus-ring; }
+}
+
+.viewRefTag {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+}
+
+.viewStale {
+  font-size: $font-size-sm;
+  color: #92400e;
+  background: #fff7ed;
+  border: 1px solid #fb923c;
+  border-radius: $radius-lg;
+  padding: $space-3;
+  margin: 0;
+}
+
+.viewSections {
+  @include flex-col;
+  gap: $space-3;
+}
+
+.viewSection {
+  border-radius: 0 $radius-lg $radius-lg 0;
+  padding: $space-3 $space-4;
+  border-left: 4px solid $color-gray-400;
+
+  &__head {
+    font-size: 0.72rem;
+    font-weight: $font-weight-bold;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: $space-2;
+  }
+
+  &__body {
+    font-size: 0.84rem;
+    color: $color-gray-700;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+
+  &--indigo {
+    background: #eef2ff;
+    border-left-color: #4338ca;
+    .viewSection__head { color: #4338ca; }
+  }
+
+  &--green {
+    background: #f0fdf4;
+    border-left-color: #166534;
+    .viewSection__head { color: #166534; }
+  }
+
+  &--amber {
+    background: #fff7ed;
+    border-left-color: #92400e;
+    .viewSection__head { color: #92400e; }
+  }
+
+  &--red {
+    background: #fef2f2;
+    border-left-color: #991b1b;
+    .viewSection__head { color: #991b1b; }
+  }
+}
+
 .viewTextarea {
   width: 100%;
-  min-height: 280px;
   @include form-field-base;
   font-family: $font-family-mono;
   font-size: 0.85rem;
   white-space: pre-wrap;
+}
+
+.refinePanel {
+  @include flex-col;
+  gap: $space-4;
+}
+
+.refineBlock {
+  @include flex-col;
+  gap: $space-2;
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+    margin: 0;
+  }
+
+  &__caption {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    margin: 0;
+  }
+}
+
+.refineExcerpt {
+  font-size: $font-size-sm;
+  color: $color-gray-700;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  padding: $space-3;
+  max-height: 160px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.refineLabel {
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-800;
+}
+
+.refineRequired {
+  color: #dc2626;
+}
+
+.refineTextarea {
+  width: 100%;
+  @include form-field-base;
+  font-size: $font-size-sm;
+  resize: vertical;
+  min-height: 100px;
+}
+
+.addFilesPanel {
+  @include flex-col;
+  gap: $space-4;
+}
+
+.addFilesIntro {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.addFilesBlock {
+  @include flex-col;
+  gap: $space-2;
+}
+
+.addFilesLabel {
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-800;
+  display: inline-flex;
+  align-items: center;
+  gap: $space-1;
+}
+
+.addFilesHint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: $color-gray-200;
+  color: $color-gray-600;
+  font-size: 0.65rem;
+  font-weight: $font-weight-bold;
+  cursor: help;
+}
+
+.addFilesEmpty {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: 0;
+  padding: $space-2 0;
 }
 
 .docPicker {

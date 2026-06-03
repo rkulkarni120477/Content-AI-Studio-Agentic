@@ -3,6 +3,7 @@ import {
   fetchStylesThunk, createStyleThunk, activateStyleThunk,
   deactivateStyleThunk, fetchDocumentsThunk, uploadDocumentsThunk,
   regenerateStyleThunk,
+  refineStyleThunk,
   deleteStyleThunk,
   updateStyleThunk,
   deleteDocumentThunk,
@@ -67,10 +68,30 @@ const styleSlice = createSlice({
       .addCase(regenerateStyleThunk.pending,  (s) => { s.isGenerating = true; })
       .addCase(regenerateStyleThunk.fulfilled,(s, { payload }) => {
         s.isGenerating = false;
-        s.styles = s.styles.map((st) => st.id === payload.id ? payload : st);
-        if (s.activeStyle?.id === payload.id) s.activeStyle = payload;
+        const styleId = payload?.style_id ?? payload?.id;
+        const text = payload?.understanding ?? payload?.generated_summary ?? '';
+        if (!styleId) return;
+        s.styles = s.styles.map((st) => (
+          st.id === styleId
+            ? { ...st, understanding_preview: text ? String(text).slice(0, 200) : st.understanding_preview }
+            : st
+        ));
       })
-      .addCase(regenerateStyleThunk.rejected, (s, { payload }) => { s.isGenerating = false; s.error = payload; });
+      .addCase(regenerateStyleThunk.rejected, (s, { payload }) => { s.isGenerating = false; s.error = payload; })
+
+      .addCase(refineStyleThunk.pending,   (s) => { s.isGenerating = true; })
+      .addCase(refineStyleThunk.fulfilled, (s, { payload }) => {
+        s.isGenerating = false;
+        const styleId = payload?.style_id ?? payload?.id;
+        const text = payload?.understanding ?? '';
+        if (!styleId) return;
+        s.styles = s.styles.map((st) => (
+          st.id === styleId
+            ? { ...st, understanding_preview: text ? String(text).slice(0, 200) : st.understanding_preview }
+            : st
+        ));
+      })
+      .addCase(refineStyleThunk.rejected,  (s, { payload }) => { s.isGenerating = false; s.error = payload; });
 
     b.addCase(updateStyleThunk.fulfilled, (s, { payload }) => {
       s.styles = s.styles.map((st) => st.id === payload.id ? payload : st);

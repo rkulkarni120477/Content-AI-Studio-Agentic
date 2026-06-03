@@ -44,6 +44,41 @@
   margin: (-$space-2) 0 $space-3;
 }
 
+.card__header {
+  @include flex-between;
+  align-items: center;
+  margin-bottom: $space-3;
+}
+
+.miniKpiRow {
+  display: flex;
+  gap: $space-4;
+  flex-wrap: wrap;
+  margin-bottom: $space-4;
+}
+
+.miniKpi {
+  @include flex-col;
+  gap: $space-1;
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+
+  strong {
+    font-size: $font-size-lg;
+    color: $color-gray-900;
+  }
+}
+
+.feedbackFilter {
+  max-width: 280px;
+  margin-bottom: $space-4;
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+}
+
 .tabs {
   display: flex;
   gap: 2px;
@@ -114,3 +149,189 @@
 
 .badge__active   { @include badge($color-success-bg, $color-success, $color-success-light); }
 .badge__inactive { @include badge($color-gray-100, $color-gray-500); }
+
+.adminBlock {
+  margin-top: $space-5;
+  padding-top: $space-4;
+  border-top: 1px solid $color-gray-100;
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    margin-bottom: $space-3;
+  }
+
+  &__row {
+    @include flex-start;
+    gap: $space-3;
+    flex-wrap: wrap;
+  }
+}
+
+.toggleSelect {
+  min-width: 280px;
+  flex: 1;
+}
+
+.sectionHeading {
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-900;
+  margin: 0 0 $space-4;
+}
+
+.addUserForm {
+  @include flex-col;
+  gap: $space-4;
+
+  &__row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: $space-4;
+
+    @media (max-width: 640px) {
+      grid-template-columns: 1fr;
+    }
+  }
+}
+
+.toggleAccess {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: $space-4;
+  align-items: end;
+
+  @media (max-width: 640px) {
+    grid-template-columns: 1fr;
+  }
+
+  &__btn {
+    white-space: nowrap;
+    min-width: 140px;
+  }
+}
+
+.clearList {
+  @include flex-col;
+}
+
+.clearRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: $space-4;
+  align-items: start;
+  padding: $space-4 0;
+  border-bottom: 1px solid #f1f5f9;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &__body {
+    min-width: 0;
+  }
+
+  &__label {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    margin-bottom: $space-1;
+  }
+
+  &__info {
+    font-size: 0.78rem;
+    color: $color-gray-500;
+    margin: 0;
+    line-height: 1.45;
+  }
+
+  &__actions {
+    @include flex-col;
+    gap: $space-2;
+    min-width: 120px;
+    align-items: stretch;
+  }
+}
+
+.clearEverythingConfirm {
+  margin-top: $space-4;
+}
+
+.clearEverythingWarn {
+  font-size: $font-size-sm;
+  color: $color-danger;
+  background: $color-danger-bg;
+  border: 1px solid $color-danger-light;
+  border-radius: $radius-md;
+  padding: $space-3 $space-4;
+  margin: 0 0 $space-3;
+}
+
+.clearEverythingActions {
+  @include flex-start;
+  gap: $space-2;
+}
+
+.auditFilters {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $space-4;
+  margin-bottom: $space-4;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr 1fr;
+  }
+  @media (max-width: 560px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.auditSummary {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: 0 0 $space-3;
+}
+
+.permToggle {
+  width: 100%;
+  text-align: left;
+  font-size: $font-size-md;
+  font-weight: $font-weight-semibold;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  color: $color-gray-900;
+
+  &:hover { color: $color-primary; }
+}
+
+.permGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: $space-4;
+  margin-top: $space-4;
+}
+
+.permRoleBadge {
+  grid-column: 1 / -1;
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+}
+
+.permCategory {
+  font-size: $font-size-sm;
+
+  &__title {
+    font-weight: $font-weight-semibold;
+    margin-bottom: $space-2;
+  }
+}
+
+.permList {
+  margin: 0;
+  padding-left: $space-4;
+  color: $color-gray-600;
+
+  li { margin-bottom: $space-1; }
+}

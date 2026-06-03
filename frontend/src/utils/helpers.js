@@ -12,6 +12,16 @@ export function formatDateTime(dateStr) {
   return formatDate(dateStr, { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Streamlit audit trail: YYYY-MM-DD HH:MM:SS */
+export function formatTimestamp(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '—';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+    + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 export function formatRelative(dateStr) {
   if (!dateStr) return '—';
   const diff = Date.now() - new Date(dateStr).getTime();

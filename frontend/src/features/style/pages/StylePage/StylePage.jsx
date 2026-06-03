@@ -6,11 +6,12 @@ import {
   fetchStylesThunk, createStyleThunk, activateStyleThunk,
   deactivateStyleThunk, fetchDocumentsThunk, uploadDocumentsThunk,
   regenerateStyleThunk,
+  refineStyleThunk,
   deleteStyleThunk,
-  updateStyleThunk,
   uploadStyleDocsThunk,
 } from '@features/style/styleThunks';
 import { deleteDocumentThunk } from '@features/style/styleThunks';
+import { styleService } from '@features/style/services/styleService';
 import {
   selectStyles, selectDocuments, selectActiveStyle,
   selectStyleLoading, selectStyleGenerating, selectStyleError,
@@ -20,6 +21,7 @@ import { formatDate } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
+import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Table from '@components/common/Table/Table';
 import FileUpload from '@components/common/FileUpload/FileUpload';
 import Modal from '@components/common/Modal/Modal';
@@ -35,9 +37,26 @@ import {
   fetchPromptsThunk, commitPromptThunk, fetchPromptVersionsThunk, aiGeneratePromptThunk,
 } from '@features/prompts/promptsThunks';
 import Select from '@components/common/Select/Select';
+import toast from 'react-hot-toast';
+import { extractErrorMessage } from '@utils/helpers';
+import { parseStyleUnderstanding } from '@features/style/utils/styleUnderstanding';
 import styles from './StylePage.module.scss';
 
 const TABS = ['Style Management', 'Document Registry'];
+
+function styleUnderstandingText(style) {
+  if (!style) return '';
+  return style.understanding ?? style.generated_summary ?? '';
+}
+
+function styleSlug(style) {
+  return style?.style_key ?? style?.style_id ?? '';
+}
+
+function documentPreviewText(preview) {
+  if (!preview) return '';
+  return preview.content ?? preview.text ?? preview.full_content ?? '';
+}
 
 export default function StylePage() {
   const dispatch    = useAppDispatch();
@@ -60,9 +79,17 @@ export default function StylePage() {
   const [viewStyleId, setViewStyleId] = useState(null);
   const [viewStyle, setViewStyle] = useState(null);
   const [viewLoading, setViewLoading] = useState(false);
-  const [editStyle, setEditStyle] = useState(null); // { id, name, description }
+  const [refineStyle, setRefineStyle] = useState(null); // { id, name, excerpt }
+  const [refineCorrections, setRefineCorrections] = useState('');
+  const [refineLoading, setRefineLoading] = useState(false);
   const [filesStyleId, setFilesStyleId] = useState(null);
+  const [filesStyleName, setFilesStyleName] = useState('');
   const [filesToUpload, setFilesToUpload] = useState([]);
+  const [selectedLibDocIds, setSelectedLibDocIds] = useState([]);
+  const [filesExtraInstructions, setFilesExtraInstructions] = useState('');
+  const [linkedDocIds, setLinkedDocIds] = useState(() => new Set());
+  const [modalLibraryDocs, setModalLibraryDocs] = useState([]);
+  const [filesModalLoading, setFilesModalLoading] = useState(false);
   const [deleteStyleId, setDeleteStyleId] = useState(null);
 
   // Document Registry UI (Streamlit-like)
@@ -92,7 +119,7 @@ export default function StylePage() {
   useEffect(() => {
     dispatch(fetchStylesThunk());
     dispatch(fetchDocumentsThunk());
-  }, [dispatch]);
+  }, []);
 
   useEffect(() => {
     // Streamlit shows Prompt Library within Style Management
@@ -119,8 +146,139 @@ export default function StylePage() {
     try {
       const full = await styleService.getStyle(styleId);
       setViewStyle(full);
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      setViewStyleId(null);
     } finally {
       setViewLoading(false);
+    }
+  }
+
+  const UNDERSTANDING_EXCERPT_LEN = 400;
+
+  async function openRefine(styleId, styleName) {
+    setRefineLoading(true);
+    setRefineCorrections('');
+    setRefineStyle({ id: styleId, name: styleName, excerpt: '' });
+    try {
+      const full = await styleService.getStyle(styleId);
+      const text = styleUnderstandingText(full);
+      if (!text) {
+        toast.error('Generate an initial understanding first (click Understand).');
+        setRefineStyle(null);
+        return;
+      }
+      const excerpt = text.length > UNDERSTANDING_EXCERPT_LEN
+        ? `${text.slice(0, UNDERSTANDING_EXCERPT_LEN)}…`
+        : text;
+      setRefineStyle({ id: styleId, name: full.name || styleName, excerpt });
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      setRefineStyle(null);
+    } finally {
+      setRefineLoading(false);
+    }
+  }
+
+  async function onRefineSubmit() {
+    if (!refineStyle?.id) return;
+    if (!refineCorrections.trim()) {
+      toast.error('Please enter corrections or guidance.');
+      return;
+    }
+    const result = await dispatch(refineStyleThunk({
+      styleId: refineStyle.id,
+      corrections: refineCorrections.trim(),
+    }));
+    if (!result.error) {
+      setRefineStyle(null);
+      setRefineCorrections('');
+      if (viewStyleId === refineStyle.id) {
+        await openView(refineStyle.id);
+      }
+    }
+  }
+
+  async function openAddFiles(styleId, styleName) {
+    setFilesStyleId(styleId);
+    setFilesStyleName(styleName);
+    setFilesToUpload([]);
+    setSelectedLibDocIds([]);
+    setFilesExtraInstructions('');
+    setFilesModalLoading(true);
+    try {
+      const [full, libDocs] = await Promise.all([
+        styleService.getStyle(styleId),
+        styleService.listAllDocuments(),
+      ]);
+      setLinkedDocIds(new Set((full.reference_documents || []).map((d) => d.id)));
+      setModalLibraryDocs(libDocs);
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      setFilesStyleId(null);
+    } finally {
+      setFilesModalLoading(false);
+    }
+  }
+
+  function closeAddFilesModal() {
+    setFilesStyleId(null);
+    setFilesStyleName('');
+    setFilesToUpload([]);
+    setSelectedLibDocIds([]);
+    setFilesExtraInstructions('');
+    setLinkedDocIds(new Set());
+    setModalLibraryDocs([]);
+  }
+
+  const availableLibDocs = (modalLibraryDocs.length ? modalLibraryDocs : documents || [])
+    .filter((d) => !linkedDocIds.has(d.id));
+
+  const librarySelectOptions = availableLibDocs.map((d) => ({
+    value: d.id,
+    label: d.name || `Document #${d.id}`,
+  }));
+
+  async function onAppendStyleFiles() {
+    if (!filesStyleId) return;
+    if (selectedLibDocIds.length === 0 && filesToUpload.length === 0) {
+      toast.error('No new files selected or uploaded.');
+      return;
+    }
+    const styleId = filesStyleId;
+    const result = await dispatch(uploadStyleDocsThunk({
+      styleId,
+      files: filesToUpload,
+      documentIds: selectedLibDocIds,
+      additionalInstructions: filesExtraInstructions,
+    }));
+    if (!result.error) {
+      closeAddFilesModal();
+      if (viewStyleId === styleId) {
+        await openView(styleId);
+      }
+    }
+  }
+
+  async function onUnderstandStyle(styleId) {
+    const result = await dispatch(regenerateStyleThunk(styleId));
+    if (!result.error && viewStyleId === styleId) {
+      await openView(styleId);
+    }
+  }
+
+  async function openDocPreview(documentId) {
+    setDocPreviewId(documentId);
+    setDocPreview(null);
+    setDocPreviewLoading(true);
+    try {
+      const content = await styleService.getDocumentContent(documentId);
+      setDocPreview(content);
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      setDocPreviewId(null);
+    } finally {
+      setDocPreviewLoading(false);
     }
   }
 
@@ -137,17 +295,7 @@ export default function StylePage() {
           <Button
             variant="ghost"
             size="xs"
-            onClick={async () => {
-              setDocPreviewId(row.id);
-              setDocPreview(null);
-              setDocPreviewLoading(true);
-              try {
-                const content = await styleService.getDocumentContent(row.id);
-                setDocPreview(content);
-              } finally {
-                setDocPreviewLoading(false);
-              }
-            }}
+            onClick={() => openDocPreview(row.id)}
           >
             View
           </Button>
@@ -279,15 +427,16 @@ export default function StylePage() {
                     </div>
                     <div className={styles.styleItem__actions}>
                       <Button variant="ghost" size="xs" onClick={() => openView(style.id)}>View</Button>
-                      <Button variant="ghost" size="xs" onClick={() => dispatch(regenerateStyleThunk(style.id))}>Understand</Button>
+                      <Button variant="ghost" size="xs" onClick={() => onUnderstandStyle(style.id)} loading={isGenerating}>Understand</Button>
                       <Button
                         variant="ghost"
                         size="xs"
-                        onClick={() => setEditStyle({ id: style.id, name: style.name, description: style.description || '' })}
+                        onClick={() => openRefine(style.id, style.name)}
+                        disabled={isGenerating}
                       >
                         Refine
                       </Button>
-                      <Button variant="ghost" size="xs" onClick={() => { setFilesStyleId(style.id); setFilesToUpload([]); }}>
+                      <Button variant="ghost" size="xs" onClick={() => openAddFiles(style.id, style.name)}>
                         + Files
                       </Button>
                       {style.is_active ? (
@@ -530,17 +679,7 @@ export default function StylePage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={async () => {
-                        setDocPreviewId(doc.id);
-                        setDocPreview(null);
-                        setDocPreviewLoading(true);
-                        try {
-                          const content = await styleService.getDocumentContent(doc.id);
-                          setDocPreview(content);
-                        } finally {
-                          setDocPreviewLoading(false);
-                        }
-                      }}
+                      onClick={() => openDocPreview(doc.id)}
                       title="View"
                     >
                       👁️
@@ -556,82 +695,209 @@ export default function StylePage() {
       )}
 
 
-      {/* View modal */}
+      {/* View modal — Streamlit Style Details panel parity */}
       <Modal
         open={Boolean(viewStyleId)}
         onClose={() => { setViewStyleId(null); setViewStyle(null); }}
         title={`Style Details${viewStyle?.name ? ` — ${viewStyle.name}` : ''}`}
-        size="md"
+        size="lg"
         footer={<Button variant="ghost" onClick={() => { setViewStyleId(null); setViewStyle(null); }}>Close</Button>}
       >
         {viewLoading ? (
           <Loader size="lg" />
-        ) : (
+        ) : viewStyle ? (
+          <div className={styles.viewPanel}>
+            {viewStyle.description && <p className={styles.viewDesc}>{viewStyle.description}</p>}
+
+            {styleSlug(viewStyle) && (
+              <div className={styles.viewMeta}>
+                <span className={styles.viewMeta__label}>Style ID</span>
+                <code className={styles.viewMeta__code}>{styleSlug(viewStyle)}</code>
+              </div>
+            )}
+
+            {viewStyle.custom_instructions && (
+              <div className={styles.viewBlock}>
+                <h3 className={styles.viewBlock__title}>Custom Instructions</h3>
+                <textarea
+                  className={styles.viewTextarea}
+                  rows={4}
+                  readOnly
+                  value={viewStyle.custom_instructions}
+                />
+              </div>
+            )}
+
+            {(viewStyle.reference_documents?.length > 0) && (
+              <div className={styles.viewBlock}>
+                <h3 className={styles.viewBlock__title}>
+                  Reference Documents ({viewStyle.reference_documents.length})
+                </h3>
+                <ul className={styles.viewRefList}>
+                  {viewStyle.reference_documents.map((doc) => (
+                    <li key={doc.id} className={styles.viewRefList__item}>
+                      <button
+                        type="button"
+                        className={styles.viewRefLink}
+                        onClick={() => openDocPreview(doc.id)}
+                        title="Preview document content"
+                      >
+                        📄 {doc.name}
+                      </button>
+                      <span className={styles.viewRefTag}>({doc.source_type || 'general'})</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {viewStyle.understanding_status === 'stale' && (
+              <p className={styles.viewStale}>
+                Understanding is out of date — new files were added. Click <strong>Understand</strong> to regenerate.
+              </p>
+            )}
+
+            <div className={styles.viewBlock}>
+              <h3 className={styles.viewBlock__title}>🧠 Style Intelligence Layer</h3>
+              {(() => {
+                const text = styleUnderstandingText(viewStyle);
+                if (!text) {
+                  return (
+                    <p className={styles.viewEmpty}>
+                      No understanding generated yet. Click <strong>Understand</strong> to generate.
+                    </p>
+                  );
+                }
+                const { sections, rawFallback } = parseStyleUnderstanding(text);
+                if (rawFallback) {
+                  return (
+                    <textarea className={styles.viewTextarea} rows={14} readOnly value={text} />
+                  );
+                }
+                return (
+                  <div className={styles.viewSections}>
+                    {sections.map((sec) => (
+                      <div key={sec.name} className={`${styles.viewSection} ${styles[`viewSection--${sec.tone}`]}`}>
+                        <div className={styles.viewSection__head}>
+                          {sec.icon} {sec.name}
+                        </div>
+                        <div className={styles.viewSection__body}>{sec.body}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* Refine modal — Streamlit "Refine Style Understanding" panel */}
+      <Modal
+        open={Boolean(refineStyle)}
+        onClose={() => { setRefineStyle(null); setRefineCorrections(''); }}
+        title={`Refine Style Understanding${refineStyle?.name ? ` — ${refineStyle.name}` : ''}`}
+        size="md"
+        footer={
           <>
-            {viewStyle?.description && <p className={styles.viewDesc}>{viewStyle.description}</p>}
-            <textarea className={styles.viewTextarea} rows={12} readOnly value={viewStyle?.understanding || ''} />
+            <Button variant="ghost" onClick={() => { setRefineStyle(null); setRefineCorrections(''); }}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={isGenerating}
+              disabled={refineLoading || !refineCorrections.trim()}
+              onClick={onRefineSubmit}
+            >
+              Regenerate Understanding
+            </Button>
           </>
+        }
+      >
+        {refineLoading ? (
+          <Loader size="lg" />
+        ) : (
+          <div className={styles.refinePanel}>
+            <div className={styles.refineBlock}>
+              <h3 className={styles.refineBlock__title}>Current Intelligence Layer (excerpt)</h3>
+              <p className={styles.refineBlock__caption}>Style Understanding Output</p>
+              <div className={styles.refineExcerpt}>{refineStyle?.excerpt || '—'}</div>
+            </div>
+            <label className={styles.refineLabel} htmlFor="refine-corrections">
+              Corrections / additional guidance <span className={styles.refineRequired}>*</span>
+            </label>
+            <textarea
+              id="refine-corrections"
+              className={styles.refineTextarea}
+              rows={5}
+              value={refineCorrections}
+              onChange={(e) => setRefineCorrections(e.target.value)}
+              placeholder="e.g. The tone should be warmer, not purely academic. Add guidance on scenario-based openings."
+            />
+          </div>
         )}
       </Modal>
 
-      {/* Refine modal */}
-      <Modal
-        open={Boolean(editStyle)}
-        onClose={() => setEditStyle(null)}
-        title={`Edit Style — ${editStyle?.name || ''}`}
-        size="sm"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setEditStyle(null)}>Cancel</Button>
-            <Button
-              variant="primary"
-              onClick={() => {
-                dispatch(updateStyleThunk({
-                  styleId: editStyle.id,
-                  data: { name: editStyle.name, description: editStyle.description || null },
-                }));
-                setEditStyle(null);
-              }}
-            >
-              Save
-            </Button>
-          </>
-        }
-      >
-        <Input label="Style Name" value={editStyle?.name || ''} onChange={(e) => setEditStyle((s) => ({ ...s, name: e.target.value }))} />
-        <Input label="Description" value={editStyle?.description || ''} onChange={(e) => setEditStyle((s) => ({ ...s, description: e.target.value }))} />
-      </Modal>
-
-      {/* +Files modal */}
+      {/* +Files modal — Streamlit "Add Files to Style" panel */}
       <Modal
         open={Boolean(filesStyleId)}
-        onClose={() => { setFilesStyleId(null); setFilesToUpload([]); }}
-        title="Add Files to Style"
-        size="sm"
+        onClose={closeAddFilesModal}
+        title={`Add Files to Style${filesStyleName ? ` — ${filesStyleName}` : ''}`}
+        size="md"
         footer={
           <>
-            <Button variant="ghost" onClick={() => { setFilesStyleId(null); setFilesToUpload([]); }}>Cancel</Button>
+            <Button variant="ghost" onClick={closeAddFilesModal}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={filesToUpload.length === 0}
-              onClick={() => {
-                dispatch(uploadStyleDocsThunk({ styleId: filesStyleId, files: filesToUpload }));
-                setFilesStyleId(null);
-                setFilesToUpload([]);
-              }}
+              disabled={filesModalLoading || (selectedLibDocIds.length === 0 && filesToUpload.length === 0)}
+              onClick={onAppendStyleFiles}
             >
-              Upload
+              Append Files
             </Button>
           </>
         }
       >
-        <FileUpload
-          accept=".pdf,.docx,.txt,.xlsx"
-          multiple
-          onChange={setFilesToUpload}
-          label="Drop style files here or click to browse"
-          hint="Supported: PDF, DOCX, TXT, XLSX"
-        />
+        {filesModalLoading ? (
+          <Loader size="lg" />
+        ) : (
+          <div className={styles.addFilesPanel}>
+            <p className={styles.addFilesIntro}>
+              Upload additional reference files. They will be appended to the existing file list —
+              no existing files will be removed.
+            </p>
+
+            <MultiSelect
+              label="Add from document library"
+              hint="Only documents not already linked to this style are shown."
+              placeholder="Choose options"
+              options={librarySelectOptions}
+              value={selectedLibDocIds}
+              onChange={setSelectedLibDocIds}
+              disabled={librarySelectOptions.length === 0}
+            />
+            {librarySelectOptions.length === 0 && (
+              <p className={styles.addFilesEmpty}>
+                No library documents available to add (all are already linked or the registry is empty).
+              </p>
+            )}
+
+            <div className={styles.addFilesBlock}>
+              <span className={styles.addFilesLabel}>Upload new reference files</span>
+              <FileUpload
+                accept=".pdf,.docx,.txt"
+                multiple
+                onChange={setFilesToUpload}
+                label="Upload"
+                hint="200MB per file · PDF, DOCX, TXT"
+              />
+            </div>
+
+            <Input
+              label="Additional Instructions (optional)"
+              placeholder="e.g. Focus more on assessment tone"
+              value={filesExtraInstructions}
+              onChange={(e) => setFilesExtraInstructions(e.target.value)}
+            />
+          </div>
+        )}
       </Modal>
 
       <ConfirmDialog
@@ -645,8 +911,12 @@ export default function StylePage() {
       />
 
       <Modal open={Boolean(docPreviewId)} onClose={() => { setDocPreviewId(null); setDocPreview(null); }} title={`Document Preview${docPreview?.name ? ` — ${docPreview.name}` : ''}`} size="md">
-        {docPreviewLoading ? <Loader size="lg" /> : (
-          <textarea className={styles.viewTextarea} rows={14} readOnly value={docPreview?.content || ''} />
+        {docPreviewLoading ? <Loader size="lg" /> : documentPreviewText(docPreview) ? (
+          <textarea className={styles.viewTextarea} rows={14} readOnly value={documentPreviewText(docPreview)} />
+        ) : (
+          <p className={styles.viewEmpty}>
+            No extracted text for this document. Re-upload the file or update it in Streamlit if content was never parsed.
+          </p>
         )}
       </Modal>
 

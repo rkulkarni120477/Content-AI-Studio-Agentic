@@ -1,14 +1,28 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { cddService } from './services/cddService';
+import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { extractErrorMessage } from '@utils/helpers';
+import { resolveProjectId } from '@utils/workspaceContext';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
   'cdd/fetch',
   async (courseId, { getState, rejectWithValue }) => {
     try {
-      const projectId = getState()?.dashboard?.selectedProject?.id;
-      const items = await cddService.listCdds(courseId, { project_id: projectId });
+      const cid = Number(courseId);
+      let projectId = resolveProjectId(getState);
+      if (!projectId && cid) {
+        try {
+          const course = await dashboardService.getCourse(cid);
+          projectId = course?.project_id ?? null;
+        } catch {
+          /* course lookup failed — list without project filter */
+        }
+      }
+      const items = await cddService.listCdds(cid, {
+        project_id: projectId ?? undefined,
+        course_id: cid,
+      });
       const course = getState()?.dashboard?.selectedCourse;
       const activeId = course?.id === Number(courseId) ? course.active_cdd_id : null;
       let activeCdd = null;

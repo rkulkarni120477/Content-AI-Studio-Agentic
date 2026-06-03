@@ -11,17 +11,28 @@ export const styleService = {
   deactivateStyle:  (id)         => api.post(STYLES.DEACTIVATE(id)),
   uploadStyleDocs:  (id, formData) => api.upload(DOCUMENTS.STYLE_DOCS(id), formData),
   getVersions:      (id)         => api.get(STYLES.VERSIONS(id)),
-  regenerateStyle:  (id)         => api.post(STYLES.REGENERATE(id)),
+  regenerateStyle:  (id, body = {}) => api.post(STYLES.UNDERSTAND(id), body),
   listDocuments:    async (courseId, projectId) => {
-    const res = await api.get(DOCUMENTS.LIST, {
-      params: {
-        course_id: courseId,
-        project_id: projectId,
-        page: 1,
-        page_size: 100,
-      },
-    });
+    const params = { page: 1, page_size: 500 };
+    if (courseId) params.course_id = courseId;
+    if (projectId) params.project_id = projectId;
+    const res = await api.get(DOCUMENTS.LIST, { params });
     return res.items || [];
+  },
+  /** Fetch full document library (paginated) for style file picker. */
+  listAllDocuments: async () => {
+    const pageSize = 100;
+    let page = 1;
+    let items = [];
+    let total = 0;
+    do {
+      const res = await api.get(DOCUMENTS.LIST, { params: { page, page_size: pageSize } });
+      const batch = res.items || [];
+      items = items.concat(batch);
+      total = res.total ?? items.length;
+      page += 1;
+    } while (items.length < total && page <= 50);
+    return items;
   },
   getDocumentContent: (id)        => api.get(DOCUMENTS.CONTENT(id)),
   uploadDocuments:  (formData)   => api.upload(DOCUMENTS.UPLOAD, formData),

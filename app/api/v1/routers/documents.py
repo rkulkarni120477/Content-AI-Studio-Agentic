@@ -42,14 +42,14 @@ def _get_document_or_404(db: Session, document_id: int):
 )
 def list_documents(
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    page_size: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[DocumentListItem]:
     """Return documents in the library, optionally scoped to a course or project."""
     from promptops_app.repositories import document_repository
 
-    documents = document_repository.list_active_documents(db)
+    documents = document_repository.list_active_documents(db, limit=500)
     total = len(documents)
     start = (page - 1) * page_size
     return PaginatedResponse.create(

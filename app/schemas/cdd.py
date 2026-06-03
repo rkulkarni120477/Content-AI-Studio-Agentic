@@ -229,7 +229,7 @@ class CDDListItem(BaseModel):
     title: str
     course_title: Optional[str] = None
     active_version: Optional[str] = None
-    workflow_state: str
+    workflow_state: str = "draft"
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

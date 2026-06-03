@@ -28,9 +28,66 @@ from app.schemas.common import MessageResponse, PaginatedResponse
 _log = logging.getLogger(__name__)
 router = APIRouter()
 
-# Tables allowed to be cleared via the API.
-# Explicit allowlist prevents accidental deletion of core data.
+# Tables allowed to be cleared via the legacy single-table endpoint.
 _CLEARABLE_TABLES = {"system_logs", "audit_logs", "generation_jobs"}
+
+# Streamlit parity — preset clears from analytics.py (users table never cleared).
+_CLEAR_PRESETS: dict[str, dict] = {
+    "cdds": {
+        "label": "Clear Course Design Documents (CDDs)",
+        "info": "Removes all CDD drafts and their version history. Style and Blueprint data is kept.",
+        "tables": ["cdd_versions", "course_design_documents"],
+    },
+    "blueprints": {
+        "label": "Clear Module Blueprints",
+        "info": "Removes all blueprint drafts and their version history. CDDs and Lessons are kept.",
+        "tables": ["blueprint_versions", "module_blueprints"],
+    },
+    "generations": {
+        "label": "Clear Generated Lessons & Blocks",
+        "info": "Removes all generated lesson content, individual blocks, and block-level comments.",
+        "tables": ["block_comments", "blocks", "generations"],
+    },
+    "styles": {
+        "label": "Clear Styles & Style Documents",
+        "info": "Removes all instructional styles and their linked document associations. Uploaded documents themselves are kept.",
+        "tables": ["style_documents", "styles"],
+    },
+    "documents": {
+        "label": "Clear Uploaded Documents",
+        "info": "Removes all uploaded reference documents (PDF, DOCX, etc.) from the library.",
+        "tables": ["documents"],
+    },
+    "prompts": {
+        "label": "Clear Prompts & Prompt Versions",
+        "info": "Removes all prompt records and every version stored under them.",
+        "tables": ["prompt_versions", "prompts"],
+    },
+    "reviews": {
+        "label": "Clear Reviews & Feedback",
+        "info": "Removes all review records and user feedback signals collected during the review workflow.",
+        "tables": ["reviews", "feedback_signals"],
+    },
+    "logs": {
+        "label": "Clear Activity Logs",
+        "info": "Removes system event logs and workflow audit trail. Does not affect any content.",
+        "tables": ["workflow_events", "system_logs"],
+    },
+    "everything": {
+        "label": "Clear Everything (all data except users)",
+        "info": "Wipes all CDDs, Blueprints, Lessons, Styles, Documents, Prompts, Reviews, and Logs in one shot. User accounts are preserved.",
+        "tables": [
+            "block_comments", "blocks", "generations",
+            "blueprint_versions", "module_blueprints",
+            "cdd_versions", "course_design_documents",
+            "style_documents", "styles",
+            "documents",
+            "prompt_versions", "prompts",
+            "reviews", "feedback_signals",
+            "workflow_events", "system_logs",
+        ],
+    },
+}
 
 
 @router.get(
@@ -39,7 +96,7 @@ _CLEARABLE_TABLES = {"system_logs", "audit_logs", "generation_jobs"}
     description="Returns the complete permission catalog with role assignments. Used to render the permissions table.",
 )
 def get_permission_matrix(
-    current_user=Depends(require_permission("system.analytics")),
+    current_user=Depends(require_permission("users.view")),
 ) -> list[dict]:
     """
     Return the RBAC permission matrix.
@@ -49,6 +106,99 @@ def get_permission_matrix(
     """
     from promptops_app.auth.permission_matrix import get_matrix_rows
     return get_matrix_rows()
+
+
+@router.get(
+    "/permissions/overview",
+    summary="Role permission summary for the current user",
+)
+def get_permissions_overview(
+    current_user=Depends(get_current_user),
+) -> dict:
+    """My-permissions card + optional full matrix for Admin/Lead."""
+    from promptops_app.auth.permission_matrix import PERMISSION_CATALOG, get_matrix_rows
+    from promptops_app.auth.permissions import rbac_check, role_label
+
+    role = current_user.role
+    categories = []
+    for section in PERMISSION_CATALOG:
+        allowed = [
+            {"key": p["key"], "label": p["label"]}
+            for p in section["permissions"]
+            if rbac_check(role, p["key"])
+        ]
+        categories.append({
+            "category": section["category"],
+            "icon": section["icon"],
+            "has_access": bool(allowed),
+            "permissions": allowed,
+        })
+
+    overview = {
+        "role": role,
+        "role_display": role_label(role),
+        "categories": categories,
+    }
+    if rbac_check(role, "users.view"):
+        overview["matrix"] = get_matrix_rows()
+    return overview
+
+
+@router.get(
+    "/clear-presets",
+    summary="List database clear presets (admin)",
+)
+def list_clear_presets(
+    current_user=Depends(require_permission("system.clear_db")),
+) -> list[dict]:
+    """Return clear-database options shown in the Streamlit Analytics tab."""
+    return [
+        {
+            "tag": tag,
+            "label": preset["label"],
+            "info": preset.get("info", ""),
+            "tables": preset["tables"],
+        }
+        for tag, preset in _CLEAR_PRESETS.items()
+    ]
+
+
+@router.post(
+    "/clear/{tag}",
+    response_model=MessageResponse,
+    summary="Clear a preset group of database tables",
+)
+def clear_preset(
+    tag: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.clear_db")),
+) -> MessageResponse:
+    """
+    Delete all rows from tables in a named preset.
+
+    Replicates the Clear Database section in pages/analytics.py.
+    User accounts are never affected.
+    """
+    preset = _CLEAR_PRESETS.get(tag)
+    if not preset:
+        raise ValidationError(
+            f"Unknown clear preset '{tag}'. "
+            f"Valid: {', '.join(sorted(_CLEAR_PRESETS))}"
+        )
+
+    from sqlalchemy import text
+
+    total_deleted = 0
+    for tbl in preset["tables"]:
+        result = db.execute(text(f"DELETE FROM {tbl}"))
+        total_deleted += result.rowcount or 0
+    db.commit()
+
+    _log.warning(
+        "db_preset_cleared  by=%s  tag=%s  tables=%s  rows=%d",
+        current_user.username, tag, preset["tables"], total_deleted,
+    )
+    return MessageResponse(message=f"{preset['label']} cleared successfully.")
 
 
 @router.get(

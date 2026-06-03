@@ -19,15 +19,14 @@ function mapGeneratePayload(data) {
 
 export const cddService = {
   listCdds: async (courseId, params = {}) => {
-    const res = await api.get(CDD.LIST(), {
-      params: {
-        course_id: courseId,
-        page: 1,
-        page_size: 100,
-        ...params,
-      },
-    });
-    return res.items || [];
+    const query = {
+      page: 1,
+      page_size: 100,
+      ...params,
+    };
+    if (courseId) query.course_id = courseId;
+    const res = await api.get(CDD.LIST(), { params: query });
+    return res?.items ?? (Array.isArray(res) ? res : []);
   },
   listAllCdds: async (params = {}) => {
     const res = await api.get(CDD.LIST_ALL, {

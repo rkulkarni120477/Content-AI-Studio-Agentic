@@ -58,7 +58,8 @@ export default function Table({
   const paged = useMemo(() => {
     if (serverSide || !pagination) return sorted;
     const start = (page - 1) * pageSize;
-    return sorted?.items?.slice(start, start + pageSize) || [];
+    if (!Array.isArray(sorted)) return [];
+    return sorted.slice(start, start + pageSize);
   }, [sorted, page, pageSize, pagination, serverSide]);
 
   const total = serverSide ? (totalCount ?? rows.length) : rows.length;

@@ -61,7 +61,8 @@ export const STYLES = {
   DEACTIVATE:       (id)      => `/api/v1/styles/${id}/deactivate`,
   ADD_DOCUMENTS:    (id)      => `/api/v1/styles/${id}/documents`,
   VERSIONS:         (id)      => `/api/v1/styles/${id}/versions`,
-  REGENERATE:       (id)      => `/api/v1/styles/${id}/regenerate`,
+  UNDERSTAND:       (id)      => `/api/v1/styles/${id}/understand`,
+  REGENERATE:       (id)      => `/api/v1/styles/${id}/understand`,
 };
 
 // ─── Documents ────────────────────────────────────────────────────────────────
@@ -160,21 +161,23 @@ export const PROMPTS = {
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
 export const ANALYTICS = {
-  SUMMARY:          '/api/v1/analytics/summary',
-  PROJECTS:         '/api/v1/analytics/projects',
-  USAGE:            '/api/v1/analytics/usage',
-  USAGE_BY_MODEL:   '/api/v1/analytics/usage/by-model',
-  USAGE_BY_PROJECT: '/api/v1/analytics/usage/by-project',
-  USAGE_BY_USER:    '/api/v1/analytics/usage/by-user',
-  USAGE_MONTHLY:    '/api/v1/analytics/usage/monthly',
-  FEEDBACK:         '/api/v1/analytics/feedback',
-  REVIEWS:          '/api/v1/analytics/reviews',
-  AUDIT_TRAIL:      '/api/v1/analytics/audit',
-  AUDIT_EXPORT:     '/api/v1/analytics/audit/export',
-  PROMPT_PERF:      '/api/v1/analytics/prompt-performance',
-  QUALITY_TRENDS:   '/api/v1/analytics/quality-trends',
-  GENERATION_HISTORY: '/api/v1/analytics/generations',
-  COST:             '/api/v1/analytics/cost',
+  SUMMARY:              '/api/v1/analytics/summary',
+  PROJECTS:             '/api/v1/analytics/projects',
+  USAGE:                '/api/v1/analytics/usage',
+  LLM_COST:             '/api/v1/analytics/llm-cost',
+  FEEDBACK:             '/api/v1/analytics/feedback',
+  FEEDBACK_SUMMARY:     '/api/v1/analytics/feedback/summary',
+  REVIEWS:              '/api/v1/analytics/reviews',
+  SYSTEM_LOGS:          '/api/v1/analytics/system-logs',
+  AUDIT_TRAIL:          '/api/v1/analytics/audit-trail',
+  AUDIT_TRAIL_FILTERS:  '/api/v1/analytics/audit-trail/filters',
+  AUDIT_EXPORT:         '/api/v1/analytics/audit-trail/export',
+  PROMPT_PERF:          '/api/v1/analytics/prompt-performance',
+  QUALITY_TRENDS:       '/api/v1/analytics/quality-trends',
+  GENERATION_HISTORY:   '/api/v1/analytics/generations',
+  HISTORY_PROMPT_VERSIONS: '/api/v1/analytics/history/prompt-versions',
+  HISTORY_DOC_UPLOADS:  '/api/v1/analytics/history/document-uploads',
+  HISTORY_CDD_BP:       '/api/v1/analytics/history/cdd-blueprint-events',
 };
 
 // ─── Plagiarism ───────────────────────────────────────────────────────────────
@@ -213,9 +216,12 @@ export const WORKSPACE = {
 
 // ─── Database Admin ───────────────────────────────────────────────────────────
 export const DB_ADMIN = {
+  CLEAR_PRESETS:    '/api/v1/admin/clear-presets',
   CLEAR_ENTITY:     (entity)   => `/api/v1/admin/clear/${entity}`,
 };
 
 export const ADMIN = {
   INSTRUCTIONS:     '/api/v1/admin/instructions',
+  PERMISSIONS:      '/api/v1/admin/permissions',
+  PERMISSIONS_OVERVIEW: '/api/v1/admin/permissions/overview',
 };

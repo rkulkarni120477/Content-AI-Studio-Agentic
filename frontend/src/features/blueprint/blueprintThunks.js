@@ -1,15 +1,24 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { blueprintService } from './services/blueprintService';
+import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { extractErrorMessage } from '@utils/helpers';
+import { resolveProjectId } from '@utils/workspaceContext';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
   'blueprint/fetch',
   async (courseId, { getState, rejectWithValue }) => {
     try {
-      const projectId = getState()?.dashboard?.selectedProject?.id;
+      const cid = Number(courseId);
+      let projectId = resolveProjectId(getState);
+      if (!projectId && cid) {
+        try {
+          const course = await dashboardService.getCourse(cid);
+          projectId = course?.project_id ?? null;
+        } catch { /* ignore */ }
+      }
       const items = await blueprintService.listBlueprints({
-        courseId: Number(courseId),
+        courseId: cid,
         projectId,
       });
       const course = getState()?.dashboard?.selectedCourse;

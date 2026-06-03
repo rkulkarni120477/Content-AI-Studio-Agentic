@@ -1,0 +1,143 @@
+@use '@styles/variables' as *;
+@use '@styles/mixins' as *;
+
+.field {
+  position: relative;
+  @include flex-col;
+  gap: $space-2;
+
+  &__labelRow {
+    @include flex-start;
+    gap: $space-1;
+  }
+
+  &__label {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+  }
+
+  &__hintIcon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: $color-gray-200;
+    color: $color-gray-600;
+    font-size: 0.65rem;
+    font-weight: $font-weight-bold;
+    cursor: help;
+  }
+}
+
+.trigger {
+  @include flex-between;
+  width: 100%;
+  min-height: 40px;
+  padding: $space-2 $space-3;
+  font-size: $font-size-sm;
+  text-align: left;
+  background: $color-white;
+  border: 1px solid $color-gray-300;
+  border-radius: $radius-lg;
+  cursor: pointer;
+  transition: border-color $transition-fast, box-shadow $transition-fast;
+
+  &:hover:not(:disabled) {
+    border-color: $color-gray-400;
+  }
+
+  &--open {
+    border-color: $color-primary;
+    box-shadow: 0 0 0 3px rgb(79 70 229 / 0.15);
+  }
+
+  &--disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  &__text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: $color-gray-900;
+
+    &--placeholder {
+      color: $color-gray-500;
+    }
+  }
+
+  &__chevron {
+    flex-shrink: 0;
+    margin-left: $space-2;
+    color: $color-gray-500;
+    font-size: 0.75rem;
+  }
+}
+
+.menu {
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+  max-height: 280px;
+  display: flex;
+  flex-direction: column;
+
+  &__empty {
+    margin: 0;
+    padding: $space-3;
+    font-size: $font-size-sm;
+    color: $color-gray-500;
+  }
+
+  &__selectAll {
+    @include flex-start;
+    gap: $space-2;
+    padding: $space-2 $space-3;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    cursor: pointer;
+    flex-shrink: 0;
+
+    &:hover {
+      background: $color-gray-50;
+    }
+  }
+
+  &__divider {
+    height: 1px;
+    background: $color-gray-200;
+    flex-shrink: 0;
+  }
+
+  &__list {
+    list-style: none;
+    margin: 0;
+    padding: $space-1 0;
+    overflow-y: auto;
+    @include custom-scrollbar;
+  }
+
+  &__option {
+    @include flex-start;
+    gap: $space-2;
+    padding: $space-2 $space-3;
+    font-size: $font-size-sm;
+    cursor: pointer;
+
+    &:hover {
+      background: $color-gray-50;
+    }
+  }
+
+  &__optionLabel {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

@@ -120,11 +120,14 @@ export default function BlueprintPage() {
     ? cdds.find((c) => c.id === linkedCddId)
     : null;
 
+  const projectId = selProject?.id ?? selCourse?.project_id;
+
   useEffect(() => {
+    if (!courseId) return;
     dispatch(fetchBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
-  }, [courseId, dispatch]);
+  }, [courseId, projectId, dispatch]);
 
   useEffect(() => {
     if (activeCdd?.id && linkedCddId === null) {

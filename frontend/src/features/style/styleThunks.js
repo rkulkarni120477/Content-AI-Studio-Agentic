@@ -48,10 +48,7 @@ export const fetchDocumentsThunk = createAsyncThunk(
       const state = getState();
       const courseId = state?.dashboard?.selectedCourse?.id;
       const projectId = state?.dashboard?.selectedProject?.id;
-      if (!courseId || !projectId) {
-        return rejectWithValue('Select a course before loading documents.');
-      }
-      return await styleService.listDocuments(courseId, projectId);
+      return await styleService.listAllDocuments();
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -88,12 +85,37 @@ export const uploadDocumentsThunk = createAsyncThunk(
 
 export const regenerateStyleThunk = createAsyncThunk(
   'style/regenerate',
-  async (styleId, { rejectWithValue }) => {
+  async (styleId, { getState, rejectWithValue }) => {
     try {
-      const result = await styleService.regenerateStyle(styleId);
-      toast.success('Style understanding regenerated.');
+      const modelChoice = getState()?.dashboard?.modelChoice || 'GPT-5.4';
+      const result = await styleService.regenerateStyle(styleId, {
+        model_choice: modelChoice,
+        extra_instructions: '',
+      });
+      toast.success('Style understanding generated.');
       return result;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      return rejectWithValue(extractErrorMessage(e));
+    }
+  },
+);
+
+export const refineStyleThunk = createAsyncThunk(
+  'style/refine',
+  async ({ styleId, corrections }, { getState, rejectWithValue }) => {
+    try {
+      const modelChoice = getState()?.dashboard?.modelChoice || 'GPT-5.4';
+      const result = await styleService.regenerateStyle(styleId, {
+        model_choice: modelChoice,
+        extra_instructions: corrections,
+      });
+      toast.success('Refined Style Intelligence Layer saved.');
+      return result;
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      return rejectWithValue(extractErrorMessage(e));
+    }
   },
 );
 
@@ -121,18 +143,29 @@ export const updateStyleThunk = createAsyncThunk(
 
 export const uploadStyleDocsThunk = createAsyncThunk(
   'style/uploadStyleDocs',
-  async ({ styleId, files }, { rejectWithValue }) => {
+  async ({ styleId, files = [], documentIds = [], additionalInstructions = '' }, { rejectWithValue }) => {
     try {
       const formData = new FormData();
+      if (documentIds.length) {
+        formData.append('document_ids', JSON.stringify(documentIds));
+      }
+      if (additionalInstructions?.trim()) {
+        formData.append('additional_instructions', additionalInstructions.trim());
+      }
       files.forEach((f) => formData.append('files', f));
       const result = await styleService.uploadStyleDocs(styleId, formData);
       if (result?.errors?.length) {
         toast.error(`Some files failed: ${result.errors[0]}`);
-      } else {
-        toast.success(`${files.length} file(s) added to style.`);
+      }
+      const added = result?.added ?? files.length + documentIds.length;
+      if (added > 0) {
+        toast.success(`${added} file(s) added. Understanding marked as stale.`);
       }
       return { styleId, result };
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+      return rejectWithValue(extractErrorMessage(e));
+    }
   },
 );
 

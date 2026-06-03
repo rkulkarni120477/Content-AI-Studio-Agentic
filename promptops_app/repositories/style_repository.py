@@ -12,8 +12,15 @@ from promptops_app.database import Document, Style, StyleVersion
 
 # ── Style lookups ─────────────────────────────────────────────────────────────
 
-def get_style_by_id(db, style_id: int):
-    return db.query(Style).filter(Style.id == style_id).first()
+def get_style_by_id(db, style_id: int, *, with_documents: bool = False):
+    q = db.query(Style).filter(Style.id == style_id)
+    if with_documents:
+        from sqlalchemy.orm import joinedload
+        from promptops_app.database import StyleDocument
+        q = q.options(
+            joinedload(Style.style_documents).joinedload(StyleDocument.document),
+        )
+    return q.first()
 
 
 def list_active_documents_for_style(db):

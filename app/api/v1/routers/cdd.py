@@ -95,8 +95,9 @@ def _get_cdd_or_404(db: Session, cdd_id: int):
 )
 def list_cdds(
     project_id: int | None = Query(default=None, description="Filter by project ID."),
+    course_id: int | None = Query(default=None, description="Optional course ID for legacy row matching."),
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)."),
-    page_size: int = Query(default=20, ge=1, le=100, description="Items per page."),
+    page_size: int = Query(default=100, ge=1, le=200, description="Items per page."),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[CDDListItem]:
@@ -108,23 +109,36 @@ def list_cdds(
     """
     from promptops_app.repositories import cdd_repository
 
-    # Admins can see all CDDs; other roles are scoped to their project.
     effective_project_id = project_id if current_user.role == "admin" else (
         project_id or getattr(current_user, "default_project_id", None)
     )
 
     if effective_project_id:
-        all_cdds = cdd_repository.list_cdds_for_project(db, effective_project_id)
+        all_cdds = cdd_repository.list_cdds_for_scope(
+            db, project_id=effective_project_id, course_id=course_id,
+        )
+    elif course_id:
+        all_cdds = cdd_repository.list_cdds_for_scope(db, course_id=course_id)
     else:
         all_cdds = cdd_repository.list_all_cdds(db)
 
-    # Apply manual pagination (the repository returns all records).
     total = len(all_cdds)
     start = (page - 1) * page_size
     page_items = all_cdds[start : start + page_size]
 
+    items = []
+    for c in page_items:
+        items.append(CDDListItem(
+            id=c.id,
+            title=c.title or "",
+            course_title=c.course_title,
+            active_version=c.active_version,
+            workflow_state=c.workflow_state or "draft",
+            created_at=c.created_at,
+        ))
+
     return PaginatedResponse.create(
-        items=[CDDListItem.model_validate(c) for c in page_items],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
