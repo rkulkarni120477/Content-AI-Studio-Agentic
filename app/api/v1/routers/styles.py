@@ -192,7 +192,7 @@ async def upload_style_documents(
     from promptops_app.database import add_files_to_style
     from promptops_app.parsers.file_parser import _parse_uploaded_file
 
-    _get_style_or_404(db, style_id)
+    style_obj = _get_style_or_404(db, style_id)
 
     uploaded, errors = [], []
 
@@ -214,17 +214,14 @@ async def upload_style_documents(
         if content:
             from promptops_app.database import Document
             doc = Document(
-                name=name,
+                filename=name,
                 content=content,
                 file_type=(upload.filename or "").rsplit(".", 1)[-1].lower(),
-                source_type="style",
-                char_count=len(content),
-                is_active=True,
-                created_by=current_user.username,
+                uploaded_by=current_user.username,
             )
             db.add(doc)
             db.flush()
-            add_files_to_style(db, style_id, [doc])
+            add_files_to_style(db, style_obj, [doc.id])
             uploaded.append(name)
 
     db.commit()
@@ -267,9 +264,8 @@ def generate_style_intelligence(
             db,
             style,
             model_choice=request_body.model_choice,
-            extra_instructions=request_body.extra_instructions,
-            system_prompt_override=request_body.system_prompt_override,
-            user_name=current_user.username,
+            correction_instructions=request_body.extra_instructions,
+            system_prompt=request_body.system_prompt_override,
         )
     else:
         result = generate_style_understanding(
@@ -277,8 +273,7 @@ def generate_style_intelligence(
             style,
             model_choice=request_body.model_choice,
             extra_instructions=request_body.extra_instructions,
-            system_prompt_override=request_body.system_prompt_override,
-            user_name=current_user.username,
+            system_prompt=request_body.system_prompt_override,
         )
 
     if not result or (isinstance(result, str) and result.startswith("ERROR")):
@@ -344,12 +339,11 @@ def deactivate_style(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.deactivate")),
 ) -> StyleRead:
-    """Remove active status from a style. Calls deactivate_style() from database.py."""
-    from promptops_app.database import deactivate_style as _deactivate
-
-    _get_style_or_404(db, style_id)
-    _deactivate(db, style_id)
+    """Remove active status from a style."""
     style = _get_style_or_404(db, style_id)
+    style.is_active = False
+    db.commit()
+    db.refresh(style)
 
     _log.info("style_deactivated  user=%s  style_id=%d", current_user.username, style_id)
     return StyleRead.model_validate(style)

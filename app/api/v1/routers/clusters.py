@@ -59,22 +59,31 @@ def list_clusters(
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[ClusterListItem]:
     """Return all clusters in a project. Replaces the cluster dropdown in Streamlit."""
-    from promptops_app.database import Cluster
+    from sqlalchemy import func
+    from promptops_app.database import Cluster, Course
 
-    clusters = (
-        db.query(Cluster)
+    rows = (
+        db.query(Cluster, func.count(Course.id).label("course_count"))
+        .outerjoin(Course, Course.cluster_id == Cluster.id)
         .filter(Cluster.project_id == project_id, Cluster.is_active == True)  # noqa: E712
+        .group_by(Cluster.id)
         .order_by(Cluster.created_at.asc())
         .all()
     )
-    total = len(clusters)
+    total = len(rows)
     start = (page - 1) * page_size
-    return PaginatedResponse.create(
-        items=[ClusterListItem.model_validate(c) for c in clusters[start: start + page_size]],
-        total=total,
-        page=page,
-        page_size=page_size,
-    )
+    items = [
+        ClusterListItem(
+            id=cluster.id,
+            project_id=cluster.project_id,
+            name=cluster.name,
+            description=cluster.description,
+            created_at=cluster.created_at,
+            course_count=count,
+        )
+        for cluster, count in rows[start: start + page_size]
+    ]
+    return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post(
