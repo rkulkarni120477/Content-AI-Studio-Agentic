@@ -62,9 +62,9 @@ def get_model_catalog(current_user=Depends(get_current_user)) -> dict:
 
     models = [
         {
-            "name":         m["name"],
-            "display_name": m.get("display_name", m["name"]),
-            "provider":     m.get("provider", "unknown"),
+            "name":         m.display_name,
+            "display_name": m.display_name,
+            "provider":     m.provider,
         }
         for m in MODEL_CATALOG
     ]
@@ -223,6 +223,7 @@ def create_central_item(
     central_repository.create_item(
         db,
         title=request.get("title", ""),
+        item_type=request.get("item_type", "Prompt"),
         content=request.get("content", ""),
         project_id=request.get("project_id"),
         course_id=request.get("course_id"),

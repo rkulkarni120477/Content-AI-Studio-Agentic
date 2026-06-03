@@ -10,25 +10,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class DocumentRead(BaseModel):
     id: int
-    name: str
+    name: str = Field(validation_alias="filename")
     file_type: Optional[str] = None
-    source_type: Optional[str] = None
-    char_count: Optional[int] = None
-    course_id: Optional[int] = None
-    project_id: Optional[int] = None
-    created_at: Optional[datetime] = None
+    source_type: Optional[str] = Field(default=None, validation_alias="doc_tag")
+    created_at: Optional[datetime] = Field(default=None, validation_alias="uploaded_at")
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class DocumentListItem(BaseModel):
     id: int
-    name: str
+    name: str = Field(validation_alias="filename")
     file_type: Optional[str] = None
-    source_type: Optional[str] = None
-    created_at: Optional[datetime] = None
+    source_type: Optional[str] = Field(default=None, validation_alias="doc_tag")
+    created_at: Optional[datetime] = Field(default=None, validation_alias="uploaded_at")
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class DocumentContentResponse(BaseModel):
