@@ -412,12 +412,11 @@ def deactivate_style(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.deactivate")),
 ) -> StyleRead:
-    """Remove active status from a style. Calls deactivate_style() from database.py."""
-    from promptops_app.database import deactivate_style as _deactivate
-
-    _get_style_or_404(db, style_id)
-    _deactivate(db, style_id)
+    """Remove active status from a style."""
     style = _get_style_or_404(db, style_id)
+    style.is_active = False
+    db.commit()
+    db.refresh(style)
 
     _log.info("style_deactivated  user=%s  style_id=%d", current_user.username, style_id)
     return _style_to_read(style)

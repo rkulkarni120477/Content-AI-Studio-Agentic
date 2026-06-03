@@ -41,8 +41,8 @@ router = APIRouter()
 
 def _get_prompt_or_404(db: Session, prompt_id: int):
     """Fetch a prompt by ID or raise HTTP 404."""
-    from promptops_app.repositories import prompt_repository
-    prompt = prompt_repository.get_prompt_by_id(db, prompt_id)
+    from promptops_app.database import Prompt
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
     if not prompt:
         raise NotFoundError("Prompt", prompt_id)
     return prompt
@@ -68,7 +68,7 @@ def list_prompts(
     if component:
         prompts = prompt_repository.list_prompts_by_component(db, component)
     else:
-        prompts = prompt_repository.list_prompts(db)
+        prompts = prompt_repository.list_all_prompts(db)
 
     if search:
         q = search.lower()
@@ -270,7 +270,7 @@ def list_prompt_versions(prompt_id: int, db: Session = Depends(get_db), current_
     """List all versions for a prompt."""
     from promptops_app.repositories import prompt_repository
     _get_prompt_or_404(db, prompt_id)
-    versions = prompt_repository.list_prompt_versions(db, prompt_id)
+    versions = prompt_repository.list_versions_for_prompt(db, prompt_id)
     return [PromptVersionListItem.model_validate(v) for v in versions]
 
 

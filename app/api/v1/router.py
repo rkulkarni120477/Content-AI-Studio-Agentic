@@ -78,12 +78,12 @@ api_v1_router.include_router(blueprints_router, prefix="/blueprints", tags=["Blu
 api_v1_router.include_router(generations_router,prefix="/generations",tags=["Generations"])
 api_v1_router.include_router(jobs_router,       prefix="/jobs",       tags=["Jobs"])
 
+# ── Prompt registry ───────────────────────────────────────────────────────────
+api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])
+
 # ── Editor and workflow ───────────────────────────────────────────────────────
 api_v1_router.include_router(blocks_router,    tags=["Blocks"])
 api_v1_router.include_router(workflow_router,  prefix="/workflow",   tags=["Workflow"])
-
-# ── Prompt registry ───────────────────────────────────────────────────────────
-api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])
 
 # ── Observability ─────────────────────────────────────────────────────────────
 api_v1_router.include_router(analytics_router, prefix="/analytics",  tags=["Analytics"])

@@ -36,5 +36,6 @@ class ClusterListItem(BaseModel):
     name: str
     description: Optional[str] = None
     created_at: Optional[datetime] = None
+    course_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
