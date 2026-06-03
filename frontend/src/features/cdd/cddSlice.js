@@ -24,7 +24,11 @@ const cddSlice = createSlice({
   extraReducers: (b) => {
     b
       .addCase(fetchCddsThunk.pending,   (s) => { s.isLoading = true; s.error = null; })
-      .addCase(fetchCddsThunk.fulfilled, (s, { payload }) => { s.isLoading = false; s.cdds = payload; })
+      .addCase(fetchCddsThunk.fulfilled, (s, { payload }) => {
+        s.isLoading = false;
+        s.cdds = payload?.items ?? payload ?? [];
+        if (payload?.activeCdd) s.activeCdd = payload.activeCdd;
+      })
       .addCase(fetchCddsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
       .addCase(generateCddThunk.pending,   (s) => { s.isGenerating = true; s.error = null; })

@@ -2,12 +2,17 @@
   @include flex-col;
   width: $sidebar-width;
   min-height: 100vh;
+  height: 100vh;
+  position: sticky;
+  top: 0;
   background: #1e1b4b;
   border-right: 1px solid rgba(99, 102, 241, 0.3);
   color: #c7d2fe;
   flex-shrink: 0;
   padding: $space-4;
   gap: $space-3;
+  overflow-y: auto;
+  @include custom-scrollbar(6px);
 }
 
 .brand {

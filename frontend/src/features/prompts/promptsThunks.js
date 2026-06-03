@@ -5,8 +5,8 @@ import toast from 'react-hot-toast';
 
 export const fetchPromptsThunk = createAsyncThunk(
   'prompts/fetch',
-  async (_, { rejectWithValue }) => {
-    try { return await promptsService.listPrompts(); }
+  async (params = {}, { rejectWithValue }) => {
+    try { return await promptsService.listPrompts(params); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -24,8 +24,8 @@ export const commitPromptThunk = createAsyncThunk(
 
 export const fetchPromptVersionsThunk = createAsyncThunk(
   'prompts/fetchVersions',
-  async (name, { rejectWithValue }) => {
-    try { return await promptsService.getVersions(name); }
+  async (promptId, { rejectWithValue }) => {
+    try { return await promptsService.getVersions(promptId); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

@@ -3,8 +3,8 @@ import { CENTRAL } from '@services/endpoints';
 
 export const centralService = {
   listItems:          (p)    => api.get(CENTRAL.LIST, { params: p }),
-  getItem:            (id)   => api.get(CENTRAL.GET(id)),
   createItem:         (data) => api.post(CENTRAL.CREATE, data),
-  importFromRegistry: (data) => api.post(CENTRAL.IMPORT, data),
-  deleteItem:         (id)   => api.delete(CENTRAL.DELETE(id)),
+  // Backend Central Repository routes live under /api/v1/admin/central
+  // and use POST /central/{id}/archive for delete.
+  deleteItem:         (id)   => api.post(CENTRAL.ARCHIVE(id)),
 };

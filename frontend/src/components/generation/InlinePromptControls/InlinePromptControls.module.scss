@@ -1,0 +1,192 @@
+.panel {
+  @include card;
+  padding: $space-5 $space-6;
+  margin-top: $space-6;
+}
+
+.hint {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin-bottom: $space-4;
+}
+
+.panel__header {
+  font-size: 0.9rem;
+  font-weight: $font-weight-bold;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: $color-primary;
+  margin: 0 0 $space-4;
+}
+
+.center {
+  @include flex-center;
+  padding: $space-6;
+}
+
+.selectorRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: $space-3;
+  align-items: start;
+  margin-bottom: $space-4;
+
+  @include max-md {
+    grid-template-columns: 1fr;
+  }
+
+  &__main {
+    min-width: 0;
+  }
+}
+
+.meta {
+  font-size: $font-size-xs;
+  color: $color-gray-600;
+  margin-top: $space-2;
+
+  code {
+    background: $color-gray-100;
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+}
+
+.overrideBanner {
+  @include flex-between;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: #1d4ed8;
+  margin-bottom: $space-4;
+}
+
+.aiPanel {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  border-radius: $radius-lg;
+  padding: $space-4;
+  margin-bottom: $space-4;
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: #166534;
+    margin-bottom: $space-3;
+  }
+
+  &__cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: $space-4;
+    margin-bottom: $space-3;
+    @include max-lg { grid-template-columns: 1fr; }
+  }
+
+  &__actions {
+    display: flex;
+    gap: $space-2;
+  }
+}
+
+.extraBlock {
+  margin-bottom: $space-4;
+}
+
+.fieldLabel {
+  display: block;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-700;
+  margin-bottom: $space-1;
+}
+
+.optional {
+  font-weight: $font-weight-normal;
+  font-size: $font-size-xs;
+  color: $color-gray-400;
+}
+
+.textarea {
+  @include form-field-base;
+  resize: vertical;
+  width: 100%;
+  font-family: $font-family-mono;
+  font-size: $font-size-xs;
+}
+
+.instrLoad {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: $space-2;
+  margin-bottom: $space-2;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-2;
+  margin-bottom: $space-2;
+}
+
+.subPanel {
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  padding: $space-4;
+  margin-top: $space-3;
+  @include flex-col;
+  gap: $space-3;
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+    margin: 0;
+  }
+
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $space-2;
+    align-items: center;
+  }
+}
+
+.infoNote {
+  font-size: $font-size-xs;
+  color: $color-primary-dark;
+  background: $color-primary-soft;
+  padding: $space-2 $space-3;
+  border-radius: $radius-md;
+  margin: 0;
+}
+
+.checkLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-1;
+  font-size: $font-size-sm;
+  white-space: nowrap;
+}
+
+.viewModal {
+  @include flex-col;
+  gap: $space-3;
+}
+
+.codeBlock {
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  padding: $space-3;
+  font-size: $font-size-xs;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+}

@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { PROJECTS, CLUSTERS, COURSES, MODELS, USERS } from '@services/endpoints';
+import { PROJECTS, CLUSTERS, COURSES, MODELS, USERS, WORKSPACE } from '@services/endpoints';
 
 export const dashboardService = {
   listProjects:    ()              => api.get(PROJECTS.LIST),
@@ -25,8 +25,11 @@ export const dashboardService = {
   assignCourseUser:(id, username)=> api.post(COURSES.USERS(id), { username }),
   unassignCourseUser:(id, user)   => api.delete(COURSES.UNASSIGN_USER(id, user)),
 
-  getCourseConfig: (courseId)     => api.get(COURSES.CONFIG(courseId)),
-  saveCourseConfig:(courseId, d)  => api.put(COURSES.UPDATE_CONFIG(courseId), d),
-  listModels:      ()             => api.get(MODELS.LIST),
+  getWorkspace:    ()             => api.get(WORKSPACE.GET),
+  updateWorkspaceConfig: (config) => api.put(WORKSPACE.UPDATE_CONFIG, config),
+  listModels:      async ()       => {
+    const res = await api.get(MODELS.LIST);
+    return { items: res.models || [], default: res.default };
+  },
   listUsers:       ()             => api.get(USERS.LIST),
 };

@@ -43,22 +43,45 @@ export const deactivateStyleThunk = createAsyncThunk(
 
 export const fetchDocumentsThunk = createAsyncThunk(
   'style/fetchDocuments',
-  async (_, { rejectWithValue }) => {
-    try { return await styleService.listDocuments(); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const state = getState();
+      const courseId = state?.dashboard?.selectedCourse?.id;
+      const projectId = state?.dashboard?.selectedProject?.id;
+      if (!courseId || !projectId) {
+        return rejectWithValue('Select a course before loading documents.');
+      }
+      return await styleService.listDocuments(courseId, projectId);
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
 export const uploadDocumentsThunk = createAsyncThunk(
   'style/uploadDocuments',
-  async ({ files, docTag }, { rejectWithValue }) => {
+  async ({ files, sourceType }, { getState, rejectWithValue }) => {
     try {
-      const formData = new FormData();
-      files.forEach((f) => formData.append('files', f));
-      if (docTag) formData.append('doc_tag', docTag);
-      const result = await styleService.uploadDocuments(formData);
-      toast.success(`${files.length} document(s) uploaded.`);
-      return result;
+      const state = getState();
+      const courseId = state?.dashboard?.selectedCourse?.id;
+      const projectId = state?.dashboard?.selectedProject?.id;
+      if (!courseId || !projectId) {
+        return rejectWithValue('Select a course before uploading documents.');
+      }
+
+      const uploaded = [];
+      // Backend expects one file per request with required course_id and project_id.
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('course_id', String(courseId));
+        formData.append('project_id', String(projectId));
+        formData.append('source_type', sourceType || 'reference');
+        const doc = await styleService.uploadDocuments(formData);
+        uploaded.push(doc);
+      }
+
+      toast.success(`${uploaded.length} document(s) uploaded.`);
+      const refreshed = await styleService.listDocuments(courseId, projectId);
+      return refreshed;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -70,6 +93,56 @@ export const regenerateStyleThunk = createAsyncThunk(
       const result = await styleService.regenerateStyle(styleId);
       toast.success('Style understanding regenerated.');
       return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const deleteStyleThunk = createAsyncThunk(
+  'style/delete',
+  async (styleId, { rejectWithValue }) => {
+    try {
+      await styleService.deleteStyle(styleId);
+      toast.success('Style deleted.');
+      return { id: styleId };
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const updateStyleThunk = createAsyncThunk(
+  'style/update',
+  async ({ styleId, data }, { rejectWithValue }) => {
+    try {
+      const result = await styleService.updateStyle(styleId, data);
+      toast.success('Style updated.');
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const uploadStyleDocsThunk = createAsyncThunk(
+  'style/uploadStyleDocs',
+  async ({ styleId, files }, { rejectWithValue }) => {
+    try {
+      const formData = new FormData();
+      files.forEach((f) => formData.append('files', f));
+      const result = await styleService.uploadStyleDocs(styleId, formData);
+      if (result?.errors?.length) {
+        toast.error(`Some files failed: ${result.errors[0]}`);
+      } else {
+        toast.success(`${files.length} file(s) added to style.`);
+      }
+      return { styleId, result };
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const deleteDocumentThunk = createAsyncThunk(
+  'style/deleteDocument',
+  async (documentId, { rejectWithValue }) => {
+    try {
+      await styleService.deleteDocument(documentId);
+      toast.success('Document deleted.');
+      return { id: documentId };
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

@@ -2,6 +2,7 @@ import { createAsyncThunk } from '@reduxjs/toolkit';
 import { dashboardService } from './services/dashboardService';
 import { extractErrorMessage } from '@utils/helpers';
 import { applyWorkspaceConfig } from './dashboardSlice';
+import { setToken } from '@features/auth/authSlice';
 
 export const fetchProjectsThunk = createAsyncThunk(
   'dashboard/fetchProjects',
@@ -37,19 +38,24 @@ export const fetchModelsThunk = createAsyncThunk(
 
 export const fetchWorkspaceConfigThunk = createAsyncThunk(
   'dashboard/fetchWorkspaceConfig',
-  async (courseId, { dispatch, rejectWithValue }) => {
+  async (_, { dispatch, rejectWithValue }) => {
     try {
-      const config = await dashboardService.getCourseConfig(courseId);
-      dispatch(applyWorkspaceConfig(config));
-      return config;
+      const ws = await dashboardService.getWorkspace();
+      const cfg = ws?.config || {};
+      dispatch(applyWorkspaceConfig(cfg));
+      return cfg;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
 export const saveWorkspaceConfigThunk = createAsyncThunk(
   'dashboard/saveWorkspaceConfig',
-  async ({ courseId, config }, { rejectWithValue }) => {
-    try { return await dashboardService.saveCourseConfig(courseId, config); }
+  async ({ config }, { dispatch, rejectWithValue }) => {
+    try {
+      const res = await dashboardService.updateWorkspaceConfig(config);
+      if (res?.access_token) dispatch(setToken(res.access_token));
+      return res;
+    }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

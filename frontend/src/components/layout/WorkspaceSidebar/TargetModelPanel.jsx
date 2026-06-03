@@ -41,9 +41,9 @@ export default function TargetModelPanel() {
     });
   }, [config]);
 
-  const modelOptions = models?.items?.length
-    ? models.items.map((m) => m.display_name || m.name)
-    : [config.modelChoice];
+  const openAiModels = (models?.items || []).filter((m) => (m.provider || '').toLowerCase() === 'openai');
+  const bedrockModels = (models?.items || []).filter((m) => (m.provider || '').toLowerCase() === 'bedrock');
+  const fallbackOptions = [config.modelChoice].filter(Boolean);
 
   async function handleApply(e) {
     e.preventDefault();
@@ -52,21 +52,18 @@ export default function TargetModelPanel() {
     dispatch(setExpertDomain(form.domain));
     dispatch(setTargetAudience(form.audience));
     dispatch(setAudienceCategory(form.audCat));
-    if (course?.id) {
-      try {
-        await dispatch(saveWorkspaceConfigThunk({
-          courseId: course.id,
-          config: {
-            model_choice: form.model,
-            expert_domain: form.domain,
-            target_audience: form.audience,
-            audience_category: form.audCat,
-          },
-        })).unwrap();
-        toast.success('Configuration applied');
-      } catch {
-        toast.error('Failed to save configuration');
-      }
+    try {
+      await dispatch(saveWorkspaceConfigThunk({
+        config: {
+          model_choice: form.model,
+          expert_domain: form.domain,
+          target_audience: form.audience,
+          audience_category: form.audCat,
+        },
+      })).unwrap();
+      toast.success('Configuration applied');
+    } catch {
+      toast.error('Failed to save configuration');
     }
     setSaving(false);
   }
@@ -82,7 +79,28 @@ export default function TargetModelPanel() {
           <label className={styles.field}>
             LLM Model
             <select value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} className={styles.select}>
-              {modelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+              {models?.items?.length ? (
+                <>
+                  {openAiModels.length > 0 && (
+                    <optgroup label="OpenAI GPT Models">
+                      {openAiModels.map((m) => {
+                        const label = m.display_name || m.name;
+                        return <option key={label} value={label}>{label}</option>;
+                      })}
+                    </optgroup>
+                  )}
+                  {bedrockModels.length > 0 && (
+                    <optgroup label="AWS Bedrock Models">
+                      {bedrockModels.map((m) => {
+                        const label = m.display_name || m.name;
+                        return <option key={label} value={label}>{label}</option>;
+                      })}
+                    </optgroup>
+                  )}
+                </>
+              ) : (
+                fallbackOptions.map((m) => <option key={m} value={m}>{m}</option>)
+              )}
             </select>
           </label>
           <label className={styles.field}>

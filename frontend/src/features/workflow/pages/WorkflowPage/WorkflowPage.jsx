@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchWorkflowBlocksThunk, approveBlockThunk, requestChangesThunk,
+  fetchWorkflowBlocksThunk, submitBlockThunk, approveBlockThunk, requestChangesThunk,
   publishBlockThunk, archiveBlockThunk, bulkApproveThunk, fetchPendingReviewsThunk,
 } from '@features/workflow/workflowThunks';
+import {
+  selectSelectedProject, selectSelectedCourse,
+} from '@features/dashboard/dashboardSlice';
 import {
   selectBlocksByState, selectWorkflowFilters, selectPendingCount,
   selectWorkflowLoading, setFilters,
@@ -12,6 +16,7 @@ import { WORKFLOW_STATES, WORKFLOW_STATE_LABELS } from '@utils/constants';
 import { formatRelative, getSlaStatus } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
+import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
 import SearchBar from '@components/common/SearchBar/SearchBar';
 import Button from '@components/common/Button/Button';
@@ -29,20 +34,38 @@ const KANBAN_COLUMNS = [
 ];
 
 export default function WorkflowPage() {
+  const { courseId } = useParams();
   const dispatch      = useAppDispatch();
   const blocksByState = useAppSelector(selectBlocksByState);
   const filters       = useAppSelector(selectWorkflowFilters);
   const pendingCount  = useAppSelector(selectPendingCount);
   const isLoading     = useAppSelector(selectWorkflowLoading);
-  const { canApprove, user } = useAuth();
+  const selProject = useAppSelector(selectSelectedProject);
+  const selCourse = useAppSelector(selectSelectedCourse);
+  const { canApprove, user, isAdmin } = useAuth();
 
   const [selectedIds, setSelectedIds]         = useState([]);
-  const [confirmAction, setConfirmAction]     = useState(null); // { type, blockId }
+  const [confirmAction, setConfirmAction]     = useState(null);
+  const [approvalBlockId, setApprovalBlockId] = useState(null);
+  const [reviewerName, setReviewerName] = useState('');
+
+  const allBlocks = KANBAN_COLUMNS.flatMap((c) => blocksByState[c.key] || []);
+  const approvalBlock = allBlocks.find((b) => b.id === approvalBlockId);
+
+  function buildApiFilters() {
+    return {
+      ...filters,
+      project_id: filters.projectId ?? selProject?.id,
+      course_id: filters.courseId ?? (courseId ? Number(courseId) : undefined),
+      state: filters.status || undefined,
+      search: filters.search || undefined,
+    };
+  }
 
   useEffect(() => {
-    dispatch(fetchWorkflowBlocksThunk(filters));
+    dispatch(fetchWorkflowBlocksThunk(buildApiFilters()));
     dispatch(fetchPendingReviewsThunk());
-  }, [dispatch, filters]);
+  }, [dispatch, filters, selProject?.id, courseId]);
 
   function handleFilter(key, value) {
     dispatch(setFilters({ [key]: value }));
@@ -58,20 +81,28 @@ export default function WorkflowPage() {
     setConfirmAction(null);
 
     switch (type) {
+      case 'submit':
+        await dispatch(submitBlockThunk({ blockId, reviewer: reviewerName || user?.username }));
+        break;
       case 'approve':   await dispatch(approveBlockThunk({ blockId })); break;
       case 'changes':   await dispatch(requestChangesThunk({ blockId })); break;
       case 'publish':   await dispatch(publishBlockThunk(blockId)); break;
       case 'archive':   await dispatch(archiveBlockThunk(blockId)); break;
       case 'bulk':      await dispatch(bulkApproveThunk(selectedIds)); setSelectedIds([]); break;
     }
+    dispatch(fetchWorkflowBlocksThunk(buildApiFilters()));
   }
 
-  const ACTION_LABELS = { approve: 'Approve', changes: 'Request Changes', publish: 'Publish', archive: 'Archive', bulk: 'Bulk Approve' };
+  const ACTION_LABELS = {
+    submit: 'Submit for Review', approve: 'Approve', changes: 'Request Changes',
+    publish: 'Publish', archive: 'Archive', bulk: 'Bulk Approve',
+  };
 
   return (
     <PageContainer
-      title="Workflow"
+      title=""
       breadcrumbs={[{ label: 'Workflow' }]}
+      noPadding
       headerActions={
         canApprove && selectedIds.length > 0 && (
           <Button variant="success" size="sm" onClick={() => handleAction('bulk')}>
@@ -80,6 +111,21 @@ export default function WorkflowPage() {
         )
       }
     >
+      <div className={styles.page}>
+        <SectionBadge
+          icon="🚦"
+          title="Content Lifecycle"
+          subtitle="Manage the approval pipeline — submit, review, approve, publish, and archive content blocks."
+        />
+
+      {!isAdmin && selProject && (
+        <p className={styles.scopeCaption}>
+          Your workflow — project <strong>{selProject.name}</strong>
+          {selCourse ? <> · course <strong>{selCourse.name}</strong></> : null}
+        </p>
+      )}
+      {isAdmin && <p className={styles.scopeCaption}>Admin view — all projects and users.</p>}
+
       {/* Pending badge */}
       {pendingCount > 0 && (
         <div className={styles.pendingBanner}>
@@ -87,14 +133,8 @@ export default function WorkflowPage() {
         </div>
       )}
 
-      {/* Filters */}
+      <h2 className={styles.sectionTitle}>🔍 Filters</h2>
       <div className={styles.filters}>
-        <SearchBar
-          value={filters.search || ''}
-          onChange={(v) => handleFilter('search', v)}
-          placeholder="Search block label…"
-          className={styles.filters__search}
-        />
         <Select
           options={[
             { value: '', label: 'All Statuses' },
@@ -103,8 +143,17 @@ export default function WorkflowPage() {
           value={filters.status || ''}
           onChange={(e) => handleFilter('status', e.target.value)}
           wrapperClassName={styles.filters__select}
+          label="Status"
+        />
+        <SearchBar
+          value={filters.search || ''}
+          onChange={(v) => handleFilter('search', v)}
+          placeholder="Search block label…"
+          className={styles.filters__search}
         />
       </div>
+
+      <h2 className={styles.sectionTitle}>📋 Status Overview</h2>
 
       {/* Kanban Board */}
       {isLoading ? (
@@ -157,7 +206,7 @@ export default function WorkflowPage() {
                         </div>
                         <div className={styles.blockCard__actions}>
                           {col.key === WORKFLOW_STATES.DRAFT && (
-                            <Button variant="ghost" size="xs" onClick={() => handleAction('approve', block.id)}>Submit</Button>
+                            <Button variant="ghost" size="xs" onClick={() => handleAction('submit', block.id)}>Submit</Button>
                           )}
                           {col.key === WORKFLOW_STATES.IN_REVIEW && canApprove && (
                             <>
@@ -182,6 +231,52 @@ export default function WorkflowPage() {
         </div>
       )}
 
+      <h2 className={styles.sectionTitle}>⚙️ Approval Center</h2>
+      {allBlocks.length > 0 ? (
+        <div className={styles.approvalCenter}>
+          <Select
+            label="Select Block"
+            options={allBlocks.map((b) => ({
+              value: String(b.id),
+              label: `#${b.id} — ${(b.block_label || '').slice(0, 40)} [${WORKFLOW_STATE_LABELS[b.workflow_state] || b.workflow_state}]`,
+            }))}
+            value={approvalBlockId != null ? String(approvalBlockId) : ''}
+            onChange={(e) => setApprovalBlockId(Number(e.target.value))}
+          />
+          {approvalBlock && (
+            <div className={styles.approvalDetail}>
+              <p><strong>Block #{approvalBlock.id}</strong> — {approvalBlock.block_label}</p>
+              <p>Status: {WORKFLOW_STATE_LABELS[approvalBlock.workflow_state] || approvalBlock.workflow_state}</p>
+              {approvalBlock.workflow_state === WORKFLOW_STATES.DRAFT && (
+                <div className={styles.approvalActions}>
+                  <input
+                    type="text"
+                    placeholder="Reviewer username"
+                    value={reviewerName}
+                    onChange={(e) => setReviewerName(e.target.value)}
+                    className={styles.reviewerInput}
+                  />
+                  <Button variant="primary" size="sm" onClick={() => handleAction('submit', approvalBlock.id)}>
+                    📤 Submit for Review
+                  </Button>
+                </div>
+              )}
+              {approvalBlock.workflow_state === WORKFLOW_STATES.IN_REVIEW && canApprove && (
+                <div className={styles.approvalActions}>
+                  <Button variant="success" size="sm" onClick={() => handleAction('approve', approvalBlock.id)}>✅ Approve</Button>
+                  <Button variant="danger-ghost" size="sm" onClick={() => handleAction('changes', approvalBlock.id)}>🔁 Request Changes</Button>
+                </div>
+              )}
+              {approvalBlock.workflow_state === WORKFLOW_STATES.APPROVED && canApprove && (
+                <Button variant="secondary" size="sm" onClick={() => handleAction('publish', approvalBlock.id)}>🌐 Publish</Button>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className={styles.emptyHint}>No content blocks match your filters. Generate content from the Generate tab to begin.</p>
+      )}
+
       <ConfirmDialog
         open={Boolean(confirmAction)}
         onClose={() => setConfirmAction(null)}
@@ -191,6 +286,7 @@ export default function WorkflowPage() {
         confirmLabel={ACTION_LABELS[confirmAction?.type] || 'Confirm'}
         variant={['changes', 'archive'].includes(confirmAction?.type) ? 'danger' : 'success'}
       />
+      </div>
     </PageContainer>
   );
 }

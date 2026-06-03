@@ -9,10 +9,21 @@ export const styleService = {
   deleteStyle:      (id)         => api.delete(STYLES.DELETE(id)),
   activateStyle:    (id)         => api.post(STYLES.ACTIVATE(id)),
   deactivateStyle:  (id)         => api.post(STYLES.DEACTIVATE(id)),
-  addDocuments:     (id, docIds) => api.post(STYLES.ADD_DOCUMENTS(id), { document_ids: docIds }),
+  uploadStyleDocs:  (id, formData) => api.upload(DOCUMENTS.STYLE_DOCS(id), formData),
   getVersions:      (id)         => api.get(STYLES.VERSIONS(id)),
   regenerateStyle:  (id)         => api.post(STYLES.REGENERATE(id)),
-  listDocuments:    ()           => api.get(DOCUMENTS.LIST),
+  listDocuments:    async (courseId, projectId) => {
+    const res = await api.get(DOCUMENTS.LIST, {
+      params: {
+        course_id: courseId,
+        project_id: projectId,
+        page: 1,
+        page_size: 100,
+      },
+    });
+    return res.items || [];
+  },
+  getDocumentContent: (id)        => api.get(DOCUMENTS.CONTENT(id)),
   uploadDocuments:  (formData)   => api.upload(DOCUMENTS.UPLOAD, formData),
   deleteDocument:   (id)         => api.delete(DOCUMENTS.DELETE(id)),
 };

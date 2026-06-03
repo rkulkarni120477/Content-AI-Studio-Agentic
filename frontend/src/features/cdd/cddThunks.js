@@ -5,9 +5,22 @@ import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
   'cdd/fetch',
-  async (courseId, { rejectWithValue }) => {
-    try { return await cddService.listCdds(courseId); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  async (courseId, { getState, rejectWithValue }) => {
+    try {
+      const projectId = getState()?.dashboard?.selectedProject?.id;
+      const items = await cddService.listCdds(courseId, { project_id: projectId });
+      const course = getState()?.dashboard?.selectedCourse;
+      const activeId = course?.id === Number(courseId) ? course.active_cdd_id : null;
+      let activeCdd = null;
+      if (activeId) {
+        try {
+          activeCdd = await cddService.getCdd(activeId);
+        } catch {
+          activeCdd = items.find((c) => c.id === activeId) || null;
+        }
+      }
+      return { items, activeCdd };
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
@@ -15,6 +28,9 @@ export const generateCddThunk = createAsyncThunk(
   'cdd/generate',
   async (payload, { rejectWithValue }) => {
     try {
+      if (!payload?.project_id) {
+        return rejectWithValue('Select a project before generating a CDD.');
+      }
       const result = await cddService.generateCdd(payload);
       toast.success('CDD generated and set as active.');
       return result;

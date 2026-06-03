@@ -1,6 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
 import {
-  fetchWorkflowBlocksThunk, approveBlockThunk, requestChangesThunk,
+  fetchWorkflowBlocksThunk, submitBlockThunk, approveBlockThunk, requestChangesThunk,
   publishBlockThunk, archiveBlockThunk, bulkApproveThunk, fetchPendingReviewsThunk,
 } from './workflowThunks';
 
@@ -32,7 +32,9 @@ const workflowSlice = createSlice({
       .addCase(fetchWorkflowBlocksThunk.fulfilled, (s, { payload }) => { s.isLoading = false; s.blocks = payload; })
       .addCase(fetchWorkflowBlocksThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
-      .addCase(fetchPendingReviewsThunk.fulfilled, (s, { payload }) => { s.pendingCount = payload.count; })
+      .addCase(fetchPendingReviewsThunk.fulfilled, (s, { payload }) => {
+        s.pendingCount = payload?.count ?? (Array.isArray(payload?.blocks) ? payload.blocks.length : 0);
+      })
       .addCase(bulkApproveThunk.fulfilled, (s, { payload }) => {
         const approvedIds = new Set(payload.map((b) => b.id));
         s.blocks = s.blocks.map((b) => approvedIds.has(b.id) ? (payload.find((p) => p.id === b.id) || b) : b);
@@ -40,6 +42,7 @@ const workflowSlice = createSlice({
       // All state-transition thunks update the block in-place
       .addMatcher(
         (action) => [
+          submitBlockThunk.fulfilled.type,
           approveBlockThunk.fulfilled.type,
           requestChangesThunk.fulfilled.type,
           publishBlockThunk.fulfilled.type,

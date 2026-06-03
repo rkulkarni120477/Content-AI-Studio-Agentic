@@ -1,3 +1,53 @@
+.page {
+  padding: $space-6;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.scopeCaption {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin-bottom: $space-4;
+}
+
+.sectionTitle {
+  font-size: $font-size-md;
+  font-weight: $font-weight-semibold;
+  margin: $space-4 0 $space-3;
+}
+
+.approvalCenter {
+  @include card;
+  padding: $space-4;
+  margin-bottom: $space-6;
+}
+
+.approvalDetail {
+  margin-top: $space-4;
+  padding-top: $space-4;
+  border-top: 1px solid $color-gray-100;
+}
+
+.approvalActions {
+  display: flex;
+  gap: $space-2;
+  flex-wrap: wrap;
+  margin-top: $space-3;
+  align-items: center;
+}
+
+.reviewerInput {
+  @include form-field-base;
+  max-width: 200px;
+  font-size: $font-size-sm;
+}
+
+.emptyHint {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin-bottom: $space-6;
+}
+
 .pendingBanner {
   padding: $space-3 $space-4;
   background: $color-info-bg;

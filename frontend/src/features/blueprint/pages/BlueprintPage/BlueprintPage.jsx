@@ -1,215 +1,753 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
-import { fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk, fetchBlueprintVersionsThunk, commitBlueprintVersionThunk } from '@features/blueprint/blueprintThunks';
-import { selectBlueprints, selectActiveBlueprint, selectBlueprintVersions, selectBlueprintLoading, selectBlueprintGenerating, setGenerationMode, selectBlueprintGenerationMode } from '@features/blueprint/blueprintSlice';
+import {
+  fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
+} from '@features/blueprint/blueprintThunks';
+import { blueprintService } from '@features/blueprint/services/blueprintService';
+import {
+  selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
+  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintError,
+  selectBlueprintGenerationMode, setGenerationMode,
+} from '@features/blueprint/blueprintSlice';
 import { selectActiveCdd, selectCdds } from '@features/cdd/cddSlice';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
-import { createBlueprintSchema, commitVersionSchema } from '@utils/validation';
+import { cddService } from '@features/cdd/services/cddService';
+import {
+  selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
+  selectModelChoice,
+} from '@features/dashboard/dashboardSlice';
+import { selectActiveStyle } from '@features/style/styleSlice';
+import { fetchStylesThunk } from '@features/style/styleThunks';
+import { selectIsAdmin } from '@features/auth/authSlice';
+import { adminService } from '@features/admin/services/adminService';
+import {
+  buildModuleOptions,
+  existingModuleNumbersForCdd,
+  buildExtraInstructionsBlock,
+} from '@utils/blueprintModules';
+import { buildPromptDownloadMd } from '@utils/promptDefaults';
+import { commitVersionSchema } from '@utils/validation';
 import { GENERATION_MODES } from '@utils/constants';
-import { formatDate } from '@utils/helpers';
+import { downloadBlob } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
+import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
+import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
 import Button from '@components/common/Button/Button';
-import Select from '@components/common/Select/Select';
 import Input from '@components/common/Input/Input';
+import Select from '@components/common/Select/Select';
 import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
+import ErrorState from '@components/common/ErrorState/ErrorState';
 import styles from './BlueprintPage.module.scss';
 
+const NONE_CDD = '';
+
 export default function BlueprintPage() {
-  const { courseId }  = useParams();
-  const dispatch      = useAppDispatch();
-  const blueprints    = useAppSelector(selectBlueprints);
+  const { courseId } = useParams();
+  const dispatch = useAppDispatch();
+  const blueprints = useAppSelector(selectBlueprints);
   const activeBlueprint = useAppSelector(selectActiveBlueprint);
-  const versions      = useAppSelector(selectBlueprintVersions);
-  const cdds          = useAppSelector(selectCdds);
-  const activeCdd     = useAppSelector(selectActiveCdd);
-  const genMode       = useAppSelector(selectBlueprintGenerationMode);
-  const isLoading     = useAppSelector(selectBlueprintLoading);
-  const isGenerating  = useAppSelector(selectBlueprintGenerating);
+  const versions = useAppSelector(selectBlueprintVersions);
+  const cdds = useAppSelector(selectCdds);
+  const activeCdd = useAppSelector(selectActiveCdd);
+  const activeStyle = useAppSelector(selectActiveStyle);
+  const selProject = useAppSelector(selectSelectedProject);
+  const selCluster = useAppSelector(selectSelectedCluster);
+  const selCourse = useAppSelector(selectSelectedCourse);
+  const modelChoice = useAppSelector(selectModelChoice);
+  const genMode = useAppSelector(selectBlueprintGenerationMode);
+  const isAdmin = useAppSelector(selectIsAdmin);
+  const isLoading = useAppSelector(selectBlueprintLoading);
+  const isGenerating = useAppSelector(selectBlueprintGenerating);
+  const error = useAppSelector(selectBlueprintError);
 
+  const [linkedCddId, setLinkedCddId] = useState(null);
+  const [cddContent, setCddContent] = useState('');
+  const [moduleSelKey, setModuleSelKey] = useState('');
+  const [documentTitle, setDocumentTitle] = useState('');
+  const [extraInstructions, setExtraInstructions] = useState('');
+  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '' });
+  const [savedInstrs, setSavedInstrs] = useState([]);
+  const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
+  const [showSaveInstr, setShowSaveInstr] = useState(false);
+  const [saveInstrName, setSaveInstrName] = useState('');
+  const [saveInstrNewVer, setSaveInstrNewVer] = useState(false);
+  const [viewBpId, setViewBpId] = useState(null);
+  const [viewBpDetail, setViewBpDetail] = useState(null);
   const [showVersionModal, setShowVersionModal] = useState(false);
+  const [selectedBpId, setSelectedBpId] = useState(null);
+  const [viewVersion, setViewVersion] = useState(null);
+  const [versionContent, setVersionContent] = useState('');
 
-  const generateForm = useForm({ resolver: zodResolver(createBlueprintSchema) });
-  const versionForm  = useForm({ resolver: zodResolver(commitVersionSchema) });
+  const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
+
+  const displayBp = viewBpDetail
+    || (viewBpId
+      ? (blueprints.find((b) => b.id === viewBpId) || (activeBlueprint?.id === viewBpId ? activeBlueprint : null))
+      : activeBlueprint);
+
+  const cddOptions = useMemo(() => {
+    const opts = [{ value: NONE_CDD, label: '— None (standalone) —' }];
+    cdds.forEach((c) => {
+      opts.push({
+        value: String(c.id),
+        label: `${c.title || c.course_title} (${c.active_version || 'v1'})`,
+      });
+    });
+    return opts;
+  }, [cdds]);
+
+  const existingNums = useMemo(
+    () => existingModuleNumbersForCdd(blueprints, linkedCddId),
+    [blueprints, linkedCddId],
+  );
+
+  const moduleOptions = useMemo(
+    () => buildModuleOptions(cddContent, existingNums),
+    [cddContent, existingNums],
+  );
+
+  const selectedModuleOpt = moduleOptions.find(
+    (o) => String(o.key) === String(moduleSelKey),
+  ) || moduleOptions[0];
+
+  const linkedCdd = linkedCddId
+    ? cdds.find((c) => c.id === linkedCddId)
+    : null;
 
   useEffect(() => {
     dispatch(fetchBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
+    dispatch(fetchStylesThunk());
   }, [courseId, dispatch]);
 
   useEffect(() => {
-    if (activeCdd?.id) {
-      generateForm.setValue('cdd_id', activeCdd.id);
+    if (activeCdd?.id && linkedCddId === null) {
+      setLinkedCddId(activeCdd.id);
     }
-  }, [activeCdd, generateForm]);
+  }, [activeCdd, linkedCddId]);
 
-  async function onGenerate(data) {
-    dispatch(generateBlueprintThunk({
-      ...data,
+  useEffect(() => {
+    if (activeBlueprint?.id) {
+      setViewBpId(activeBlueprint.id);
+      setSelectedBpId(activeBlueprint.id);
+      setViewBpDetail(activeBlueprint);
+      dispatch(fetchBlueprintVersionsThunk(activeBlueprint.id));
+    }
+  }, [activeBlueprint, dispatch]);
+
+  useEffect(() => {
+    if (!viewBpId) {
+      setViewBpDetail(null);
+      return;
+    }
+    let cancelled = false;
+    blueprintService.getBlueprint(viewBpId).then((bp) => {
+      if (!cancelled) setViewBpDetail(bp);
+    }).catch(() => {
+      if (!cancelled) {
+        setViewBpDetail(
+          blueprints.find((b) => b.id === viewBpId)
+          || (activeBlueprint?.id === viewBpId ? activeBlueprint : null),
+        );
+      }
+    });
+    return () => { cancelled = true; };
+  }, [viewBpId, blueprints, activeBlueprint]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCddContent() {
+      if (!linkedCddId) {
+        setCddContent('');
+        return;
+      }
+      try {
+        const detail = await cddService.getCdd(linkedCddId);
+        const content = detail?.active_content?.full_content
+          || detail?.active_version?.full_content
+          || '';
+        if (!cancelled) setCddContent(content);
+      } catch {
+        const local = cdds.find((c) => c.id === linkedCddId);
+        const content = local?.active_content?.full_content
+          || local?.active_version?.full_content
+          || '';
+        if (!cancelled) setCddContent(content);
+      }
+    }
+    loadCddContent();
+    return () => { cancelled = true; };
+  }, [linkedCddId, cdds]);
+
+  useEffect(() => {
+    if (moduleOptions.length > 0 && !moduleSelKey) {
+      setModuleSelKey(String(moduleOptions[0].key));
+    }
+  }, [moduleOptions, moduleSelKey]);
+
+  useEffect(() => {
+    async function loadSaved() {
+      if (!selProject?.id) return;
+      try {
+        const list = await adminService.listInstructions({
+          component: 'blueprint',
+          project_id: selProject.id,
+          course_id: Number(courseId),
+        });
+        setSavedInstrs(list || []);
+      } catch {
+        setSavedInstrs([]);
+      }
+    }
+    loadSaved();
+  }, [selProject?.id, courseId]);
+
+  useEffect(() => {
+    if (!displayBp?.id || !viewVersion) return;
+    async function loadVer() {
+      try {
+        const ver = await blueprintService.getVersion(displayBp.id, viewVersion);
+        setVersionContent(ver?.full_content || '');
+      } catch {
+        setVersionContent(
+          displayBp.active_content?.full_content
+          || displayBp.active_version?.full_content
+          || '',
+        );
+      }
+    }
+    loadVer();
+  }, [displayBp, viewVersion]);
+
+  useEffect(() => {
+    if (displayBp?.active_version) {
+      setViewVersion(displayBp.active_version);
+    }
+  }, [displayBp?.id, displayBp?.active_version]);
+
+  async function onGenerate() {
+    if (!selProject?.id) return;
+    const mod = selectedModuleOpt;
+    if (!mod) return;
+
+    const moduleRef = mod.isCourseEnd
+      ? mod.courseEndLabel
+      : `Module ${mod.key}`;
+
+    const extraBlock = buildExtraInstructionsBlock({
+      isCourseEnd: mod.isCourseEnd,
+      courseEndLabel: mod.courseEndLabel,
+      moduleNum: mod.key,
+      extraInstructions,
+    });
+
+    let titleHint = '';
+    if (documentTitle.trim()) {
+      titleHint = `Preferred blueprint title: ${documentTitle.trim()}\n\n`;
+    }
+
+    const payload = {
       course_id: Number(courseId),
-      generation_mode: genMode,
-    }));
+      project_id: selProject.id,
+      cdd_id: linkedCddId || null,
+      selected_module: moduleRef,
+      extra_instructions: titleHint + extraBlock,
+      style_id: activeStyle?.id || null,
+      model_choice: modelChoice,
+      teacher_mode: genMode === GENERATION_MODES.TEACHER,
+      system_prompt_override: promptConfig.systemPrompt || undefined,
+      user_prompt_override: promptConfig.userPromptTemplate || undefined,
+    };
+    try {
+      const bp = await dispatch(generateBlueprintThunk(payload)).unwrap();
+      if (bp?.id) {
+        setViewBpId(bp.id);
+        setViewBpDetail(bp);
+        dispatch(fetchBlueprintVersionsThunk(bp.id));
+      }
+      dispatch(fetchBlueprintsThunk(courseId));
+    } catch {
+      /* error surfaced via slice */
+    }
+  }
+
+  async function onPin(bpId) {
+    await dispatch(setActiveBlueprintThunk({ blueprintId: bpId, courseId: Number(courseId) }));
+    setViewBpId(bpId);
   }
 
   async function onCommitVersion(data) {
-    if (!activeBlueprint?.id) return;
-    await dispatch(commitBlueprintVersionThunk({ blueprintId: activeBlueprint.id, data }));
+    if (!selectedBpId || !displayBp) return;
+    const content = versionContent
+      || displayBp.active_content?.full_content
+      || displayBp.active_version?.full_content
+      || '';
+    await dispatch(commitBlueprintVersionThunk({
+      blueprintId: selectedBpId,
+      data: { ...data, full_content: content },
+    }));
     setShowVersionModal(false);
     versionForm.reset();
+    dispatch(fetchBlueprintVersionsThunk(selectedBpId));
   }
 
-  const cddOptions = cdds.map((c) => ({
-    value: c.id,
-    label: `${c.title || c.course_title}${activeCdd?.id === c.id ? ' ★ Active' : ''}`,
-  }));
+  async function onExport(format) {
+    if (!displayBp?.id) return;
+    const response = await dispatch(exportBlueprintThunk({ blueprintId: displayBp.id, format })).unwrap();
+    downloadBlob(response.data, `blueprint-${displayBp.id}.${format === 'docx' ? 'docx' : format}`);
+  }
 
-  // Derive module options from active CDD
-  // TODO: parse module numbers from activeCdd.active_version.sections once backend contract confirmed
-  const moduleOptions = Array.from({ length: 10 }, (_, i) => ({ value: i + 1, label: `Module ${i + 1}` }));
+  function handleDownloadPrompt() {
+    const mod = selectedModuleOpt;
+    const moduleRef = mod?.isCourseEnd ? mod.courseEndLabel : `Module ${mod?.key ?? 1}`;
+    const extraBlock = buildExtraInstructionsBlock({
+      isCourseEnd: mod?.isCourseEnd,
+      courseEndLabel: mod?.courseEndLabel,
+      moduleNum: mod?.key ?? 1,
+      extraInstructions,
+    });
+    const md = buildPromptDownloadMd({
+      projectName: selProject?.name,
+      clusterName: selCluster?.name,
+      courseName: selCourse?.name,
+      component: 'blueprint',
+      promptName: 'blueprint_generation',
+      promptVersion: 'active',
+      systemPrompt: promptConfig.systemPrompt,
+      userPromptTemplate: promptConfig.userPromptTemplate,
+      extraInstructions: extraBlock,
+    });
+    downloadBlob(new Blob([md], { type: 'application/msword' }), 'prompt_blueprint_active.doc');
+  }
+
+  async function handleSaveInstructions() {
+    if (!saveInstrName.trim() || !extraInstructions.trim()) return;
+    await adminService.saveInstruction({
+      name: saveInstrName.trim(),
+      component: 'blueprint',
+      content: extraInstructions.trim(),
+      project_id: selProject?.id,
+      cluster_id: selCluster?.id,
+      course_id: Number(courseId),
+      as_new_version: saveInstrNewVer,
+    });
+    setShowSaveInstr(false);
+    setSaveInstrName('');
+    const list = await adminService.listInstructions({
+      component: 'blueprint',
+      project_id: selProject?.id,
+      course_id: Number(courseId),
+    });
+    setSavedInstrs(list || []);
+  }
+
+  const styleLabel = activeStyle?.name || 'None — no active style';
+  const styleOk = Boolean(activeStyle);
+  const cddLabel = activeCdd
+    ? `${activeCdd.title || activeCdd.course_title}`
+  : 'None — no CDD pinned';
+  const cddOk = Boolean(activeCdd);
+
+  const moduleStatusBanner = () => {
+    if (!selectedModuleOpt) return null;
+    if (selectedModuleOpt.isCourseEnd) {
+      return (
+        <div className={styles.statusInfo}>
+          📋 Course-end item selected: <strong>{selectedModuleOpt.courseEndLabel}</strong>
+        </div>
+      );
+    }
+    const num = selectedModuleOpt.key;
+    if (existingNums.has(num)) {
+      return (
+        <div className={styles.statusWarn}>
+          ⚠️ Blueprint already exists for Module {num}. Generating again will create a new version.
+        </div>
+      );
+    }
+    return (
+      <div className={styles.statusOk}>
+        ✅ Ready to generate Module {num} Blueprint.
+      </div>
+    );
+  };
+
+  const previewContent = versionContent
+    || displayBp?.active_content?.full_content
+    || displayBp?.active_version?.full_content;
 
   return (
     <PageContainer
-      title="Module Blueprint"
+      title=""
       breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'Blueprint' }]}
-      headerActions={
-        activeBlueprint && (
-          <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
-            + Save Version
-          </Button>
-        )
-      }
+      noPadding
     >
-      <div className={styles.layout}>
-        {/* Left: Form */}
-        <section className={styles.panel}>
-          <h2 className={styles.panel__title}>Generate Blueprint</h2>
+      <div className={styles.page}>
+        <SectionBadge
+          icon="🧩"
+          title="Module Blueprint"
+          subtitle="Generates directly from the linked CDD — module structure, lessons, and all components are derived automatically. No need to re-enter course metadata."
+        />
 
-          {activeCdd ? (
-            <div className={styles.cddBadge}>
-              <span aria-hidden="true">📋</span> Linked CDD: <strong>{activeCdd.title || activeCdd.course_title}</strong>
+        <div className={styles.configPanel}>
+          <div className={styles.configPanel__heading}>Approved Configuration (Read-Only)</div>
+          <div className={styles.configPanel__row}>
+            <div>
+              <div className={styles.configPanel__item}>🎨 Style</div>
+              <div className={styles.configPanel__value} style={{ color: styleOk ? '#10b981' : '#f59e0b' }}>
+                {styleLabel}
+                <span className={styles.configPanel__status} style={{ color: styleOk ? '#10b981' : '#f59e0b' }}>
+                  {styleOk ? '● Active' : '○ Not set'}
+                </span>
+              </div>
+            </div>
+            <div>
+              <div className={styles.configPanel__item}>📘 CDD</div>
+              <div className={styles.configPanel__value} style={{ color: cddOk ? '#6366f1' : '#f59e0b' }}>
+                {cddLabel}
+                <span className={styles.configPanel__status} style={{ color: cddOk ? '#6366f1' : '#f59e0b' }}>
+                  {cddOk ? `📌 Pinned (${activeCdd.active_version || 'v1'})` : '○ Not pinned'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {!isAdmin && (
+          activeCdd ? (
+            <div className={styles.ctaBanner}>
+              👇 <strong>Generate Blueprint from Approved CDD:</strong>
+              {' '}Use the form below to create a new module blueprint based on the pinned CDD above.
             </div>
           ) : (
-            <div className={styles.warning}>
-              ⚠️ No active CDD. Go to the CDD tab first.
+            <div className={styles.warnBanner}>
+              No CDD is pinned yet. Create and pin a CDD in the CDD tab first, then return here to generate blueprints.
             </div>
-          )}
+          )
+        )}
 
-          {/* Generation mode toggle */}
-          <div className={styles.modeToggle} role="radiogroup" aria-label="Generation mode">
-            {[GENERATION_MODES.STUDENT, GENERATION_MODES.TEACHER].map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                role="radio"
-                aria-checked={genMode === mode}
-                className={`${styles.modeBtn} ${genMode === mode ? styles['modeBtn--active'] : ''}`}
-                onClick={() => dispatch(setGenerationMode(mode))}
-              >
-                {mode === GENERATION_MODES.STUDENT ? '🎓 Student' : '👨‍🏫 Teacher'}
-              </button>
-            ))}
-          </div>
+        <div className={styles.modeRadio} role="radiogroup" aria-label="Generation mode">
+          <label>
+            <input
+              type="radio"
+              name="bp_mode"
+              checked={genMode === GENERATION_MODES.STUDENT}
+              onChange={() => dispatch(setGenerationMode(GENERATION_MODES.STUDENT))}
+            />
+            Student
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="bp_mode"
+              checked={genMode === GENERATION_MODES.TEACHER}
+              onChange={() => dispatch(setGenerationMode(GENERATION_MODES.TEACHER))}
+            />
+            Teacher
+          </label>
+        </div>
 
-          <form onSubmit={generateForm.handleSubmit(onGenerate)} className={styles.form}>
+        <div className={styles.layout}>
+          <section className={styles.panel}>
+            <h2 className={styles.panel__title}>➕ Create New Blueprint</h2>
+
             <Select
-              label="Linked CDD"
-              required
+              label="📘 Source CDD"
               options={cddOptions}
-              placeholder="Select a CDD"
-              error={generateForm.formState.errors.cdd_id?.message}
-              {...generateForm.register('cdd_id', { valueAsNumber: true })}
+              value={linkedCddId != null ? String(linkedCddId) : NONE_CDD}
+              onChange={(e) => {
+                const v = e.target.value;
+                setLinkedCddId(v ? Number(v) : null);
+                setModuleSelKey('');
+              }}
             />
-            <Select
-              label="Module"
-              required
-              options={moduleOptions}
-              placeholder="Select module number"
-              error={generateForm.formState.errors.module_number?.message}
-              {...generateForm.register('module_number', { valueAsNumber: true })}
+
+            {moduleOptions.length > 0 ? (
+              <>
+                <div className={styles.moduleLabel}>Select Module / Course-End Item</div>
+                <Select
+                  label=""
+                  options={moduleOptions.map((o) => ({
+                    value: String(o.key),
+                    label: o.label,
+                  }))}
+                  value={moduleSelKey || String(moduleOptions[0].key)}
+                  onChange={(e) => setModuleSelKey(e.target.value)}
+                />
+                {moduleStatusBanner()}
+              </>
+            ) : (
+              <p className={styles.configPanel__item}>
+                ℹ️ Module number will be 1 (no module structure detected in CDD).
+              </p>
+            )}
+
+            <Input
+              label="Blueprint Title (optional)"
+              placeholder={
+                selectedModuleOpt
+                  ? `e.g. Module ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
+                  : 'e.g. Module 1 — Patient Assessment Blueprint'
+              }
+              value={documentTitle}
+              onChange={(e) => setDocumentTitle(e.target.value)}
             />
-            <Input label="Document Title (optional)" {...generateForm.register('document_title')} />
-            <Button type="submit" variant="primary" fullWidth loading={isGenerating} disabled={!activeCdd}>
-              {isGenerating ? 'Generating Blueprint…' : '✨ Generate Blueprint'}
+
+            <Button variant="secondary" fullWidth type="button">
+              Confirm Module Selection
             </Button>
-          </form>
-        </section>
 
-        {/* Right: Library + Preview */}
-        <section className={styles.panel}>
-          <div className={styles.panel__header}>
-            <h2 className={styles.panel__title}>Blueprint Library</h2>
-          </div>
-
-          {isLoading ? (
-            <div className={styles.center}><Loader size="lg" /></div>
-          ) : blueprints.length === 0 ? (
-            <EmptyState title="No blueprints yet" message="Generate your first blueprint using the form." />
-          ) : (
-            <ul className={styles.list}>
-              {blueprints.map((bp) => (
-                <li
-                  key={bp.id}
-                  className={`${styles.listItem} ${activeBlueprint?.id === bp.id ? styles['listItem--active'] : ''}`}
-                >
-                  <div className={styles.listItem__info}>
-                    <span className={styles.listItem__title}>{bp.title}</span>
-                    <span className={styles.listItem__meta}>Module {bp.module_number} · {formatDate(bp.created_at)}</span>
-                  </div>
-                  {activeBlueprint?.id === bp.id ? (
-                    <span className={styles.badge__active}>Active</span>
-                  ) : (
-                    <Button variant="ghost" size="sm" onClick={() => dispatch(setActiveBlueprintThunk({ blueprintId: bp.id, courseId: Number(courseId) }))}>
-                      Set Active
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {activeBlueprint && (
-            <div className={styles.activeContent}>
-              <h3 className={styles.activeContent__title}>{activeBlueprint.title}</h3>
-              {versions.length > 0 && (
-                <div className={styles.versions}>
-                  {versions.map((v) => (
-                    <span key={v.id} className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}>
-                      {v.version}
-                    </span>
-                  ))}
+            <div className={styles.extraSection}>
+              <label className={styles.extraSection__label}>
+                💬 Additional Instructions <span className={styles.optional}>(optional)</span>
+              </label>
+              {savedInstrs.length > 0 && (
+                <div className={styles.instrLoad}>
+                  <Select
+                    label=""
+                    options={[
+                      { value: '— Start fresh —', label: '— Start fresh —' },
+                      ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
+                    ]}
+                    value={loadInstrSel}
+                    onChange={(e) => setLoadInstrSel(e.target.value)}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    type="button"
+                    onClick={() => {
+                      if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
+                      else {
+                        const rec = savedInstrs.find((r) => r.name === loadInstrSel);
+                        if (rec) setExtraInstructions(rec.content);
+                      }
+                    }}
+                  >
+                    📥 Load
+                  </Button>
                 </div>
               )}
-              {activeBlueprint.active_version?.full_content && (
-                <div className={styles.contentPreview}>
-                  <pre className={styles.contentPreview__text}>
-                    {activeBlueprint.active_version.full_content}
-                  </pre>
+              <textarea
+                className={styles.textarea}
+                rows={4}
+                placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson."
+                value={extraInstructions}
+                onChange={(e) => setExtraInstructions(e.target.value)}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                type="button"
+                fullWidth
+                onClick={() => setShowSaveInstr(!showSaveInstr)}
+              >
+                💾 Save Instructions
+              </Button>
+              {showSaveInstr && (
+                <div className={styles.saveInstrPanel}>
+                  <Input
+                    placeholder="e.g. Simulation-based lessons"
+                    value={saveInstrName}
+                    onChange={(e) => setSaveInstrName(e.target.value)}
+                  />
+                  <label className={styles.checkLabel}>
+                    <input
+                      type="checkbox"
+                      checked={saveInstrNewVer}
+                      onChange={(e) => setSaveInstrNewVer(e.target.checked)}
+                    />
+                    New version
+                  </label>
+                  <Button variant="primary" size="sm" type="button" onClick={handleSaveInstructions}>
+                    Confirm
+                  </Button>
                 </div>
               )}
             </div>
-          )}
-        </section>
+
+            {error && (
+              <ErrorState message={error} onRetry={() => dispatch(fetchBlueprintsThunk(courseId))} />
+            )}
+          </section>
+
+          <section className={styles.panel}>
+            <h2 className={styles.panel__title}>📂 Your Module Blueprints</h2>
+
+            {isLoading ? (
+              <div className={styles.center}><Loader size="lg" /></div>
+            ) : blueprints.length === 0 ? (
+              <EmptyState
+                title="No Blueprints yet"
+                message="Create your first Blueprint using the form on the left."
+              />
+            ) : (
+              <>
+                <Select
+                  label="Select Blueprint to View/Edit"
+                  options={blueprints.map((bp) => ({
+                    value: String(bp.id),
+                    label: `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                  }))}
+                  value={viewBpId != null ? String(viewBpId) : ''}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setViewBpId(id);
+                    setSelectedBpId(id);
+                    if (id) dispatch(fetchBlueprintVersionsThunk(id));
+                  }}
+                />
+
+                {displayBp && (
+                  <>
+                    <div className={styles.metrics}>
+                      <div className={styles.metric}>
+                        <span className={styles.metric__label}>Active Version</span>
+                        <span className={styles.metric__value}>{displayBp.active_version || '—'}</span>
+                      </div>
+                      <div className={styles.metric}>
+                        <span className={styles.metric__label}>State</span>
+                        <span className={styles.metric__value}>
+                          {(displayBp.workflow_state || 'draft').replace(/^\w/, (c) => c.toUpperCase())}
+                        </span>
+                      </div>
+                      <div className={styles.metric}>
+                        <span className={styles.metric__label}>Total Versions</span>
+                        <span className={styles.metric__value}>{versions.length}</span>
+                      </div>
+                    </div>
+
+                    {displayBp.cdd_id && (() => {
+                      const bpCdd = cdds.find((c) => c.id === displayBp.cdd_id);
+                      if (!bpCdd) return null;
+                      return (
+                        <div className={styles.cddLink}>
+                          🔗 Linked to CDD: <strong>{bpCdd.title || bpCdd.course_title}</strong>
+                          {' '}({bpCdd.active_version || 'v1'})
+                        </div>
+                      );
+                    })()}
+
+                    {versions.length > 0 && (
+                      <Select
+                        label="View Version"
+                        options={versions.map((v) => ({
+                          value: v.version,
+                          label: v.version,
+                        }))}
+                        value={viewVersion || displayBp.active_version || ''}
+                        onChange={(e) => setViewVersion(e.target.value)}
+                      />
+                    )}
+
+                    <div className={styles.activeContent}>
+                      <div className={styles.activeContent__header}>
+                        <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
+                        <div className={styles.activeContent__actions}>
+                          <Button variant="ghost" size="sm" onClick={() => onExport('docx')}>
+                            ⬇️ Word (.docx)
+                          </Button>
+                          <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
+                            + Save Version
+                          </Button>
+                        </div>
+                      </div>
+
+                      {versions.length > 0 && (
+                        <div className={styles.versions}>
+                          <span className={styles.versions__label}>Versions:</span>
+                          {versions.map((v) => (
+                            <span
+                              key={v.version}
+                              className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}
+                            >
+                              {v.version}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {previewContent && (
+                        <div className={styles.contentPreview}>
+                          <pre className={styles.contentPreview__text}>{previewContent}</pre>
+                        </div>
+                      )}
+                    </div>
+
+                    <Button
+                      variant="primary"
+                      fullWidth
+                      onClick={() => onPin(displayBp.id)}
+                      disabled={activeBlueprint?.id === displayBp.id}
+                    >
+                      📌 Set as Active Blueprint for Generation
+                    </Button>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+
+        <hr className={styles.divider} />
+
+        <InlinePromptControls
+          component="blueprint"
+          extraInstructions={extraInstructions}
+          showExtraInstructions={false}
+          onPromptsChange={setPromptConfig}
+          headerHint="📝 Select the source CDD and module on the left, then configure the prompt and generate your Blueprint below."
+        />
+
+        <div className={styles.generateRow}>
+          <Button
+            variant="primary"
+            size="lg"
+            className={styles.generateRow__main}
+            loading={isGenerating}
+            onClick={onGenerate}
+          >
+            {isGenerating ? 'Generating Blueprint…' : '🤖 Generate Blueprint with AI'}
+          </Button>
+          <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
+            ⬇️ Download Prompt
+          </Button>
+        </div>
       </div>
 
       <Modal
         open={showVersionModal}
         onClose={() => setShowVersionModal(false)}
-        title="Save New Version"
+        title="Save as New Version"
         size="sm"
-        footer={
+        footer={(
           <>
             <Button variant="ghost" onClick={() => setShowVersionModal(false)}>Cancel</Button>
-            <Button variant="primary" onClick={versionForm.handleSubmit(onCommitVersion)}>Save</Button>
+            <Button variant="primary" onClick={versionForm.handleSubmit(onCommitVersion)}>
+              💾 Commit New Blueprint Version
+            </Button>
           </>
-        }
+        )}
       >
         <form className={styles.form}>
-          <Input label="Version Tag" placeholder="v2" {...versionForm.register('tag')} />
-          <Input label="Change Reason" required error={versionForm.formState.errors.reason?.message} {...versionForm.register('reason')} />
+          <Input
+            label="New Version Tag"
+            placeholder={`v${versions.length + 1}`}
+            {...versionForm.register('tag')}
+          />
+          <Input
+            label="Change Reason"
+            required
+            placeholder="What changed?"
+            error={versionForm.formState.errors.reason?.message}
+            {...versionForm.register('reason')}
+          />
         </form>
       </Modal>
     </PageContainer>

@@ -23,6 +23,10 @@ const authSlice = createSlice({
       state.error   = null;
       tokenStorage.remove();
     },
+    setToken(state, { payload }) {
+      state.token = payload;
+      tokenStorage.set(payload);
+    },
   },
   extraReducers: (builder) => {
     // ── Login ────────────────────────────────────────────────────────────────
@@ -67,7 +71,7 @@ const authSlice = createSlice({
   },
 });
 
-export const { clearError, forceLogout } = authSlice.actions;
+export const { clearError, forceLogout, setToken } = authSlice.actions;
 export default authSlice.reducer;
 
 // ─── Selectors ────────────────────────────────────────────────────────────────

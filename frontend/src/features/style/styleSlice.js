@@ -3,6 +3,9 @@ import {
   fetchStylesThunk, createStyleThunk, activateStyleThunk,
   deactivateStyleThunk, fetchDocumentsThunk, uploadDocumentsThunk,
   regenerateStyleThunk,
+  deleteStyleThunk,
+  updateStyleThunk,
+  deleteDocumentThunk,
 } from './styleThunks';
 
 const initialState = {
@@ -53,9 +56,13 @@ const styleSlice = createSlice({
       .addCase(uploadDocumentsThunk.pending,  (s) => { s.isUploadingDoc = true; })
       .addCase(uploadDocumentsThunk.fulfilled,(s, { payload }) => {
         s.isUploadingDoc = false;
-        s.documents.unshift(...payload);
+        s.documents = Array.isArray(payload) ? payload : [];
       })
       .addCase(uploadDocumentsThunk.rejected, (s, { payload }) => { s.isUploadingDoc = false; s.error = payload; })
+
+      .addCase(deleteDocumentThunk.fulfilled, (s, { payload }) => {
+        s.documents = s.documents.filter((d) => d.id !== payload.id);
+      })
 
       .addCase(regenerateStyleThunk.pending,  (s) => { s.isGenerating = true; })
       .addCase(regenerateStyleThunk.fulfilled,(s, { payload }) => {
@@ -64,6 +71,16 @@ const styleSlice = createSlice({
         if (s.activeStyle?.id === payload.id) s.activeStyle = payload;
       })
       .addCase(regenerateStyleThunk.rejected, (s, { payload }) => { s.isGenerating = false; s.error = payload; });
+
+    b.addCase(updateStyleThunk.fulfilled, (s, { payload }) => {
+      s.styles = s.styles.map((st) => st.id === payload.id ? payload : st);
+      if (s.activeStyle?.id === payload.id) s.activeStyle = payload;
+    });
+
+    b.addCase(deleteStyleThunk.fulfilled, (s, { payload }) => {
+      s.styles = s.styles.filter((st) => st.id !== payload.id);
+      if (s.activeStyle?.id === payload.id) s.activeStyle = null;
+    });
   },
 });
 

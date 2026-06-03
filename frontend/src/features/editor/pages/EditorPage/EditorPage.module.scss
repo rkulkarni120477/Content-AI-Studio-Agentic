@@ -1,13 +1,25 @@
+.page {
+  padding: $space-6;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
 .headerActions { @include flex-start; gap: $space-2; }
 
 .completionBanner {
-  padding: $space-4 $space-6;
-  background: $color-success-bg;
-  border: 1px solid $color-success-light;
-  border-radius: $radius-xl;
+  display: flex;
+  align-items: center;
+  gap: $space-4;
+  padding: 16px 20px;
+  background: #f0fdf4;
+  border: 2px solid #86efac;
+  border-radius: 12px;
   font-size: $font-size-sm;
-  color: $color-success;
+  color: #166534;
   margin-bottom: $space-6;
+
+  &__icon { font-size: 2rem; }
+  p { margin: 4px 0 0; font-size: 0.84rem; }
 }
 
 .validation {

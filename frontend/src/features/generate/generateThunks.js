@@ -4,24 +4,20 @@ import { extractErrorMessage } from '@utils/helpers';
 import { JOB_STATUSES } from '@utils/constants';
 import toast from 'react-hot-toast';
 
-const POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 3000;
+const POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
 
-export const runGenerationThunk = createAsyncThunk(
-  'generate/run',
+export const launchGenerationThunk = createAsyncThunk(
+  'generate/launch',
   async (payload, { rejectWithValue }) => {
     try {
-      const result = await generateService.run(payload);
-      toast.success(`${result.blocks?.length || 0} block(s) generated.`);
-      return result;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const queueGenerationThunk = createAsyncThunk(
-  'generate/queue',
-  async (payload, { rejectWithValue }) => {
-    try { return await generateService.queue(payload); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+      if (!payload?.project_id) {
+        return rejectWithValue('Select a project before launching generation.');
+      }
+      const accepted = await generateService.launch(payload);
+      return accepted;
+    } catch (e) {
+      return rejectWithValue(extractErrorMessage(e));
+    }
   },
 );
 
@@ -30,15 +26,28 @@ export const pollJobThunk = createAsyncThunk(
   async (jobId, { dispatch, rejectWithValue }) => {
     try {
       const status = await generateService.getJobStatus(jobId);
-      // If still running, schedule another poll
-      if (status.status === JOB_STATUSES.PENDING || status.status === JOB_STATUSES.RUNNING) {
+      if (status.current_step) {
+        dispatch({ type: 'generate/addJobStage', payload: status.current_step });
+      }
+      const active = ['pending', 'queued', 'running'].includes(status.status);
+      if (active) {
         setTimeout(() => dispatch(pollJobThunk(jobId)), POLL_INTERVAL_MS);
       } else if (status.status === JOB_STATUSES.COMPLETED) {
         toast.success('Generation completed!');
+        if (status.generation_id) {
+          const gen = await generateService.getGeneration(status.generation_id);
+          return { ...status, blocks: gen.blocks || [] };
+        }
       } else if (status.status === JOB_STATUSES.FAILED) {
-        toast.error('Generation failed. Check the job log.');
+        toast.error(status.error_message || 'Generation failed.');
       }
       return status;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+    } catch (e) {
+      return rejectWithValue(extractErrorMessage(e));
+    }
   },
 );
+
+/** @deprecated use launchGenerationThunk */
+export const runGenerationThunk = launchGenerationThunk;
+export const queueGenerationThunk = launchGenerationThunk;

@@ -2,7 +2,11 @@ import { api } from '@services/apiClient';
 import { WORKFLOW } from '@services/endpoints';
 
 export const workflowService = {
-  listBlocks:     (filters)          => api.get(WORKFLOW.LIST, { params: filters }),
+  listBlocks: async (filters) => {
+    const res = await api.get(WORKFLOW.LIST, { params: { page_size: 200, ...filters } });
+    return res.items || res || [];
+  },
+  submit:         (id, data)         => api.post(WORKFLOW.SUBMIT(id), data || {}),
   getPending:     ()                 => api.get(WORKFLOW.PENDING_REVIEWS),
   approve:        (id, data)         => api.post(WORKFLOW.APPROVE(id), data || {}),
   requestChanges: (id, data)         => api.post(WORKFLOW.REQUEST_CHANGES(id), data || {}),

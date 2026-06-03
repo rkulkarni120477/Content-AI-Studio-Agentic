@@ -26,9 +26,9 @@ export const importFromRegistryThunk = createAsyncThunk(
   'central/import',
   async (data, { rejectWithValue }) => {
     try {
-      const result = await centralService.importFromRegistry(data);
-      toast.success('Prompt imported to Central Repository.');
-      return result;
+      // Backend does not expose an import endpoint in FastAPI (Streamlit-only feature).
+      // Keep thunk but fail gracefully with a clear message.
+      return rejectWithValue('Import from Registry is not available in the API.');
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

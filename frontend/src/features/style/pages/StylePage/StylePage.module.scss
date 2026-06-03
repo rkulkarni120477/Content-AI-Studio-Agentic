@@ -31,17 +31,46 @@
   display: grid;
   grid-template-columns: 380px 1fr;
   gap: $space-6;
-  align-items: start;
+  align-items: stretch;
 
   @include max-lg { grid-template-columns: 1fr; }
 }
+
+.panelFull {
+  grid-column: 1 / -1;
+}
+
+.hintText {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+}
+
+.promptLayout {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: $space-6;
+  align-items: start;
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.promptLeft, .promptRight { min-width: 0; }
 
 .panel {
   @include card;
   @include flex-col;
   gap: $space-4;
+  min-height: 0;
 
   &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+}
+
+.panelLibrary {
+  max-height: 100vh;
+  overflow: hidden;
+
+  @include max-lg {
+    max-height: min(70vh, 640px);
+  }
 }
 
 .form {
@@ -64,36 +93,270 @@
   color: $color-primary-dark;
 }
 
+.noActiveBanner {
+  padding: $space-4 $space-5;
+  background: $color-warning-bg;
+  border: 1px solid $color-warning-light;
+  border-radius: $radius-lg;
+  color: $color-warning;
+  font-size: $font-size-sm;
+  margin-bottom: $space-5;
+}
+
+.docRegistry {
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+}
+
+.docHelp, .docUpload {
+  @include card;
+  padding: 0;
+  overflow: hidden;
+}
+
+.docHelp__toggle, .docUpload__toggle {
+  width: 100%;
+  text-align: left;
+  background: $color-white;
+  border: none;
+  padding: $space-4 $space-5;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  cursor: pointer;
+}
+
+.docHelp__body, .docUpload__body {
+  padding: 0 $space-5 $space-5;
+  color: $color-gray-700;
+  font-size: $font-size-sm;
+  line-height: 1.6;
+}
+
+.quickCard {
+  margin-top: $space-4;
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  padding: $space-4;
+
+  &__title { font-weight: $font-weight-semibold; margin-bottom: $space-2; }
+  &__list { padding-left: 1.1rem; }
+}
+
+.kpiRow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: $space-4;
+  @include max-lg { grid-template-columns: repeat(2, 1fr); }
+}
+
+.kpi {
+  @include card;
+  padding: $space-4 $space-5;
+
+  &__label { font-size: $font-size-xs; color: $color-gray-500; font-weight: $font-weight-semibold; text-transform: uppercase; letter-spacing: 0.06em; }
+  &__value { font-size: 1.6rem; font-weight: $font-weight-bold; color: $color-gray-900; margin-top: 4px; }
+}
+
+.docHeader {
+  @include card;
+  gap: $space-4;
+
+  &__title { font-size: $font-size-xl; font-weight: $font-weight-bold; }
+}
+
+.docFilters {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.2fr;
+  gap: $space-4;
+  align-items: end;
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.docSearch__label {
+  display: block;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  color: $color-gray-700;
+  margin-bottom: $space-1;
+}
+
+.docPager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-4;
+
+  &__meta { color: $color-gray-500; font-size: $font-size-sm; }
+}
+
+.docList {
+  @include card;
+  gap: $space-2;
+}
+
+.docRow {
+  display: grid;
+  grid-template-columns: 1.6fr 0.8fr 0.9fr 0.6fr;
+  gap: $space-4;
+  align-items: center;
+  padding: $space-4;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-white;
+
+  @include max-lg { grid-template-columns: 1fr; }
+
+  &__name { font-weight: $font-weight-semibold; color: $color-gray-900; }
+  &__meta { font-size: $font-size-xs; color: $color-gray-500; margin-top: 2px; }
+}
+
+.docRow__chips {
+  display: flex;
+  gap: $space-2;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 10px;
+  border-radius: $radius-full;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  border: 1px solid $color-gray-200;
+  background: $color-gray-50;
+  color: $color-gray-700;
+
+  &--active {
+    background: $color-success-bg;
+    border-color: $color-success-light;
+    color: $color-success;
+  }
+}
+
+.docRow__dates {
+  font-size: $font-size-xs;
+  color: $color-gray-600;
+}
+
+.miniLabel {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $color-gray-400;
+  font-weight: $font-weight-semibold;
+}
+
+.docRow__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: $space-2;
+  @include max-lg { justify-content: flex-start; }
+}
+
 .center { @include flex-center; padding: $space-8; }
 
 .list {
   @include flex-col;
+  flex: 1;
+  min-height: 0;
   gap: $space-2;
-  max-height: 500px;
   overflow-y: auto;
+  overflow-x: hidden;
   @include custom-scrollbar;
 }
 
 .styleItem {
-  @include flex-between;
+  @include flex-col;
+  align-items: stretch;
   gap: $space-3;
   padding: $space-4;
   background: $color-white;
   border: 1px solid $color-gray-200;
   border-radius: $radius-lg;
   transition: all $transition-fast;
+  flex-shrink: 0;
 
   &:hover   { border-color: $color-gray-300; }
   &--active { border-color: $color-primary; background: $color-primary-soft; }
 
-  &__info { @include flex-col; gap: 2px; flex: 1; min-width: 0; }
+  &__info { @include flex-col; gap: 2px; min-width: 0; }
   &__name  { font-size: $font-size-sm; font-weight: $font-weight-semibold; @include text-truncate; }
   &__desc  { font-size: $font-size-xs; color: $color-gray-600; @include text-clamp(2); }
   &__date  { font-size: $font-size-xs; color: $color-gray-400; }
-  &__actions { @include flex-start; gap: $space-2; flex-shrink: 0; }
+  &__actions {
+    @include flex-start;
+    flex-wrap: wrap;
+    gap: $space-2;
+    width: 100%;
+  }
 }
 
 .badge__active { @include badge($color-success-bg, $color-success, $color-success-light); }
+
+.rowActions {
+  display: flex;
+  gap: $space-2;
+  justify-content: flex-end;
+}
+
+.aiBox {
+  @include flex-col;
+  gap: $space-2;
+  padding: $space-3;
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+
+  &__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+  &__input { @include form-field-base; resize: vertical; }
+}
+
+.aiGenResult {
+  margin-top: $space-2;
+
+  &__code {
+    max-height: 220px;
+    overflow: auto;
+    background: $color-gray-900;
+    color: $color-gray-100;
+    padding: $space-3;
+    border-radius: $radius-lg;
+    font-size: 0.8rem;
+  }
+}
+
+.emptyText { color: $color-gray-600; font-size: $font-size-sm; }
+
+.versionList { @include flex-col; gap: $space-2; }
+.versionItem {
+  padding: $space-3;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-white;
+}
+.versionItem__ver { font-weight: $font-weight-semibold; margin-right: $space-2; }
+.versionItem__date { margin-left: $space-2; color: $color-gray-500; font-size: $font-size-xs; }
+.versionItem__reason { margin-top: $space-2; color: $color-gray-600; font-size: $font-size-sm; }
+
+.viewDesc {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin-bottom: $space-3;
+}
+
+.viewTextarea {
+  width: 100%;
+  min-height: 280px;
+  @include form-field-base;
+  font-family: $font-family-mono;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
 
 .docPicker {
   @include flex-col;

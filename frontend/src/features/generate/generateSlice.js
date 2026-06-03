@@ -1,5 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit';
-import { runGenerationThunk, queueGenerationThunk, pollJobThunk } from './generateThunks';
+import { launchGenerationThunk, pollJobThunk } from './generateThunks';
 import { JOB_STATUSES } from '@utils/constants';
 
 const initialState = {
@@ -25,28 +25,39 @@ const generateSlice = createSlice({
   },
   extraReducers: (b) => {
     b
-      .addCase(runGenerationThunk.pending,   (s) => { s.isGenerating = true; s.error = null; s.latestBlocks = []; })
-      .addCase(runGenerationThunk.fulfilled, (s, { payload }) => {
-        s.isGenerating  = false;
-        s.latestBlocks  = payload.blocks || [];
+      .addCase(launchGenerationThunk.pending, (s) => {
+        s.isGenerating = true;
+        s.error = null;
+        s.latestBlocks = [];
+        s.jobProgress = [];
       })
-      .addCase(runGenerationThunk.rejected,  (s, { payload }) => { s.isGenerating = false; s.error = payload; })
-
-      .addCase(queueGenerationThunk.fulfilled, (s, { payload }) => {
+      .addCase(launchGenerationThunk.fulfilled, (s, { payload }) => {
         s.activeJobId = payload.job_id;
-        s.jobStatus   = JOB_STATUSES.PENDING;
+        s.jobStatus = payload.status || 'queued';
+        s.isGenerating = true;
+      })
+      .addCase(launchGenerationThunk.rejected, (s, { payload }) => {
+        s.isGenerating = false;
+        s.error = payload;
       })
 
       .addCase(pollJobThunk.fulfilled, (s, { payload }) => {
         s.jobStatus = payload.status;
-        if (payload.status === JOB_STATUSES.COMPLETED) {
+        if (payload.current_step && !s.jobProgress.includes(payload.current_step)) {
+          s.jobProgress.push(payload.current_step);
+        }
+        if (payload.status === JOB_STATUSES.COMPLETED || payload.status === 'completed') {
           s.latestBlocks = payload.blocks || [];
           s.isGenerating = false;
         }
-        if (payload.status === JOB_STATUSES.FAILED) {
-          s.error        = payload.error || 'Generation failed.';
+        if (payload.status === JOB_STATUSES.FAILED || payload.status === 'failed') {
+          s.error = payload.error_message || payload.error || 'Generation failed.';
           s.isGenerating = false;
         }
+      })
+      .addCase(pollJobThunk.rejected, (s, { payload }) => {
+        s.isGenerating = false;
+        s.error = payload;
       });
   },
 });

@@ -1,51 +1,146 @@
-.steps {
+.page {
+  padding: $space-6;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.stepper {
   display: flex;
   align-items: center;
-  gap: $space-3;
-  padding: $space-4 $space-6;
-  background: $color-white;
-  border: 1px solid $color-gray-200;
-  border-radius: $radius-xl;
-  margin-bottom: $space-6;
-  overflow-x: auto;
+  gap: 0;
+  margin-bottom: $space-4;
   flex-wrap: wrap;
-
-  &__connector { color: $color-gray-300; font-size: $font-size-lg; }
 }
 
 .step {
-  @include flex-start;
-  gap: $space-3;
-  padding: $space-3;
-  border-radius: $radius-lg;
-  min-width: 160px;
+  flex: 1;
+  min-width: 100px;
+  text-align: center;
+  padding: 7px 10px;
+  margin: 0 3px;
+  border-radius: 8px;
+  border: 1px solid $color-gray-200;
+  background: $color-gray-50;
 
-  &__icon { font-size: 1.5rem; }
-  &__label { font-size: $font-size-xs; color: $color-gray-500; text-transform: uppercase; letter-spacing: 0.05em; }
-  &__value { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-800; @include text-truncate; }
+  &--done {
+    border-color: #86efac;
+    background: #f0fdf4;
+  }
 
-  &--done  { background: $color-success-bg; }
-  &--ready { background: $color-primary-soft; }
-  &--pending { opacity: 0.6; }
+  &__icon { font-size: 1rem; }
+  &__label { font-size: 0.72rem; font-weight: $font-weight-bold; color: $color-gray-500; }
+  &__status { font-size: 0.65rem; }
+  &--done &__label,
+  &--done &__status { color: #16a34a; }
 }
 
-.notReady {
+.stepArrow {
+  color: #d1d5db;
+  font-size: 1.2rem;
+  padding: 0 2px;
+}
+
+.contextBanner {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  background: $color-white;
+  border: 1px solid #e4e7ef;
+  border-radius: 12px;
+  padding: 14px 20px;
+  margin-bottom: $space-4;
+  flex-wrap: wrap;
+
+  &__col {
+    flex: 1;
+    min-width: 140px;
+    padding-right: 20px;
+  }
+
+  &__divider {
+    width: 1px;
+    background: #e4e7ef;
+    margin: 0 20px;
+  }
+
+  &__heading {
+    font-size: 0.7rem;
+    font-weight: $font-weight-semibold;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: $color-gray-500;
+    margin-bottom: 4px;
+  }
+
+  &__value {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.9rem;
+    font-weight: $font-weight-semibold;
+  }
+
+  &__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  &__hint {
+    margin-left: auto;
+    align-self: center;
+    font-size: 0.78rem;
+    color: $color-gray-400;
+    padding-left: 20px;
+  }
+}
+
+.compOk {
+  padding: 7px 12px;
+  background: #f0fdf4;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #065f46;
+  margin-bottom: $space-2;
+}
+
+.compWarn {
+  padding: 10px 14px;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  border-radius: 8px;
+  font-size: 0.83rem;
+  color: #854d0e;
+  margin-bottom: $space-2;
+}
+
+.overridePanel {
+  @include card;
   padding: $space-4;
-  background: $color-warning-bg;
-  border: 1px solid $color-warning-light;
-  border-radius: $radius-lg;
-  font-size: $font-size-sm;
-  color: $color-warning;
-  margin-bottom: $space-6;
+  margin-bottom: $space-4;
+
+  &__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: $space-4;
+
+    @include max-md {
+      grid-template-columns: 1fr;
+    }
+  }
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: 0.45fr 0.55fr;
   gap: $space-6;
   align-items: start;
 
-  @include max-lg { grid-template-columns: 1fr; }
+  @include max-lg {
+    grid-template-columns: 1fr;
+  }
 }
 
 .panel {
@@ -53,43 +148,77 @@
   @include flex-col;
   gap: $space-4;
 
-  &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+  &__title {
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    margin: 0;
+  }
+}
+
+.sectionLabel {
+  font-size: 0.75rem;
+  font-weight: $font-weight-bold;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #4f46e5;
+  margin-bottom: 8px;
 }
 
 .form {
   @include flex-col;
   gap: $space-4;
+}
 
-  &__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+.gateWarn {
+  padding: $space-3;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: #854d0e;
+}
 
-  &__textarea { @include flex-col; gap: $space-1; }
+.checkLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+}
 
-  &__textareaInput {
-    @include form-field-base;
-    resize: vertical;
-    min-height: 96px;
+.divider {
+  border: none;
+  border-top: 1px solid $color-gray-200;
+  margin: $space-6 0;
+}
+
+.generateRow {
+  display: grid;
+  grid-template-columns: 0.65fr 0.35fr;
+  gap: $space-4;
+  margin-top: $space-4;
+
+  @include max-md {
+    grid-template-columns: 1fr;
   }
+
+  &__main { width: 100%; }
 }
 
 .jobProgress {
   @include flex-col;
-  gap: $space-3;
+  gap: $space-2;
 
   &__status {
     @include flex-start;
     gap: $space-2;
-    font-size: $font-size-sm;
     font-weight: $font-weight-medium;
-    color: $color-gray-700;
   }
 
   &__stage {
-    font-size: $font-size-xs;
+    font-size: $font-size-sm;
     color: $color-gray-600;
-    padding: $space-2 $space-3;
-    background: $color-gray-50;
-    border-radius: $radius-md;
-    border-left: 3px solid $color-primary;
+    padding-left: $space-2;
+    border-left: 2px solid $color-primary-light;
   }
 }
 
@@ -97,28 +226,44 @@
   @include flex-col;
   gap: $space-3;
 
-  &__count { font-size: $font-size-sm; color: $color-gray-500; }
+  &__count {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    margin: 0;
+  }
 }
 
 .blockCard {
-  @include card($space-4);
-  @include flex-col;
-  gap: $space-2;
+  padding: $space-3;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-gray-50;
 
-  &__header { @include flex-between; }
-  &__label  { font-size: $font-size-sm; font-weight: $font-weight-semibold; }
-  &__type   { @include badge($color-primary-soft, $color-primary); }
-  &__preview { font-size: $font-size-sm; color: $color-gray-600; line-height: $line-height-relaxed; }
+  &__header {
+    @include flex-between;
+    margin-bottom: $space-2;
+  }
+
+  &__label { font-weight: $font-weight-medium; font-size: $font-size-sm; }
+  &__type { font-size: $font-size-xs; color: $color-gray-500; }
+  &__preview {
+    font-size: $font-size-xs;
+    color: $color-gray-600;
+    margin: 0;
+    white-space: pre-wrap;
+  }
 }
 
 .empty {
   @include flex-col;
-  align-items: center;
-  gap: $space-3;
-  padding: $space-12;
+  @include flex-center;
+  gap: $space-2;
+  padding: $space-8;
   color: $color-gray-400;
-  font-size: $font-size-sm;
   text-align: center;
+}
 
-  span { font-size: 2.5rem; }
+.center {
+  @include flex-center;
+  padding: $space-8;
 }

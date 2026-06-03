@@ -1,10 +1,18 @@
+.page {
+  padding: $space-6;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
 .layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: 0.4fr 0.6fr;
   gap: $space-6;
   align-items: start;
 
-  @include max-lg { grid-template-columns: 1fr; }
+  @include max-lg {
+    grid-template-columns: 1fr;
+  }
 }
 
 .panel {
@@ -12,22 +20,61 @@
   @include flex-col;
   gap: $space-4;
 
-  &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
-  &__header { @include flex-between; }
+  &__title {
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    margin: 0;
+  }
 }
 
-.cddBadge {
-  @include flex-start;
-  gap: $space-2;
-  padding: $space-3 $space-4;
-  background: $color-primary-soft;
-  border: 1px solid $color-primary-light;
-  border-radius: $radius-lg;
-  font-size: $font-size-sm;
-  color: $color-primary-dark;
+.configPanel {
+  background: #f8faff;
+  border: 1.5px solid #c7d2fe;
+  border-radius: 10px;
+  padding: 12px 18px;
+
+  &__heading {
+    font-size: 0.7rem;
+    font-weight: $font-weight-bold;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #6366f1;
+    margin-bottom: 8px;
+  }
+
+  &__row {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+
+  &__item {
+    font-size: 0.72rem;
+    color: $color-gray-500;
+  }
+
+  &__value {
+    font-weight: $font-weight-semibold;
+    font-size: $font-size-sm;
+  }
+
+  &__status {
+    font-size: 0.7rem;
+    margin-left: 4px;
+  }
 }
 
-.warning {
+.ctaBanner {
+  padding: 10px 16px;
+  background: #eef2ff;
+  border: 1.5px solid #a5b4fc;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  color: #3730a3;
+}
+
+.warnBanner {
   padding: $space-3 $space-4;
   background: $color-warning-bg;
   border: 1px solid $color-warning-light;
@@ -36,43 +83,158 @@
   color: $color-warning;
 }
 
-.modeToggle {
+.modeRadio {
+  display: flex;
+  gap: $space-6;
+  flex-wrap: wrap;
+
+  label {
+    display: flex;
+    align-items: center;
+    gap: $space-2;
+    font-size: $font-size-sm;
+    cursor: pointer;
+  }
+}
+
+.moduleLabel {
+  font-size: 0.85rem;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-900;
+}
+
+.statusOk {
+  padding: 5px 10px;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #166534;
+}
+
+.statusWarn {
+  padding: 5px 10px;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #854d0e;
+}
+
+.statusInfo {
+  padding: 5px 10px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #4338ca;
+}
+
+.optional {
+  font-weight: $font-weight-normal;
+  font-size: 0.75rem;
+  color: $color-gray-400;
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+}
+
+.textarea {
+  @include form-field-base;
+  resize: vertical;
+  width: 100%;
+  font-size: $font-size-sm;
+}
+
+.extraSection {
+  @include flex-col;
+  gap: $space-2;
+
+  &__label {
+    font-size: 0.8rem;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-700;
+    margin-top: $space-2;
+  }
+}
+
+.instrLoad {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr auto;
   gap: $space-2;
 }
 
-.modeBtn {
-  padding: $space-2 $space-3;
-  border: 2px solid $color-gray-200;
+.saveInstrPanel {
+  @include flex-col;
+  gap: $space-2;
+  padding: $space-3;
+  background: $color-gray-50;
   border-radius: $radius-lg;
-  background: $color-white;
-  font-size: $font-size-sm;
-  font-weight: $font-weight-medium;
-  cursor: pointer;
-  transition: all $transition-fast;
-  color: $color-gray-600;
-
-  &--active {
-    border-color: $color-primary;
-    background: $color-primary-soft;
-    color: $color-primary;
-  }
-
-  &:hover:not(&--active) { border-color: $color-gray-300; }
-  &:focus-visible { @include focus-ring; }
 }
 
-.form { @include flex-col; gap: $space-4; }
+.checkLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+}
 
-.center { @include flex-center; padding: $space-8; }
+.center {
+  @include flex-center;
+  padding: $space-8;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $space-3;
+  margin-bottom: $space-3;
+
+  @include max-md {
+    grid-template-columns: 1fr;
+  }
+}
+
+.metric {
+  @include flex-col;
+  gap: 2px;
+  padding: $space-3;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+  border: 1px solid $color-gray-200;
+
+  &__label {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  &__value {
+    font-size: $font-size-lg;
+    font-weight: $font-weight-bold;
+    color: $color-gray-900;
+  }
+}
+
+.cddLink {
+  padding: $space-2 $space-3;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: #1e40af;
+}
 
 .list {
   @include flex-col;
   gap: $space-2;
-  max-height: 280px;
+  max-height: 180px;
   overflow-y: auto;
   @include custom-scrollbar;
+  margin-bottom: $space-4;
 }
 
 .listItem {
@@ -84,26 +246,53 @@
   border-radius: $radius-lg;
   transition: all $transition-fast;
 
-  &:hover   { border-color: $color-gray-300; }
+  &:hover { border-color: $color-gray-300; }
   &--active { border-color: $color-primary; background: $color-primary-soft; }
 
-  &__info { @include flex-col; gap: 2px; flex: 1; min-width: 0; }
+  &__info { @include flex-col; gap: 2px; min-width: 0; flex: 1; }
   &__title { font-size: $font-size-sm; font-weight: $font-weight-medium; @include text-truncate; }
-  &__meta  { font-size: $font-size-xs; color: $color-gray-500; }
+  &__meta { font-size: $font-size-xs; color: $color-gray-500; }
 }
 
-.badge__active { @include badge($color-success-bg, $color-success, $color-success-light); }
+.badge__active {
+  @include badge($color-success-bg, $color-success, $color-success-light);
+}
 
 .activeContent {
   @include flex-col;
-  gap: $space-3;
+  gap: $space-4;
   padding-top: $space-4;
   border-top: 1px solid $color-gray-100;
 
-  &__title { font-size: $font-size-base; font-weight: $font-weight-semibold; }
+  &__header {
+    @include flex-between;
+    gap: $space-3;
+    flex-wrap: wrap;
+  }
+
+  &__title {
+    font-size: $font-size-base;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+  }
+
+  &__actions {
+    display: flex;
+    gap: $space-2;
+    flex-wrap: wrap;
+  }
 }
 
-.versions { @include flex-start; gap: $space-2; flex-wrap: wrap; }
+.versions {
+  @include flex-start;
+  gap: $space-2;
+  flex-wrap: wrap;
+
+  &__label {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+  }
+}
 
 .versionTag {
   padding: 2px $space-2;
@@ -111,11 +300,15 @@
   background: $color-gray-100;
   border-radius: $radius-full;
   color: $color-gray-600;
-  &--active { background: $color-primary; color: $color-white; }
+
+  &--active {
+    background: $color-primary;
+    color: $color-white;
+  }
 }
 
 .contentPreview {
-  max-height: 400px;
+  max-height: 360px;
   overflow-y: auto;
   background: $color-gray-50;
   border-radius: $radius-lg;
@@ -128,5 +321,27 @@
     color: $color-gray-700;
     white-space: pre-wrap;
     word-break: break-word;
+    margin: 0;
+  }
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid $color-gray-200;
+  margin: $space-6 0;
+}
+
+.generateRow {
+  display: grid;
+  grid-template-columns: 0.65fr 0.35fr;
+  gap: $space-4;
+  margin-top: $space-4;
+
+  @include max-md {
+    grid-template-columns: 1fr;
+  }
+
+  &__main {
+    width: 100%;
   }
 }

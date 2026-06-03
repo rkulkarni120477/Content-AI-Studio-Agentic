@@ -6,11 +6,18 @@ import {
   fetchSummaryThunk, fetchUsageThunk, fetchCostThunk,
   fetchAuditTrailThunk, fetchUsersThunk, createUserThunk,
   toggleUserActiveThunk, exportAuditThunk,
+  fetchProjectAnalyticsThunk, fetchPromptPerfThunk,
+  fetchQualityTrendsThunk, fetchGenerationHistoryThunk,
 } from '@features/analytics/analyticsThunks';
 import {
   selectSummary, selectUsage, selectCost, selectAuditTrail,
   selectUsers, selectAnalyticsLoading, setFilters, selectAnalyticsFilters,
+  selectProjectRows, selectPromptPerf, selectQualityRatings, selectGenHistory,
 } from '@features/analytics/analyticsSlice';
+import {
+  selectSelectedProject, selectSelectedCourse,
+} from '@features/dashboard/dashboardSlice';
+import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import { createUserSchema } from '@utils/validation';
 import { DATE_RANGE_LABELS, DATE_RANGE_PRESETS } from '@utils/constants';
 import { formatCurrency, formatDate, formatNumber, formatTokens } from '@utils/helpers';
@@ -26,6 +33,7 @@ import Loader from '@components/common/Loader/Loader';
 import styles from './AnalyticsPage.module.scss';
 
 const TABS = ['Overview', 'Cost & Usage', 'Audit Trail', 'User Management'];
+const HISTORY_TABS = ['Generations', 'Registry Commits', 'Document Uploads', 'CDD & Blueprint Log'];
 const DATE_RANGE_OPTIONS = Object.entries(DATE_RANGE_PRESETS).map(([, v]) => ({
   value: v, label: DATE_RANGE_LABELS[v],
 }));
@@ -34,21 +42,32 @@ export default function AnalyticsPage() {
   const dispatch   = useAppDispatch();
   const { isAdmin } = useAuth();
   const summary    = useAppSelector(selectSummary);
+  const projectRows = useAppSelector(selectProjectRows);
+  const promptPerf = useAppSelector(selectPromptPerf);
+  const qualityRatings = useAppSelector(selectQualityRatings);
+  const genHistory = useAppSelector(selectGenHistory);
   const usage      = useAppSelector(selectUsage);
   const cost       = useAppSelector(selectCost);
   const auditTrail = useAppSelector(selectAuditTrail);
   const users      = useAppSelector(selectUsers);
   const filters    = useAppSelector(selectAnalyticsFilters);
   const isLoading  = useAppSelector(selectAnalyticsLoading);
+  const selProject = useAppSelector(selectSelectedProject);
+  const selCourse = useAppSelector(selectSelectedCourse);
 
   const [activeTab, setActiveTab]     = useState(0);
+  const [historyTab, setHistoryTab] = useState(0);
   const [showUserModal, setShowUserModal] = useState(false);
 
   const userForm = useForm({ resolver: zodResolver(createUserSchema) });
 
   useEffect(() => {
     dispatch(fetchSummaryThunk(filters));
-  }, [dispatch, filters.dateRange]);
+    dispatch(fetchPromptPerfThunk(filters));
+    dispatch(fetchQualityTrendsThunk(filters));
+    dispatch(fetchGenerationHistoryThunk(filters));
+    if (isAdmin) dispatch(fetchProjectAnalyticsThunk());
+  }, [dispatch, filters.dateRange, isAdmin]);
 
   useEffect(() => {
     if (activeTab === 1) dispatch(fetchUsageThunk(filters));
@@ -87,8 +106,24 @@ export default function AnalyticsPage() {
     },
   ];
 
+  const qualityChartData = (qualityRatings || []).map((r, i) => ({ index: i + 1, rating: r }));
+
   return (
-    <PageContainer title="Analytics" breadcrumbs={[{ label: 'Analytics' }]}>
+    <PageContainer title="" breadcrumbs={[{ label: 'Analytics' }]} noPadding>
+      <div className={styles.pageWrap}>
+        <SectionBadge
+          icon="📊"
+          title="Analytics & Observability"
+          subtitle="Real-time metrics, prompt performance tracking, and full audit trails for every action on the platform."
+        />
+        {!isAdmin && selProject && (
+          <p className={styles.scopeCaption}>
+            Showing your metrics for project <strong>{selProject.name}</strong>
+            {selCourse ? <> → course <strong>{selCourse.name}</strong></> : null}.
+          </p>
+        )}
+        {isAdmin && <p className={styles.scopeCaption}>Admin view — cross-project metrics.</p>}
+
       {/* Tab Bar */}
       <div className={styles.tabs} role="tablist">
         {TABS.map((tab, i) => (
@@ -123,12 +158,12 @@ export default function AnalyticsPage() {
               {/* KPI Cards */}
               <div className={styles.kpiGrid}>
                 {[
-                  { label: 'Generations',  value: formatNumber(summary?.generations), icon: '⚡' },
-                  { label: 'Blocks',       value: formatNumber(summary?.blocks),       icon: '📦' },
-                  { label: 'Prompts',      value: formatNumber(summary?.prompt_assets),      icon: '📝' },
-                  { label: 'CDDs',         value: formatNumber(summary?.cdds),         icon: '📋' },
-                  { label: 'Blueprints',   value: formatNumber(summary?.blueprints),   icon: '🗺️'  },
-                  { label: 'Total Cost',   value: formatCurrency(summary?.total_cost),       icon: '💰' },
+                  { label: 'Generations',  value: formatNumber(summary?.generations), icon: '🚀' },
+                  { label: 'Content Blocks', value: formatNumber(summary?.blocks), icon: '🧩' },
+                  { label: 'Prompt Assets', value: formatNumber(summary?.prompt_assets), icon: '📚' },
+                  { label: 'Documents', value: formatNumber(summary?.documents), icon: '📄' },
+                  { label: 'CDDs', value: formatNumber(summary?.cdds), icon: '📋' },
+                  { label: 'Blueprints', value: formatNumber(summary?.blueprints), icon: '🗂️' },
                 ].map((kpi) => (
                   <div key={kpi.label} className={styles.kpiCard}>
                     <span className={styles.kpiCard__icon} aria-hidden="true">{kpi.icon}</span>
@@ -140,23 +175,99 @@ export default function AnalyticsPage() {
                 ))}
               </div>
 
-              {/* Prompt performance table */}
-              {summary?.prompt_performance && (
+              {isAdmin && projectRows.length > 0 && (
                 <section className={styles.card}>
-                  <h3 className={styles.card__title}>Prompt Performance</h3>
+                  <h3 className={styles.card__title}>📁 Project-Level Comparison</h3>
                   <Table
                     columns={[
-                      { key: 'prompt_name', header: 'Prompt',   sortable: true },
-                      { key: 'usage_count', header: 'Uses',     sortable: true, align: 'right' },
-                      { key: 'avg_rating',  header: 'Avg Rating', sortable: true, align: 'right', render: (v) => v ? v.toFixed(2) : '—' },
+                      { key: 'project_name', header: 'Project', sortable: true },
+                      { key: 'client', header: 'Client' },
+                      { key: 'generations', header: 'Generations', align: 'right' },
+                      { key: 'blocks', header: 'Blocks', align: 'right' },
+                      { key: 'cdds', header: 'CDDs', align: 'right' },
+                      { key: 'blueprints', header: 'Blueprints', align: 'right' },
                     ]}
-                    rows={summary.prompt_performance}
-                    rowKey="prompt_name"
-                    pagination
-                    pageSize={10}
+                    rows={projectRows}
+                    rowKey="project_id"
+                    pagination={false}
                   />
                 </section>
               )}
+
+              <section className={styles.card}>
+                <h3 className={styles.card__title}>🏆 Prompt Performance Leaderboard</h3>
+                <p className={styles.card__caption}>Average quality rating per prompt template, computed from reviewer feedback.</p>
+                {promptPerf.length > 0 ? (
+                  <Table
+                    columns={[
+                      { key: 'prompt', header: 'Prompt', sortable: true },
+                      { key: 'avg_rating', header: 'Avg Rating', align: 'right' },
+                      { key: 'samples', header: 'Samples', align: 'right' },
+                    ]}
+                    rows={promptPerf}
+                    rowKey="prompt"
+                    pagination
+                    pageSize={10}
+                  />
+                ) : (
+                  <p className={styles.emptyHint}>No rated content yet. Score blocks in the Editor tab to see performance data here.</p>
+                )}
+              </section>
+
+              <section className={styles.card}>
+                <h3 className={styles.card__title}>🎯 Instructional Quality Trends</h3>
+                {qualityChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}>
+                    <AreaChart data={qualityChartData}>
+                      <XAxis dataKey="index" tick={{ fontSize: 12 }} />
+                      <YAxis domain={[1, 5]} tick={{ fontSize: 12 }} />
+                      <Tooltip />
+                      <Area type="monotone" dataKey="rating" stroke="#4f46e5" fill="#eef2ff" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className={styles.emptyHint}>No rated blocks yet.</p>
+                )}
+              </section>
+
+              <section className={styles.card}>
+                <h3 className={styles.card__title}>📜 Interactive System History</h3>
+                <div className={styles.subTabs}>
+                  {HISTORY_TABS.map((t, i) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`${styles.subTab} ${historyTab === i ? styles['subTab--active'] : ''}`}
+                      onClick={() => setHistoryTab(i)}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                {historyTab === 0 && (
+                  genHistory.length > 0 ? (
+                    <Table
+                      columns={[
+                        { key: 'id', header: 'ID' },
+                        { key: 'topic', header: 'Topic' },
+                        { key: 'prompt_name', header: 'Asset' },
+                        { key: 'prompt_version', header: 'V' },
+                        { key: 'cdd_label', header: 'CDD' },
+                        { key: 'blueprint_label', header: 'Blueprint' },
+                        { key: 'created_at', header: 'Time', render: (v) => formatDate(v) },
+                      ]}
+                      rows={genHistory}
+                      rowKey="id"
+                      pagination={false}
+                    />
+                  ) : (
+                    <p className={styles.emptyHint}>No generations yet.</p>
+                  )
+                )}
+                {historyTab > 0 && (
+                  <p className={styles.emptyHint}>Detailed history for this tab is available in the Audit Trail tab.</p>
+                )}
+              </section>
             </>
           )}
         </>
@@ -259,6 +370,7 @@ export default function AnalyticsPage() {
           <Input label="Email (optional)" type="email" {...userForm.register('email')} />
         </form>
       </Modal>
+      </div>
     </PageContainer>
   );
 }

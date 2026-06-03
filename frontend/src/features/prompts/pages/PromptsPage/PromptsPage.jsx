@@ -80,7 +80,7 @@ export default function PromptsPage() {
         <div className={styles.rowActions}>
           <Button variant="ghost" size="xs" onClick={() => {
             setSelectedPrompt(row);
-            dispatch(fetchPromptVersionsThunk(row.name));
+            dispatch(fetchPromptVersionsThunk(row.id));
             setShowVersions(true);
           }}>
             Versions

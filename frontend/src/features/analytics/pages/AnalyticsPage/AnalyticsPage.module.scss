@@ -1,3 +1,49 @@
+.pageWrap {
+  padding: $space-6;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.scopeCaption {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin: (-$space-2) 0 $space-4;
+}
+
+.emptyHint {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: $space-3 0 0;
+}
+
+.subTabs {
+  display: flex;
+  gap: $space-2;
+  margin-bottom: $space-4;
+  flex-wrap: wrap;
+}
+
+.subTab {
+  padding: $space-2 $space-3;
+  font-size: $font-size-xs;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-full;
+  background: $color-white;
+  cursor: pointer;
+
+  &--active {
+    background: $color-primary;
+    color: $color-white;
+    border-color: $color-primary;
+  }
+}
+
+.card__caption {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: (-$space-2) 0 $space-3;
+}
+
 .tabs {
   display: flex;
   gap: 2px;

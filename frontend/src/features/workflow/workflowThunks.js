@@ -19,6 +19,17 @@ export const fetchPendingReviewsThunk = createAsyncThunk(
   },
 );
 
+export const submitBlockThunk = createAsyncThunk(
+  'workflow/submit',
+  async ({ blockId, reviewer }, { rejectWithValue }) => {
+    try {
+      const result = await workflowService.submit(blockId, { reviewer_username: reviewer });
+      toast.success('Submitted for review.');
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 export const approveBlockThunk = createAsyncThunk(
   'workflow/approve',
   async ({ blockId, data }, { rejectWithValue }) => {

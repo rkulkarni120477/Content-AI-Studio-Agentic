@@ -13,7 +13,7 @@ const initialState = {
   selectedCluster: null,
   selectedCourse:  null,
   // Sidebar generation context
-  modelChoice:      'gpt-4o',
+  modelChoice:      'GPT-5.4',
   expertDomain:     '',
   targetAudience:   '',
   audienceCategory: '',
@@ -99,6 +99,10 @@ export const selectModels          = (s) => s.dashboard.models;
 export const selectSelectedProject = (s) => s.dashboard.selectedProject;
 export const selectSelectedCluster = (s) => s.dashboard.selectedCluster;
 export const selectSelectedCourse  = (s) => s.dashboard.selectedCourse;
+export const selectModelChoice      = (s) => s.dashboard.modelChoice;
+export const selectExpertDomain     = (s) => s.dashboard.expertDomain;
+export const selectTargetAudience   = (s) => s.dashboard.targetAudience;
+export const selectAudienceCategory = (s) => s.dashboard.audienceCategory;
 export const selectWorkspaceConfig = (s) => ({
   modelChoice:      s.dashboard.modelChoice,
   expertDomain:     s.dashboard.expertDomain,

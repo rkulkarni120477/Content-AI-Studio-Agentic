@@ -26,23 +26,36 @@ const blueprintSlice = createSlice({
   extraReducers: (b) => {
     b
       .addCase(fetchBlueprintsThunk.pending,   (s) => { s.isLoading = true; s.error = null; })
-      .addCase(fetchBlueprintsThunk.fulfilled, (s, { payload }) => { s.isLoading = false; s.blueprints = payload; })
+      .addCase(fetchBlueprintsThunk.fulfilled, (s, { payload }) => {
+        s.isLoading = false;
+        s.blueprints = payload?.items ?? payload ?? [];
+        if (payload?.activeBlueprint) s.activeBlueprint = payload.activeBlueprint;
+      })
       .addCase(fetchBlueprintsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
       .addCase(generateBlueprintThunk.pending,   (s) => { s.isGenerating = true; s.error = null; })
       .addCase(generateBlueprintThunk.fulfilled, (s, { payload }) => {
-        s.isGenerating   = false;
-        s.blueprints.unshift(payload);
-        s.activeBlueprint = payload;
+        s.isGenerating = false;
+        if (payload?.id) {
+          const idx = s.blueprints.findIndex((b) => b.id === payload.id);
+          if (idx >= 0) s.blueprints[idx] = { ...s.blueprints[idx], ...payload };
+          else s.blueprints.unshift(payload);
+          s.activeBlueprint = payload;
+        }
       })
-      .addCase(generateBlueprintThunk.rejected,  (s, { payload }) => { s.isGenerating = false; s.error = payload; })
+      .addCase(generateBlueprintThunk.rejected,  (s, { payload }) => {
+        s.isGenerating = false;
+        s.error = payload;
+      })
 
       .addCase(setActiveBlueprintThunk.fulfilled, (s, { payload }) => { s.activeBlueprint = payload; })
 
       .addCase(fetchBlueprintVersionsThunk.fulfilled, (s, { payload }) => { s.versions = payload; })
       .addCase(commitBlueprintVersionThunk.fulfilled, (s, { payload }) => { s.versions.unshift(payload); })
 
-      .addCase(fetchBlueprintComponentsThunk.fulfilled, (s, { payload }) => { s.components = payload; });
+      .addCase(fetchBlueprintComponentsThunk.fulfilled, (s, { payload }) => {
+        s.components = Array.isArray(payload) ? payload : (payload?.components || []);
+      });
   },
 });
 

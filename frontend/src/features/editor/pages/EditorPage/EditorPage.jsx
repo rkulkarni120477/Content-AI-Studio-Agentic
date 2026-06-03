@@ -18,6 +18,7 @@ import { WORKFLOW_STATES, WORKFLOW_STATE_LABELS, EXPORT_FORMATS } from '@utils/c
 import { getWorkflowStateColor, formatDate } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
+import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Table from '@components/common/Table/Table';
 import Button from '@components/common/Button/Button';
 import Modal from '@components/common/Modal/Modal';
@@ -120,10 +121,15 @@ export default function EditorPage() {
   const approvedCount  = blocks.filter((b) => [WORKFLOW_STATES.APPROVED, WORKFLOW_STATES.PUBLISHED].includes(b.workflow_state)).length;
   const allApproved    = blocks.length > 0 && approvedCount === blocks.length;
 
+  const validationIssues = validation?.blocks?.flatMap((b) => b.errors || [])
+    || validation?.issues
+    || [];
+
   return (
     <PageContainer
-      title="Content Editor"
+      title=""
       breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'Editor' }]}
+      noPadding
       headerActions={
         <div className={styles.headerActions}>
           <Button variant="ghost" size="sm" loading={isValidating} onClick={() => dispatch(validateCourseThunk(courseId))}>
@@ -138,20 +144,31 @@ export default function EditorPage() {
         </div>
       }
     >
+      <div className={styles.page}>
+        <SectionBadge
+          icon="✏️"
+          title="Content Editor"
+          subtitle="Review, edit, validate, and export generated lesson blocks. Submit blocks to the workflow when ready for review."
+        />
+
       {/* Course completion banner */}
       {allApproved && (
         <div className={styles.completionBanner}>
-          🎉 All blocks are approved! The course is ready to export.
+          <div className={styles.completionBanner__icon}>🎉</div>
+          <div>
+            <strong>Course Generation Complete!</strong>
+            <p>All blocks are approved. Validate content below before downloading the full course package.</p>
+          </div>
         </div>
       )}
 
       {/* Validation results */}
       {validation && (
         <div className={`${styles.validation} ${validation.passed ? styles['validation--pass'] : styles['validation--fail']}`}>
-          {validation.passed ? '✅ Validation passed' : `❌ ${validation.issues?.length} issue(s) found`}
-          {!validation.passed && (
+          {validation.passed ? '✅ Validation passed' : `❌ ${validationIssues.length || 'Some'} issue(s) found`}
+          {!validation.passed && validationIssues.length > 0 && (
             <ul className={styles.validation__issues}>
-              {validation.issues?.map((issue, i) => <li key={i}>{issue}</li>)}
+              {validationIssues.map((issue, i) => <li key={i}>{typeof issue === 'string' ? issue : JSON.stringify(issue)}</li>)}
             </ul>
           )}
         </div>
@@ -277,6 +294,7 @@ export default function EditorPage() {
           </ul>
         )}
       </Modal>
+      </div>
     </PageContainer>
   );
 }

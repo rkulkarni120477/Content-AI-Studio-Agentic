@@ -3,10 +3,16 @@ import {
   fetchSummaryThunk, fetchUsageThunk, fetchAuditTrailThunk,
   fetchCostThunk, fetchFeedbackThunk, fetchUsersThunk,
   createUserThunk, toggleUserActiveThunk,
+  fetchProjectAnalyticsThunk, fetchPromptPerfThunk,
+  fetchQualityTrendsThunk, fetchGenerationHistoryThunk,
 } from './analyticsThunks';
 
 const initialState = {
   summary:    null,
+  projectRows: [],
+  promptPerf: [],
+  qualityRatings: [],
+  genHistory: [],
   usage:      null,
   cost:       null,
   feedback:   { items: [], total: 0 },
@@ -41,6 +47,13 @@ const analyticsSlice = createSlice({
       .addCase(fetchSummaryThunk.fulfilled, (s, { payload }) => { s.isLoading = false; s.summary = payload; })
       .addCase(fetchSummaryThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
+      .addCase(fetchProjectAnalyticsThunk.fulfilled, (s, { payload }) => { s.projectRows = payload || []; })
+      .addCase(fetchPromptPerfThunk.fulfilled, (s, { payload }) => { s.promptPerf = payload || []; })
+      .addCase(fetchQualityTrendsThunk.fulfilled, (s, { payload }) => {
+        s.qualityRatings = payload?.ratings || payload || [];
+      })
+      .addCase(fetchGenerationHistoryThunk.fulfilled, (s, { payload }) => { s.genHistory = payload || []; })
+
       .addCase(fetchUsageThunk.fulfilled,   (s, { payload }) => { s.usage = payload; })
       .addCase(fetchCostThunk.fulfilled,    (s, { payload }) => { s.cost = payload; })
       .addCase(fetchFeedbackThunk.fulfilled,(s, { payload }) => { s.feedback = payload; })
@@ -61,6 +74,10 @@ export const { clearError, setFilters, resetFilters } = analyticsSlice.actions;
 export default analyticsSlice.reducer;
 
 export const selectSummary    = (s) => s.analytics.summary;
+export const selectProjectRows = (s) => s.analytics.projectRows;
+export const selectPromptPerf = (s) => s.analytics.promptPerf;
+export const selectQualityRatings = (s) => s.analytics.qualityRatings;
+export const selectGenHistory = (s) => s.analytics.genHistory;
 export const selectUsage      = (s) => s.analytics.usage;
 export const selectCost       = (s) => s.analytics.cost;
 export const selectFeedback   = (s) => s.analytics.feedback;

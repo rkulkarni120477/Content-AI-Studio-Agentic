@@ -6,9 +6,49 @@ import toast from 'react-hot-toast';
 
 export const fetchSummaryThunk = createAsyncThunk(
   'analytics/fetchSummary',
-  async (params, { rejectWithValue }) => {
-    try { return await analyticsService.getSummary(params); }
+  async (params, { getState, rejectWithValue }) => {
+    try {
+      const projectId = params?.project_id ?? getState()?.dashboard?.selectedProject?.id;
+      return await analyticsService.getSummary({ project_id: projectId });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchProjectAnalyticsThunk = createAsyncThunk(
+  'analytics/fetchProjects',
+  async (_, { rejectWithValue }) => {
+    try { return await analyticsService.getProjectAnalytics(); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchPromptPerfThunk = createAsyncThunk(
+  'analytics/fetchPromptPerf',
+  async (params, { getState, rejectWithValue }) => {
+    try {
+      const projectId = params?.project_id ?? getState()?.dashboard?.selectedProject?.id;
+      return await analyticsService.getPromptPerf({ project_id: projectId });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchQualityTrendsThunk = createAsyncThunk(
+  'analytics/fetchQualityTrends',
+  async (params, { getState, rejectWithValue }) => {
+    try {
+      const projectId = params?.project_id ?? getState()?.dashboard?.selectedProject?.id;
+      return await analyticsService.getQualityTrends({ project_id: projectId });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchGenerationHistoryThunk = createAsyncThunk(
+  'analytics/fetchGenHistory',
+  async (params, { getState, rejectWithValue }) => {
+    try {
+      const projectId = params?.project_id ?? getState()?.dashboard?.selectedProject?.id;
+      return await analyticsService.getGenerationHistory({ project_id: projectId, limit: 20 });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 

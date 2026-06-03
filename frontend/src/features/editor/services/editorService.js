@@ -1,8 +1,11 @@
 import { api } from '@services/apiClient';
-import { BLOCKS, EXPORT, PLAGIARISM, WORKFLOW } from '@services/endpoints';
+import { BLOCKS, EXPORT, PLAGIARISM, WORKFLOW, COURSES } from '@services/endpoints';
 
 export const editorService = {
-  listBlocks:          (courseId)          => api.get(BLOCKS.LIST_SCOPED, { params: { course_id: courseId } }),
+  listBlocks: async (courseId) => {
+    const res = await api.get(BLOCKS.LIST_SCOPED, { params: { course_id: courseId, page_size: 500 } });
+    return res.items || res || [];
+  },
   getBlock:            (id)                => api.get(BLOCKS.GET(id)),
   updateBlock:         (id, data)          => api.put(BLOCKS.UPDATE(id), data),
   getBlockVersions:    (id)                => api.get(BLOCKS.VERSIONS(id)),
@@ -23,6 +26,5 @@ export const editorService = {
     };
     return api.post(endpoints[action], data || {});
   },
-  // TODO: wire up validation endpoint when backend contract is confirmed
-  validateCourse: (courseId) => api.get(`/courses/${courseId}/validate`),
+  validateCourse: (courseId) => api.post(COURSES.VALIDATE(courseId)),
 };

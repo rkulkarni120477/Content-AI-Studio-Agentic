@@ -34,12 +34,11 @@ export const COURSES = {
   CREATE:           '/api/v1/courses',
   UPDATE:           (id)      => `/api/v1/courses/${id}`,
   DELETE:           (id)      => `/api/v1/courses/${id}`,
-  CONFIG:           (id)      => `/api/v1/courses/${id}/config`,
-  UPDATE_CONFIG:    (id)      => `/api/v1/courses/${id}/config`,
   SET_ACTIVE_CDD:   (id)      => `/api/v1/courses/${id}/active-cdd`,
   SET_ACTIVE_BP:    (id)      => `/api/v1/courses/${id}/active-blueprint`,
   USERS:            (id)      => `/api/v1/courses/${id}/users`,
   UNASSIGN_USER:    (id, user) => `/api/v1/courses/${id}/users/${encodeURIComponent(user)}`,
+  VALIDATE:         (id)      => `/api/v1/courses/${id}/validate`,
 };
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -69,6 +68,7 @@ export const STYLES = {
 export const DOCUMENTS = {
   LIST:             '/api/v1/documents',
   GET:              (id)      => `/api/v1/documents/${id}`,
+  CONTENT:          (id)      => `/api/v1/documents/${id}/content`,
   UPLOAD:           '/api/v1/documents/upload',
   DELETE:           (id)      => `/api/v1/documents/${id}`,
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
@@ -76,38 +76,43 @@ export const DOCUMENTS = {
 
 // ─── CDD ──────────────────────────────────────────────────────────────────────
 export const CDD = {
-  LIST:             (courseId) => `/api/v1/courses/${courseId}/cdds`,
-  LIST_ALL:         '/api/v1/cdds',
-  GET:              (id)       => `/api/v1/cdds/${id}`,
-  CREATE:           '/api/v1/cdds',
-  GENERATE:         '/api/v1/cdds/generate',
-  VERSIONS:         (id)       => `/api/v1/cdds/${id}/versions`,
-  GET_VERSION:      (id, v)    => `/api/v1/cdds/${id}/versions/${v}`,
-  COMMIT_VERSION:   (id)       => `/api/v1/cdds/${id}/versions`,
-  SET_ACTIVE:       (id)       => `/api/v1/cdds/${id}/set-active`,
-  EXPORT:           (id)       => `/api/v1/cdds/${id}/export`,
+  LIST:             () => `/api/v1/cdd`,
+  LIST_ALL:         '/api/v1/cdd',
+  GET:              (id)       => `/api/v1/cdd/${id}`,
+  CREATE:           '/api/v1/cdd',
+  GENERATE:         '/api/v1/cdd/generate',
+  VERSIONS:         (id)       => `/api/v1/cdd/${id}/versions`,
+  GET_VERSION:      (id, v)    => `/api/v1/cdd/${id}/versions/${v}`,
+  COMMIT_VERSION:   (id)       => `/api/v1/cdd/${id}/versions`,
+  PIN:              (id)       => `/api/v1/cdd/${id}/pin`,
+  SET_ACTIVE:       (id)       => `/api/v1/cdd/${id}/pin`,
+  EXPORT:           (id)       => `/api/v1/cdd/${id}/export`,
 };
 
 // ─── Blueprint ────────────────────────────────────────────────────────────────
 export const BLUEPRINT = {
-  LIST:             (courseId) => `/api/v1/courses/${courseId}/blueprints`,
+  LIST:             '/api/v1/blueprints',
   GET:              (id)       => `/api/v1/blueprints/${id}`,
   GENERATE:         '/api/v1/blueprints/generate',
   VERSIONS:         (id)       => `/api/v1/blueprints/${id}/versions`,
   GET_VERSION:      (id, v)    => `/api/v1/blueprints/${id}/versions/${v}`,
   COMMIT_VERSION:   (id)       => `/api/v1/blueprints/${id}/versions`,
-  SET_ACTIVE:       (id)       => `/api/v1/blueprints/${id}/set-active`,
+  PIN:              (id)       => `/api/v1/blueprints/${id}/pin`,
+  SET_ACTIVE:       (id)       => `/api/v1/blueprints/${id}/pin`,
   EXPORT:           (id)       => `/api/v1/blueprints/${id}/export`,
   PARSE_COMPONENTS: (id)       => `/api/v1/blueprints/${id}/components`,
+  COMPLETION:       (id)       => `/api/v1/blueprints/${id}/completion-status`,
 };
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
 export const GENERATE = {
-  RUN:              '/api/v1/generate',
-  QUEUE:            '/api/v1/generate/queue',
-  STATUS:           (jobId)    => `/api/v1/jobs/${jobId}/status`,
-  CANCEL:           (jobId)    => `/api/v1/jobs/${jobId}/cancel`,
-  GENERATIONS_LIST: (courseId) => `/api/v1/courses/${courseId}/generations`,
+  LAUNCH:           '/api/v1/generations/launch',
+  LIST:             '/api/v1/generations',
+  GET:              (id)       => `/api/v1/generations/${id}`,
+  MODULE_COMPLETION: (bpId)    => `/api/v1/blueprints/${bpId}/completion-status`,
+  COURSE_COMPLETION: (courseId) => `/api/v1/generations/course/${courseId}/completion-status`,
+  JOB_STATUS:       (jobId)    => `/api/v1/jobs/${jobId}`,
+  JOB_CANCEL:       (jobId)    => `/api/v1/jobs/${jobId}/cancel`,
 };
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
@@ -144,12 +149,12 @@ export const REVIEWS = {
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 export const PROMPTS = {
   LIST:             '/api/v1/prompts',
-  GET:              (name)     => `/api/v1/prompts/${name}`,
+  GET:              (id)       => `/api/v1/prompts/${id}`,
   CREATE:           '/api/v1/prompts',
-  UPDATE:           (name)     => `/api/v1/prompts/${name}`,
-  VERSIONS:         (name)     => `/api/v1/prompts/${name}/versions`,
-  COMMIT_VERSION:   (name)     => `/api/v1/prompts/${name}/versions`,
-  SET_ACTIVE:       (name, v)  => `/api/v1/prompts/${name}/versions/${v}/activate`,
+  UPDATE:           (id)       => `/api/v1/prompts/${id}`,
+  VERSIONS:         (id)       => `/api/v1/prompts/${id}/versions`,
+  COMMIT_VERSION:   (id)       => `/api/v1/prompts/${id}/versions`,
+  SET_ACTIVE:       (id, v)    => `/api/v1/prompts/${id}/versions/${v}/deploy`,
   AI_GENERATE:      '/api/v1/prompts/generate',
 };
 
@@ -166,7 +171,9 @@ export const ANALYTICS = {
   REVIEWS:          '/api/v1/analytics/reviews',
   AUDIT_TRAIL:      '/api/v1/analytics/audit',
   AUDIT_EXPORT:     '/api/v1/analytics/audit/export',
-  PROMPT_PERF:      '/api/v1/analytics/prompts/performance',
+  PROMPT_PERF:      '/api/v1/analytics/prompt-performance',
+  QUALITY_TRENDS:   '/api/v1/analytics/quality-trends',
+  GENERATION_HISTORY: '/api/v1/analytics/generations',
   COST:             '/api/v1/analytics/cost',
 };
 
@@ -186,19 +193,29 @@ export const EXPORT = {
 
 // ─── Central Repository ───────────────────────────────────────────────────────
 export const CENTRAL = {
-  LIST:             '/api/v1/central',
-  GET:              (id)       => `/api/v1/central/${id}`,
-  CREATE:           '/api/v1/central',
-  IMPORT:           '/api/v1/central/import',
-  DELETE:           (id)       => `/api/v1/central/${id}`,
+  // Central Repository is served from the Admin router in FastAPI
+  LIST:             '/api/v1/admin/central',
+  CREATE:           '/api/v1/admin/central',
+  ARCHIVE:          (id)       => `/api/v1/admin/central/${id}/archive`,
 };
 
 // ─── Models ───────────────────────────────────────────────────────────────────
 export const MODELS = {
-  LIST:             '/api/v1/models',
+  LIST:             '/api/v1/admin/model-catalog',
+};
+
+// ─── Workspace (JWT-embedded config) ─────────────────────────────────────────
+export const WORKSPACE = {
+  GET:              '/api/v1/workspace',
+  UPDATE:           '/api/v1/workspace',
+  UPDATE_CONFIG:    '/api/v1/workspace/config',
 };
 
 // ─── Database Admin ───────────────────────────────────────────────────────────
 export const DB_ADMIN = {
   CLEAR_ENTITY:     (entity)   => `/api/v1/admin/clear/${entity}`,
+};
+
+export const ADMIN = {
+  INSTRUCTIONS:     '/api/v1/admin/instructions',
 };
