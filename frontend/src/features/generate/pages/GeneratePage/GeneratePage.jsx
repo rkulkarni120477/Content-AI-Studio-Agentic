@@ -7,8 +7,8 @@ import {
   selectJobProgress, selectLatestBlocks, selectGenerateError,
   clearJob,
 } from '@features/generate/generateSlice';
-import { selectActiveBlueprint, selectBlueprintComponents } from '@features/blueprint/blueprintSlice';
-import { selectActiveCdd } from '@features/cdd/cddSlice';
+import { selectActiveBlueprint, selectBlueprintComponents, selectBlueprints } from '@features/blueprint/blueprintSlice';
+import { selectActiveCdd, selectCdds } from '@features/cdd/cddSlice';
 import { fetchBlueprintComponentsThunk } from '@features/blueprint/blueprintThunks';
 import { fetchBlueprintsThunk } from '@features/blueprint/blueprintThunks';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
@@ -22,19 +22,33 @@ import {
 } from '@features/dashboard/dashboardSlice';
 import { adminService } from '@features/admin/services/adminService';
 import { generateService } from '@features/generate/services/generateService';
+import { documentService } from '@features/documents/documentService';
 import { cddService } from '@features/cdd/services/cddService';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
-import { buildPromptDownloadMd } from '@utils/promptDefaults';
+import {
+  canLaunchWithModuleGate,
+  isCourseLevelComponent,
+  isModuleAssessmentLabel,
+  isModuleLevelComponent,
+  shouldShowAssessmentOverride,
+} from '@utils/generationGates';
 import { JOB_STATUSES } from '@utils/constants';
-import { downloadBlob } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
 import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
+import MultiSelect from '@components/common/MultiSelect/MultiSelect';
+import FileUpload from '@components/common/FileUpload/FileUpload';
 import Loader from '@components/common/Loader/Loader';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 import styles from './GeneratePage.module.scss';
+
+const SUPP_UPLOADS = [
+  { key: 'guidelines', label: 'Guidelines (PDF/TXT)', accept: '.pdf,.txt', sourceType: 'guidelines' },
+  { key: 'checklist', label: 'Checklist (PDF/XLSX/TXT)', accept: '.pdf,.xlsx,.txt', sourceType: 'checklist' },
+  { key: 'chapter', label: 'Chapter / Source Material (PDF/DOCX/TXT)', accept: '.pdf,.docx,.txt', sourceType: 'chapter' },
+];
 
 export default function GeneratePage() {
   const { courseId } = useParams();
@@ -48,6 +62,8 @@ export default function GeneratePage() {
   const generateError = useAppSelector(selectGenerateError);
   const activeCdd = useAppSelector(selectActiveCdd);
   const activeBlueprint = useAppSelector(selectActiveBlueprint);
+  const cddsFromStore = useAppSelector(selectCdds);
+  const blueprintsFromStore = useAppSelector(selectBlueprints);
   const components = useAppSelector(selectBlueprintComponents);
   const activeStyle = useAppSelector(selectActiveStyle);
   const prompts = useAppSelector(selectPrompts);
@@ -68,11 +84,14 @@ export default function GeneratePage() {
   const [extraInstructions, setExtraInstructions] = useState('');
   const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '' });
   const [assessmentOverride, setAssessmentOverride] = useState(false);
-  const [completionGate, setCompletionGate] = useState(null);
-  const [savedInstrs, setSavedInstrs] = useState([]);
-  const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
-  const [showSaveInstr, setShowSaveInstr] = useState(false);
-  const [saveInstrName, setSaveInstrName] = useState('');
+  const [moduleGate, setModuleGate] = useState(null);
+  const [courseGate, setCourseGate] = useState(null);
+  const [libraryDocs, setLibraryDocs] = useState([]);
+  const [ctxDocNames, setCtxDocNames] = useState([]);
+  const [suppFiles, setSuppFiles] = useState({ guidelines: null, checklist: null, chapter: null });
+  const [suppErrors, setSuppErrors] = useState({});
+  const [parsingSupp, setParsingSupp] = useState(false);
+  const [showSuppPanel, setShowSuppPanel] = useState(false);
 
   const effCddId = cddOverrideId ? Number(cddOverrideId) : activeCdd?.id;
   const effBpId = bpOverrideId ? Number(bpOverrideId) : activeBlueprint?.id;
@@ -83,14 +102,75 @@ export default function GeneratePage() {
   );
 
   const promptOptions = useMemo(() => {
-    const names = [...new Set((prompts || []).map((p) => p.name).filter(Boolean))];
+    const names = [...new Set((prompts || []).map((p) => p.name).filter(Boolean))].sort();
     return [
       { value: '', label: '— Select a template —' },
       ...names.map((n) => ({ value: n, label: n })),
     ];
   }, [prompts]);
 
+  const docOptions = useMemo(
+    () => libraryDocs.map((d) => ({ value: d.name || d.filename, label: d.name || d.filename })),
+    [libraryDocs],
+  );
+
+  const overrideCdds = useMemo(() => {
+    const byId = new Map();
+    [...allCdds, ...cddsFromStore].forEach((c) => {
+      if (c?.id) byId.set(c.id, c);
+    });
+    return Array.from(byId.values());
+  }, [allCdds, cddsFromStore]);
+
+  const overrideBps = useMemo(() => {
+    const byId = new Map();
+    [...allBps, ...blueprintsFromStore].forEach((b) => {
+      if (b?.id) byId.set(b.id, b);
+    });
+    return Array.from(byId.values());
+  }, [allBps, blueprintsFromStore]);
+
+  const cddOverrideOptions = useMemo(
+    () => [
+      { value: '', label: '— Use pinned CDD —' },
+      ...overrideCdds.map((c) => ({
+        value: String(c.id),
+        label: `${c.title || c.course_title || `CDD ${c.id}`} (${c.active_version || 'v1'})`,
+      })),
+    ],
+    [overrideCdds],
+  );
+
+  const bpOverrideOptions = useMemo(
+    () => [
+      { value: '', label: '— Use pinned Blueprint —' },
+      ...overrideBps.map((b) => ({
+        value: String(b.id),
+        label: `${b.title || `Blueprint ${b.id}`} (${b.active_version || 'v1'})`,
+      })),
+    ],
+    [overrideBps],
+  );
+
+  const showAssessmentGate = shouldShowAssessmentOverride(moduleGate, selectedComponent);
+  const showCourseGate = Boolean(
+    selectedComponent
+    && isCourseLevelComponent(selectedComponent.value)
+    && courseGate
+    && !courseGate.completed,
+  );
+
+  const moduleLaunchAllowed = canLaunchWithModuleGate(
+    moduleGate,
+    selectedComponent?.label,
+    assessmentOverride,
+  );
+
   const isReady = Boolean(effCddId && effBpId && selectedComponent && promptName);
+  const launchDisabled = !isReady
+    || !moduleLaunchAllowed
+    || (showCourseGate && !courseGate?.completed)
+    || isGenerating;
 
   useEffect(() => {
     dispatch(fetchCddsThunk(courseId));
@@ -100,7 +180,10 @@ export default function GeneratePage() {
   }, [courseId, dispatch]);
 
   useEffect(() => {
-    if (effBpId) dispatch(fetchBlueprintComponentsThunk(effBpId));
+    if (effBpId) {
+      setSelectedCompValue('');
+      dispatch(fetchBlueprintComponentsThunk(effBpId));
+    }
   }, [effBpId, dispatch]);
 
   useEffect(() => {
@@ -112,43 +195,51 @@ export default function GeneratePage() {
   useEffect(() => {
     async function loadOverrides() {
       try {
-        const cdds = await cddService.listAllCdds({ page_size: 100 });
+        const [cdds, bps] = await Promise.all([
+          cddService.listAllCdds({ page_size: 200 }),
+          blueprintService.listAllBlueprints(),
+        ]);
         setAllCdds(cdds || []);
-        const bps = await blueprintService.listBlueprints({
-          courseId: Number(courseId),
-          projectId: selProject?.id,
-        });
         setAllBps(bps || []);
       } catch {
-        setAllCdds([]);
-        setAllBps([]);
+        /* fall back to lists already loaded for this course */
       }
     }
     loadOverrides();
-  }, [courseId, selProject?.id]);
+  }, [courseId]);
 
   useEffect(() => {
-    async function checkGate() {
-      if (!selectedComponent || !effBpId) {
-        setCompletionGate(null);
+    documentService.listActive().then(setLibraryDocs).catch(() => setLibraryDocs([]));
+  }, []);
+
+  useEffect(() => {
+    setAssessmentOverride(false);
+    async function checkGates() {
+      if (!selectedComponent) {
+        setModuleGate(null);
+        setCourseGate(null);
         return;
       }
       try {
-        if (selectedComponent.type === 'assessment') {
+        if (effBpId && isModuleLevelComponent(selectedComponent.value)) {
           const st = await generateService.getModuleCompletion(effBpId);
-          setCompletionGate(st);
-        } else if (selectedComponent.type === 'course' || selectedComponent.value?.includes('course')) {
-          const st = await generateService.getCourseCompletion(Number(courseId));
-          setCompletionGate(st);
+          setModuleGate(st);
         } else {
-          setCompletionGate(null);
+          setModuleGate(null);
+        }
+        if (effCddId && isCourseLevelComponent(selectedComponent.value)) {
+          const st = await generateService.getCourseCompletion(Number(courseId), effCddId);
+          setCourseGate(st);
+        } else {
+          setCourseGate(null);
         }
       } catch {
-        setCompletionGate(null);
+        setModuleGate(null);
+        setCourseGate(null);
       }
     }
-    checkGate();
-  }, [selectedComponent, effBpId, courseId]);
+    checkGates();
+  }, [selectedComponent, effBpId, effCddId, courseId]);
 
   useEffect(() => {
     if (activeJobId && ['pending', 'queued', 'running'].includes(jobStatus)) {
@@ -156,25 +247,32 @@ export default function GeneratePage() {
     }
   }, [activeJobId, jobStatus, dispatch]);
 
-  useEffect(() => {
-    async function loadSaved() {
-      if (!selProject?.id) return;
-      try {
-        const list = await adminService.listInstructions({
-          component: 'generate',
-          project_id: selProject.id,
-          course_id: Number(courseId),
-        });
-        setSavedInstrs(list || []);
-      } catch {
-        setSavedInstrs([]);
-      }
+  async function handleSuppFile(key, files, sourceType) {
+    const file = files?.[0];
+    if (!file) {
+      setSuppFiles((s) => ({ ...s, [key]: null }));
+      return;
     }
-    loadSaved();
-  }, [selProject?.id, courseId]);
+    setParsingSupp(true);
+    setSuppErrors((e) => ({ ...e, [key]: null }));
+    try {
+      const parsed = await documentService.parseFile(file, sourceType);
+      setSuppFiles((s) => ({
+        ...s,
+        [key]: { name: parsed.name, content: parsed.content, source_type: sourceType },
+      }));
+    } catch (err) {
+      setSuppErrors((e) => ({ ...e, [key]: err?.message || 'Could not parse file' }));
+      setSuppFiles((s) => ({ ...s, [key]: null }));
+    } finally {
+      setParsingSupp(false);
+    }
+  }
 
   async function onLaunch() {
-    if (!isReady || !selProject?.id) return;
+    if (launchDisabled || !selProject?.id) return;
+
+    const supplementary_files = Object.values(suppFiles).filter(Boolean);
     const payload = {
       course_id: Number(courseId),
       project_id: selProject.id,
@@ -190,30 +288,25 @@ export default function GeneratePage() {
       audience_category: audienceCategory,
       extra_instructions: extraInstructions,
       assessment_override: assessmentOverride,
-      system_prompt_override: promptConfig.systemPrompt || undefined,
-      user_prompt_override: promptConfig.userPromptTemplate || undefined,
+      context_document_names: ctxDocNames,
+      supplementary_files,
     };
+
     try {
       const accepted = await dispatch(launchGenerationThunk(payload)).unwrap();
+      if (extraInstructions.trim()) {
+        await adminService.saveInstruction({
+          name: (selectedComponent.label || 'Generate Instructions').slice(0, 80),
+          component: 'generate',
+          content: extraInstructions.trim(),
+          project_id: selProject.id,
+          course_id: Number(courseId),
+        }).catch(() => {});
+      }
       if (accepted?.job_id) dispatch(pollJobThunk(accepted.job_id));
     } catch {
       /* error in slice */
     }
-  }
-
-  function handleDownloadPrompt() {
-    const md = buildPromptDownloadMd({
-      projectName: selProject?.name,
-      clusterName: selCluster?.name,
-      courseName: selCourse?.name,
-      component: 'generate',
-      promptName: promptName || 'active',
-      promptVersion: 'active',
-      systemPrompt: promptConfig.systemPrompt,
-      userPromptTemplate: promptConfig.userPromptTemplate,
-      extraInstructions,
-    });
-    downloadBlob(new Blob([md], { type: 'application/msword' }), 'prompt_generate_active.doc');
   }
 
   const cddDisp = activeCdd
@@ -224,8 +317,7 @@ export default function GeneratePage() {
     : 'None linked';
   const styleDisp = activeStyle?.name || 'None';
 
-  const needsOverride = completionGate && !completionGate.completed
-    && selectedComponent?.type === 'assessment';
+  const jobActive = activeJobId && ['pending', 'queued', 'running'].includes(jobStatus);
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'Generate' }]} noPadding>
@@ -235,6 +327,19 @@ export default function GeneratePage() {
           title="Content Generation"
           subtitle="AI pipeline for generating lessons and course components. Context is auto-injected from the active CDD and Blueprint."
         />
+
+        {jobActive && (
+          <div className={styles.activeJob}>
+            <div className={styles.activeJob__header}>
+              <Loader size="sm" />
+              <strong>Generation in progress</strong>
+              <span className={styles.activeJob__status}>{jobStatus === 'running' ? 'Running…' : 'Queued…'}</span>
+            </div>
+            {jobProgress.map((msg, i) => (
+              <div key={i} className={styles.activeJob__stage}>{msg}</div>
+            ))}
+          </div>
+        )}
 
         <div className={styles.stepper}>
           {[
@@ -281,151 +386,253 @@ export default function GeneratePage() {
           <div className={styles.contextBanner__hint}>Set via Style / CDD / Blueprint tabs</div>
         </div>
 
+        <div className={styles.sectionStack}>
         <details className={styles.overridePanel}>
           <summary>🔀 Override Active CDD / Blueprint (optional)</summary>
-          <p style={{ fontSize: '0.8rem', color: '#6b7280', margin: '8px 0' }}>
-            By default the pinned CDD and Blueprint are used. Change here for this generation only.
+          <p className={styles.overridePanel__caption}>
+            By default the pinned CDD and Blueprint are used. Change here for this generation only — does not affect the pin.
           </p>
           <div className={styles.overridePanel__grid}>
             <Select
               label="CDD Override"
-              options={[
-                { value: '', label: '— Use pinned CDD —' },
-                ...allCdds.map((c) => ({
-                  value: String(c.id),
-                  label: `${c.title || c.course_title} (${c.active_version || 'v1'})`,
-                })),
-              ]}
+              options={cddOverrideOptions}
               value={cddOverrideId}
               onChange={(e) => setCddOverrideId(e.target.value)}
             />
             <Select
               label="Blueprint Override"
-              options={[
-                { value: '', label: '— Use pinned Blueprint —' },
-                ...allBps.map((b) => ({
-                  value: String(b.id),
-                  label: `${b.title} (${b.active_version || 'v1'})`,
-                })),
-              ]}
+              options={bpOverrideOptions}
               value={bpOverrideId}
               onChange={(e) => setBpOverrideId(e.target.value)}
             />
           </div>
         </details>
 
-        <div className={styles.layout}>
-          <section className={styles.panel}>
-            <div className={styles.sectionLabel}>📋 Content Type</div>
-            {components.length > 0 ? (
-              <>
-                <div className={styles.compOk}>
-                  ✅ <strong>{components.length} component(s)</strong> loaded from Blueprint — Content Type dropdown auto-populated.
-                </div>
-                <Select
-                  label="Content Type"
-                  options={components.map((c) => ({ value: c.value, label: c.label }))}
-                  value={selectedCompValue}
-                  onChange={(e) => setSelectedCompValue(e.target.value)}
-                />
-                {selectedComponent && (
-                  <p style={{ fontSize: '0.8rem', color: '#6b7280', margin: 0 }}>
-                    🧩 {activeBlueprint?.module_number ? `M${activeBlueprint.module_number} — ` : ''}
-                    {selectedComponent.label} · type: {selectedComponent.type}
-                  </p>
+        {components.length > 0 && (
+          <div className={styles.compOk}>
+            ✅ <strong>{components.length} component(s)</strong> loaded from Blueprint — Content Type dropdown auto-populated.
+          </div>
+        )}
+
+        <div className={styles.promptWrap}>
+          <InlinePromptControls
+            component="generate"
+            extraInstructions={extraInstructions}
+            onExtraInstructionsChange={setExtraInstructions}
+            showExtraInstructions
+            onPromptsChange={setPromptConfig}
+          />
+        </div>
+
+        <section className={styles.configCard}>
+            <div className={styles.formGrid}>
+              <div>
+                <div className={styles.sectionLabel}>📋 Content Type</div>
+                {components.length > 0 ? (
+                  <>
+                    <Select
+                      label="Content Type"
+                      options={components.map((c) => ({ value: c.value, label: c.label }))}
+                      value={selectedCompValue}
+                      onChange={(e) => setSelectedCompValue(e.target.value)}
+                    />
+                    {selectedComponent && (
+                      <p className={styles.compCaption}>
+                        🧩 {activeBlueprint?.module_number ? `M${activeBlueprint.module_number} — ` : ''}
+                        {selectedComponent.label} · type: <code>{selectedComponent.type}</code>
+                      </p>
+                    )}
+                  </>
+                ) : effBpId ? (
+                  <div className={styles.compWarn}>
+                    ⚠️ <strong>Blueprint has no sections yet.</strong> Generate or edit it in the Blueprint tab first.
+                  </div>
+                ) : (
+                  <div className={styles.compWarn}>
+                    ⚠️ <strong>No Blueprint pinned.</strong> Pin a Blueprint via the Blueprint tab first.
+                    The Content Type dropdown will auto-populate from lessons and components defined in it.
+                  </div>
                 )}
-              </>
-            ) : effBpId ? (
-              <div className={styles.compWarn}>
-                ⚠️ <strong>Blueprint has no sections yet.</strong> Generate or edit it in the Blueprint tab first.
               </div>
-            ) : (
-              <div className={styles.compWarn}>
-                ⚠️ <strong>No Blueprint pinned.</strong> Pin a Blueprint via the Blueprint tab first.
+
+              <div>
+                <div className={styles.sectionLabel}>🛠️ Prompt & Source</div>
+                {selectedComponent ? (
+                  <Select
+                    label="Prompt Template"
+                    options={promptOptions}
+                    value={promptName}
+                    onChange={(e) => setPromptName(e.target.value)}
+                  />
+                ) : (
+                  <p className={styles.infoHint}>👉 Select a Content Type to unlock prompt templates.</p>
+                )}
+              </div>
+            </div>
+
+            <hr className={styles.formDivider} />
+
+            {promptName && (
+              <details
+                className={styles.suppPanel}
+                open={showSuppPanel}
+                onToggle={(e) => setShowSuppPanel(e.target.open)}
+              >
+                <summary>📂 Supplementary File Uploads (optional)</summary>
+                <p className={styles.suppPanel__caption}>
+                  Upload extra reference files in addition to CDD/Blueprint context.
+                </p>
+                <div className={styles.suppPanel__grid}>
+                  {SUPP_UPLOADS.map(({ key, label, accept, sourceType }) => (
+                    <div key={key}>
+                      <span className={styles.suppPanel__fileLabel}>{label}</span>
+                      <FileUpload
+                        accept={accept}
+                        label="Drop file or click to browse"
+                        disabled={parsingSupp}
+                        onChange={(files) => handleSuppFile(key, files, sourceType)}
+                      />
+                      {suppFiles[key] && (
+                        <p className={styles.suppPanel__ok}>✓ {suppFiles[key].name}</p>
+                      )}
+                      {suppErrors[key] && (
+                        <p className={styles.suppPanel__err} role="alert">{suppErrors[key]}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <MultiSelect
+                  label="Additional Source Materials from Library"
+                  hint="Supplement the CDD/Blueprint with uploaded documents."
+                  options={docOptions}
+                  value={ctxDocNames}
+                  onChange={setCtxDocNames}
+                  placeholder="Choose documents"
+                />
+                {docOptions.length > 0 && (
+                  <div className={styles.ctxHint}>
+                    📎 <strong>Context DB Reference</strong> — You can also reference documents in the topic using backticks, e.g.{' '}
+                    <code>{`\`${docOptions[0].value}\``}</code>
+                  </div>
+                )}
+              </details>
+            )}
+
+            {moduleGate?.completed && selectedComponent && isModuleLevelComponent(selectedComponent.value) && (
+              <div className={styles.gateOk}>
+                ✅ All {moduleGate.total_lessons} lesson(s) completed for this module. <strong>{selectedComponent.label}</strong> generation is unlocked.
               </div>
             )}
 
-            <div className={styles.sectionLabel} style={{ marginTop: 16 }}>🛠️ Prompt & Source</div>
-            <Select
-              label="Prompt Template"
-              options={promptOptions}
-              value={promptName}
-              onChange={(e) => setPromptName(e.target.value)}
-              disabled={!selectedComponent}
-            />
-
-            {needsOverride && (
+            {showAssessmentGate && (
               <div className={styles.gateWarn}>
-                ⚠️ Not all lessons are complete ({completionGate.generated_lessons}/{completionGate.total_lessons}).
-                <label className={styles.checkLabel} style={{ marginTop: 8 }}>
+                <strong>⚠️ Not all lessons have been generated yet</strong>
+                <p>
+                  Only <strong>{moduleGate.generated_lessons} of {moduleGate.total_lessons}</strong> lesson(s) are complete
+                  for this module. The assessment may lack full context.
+                </p>
+                <label className={styles.checkLabel}>
                   <input
                     type="checkbox"
                     checked={assessmentOverride}
                     onChange={(e) => setAssessmentOverride(e.target.checked)}
                   />
-                  Generate assessment anyway (override)
+                  Generate Anyway — I understand not all lessons are complete
                 </label>
               </div>
             )}
 
-            {savedInstrs.length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 }}>
-                <Select
-                  label="Saved instructions"
-                  options={[
-                    { value: '— Start fresh —', label: '— Start fresh —' },
-                    ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
-                  ]}
-                  value={loadInstrSel}
-                  onChange={(e) => setLoadInstrSel(e.target.value)}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  type="button"
-                  onClick={() => {
-                    if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
-                    else {
-                      const rec = savedInstrs.find((r) => r.name === loadInstrSel);
-                      if (rec) setExtraInstructions(rec.content);
-                    }
-                  }}
-                >
-                  📥 Load
-                </Button>
+            {selectedComponent
+              && isModuleLevelComponent(selectedComponent.value)
+              && moduleGate
+              && !moduleGate.completed
+              && !isModuleAssessmentLabel(selectedComponent?.label)
+              && (
+                <div className={styles.gateBlock}>
+                  <strong>🚫 Module lessons are incomplete</strong>
+                  <p>Complete all lessons before generating module-level components.</p>
+                  <div className={styles.gateBlock__bar}>
+                    <div
+                      className={styles.gateBlock__fill}
+                      style={{
+                        width: `${moduleGate.total_lessons
+                          ? Math.round((moduleGate.generated_lessons / moduleGate.total_lessons) * 100)
+                          : 0}%`,
+                      }}
+                    />
+                  </div>
+                  <span className={styles.gateBlock__count}>
+                    {moduleGate.generated_lessons} / {moduleGate.total_lessons} lessons generated
+                  </span>
+                </div>
+              )}
+
+            {showCourseGate && (
+              <div className={styles.gateBlock}>
+                <strong>🚫 Course modules are incomplete</strong>
+                <p>
+                  Complete all modules ({courseGate.generated_lessons}/{courseGate.total_lessons}) before generating{' '}
+                  <strong>{selectedComponent.label}</strong>.
+                </p>
               </div>
             )}
-            <textarea
-              className={styles.form}
-              rows={3}
-              placeholder="e.g. Use real-world case studies. Add knowledge check questions."
-              value={extraInstructions}
-              onChange={(e) => setExtraInstructions(e.target.value)}
-              style={{ resize: 'vertical', width: '100%', padding: 8, borderRadius: 8, border: '1px solid #e5e7eb' }}
-            />
 
             {generateError && <ErrorState message={generateError} />}
-          </section>
 
-          <section className={styles.panel}>
-            <h2 className={styles.panel__title}>
+            <div className={styles.launchRow}>
+              <Button
+                variant="primary"
+                size="lg"
+                className={styles.launchRow__btn}
+                loading={isGenerating}
+                disabled={launchDisabled}
+                onClick={onLaunch}
+              >
+                {isGenerating ? 'Launching…' : '🚀 Launch Pipeline'}
+              </Button>
+            </div>
+
+            {!selectedComponent && (
+              <p className={styles.validationWarn}>⚠️ Select a Content Type to continue.</p>
+            )}
+            {selectedComponent && !promptName && (
+              <p className={styles.validationWarn}>⚠️ Select a Prompt Template to continue.</p>
+            )}
+        </section>
+
+        {!activeJobId && latestBlocks.length === 0 && (
+          components.length > 0 ? (
+            <div className={styles.readyState}>
+              ✅ <strong>Blueprint loaded</strong> — {components.length} component(s) ready.
+              Select a component and click <strong>🚀 Launch Pipeline</strong>.
+            </div>
+          ) : (
+            <div className={styles.configureEmpty}>
+              <span className={styles.configureEmpty__icon} aria-hidden="true">⚙️</span>
+              <h3 className={styles.configureEmpty__title}>Configure your generation</h3>
+              <p className={styles.configureEmpty__text}>
+                Pin a <strong>CDD</strong> and <strong>Blueprint</strong> using the tabs above,
+                then the Content Type dropdown will auto-populate with all Blueprint components.
+              </p>
+            </div>
+          )
+        )}
+
+        {(activeJobId || latestBlocks.length > 0) && (
+          <section className={styles.resultsPanel}>
+            <h2 className={styles.resultsPanel__title}>
               {activeJobId ? 'Generation Progress' : 'Latest Results'}
             </h2>
-            {activeJobId && (
+            {activeJobId && !jobActive && (
               <div className={styles.jobProgress}>
                 <div className={styles.jobProgress__status}>
-                  {['pending', 'queued', 'running'].includes(jobStatus) && (
-                    <><Loader size="sm" /> {jobStatus === 'running' ? 'Running…' : 'Queued…'}</>
-                  )}
                   {(jobStatus === JOB_STATUSES.COMPLETED || jobStatus === 'completed') && '✅ Completed'}
                   {(jobStatus === JOB_STATUSES.FAILED || jobStatus === 'failed') && '❌ Failed'}
                 </div>
                 {jobProgress.map((msg, i) => (
                   <div key={i} className={styles.jobProgress__stage}>{msg}</div>
                 ))}
-                {!['completed', JOB_STATUSES.COMPLETED].includes(jobStatus) && (
-                  <Button variant="ghost" size="sm" onClick={() => dispatch(clearJob())}>Dismiss</Button>
-                )}
+                <Button variant="ghost" size="sm" onClick={() => dispatch(clearJob())}>Dismiss</Button>
               </div>
             )}
             {latestBlocks.length > 0 && (
@@ -445,39 +652,8 @@ export default function GeneratePage() {
                 ))}
               </div>
             )}
-            {!activeJobId && latestBlocks.length === 0 && (
-              <div className={styles.empty}>
-                <span aria-hidden="true">✨</span>
-                <p>Generated blocks will appear here after you launch the pipeline.</p>
-              </div>
-            )}
           </section>
-        </div>
-
-        <hr className={styles.divider} />
-
-        <InlinePromptControls
-          component="generate"
-          extraInstructions={extraInstructions}
-          showExtraInstructions={false}
-          onPromptsChange={setPromptConfig}
-          headerHint="📝 Select a content type and prompt template above, then configure the prompt and launch generation below."
-        />
-
-        <div className={styles.generateRow}>
-          <Button
-            variant="primary"
-            size="lg"
-            className={styles.generateRow__main}
-            loading={isGenerating}
-            disabled={!isReady || (needsOverride && !assessmentOverride)}
-            onClick={onLaunch}
-          >
-            {isGenerating ? 'Launching…' : '🚀 Launch Pipeline'}
-          </Button>
-          <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
-            ⬇️ Download Prompt
-          </Button>
+        )}
         </div>
       </div>
     </PageContainer>

@@ -1,116 +1,262 @@
-import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchWorkflowBlocksThunk, submitBlockThunk, approveBlockThunk, requestChangesThunk,
-  publishBlockThunk, archiveBlockThunk, bulkApproveThunk, fetchPendingReviewsThunk,
+  rejectBlockThunk, publishBlockThunk, archiveBlockThunk, resetDraftBlockThunk,
+  bulkApproveThunk, fetchPendingReviewsThunk,
 } from '@features/workflow/workflowThunks';
 import {
-  selectSelectedProject, selectSelectedCourse,
+  selectSelectedProject, selectSelectedCourse, selectProjects,
 } from '@features/dashboard/dashboardSlice';
+import { fetchProjectsThunk } from '@features/dashboard/dashboardThunks';
 import {
-  selectBlocksByState, selectWorkflowFilters, selectPendingCount,
-  selectWorkflowLoading, setFilters,
+  selectBlocksByState, selectWorkflowBlocks, selectWorkflowFilters,
+  selectPendingCount, selectWorkflowLoading, setFilters,
 } from '@features/workflow/workflowSlice';
-import { WORKFLOW_STATES, WORKFLOW_STATE_LABELS } from '@utils/constants';
-import { formatRelative, getSlaStatus } from '@utils/helpers';
+import {
+  WORKFLOW_STATES, WORKFLOW_STATE_LABELS, WORKFLOW_KANBAN_COLORS,
+} from '@utils/constants';
+import { truncate } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
+import toast from 'react-hot-toast';
+import { api } from '@services/apiClient';
+import { PROJECTS, USERS } from '@services/endpoints';
+import { workflowService } from '@features/workflow/services/workflowService';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
 import SearchBar from '@components/common/SearchBar/SearchBar';
 import Button from '@components/common/Button/Button';
-import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
+import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Loader from '@components/common/Loader/Loader';
+import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
 import styles from './WorkflowPage.module.scss';
 
 const KANBAN_COLUMNS = [
-  { key: WORKFLOW_STATES.DRAFT,             label: 'Draft',              icon: '📝' },
-  { key: WORKFLOW_STATES.IN_REVIEW,         label: 'In Review',          icon: '👀' },
-  { key: WORKFLOW_STATES.CHANGES_REQUESTED, label: 'Changes Requested',  icon: '✏️' },
-  { key: WORKFLOW_STATES.APPROVED,          label: 'Approved',           icon: '✅' },
-  { key: WORKFLOW_STATES.PUBLISHED,         label: 'Published',          icon: '🌐' },
-  { key: WORKFLOW_STATES.ARCHIVED,          label: 'Archived',           icon: '📦' },
+  WORKFLOW_STATES.DRAFT,
+  WORKFLOW_STATES.IN_REVIEW,
+  WORKFLOW_STATES.CHANGES_REQUESTED,
+  WORKFLOW_STATES.APPROVED,
+  WORKFLOW_STATES.PUBLISHED,
+  WORKFLOW_STATES.ARCHIVED,
 ];
 
+const SUBMITTABLE = new Set([
+  WORKFLOW_STATES.DRAFT,
+  WORKFLOW_STATES.REJECTED,
+  WORKFLOW_STATES.CHANGES_REQUESTED,
+]);
+
+const RESETTABLE = new Set([
+  WORKFLOW_STATES.APPROVED,
+  WORKFLOW_STATES.REJECTED,
+  WORKFLOW_STATES.CHANGES_REQUESTED,
+]);
+
+function normalizeList(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
+  return [];
+}
+
+function formatDt(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function filterBlocks(blocks, filters) {
+  let list = [...blocks];
+  if (filters.status) {
+    list = list.filter((b) => b.workflow_state === filters.status);
+  }
+  if (filters.reviewer) {
+    list = list.filter((b) => b.assigned_reviewer === filters.reviewer);
+  }
+  if (filters.search?.trim()) {
+    const q = filters.search.trim().toLowerCase();
+    list = list.filter((b) => (b.block_label || '').toLowerCase().includes(q));
+  }
+  return list;
+}
+
 export default function WorkflowPage() {
-  const { courseId } = useParams();
-  const dispatch      = useAppDispatch();
+  const dispatch = useAppDispatch();
   const blocksByState = useAppSelector(selectBlocksByState);
-  const filters       = useAppSelector(selectWorkflowFilters);
-  const pendingCount  = useAppSelector(selectPendingCount);
-  const isLoading     = useAppSelector(selectWorkflowLoading);
+  const allRawBlocks = useAppSelector(selectWorkflowBlocks);
+  const filters = useAppSelector(selectWorkflowFilters);
+  const pendingCount = useAppSelector(selectPendingCount);
+  const isLoading = useAppSelector(selectWorkflowLoading);
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
-  const { canApprove, user, isAdmin } = useAuth();
+  const projectsData = useAppSelector(selectProjects);
+  const { user, isAdmin, canApprove, hasPermission } = useAuth();
 
-  const [selectedIds, setSelectedIds]         = useState([]);
-  const [confirmAction, setConfirmAction]     = useState(null);
   const [approvalBlockId, setApprovalBlockId] = useState(null);
   const [reviewerName, setReviewerName] = useState('');
+  const [reviewers, setReviewers] = useState([]);
+  const [projectCourses, setProjectCourses] = useState([]);
+  const [rejectMode, setRejectMode] = useState(false);
+  const [reviewComment, setReviewComment] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [events, setEvents] = useState([]);
+  const [bulkSelected, setBulkSelected] = useState([]);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [expandedProjects, setExpandedProjects] = useState({});
+  const [adminBreakdown, setAdminBreakdown] = useState([]);
+  const [breakdownLoading, setBreakdownLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
-  const allBlocks = KANBAN_COLUMNS.flatMap((c) => blocksByState[c.key] || []);
-  const approvalBlock = allBlocks.find((b) => b.id === approvalBlockId);
+  const showAdminBreakdown = isAdmin || hasPermission('analytics.view_all');
 
-  function buildApiFilters() {
-    return {
-      ...filters,
-      project_id: filters.projectId ?? selProject?.id,
-      course_id: filters.courseId ?? (courseId ? Number(courseId) : undefined),
-      state: filters.status || undefined,
-      search: filters.search || undefined,
-    };
-  }
+  const projects = useMemo(() => normalizeList(projectsData), [projectsData]);
+
+  const buildApiFilters = useCallback(() => {
+    const f = {};
+    if (filters.projectId != null) {
+      f.project_id = filters.projectId;
+    } else if (!isAdmin && selProject?.id) {
+      f.project_id = selProject.id;
+    }
+    if (filters.courseId != null) {
+      f.course_id = filters.courseId;
+    }
+    if (filters.search?.trim()) f.search = filters.search.trim();
+    if (filters.reviewer) f.reviewer = filters.reviewer;
+    return f;
+  }, [filters, isAdmin, selProject?.id]);
+
+  const loadAdminBreakdown = useCallback(() => {
+    if (!showAdminBreakdown) return;
+    workflowService.getAdminBreakdown()
+      .then((data) => setAdminBreakdown(normalizeList(data)))
+      .catch(() => setAdminBreakdown([]));
+  }, [showAdminBreakdown]);
+
+  const refresh = useCallback(() => {
+    dispatch(fetchWorkflowBlocksThunk(buildApiFilters()));
+    if (canApprove || isAdmin) dispatch(fetchPendingReviewsThunk());
+    loadAdminBreakdown();
+  }, [dispatch, buildApiFilters, canApprove, isAdmin, loadAdminBreakdown]);
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
-    dispatch(fetchWorkflowBlocksThunk(buildApiFilters()));
-    dispatch(fetchPendingReviewsThunk());
-  }, [dispatch, filters, selProject?.id, courseId]);
+    if (isAdmin) dispatch(fetchProjectsThunk());
+  }, [dispatch, isAdmin]);
+
+  useEffect(() => {
+    if (!showAdminBreakdown) return;
+    setBreakdownLoading(true);
+    workflowService.getAdminBreakdown()
+      .then((data) => {
+        const items = normalizeList(data);
+        setAdminBreakdown(items);
+        const open = {};
+        for (const p of items) open[p.project_id] = true;
+        setExpandedProjects(open);
+      })
+      .catch(() => setAdminBreakdown([]))
+      .finally(() => setBreakdownLoading(false));
+  }, [showAdminBreakdown]); // initial load only
+
+  useEffect(() => {
+    if (!canApprove && !isAdmin) return;
+    api.get(USERS.REVIEWERS)
+      .then((res) => {
+        const list = normalizeList(res);
+        setReviewers(list.map((u) => u.username || u).filter(Boolean));
+      })
+      .catch(() => setReviewers([]));
+  }, [canApprove, isAdmin]);
+
+  useEffect(() => {
+    const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null);
+    if (!projId) {
+      setProjectCourses([]);
+      return;
+    }
+    api.get(PROJECTS.COURSES(projId))
+      .then((res) => setProjectCourses(normalizeList(res)))
+      .catch(() => setProjectCourses([]));
+  }, [filters.projectId, isAdmin, selProject?.id]);
+
+  const filteredBlocks = useMemo(
+    () => filterBlocks(normalizeList(allRawBlocks), filters),
+    [allRawBlocks, filters],
+  );
+
+  useEffect(() => {
+    if (!filteredBlocks.length) {
+      setApprovalBlockId(null);
+      return;
+    }
+    if (!filteredBlocks.some((b) => b.id === approvalBlockId)) {
+      setApprovalBlockId(filteredBlocks[0].id);
+    }
+  }, [filteredBlocks, approvalBlockId]);
+
+  const approvalBlock = filteredBlocks.find((b) => b.id === approvalBlockId);
+
+  useEffect(() => {
+    setRejectMode(false);
+    setReviewComment('');
+    setRejectReason('');
+    if (!approvalBlockId) {
+      setEvents([]);
+      return;
+    }
+    workflowService.getEvents(approvalBlockId)
+      .then((res) => setEvents(normalizeList(res)))
+      .catch(() => setEvents([]));
+  }, [approvalBlockId]);
+
+  useEffect(() => {
+    if (reviewers.length && !reviewerName) setReviewerName(reviewers[0]);
+  }, [reviewers, reviewerName]);
+
+  const inReviewBlocks = blocksByState[WORKFLOW_STATES.IN_REVIEW] || [];
+
+  useEffect(() => {
+    const opts = inReviewBlocks.map((b) => String(b.id));
+    setBulkSelected(opts);
+  }, [inReviewBlocks.map((b) => b.id).join(',')]);
 
   function handleFilter(key, value) {
-    dispatch(setFilters({ [key]: value }));
+    const patch = { [key]: value };
+    if (key === 'projectId') patch.courseId = null;
+    dispatch(setFilters(patch));
   }
 
-  function handleAction(type, blockId) {
-    setConfirmAction({ type, blockId });
-  }
-
-  async function confirmWorkflowAction() {
-    if (!confirmAction) return;
-    const { type, blockId } = confirmAction;
-    setConfirmAction(null);
-
-    switch (type) {
-      case 'submit':
-        await dispatch(submitBlockThunk({ blockId, reviewer: reviewerName || user?.username }));
-        break;
-      case 'approve':   await dispatch(approveBlockThunk({ blockId })); break;
-      case 'changes':   await dispatch(requestChangesThunk({ blockId })); break;
-      case 'publish':   await dispatch(publishBlockThunk(blockId)); break;
-      case 'archive':   await dispatch(archiveBlockThunk(blockId)); break;
-      case 'bulk':      await dispatch(bulkApproveThunk(selectedIds)); setSelectedIds([]); break;
+  async function runAction(fn) {
+    setActionLoading(true);
+    try {
+      await fn();
+      refresh();
+    } finally {
+      setActionLoading(false);
     }
-    dispatch(fetchWorkflowBlocksThunk(buildApiFilters()));
   }
 
-  const ACTION_LABELS = {
-    submit: 'Submit for Review', approve: 'Approve', changes: 'Request Changes',
-    publish: 'Publish', archive: 'Archive', bulk: 'Bulk Approve',
-  };
+  const scopeProjId = filters.projectId ?? (!isAdmin ? selProject?.id : null);
+  const showCourseFilter = Boolean(scopeProjId) && projectCourses.length > 0;
+
+  const blockSelectOptions = filteredBlocks.map((b) => ({
+    value: String(b.id),
+    label: `#${b.id} — ${(b.block_label || '').slice(0, 40)} [${WORKFLOW_STATE_LABELS[b.workflow_state] || b.workflow_state}]`,
+  }));
+
+  const bulkOptions = inReviewBlocks.map((b) => ({
+    value: String(b.id),
+    label: `#${b.id} — ${(b.block_label || '').slice(0, 40)}`,
+  }));
+
+  const stateKey = approvalBlock?.workflow_state?.toLowerCase();
 
   return (
-    <PageContainer
-      title=""
-      breadcrumbs={[{ label: 'Workflow' }]}
-      noPadding
-      headerActions={
-        canApprove && selectedIds.length > 0 && (
-          <Button variant="success" size="sm" onClick={() => handleAction('bulk')}>
-            ✅ Approve {selectedIds.length} selected
-          </Button>
-        )
-      }
-    >
+    <PageContainer title="" breadcrumbs={[{ label: 'Workflow' }]} noPadding>
       <div className={styles.page}>
         <SectionBadge
           icon="🚦"
@@ -118,174 +264,463 @@ export default function WorkflowPage() {
           subtitle="Manage the approval pipeline — submit, review, approve, publish, and archive content blocks."
         />
 
-      {!isAdmin && selProject && (
-        <p className={styles.scopeCaption}>
-          Your workflow — project <strong>{selProject.name}</strong>
-          {selCourse ? <> · course <strong>{selCourse.name}</strong></> : null}
-        </p>
-      )}
-      {isAdmin && <p className={styles.scopeCaption}>Admin view — all projects and users.</p>}
+        {(canApprove || isAdmin) && pendingCount > 0 && (
+          <div className={styles.pendingBanner}>
+            📬 <strong>You have {pendingCount} block(s) pending your review.</strong>{' '}
+            See the <em>Approval Center</em> below.
+          </div>
+        )}
 
-      {/* Pending badge */}
-      {pendingCount > 0 && (
-        <div className={styles.pendingBanner}>
-          👀 You have <strong>{pendingCount}</strong> block(s) pending your review.
+        <h2 className={styles.sectionTitle}>🔍 Filters</h2>
+        <div className={styles.filters}>
+          <Select
+            label="Status"
+            options={[
+              { value: '', label: 'All statuses' },
+              ...KANBAN_COLUMNS.map((s) => ({
+                value: s,
+                label: WORKFLOW_STATE_LABELS[s],
+              })),
+            ]}
+            value={filters.status || ''}
+            onChange={(e) => handleFilter('status', e.target.value)}
+          />
+          <Select
+            label="Reviewer"
+            options={[
+              { value: '', label: 'All reviewers' },
+              ...reviewers.map((r) => ({ value: r, label: r })),
+            ]}
+            value={filters.reviewer || ''}
+            onChange={(e) => handleFilter('reviewer', e.target.value)}
+          />
+          <div>
+            <label className={styles.metaLine} style={{ display: 'block', marginBottom: 4 }}>
+              🔍 Search label
+            </label>
+            <SearchBar
+              value={filters.search || ''}
+              onChange={(v) => handleFilter('search', v)}
+              placeholder="e.g. Lesson 1"
+            />
+          </div>
+          {isAdmin ? (
+            <Select
+              label="Project"
+              options={[
+                { value: '', label: 'All projects' },
+                ...projects.map((p) => ({ value: String(p.id), label: p.name })),
+              ]}
+              value={filters.projectId != null ? String(filters.projectId) : ''}
+              onChange={(e) => handleFilter('projectId', e.target.value ? Number(e.target.value) : null)}
+            />
+          ) : (
+            <p className={styles.filters__projectCaption}>
+              Project: <strong>{selProject?.name || '—'}</strong>
+            </p>
+          )}
         </div>
-      )}
+        <div className={styles.filters__row2}>
+          {showCourseFilter ? (
+            <Select
+              label="Course"
+              options={[
+                { value: '', label: 'All courses' },
+                ...projectCourses.map((c) => ({ value: String(c.id), label: c.name })),
+              ]}
+              value={filters.courseId != null ? String(filters.courseId) : ''}
+              onChange={(e) => handleFilter('courseId', e.target.value ? Number(e.target.value) : null)}
+            />
+          ) : scopeProjId ? (
+            <p className={styles.filters__noCourses}>No courses in this project.</p>
+          ) : null}
+        </div>
 
-      <h2 className={styles.sectionTitle}>🔍 Filters</h2>
-      <div className={styles.filters}>
-        <Select
-          options={[
-            { value: '', label: 'All Statuses' },
-            ...KANBAN_COLUMNS.map((c) => ({ value: c.key, label: c.label })),
-          ]}
-          value={filters.status || ''}
-          onChange={(e) => handleFilter('status', e.target.value)}
-          wrapperClassName={styles.filters__select}
-          label="Status"
-        />
-        <SearchBar
-          value={filters.search || ''}
-          onChange={(v) => handleFilter('search', v)}
-          placeholder="Search block label…"
-          className={styles.filters__search}
-        />
-      </div>
+        <h2 className={styles.sectionTitle}>📋 Status Overview</h2>
+        {!isAdmin && selProject && (
+          <p className={styles.scopeCaption}>
+            Your workflow — project <strong>{selProject.name}</strong>
+            {selCourse ? <> · course <strong>{selCourse.name}</strong></> : null}
+          </p>
+        )}
+        {isAdmin && (
+          <p className={styles.scopeCaption}>Admin view — all projects and users.</p>
+        )}
 
-      <h2 className={styles.sectionTitle}>📋 Status Overview</h2>
-
-      {/* Kanban Board */}
-      {isLoading ? (
-        <div className={styles.loading}><Loader size="xl" /></div>
-      ) : (
-        <div className={styles.kanban}>
-          {KANBAN_COLUMNS.map((col) => {
-            const colBlocks = blocksByState[col.key] || [];
-            return (
-              <div key={col.key} className={styles.column}>
-                <div className={styles.column__header}>
-                  <span>{col.icon} {col.label}</span>
-                  <span className={styles.column__count}>{colBlocks.length}</span>
+        {isLoading ? (
+          <div className={styles.loading}><Loader size="xl" /></div>
+        ) : (
+          <div className={styles.kanban}>
+            {KANBAN_COLUMNS.map((state) => {
+              const colBlocks = blocksByState[state] || [];
+              const color = WORKFLOW_KANBAN_COLORS[state];
+              const label = WORKFLOW_STATE_LABELS[state];
+              return (
+                <div key={state} className={styles.column}>
+                  <div
+                    className={styles.column__header}
+                    style={{ borderBottomColor: color }}
+                  >
+                    {label}
+                    <span className={styles.column__count} style={{ color }}>
+                      ({colBlocks.length})
+                    </span>
+                  </div>
+                  <div className={styles.column__cards}>
+                    {colBlocks.length === 0 ? (
+                      <p className={styles.emptyDash}>—</p>
+                    ) : (
+                      colBlocks.slice(0, 5).map((block) => (
+                        <div
+                          key={block.id}
+                          className={styles.kanbanCard}
+                          style={{ borderLeftColor: `${color}22` }}
+                        >
+                          <p className={styles.kanbanCard__label}>
+                            {truncate(block.block_label || `Block ${block.id}`, 25)}
+                          </p>
+                          <p className={styles.kanbanCard__meta}>
+                            #{block.id}
+                            {block.assigned_reviewer && (
+                              <span className={styles.kanbanCard__reviewer}>
+                                {' '}→ {block.assigned_reviewer}
+                              </span>
+                            )}
+                            {block.sla?.label && (
+                              <span className={styles.kanbanCard__sla}> {block.sla.label}</span>
+                            )}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-                <div className={styles.column__cards}>
-                  {colBlocks.map((block) => {
-                    const sla = col.key === WORKFLOW_STATES.IN_REVIEW
-                      ? getSlaStatus(block.submitted_at)
-                      : null;
-                    return (
-                      <div
-                        key={block.id}
-                        className={`${styles.blockCard} ${sla === 'overdue' ? styles['blockCard--overdue'] : ''}`}
-                      >
-                        {canApprove && col.key === WORKFLOW_STATES.IN_REVIEW && (
-                          <input
-                            type="checkbox"
-                            aria-label={`Select ${block.block_label}`}
-                            checked={selectedIds.includes(block.id)}
-                            onChange={(e) => {
-                              setSelectedIds((prev) =>
-                                e.target.checked ? [...prev, block.id] : prev.filter((id) => id !== block.id),
-                              );
-                            }}
-                            className={styles.blockCard__check}
-                          />
+              );
+            })}
+          </div>
+        )}
+
+        <hr className={styles.divider} />
+
+        <h2 className={styles.sectionTitle}>⚙️ Approval Center</h2>
+
+        {filteredBlocks.length === 0 ? (
+          <p className={styles.emptyHint}>
+            No content blocks match your filters. Generate content from the <strong>Generate</strong> tab to begin.
+          </p>
+        ) : (
+          <>
+            <Select
+              label="Select Block"
+              options={blockSelectOptions}
+              value={approvalBlockId != null ? String(approvalBlockId) : ''}
+              onChange={(e) => setApprovalBlockId(Number(e.target.value))}
+            />
+            {approvalBlock && (
+              <div className={styles.approvalGrid}>
+                <div className={styles.approvalMeta}>
+                  <p>
+                    <strong>Block #{approvalBlock.id}</strong> — {approvalBlock.block_label}
+                  </p>
+                  <WorkflowStatusBadge state={approvalBlock.workflow_state} />
+                  {approvalBlock.submitted_by && (
+                    <p className={styles.metaLine}>📤 Submitted by: <strong>{approvalBlock.submitted_by}</strong></p>
+                  )}
+                  {approvalBlock.assigned_reviewer && (
+                    <p className={styles.metaLine}>👤 Reviewer: <strong>{approvalBlock.assigned_reviewer}</strong></p>
+                  )}
+                  {approvalBlock.approved_by && (
+                    <p className={styles.metaLine}>✅ Approved by: <strong>{approvalBlock.approved_by}</strong></p>
+                  )}
+                  {approvalBlock.reviewed_by && [WORKFLOW_STATES.CHANGES_REQUESTED, WORKFLOW_STATES.REJECTED].includes(stateKey) && (
+                    <p className={styles.metaLine}>🔍 Reviewed by: <strong>{approvalBlock.reviewed_by}</strong></p>
+                  )}
+                  {approvalBlock.review_comments && [WORKFLOW_STATES.CHANGES_REQUESTED, WORKFLOW_STATES.REJECTED, WORKFLOW_STATES.APPROVED].includes(stateKey) && (
+                    <p className={styles.metaLine}>💬 Comments: <em>{approvalBlock.review_comments.slice(0, 120)}</em></p>
+                  )}
+                  {approvalBlock.archived_by && (
+                    <p className={styles.metaLine}>🗄️ Archived by: <strong>{approvalBlock.archived_by}</strong></p>
+                  )}
+                  {approvalBlock.sla?.label && (
+                    <p className={styles.metaLine}>{approvalBlock.sla.label}</p>
+                  )}
+                  {approvalBlock.review_requested_at && (
+                    <p className={styles.metaLine}>🕐 Submitted: {formatDt(approvalBlock.review_requested_at)}</p>
+                  )}
+                  {events.length > 0 && (
+                    <details className={styles.history}>
+                      <summary>📜 Transition History</summary>
+                      {events.map((ev, i) => (
+                        <p key={i} className={styles.history__item}>
+                          {formatDt(ev.created_at)} <strong>{ev.actor}</strong> — {ev.from_state} → {ev.to_state} ({ev.action})
+                          {ev.comment ? <> · <em>{ev.comment.slice(0, 60)}</em></> : null}
+                        </p>
+                      ))}
+                    </details>
+                  )}
+                </div>
+
+                <div className={styles.actionsCard}>
+                  <h3>Available Actions</h3>
+
+                  {SUBMITTABLE.has(stateKey) && hasPermission('workflow.submit') && (
+                    <div className={styles.actionForm}>
+                      <Select
+                        label="Assign Reviewer"
+                        options={(reviewers.length ? reviewers : ['(no reviewers available)']).map((r) => ({
+                          value: r,
+                          label: r,
+                        }))}
+                        value={reviewerName}
+                        onChange={(e) => setReviewerName(e.target.value)}
+                        disabled={!reviewers.length}
+                      />
+                      <Button
+                        variant="primary"
+                        disabled={actionLoading || !reviewers.length}
+                        onClick={() => runAction(() =>
+                          dispatch(submitBlockThunk({
+                            blockId: approvalBlock.id,
+                            reviewer: reviewerName,
+                          })).unwrap(),
                         )}
-                        <div className={styles.blockCard__header}>
-                          <span className={styles.blockCard__label}>{block.block_label || `Block ${block.id}`}</span>
-                          {sla && (
-                            <span className={`${styles.slaBadge} ${styles[`slaBadge--${sla}`]}`}>
-                              {sla === 'overdue' ? '⚠️ Overdue' : sla === 'warning' ? '⏰ Due soon' : ''}
-                            </span>
+                      >
+                        📤 Submit for Review
+                      </Button>
+                    </div>
+                  )}
+
+                  {stateKey === WORKFLOW_STATES.IN_REVIEW && hasPermission('workflow.approve') && !rejectMode && (
+                    <div className={styles.actionForm}>
+                      <label className={styles.metaLine}>Review Comment</label>
+                      <textarea
+                        className={styles.textarea}
+                        placeholder="Optional notes for the author…"
+                        value={reviewComment}
+                        onChange={(e) => setReviewComment(e.target.value)}
+                      />
+                      <div className={styles.reviewBtns}>
+                        <Button
+                          variant="success"
+                          disabled={actionLoading}
+                          onClick={() => runAction(() =>
+                            dispatch(approveBlockThunk({
+                              blockId: approvalBlock.id,
+                              comment: reviewComment,
+                            })).unwrap(),
                           )}
-                        </div>
-                        <div className={styles.blockCard__meta}>
-                          <span>{block.block_type || 'lesson'}</span>
-                          <span>·</span>
-                          <span>{formatRelative(block.created_at)}</span>
-                        </div>
-                        <div className={styles.blockCard__actions}>
-                          {col.key === WORKFLOW_STATES.DRAFT && (
-                            <Button variant="ghost" size="xs" onClick={() => handleAction('submit', block.id)}>Submit</Button>
-                          )}
-                          {col.key === WORKFLOW_STATES.IN_REVIEW && canApprove && (
-                            <>
-                              <Button variant="ghost" size="xs" onClick={() => handleAction('approve', block.id)}>Approve</Button>
-                              <Button variant="ghost" size="xs" onClick={() => handleAction('changes', block.id)}>Changes</Button>
-                            </>
-                          )}
-                          {col.key === WORKFLOW_STATES.APPROVED && canApprove && (
-                            <Button variant="ghost" size="xs" onClick={() => handleAction('publish', block.id)}>Publish</Button>
-                          )}
-                        </div>
+                        >
+                          ✅ Approve
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          disabled={actionLoading}
+                          onClick={() => {
+                            if (!reviewComment.trim()) {
+                              toast.error('Please describe what changes are needed.');
+                              return;
+                            }
+                            runAction(() =>
+                              dispatch(requestChangesThunk({
+                                blockId: approvalBlock.id,
+                                reason: reviewComment,
+                              })).unwrap(),
+                            );
+                          }}
+                        >
+                          🔁 Request Changes
+                        </Button>
+                        <Button
+                          variant="danger-ghost"
+                          disabled={actionLoading}
+                          onClick={() => setRejectMode(true)}
+                        >
+                          ❌ Reject
+                        </Button>
                       </div>
-                    );
-                  })}
-                  {colBlocks.length === 0 && (
-                    <p className={styles.emptyCol}>No blocks</p>
+                    </div>
+                  )}
+
+                  {stateKey === WORKFLOW_STATES.IN_REVIEW && rejectMode && (
+                    <div className={styles.actionForm}>
+                      <label className={styles.metaLine}>Rejection Reason (required)</label>
+                      <textarea
+                        className={styles.textarea}
+                        placeholder="Explain why this content is rejected…"
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                      />
+                      <div className={styles.reviewBtns}>
+                        <Button
+                          variant="danger"
+                          disabled={actionLoading}
+                          onClick={() => {
+                            if (!rejectReason.trim()) return;
+                            runAction(() =>
+                              dispatch(rejectBlockThunk({
+                                blockId: approvalBlock.id,
+                                reason: rejectReason,
+                              })).unwrap(),
+                            ).then(() => setRejectMode(false));
+                          }}
+                        >
+                          Confirm Rejection
+                        </Button>
+                        <Button variant="ghost" onClick={() => setRejectMode(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {stateKey === WORKFLOW_STATES.APPROVED && hasPermission('workflow.publish') && (
+                    <Button
+                      variant="primary"
+                      disabled={actionLoading}
+                      onClick={() => runAction(() =>
+                        dispatch(publishBlockThunk(approvalBlock.id)).unwrap(),
+                      )}
+                    >
+                      🚀 Publish Block
+                    </Button>
+                  )}
+
+                  {RESETTABLE.has(stateKey) && hasPermission('workflow.reset_draft') && (
+                    <Button
+                      variant="secondary"
+                      disabled={actionLoading}
+                      onClick={() => runAction(() =>
+                        dispatch(resetDraftBlockThunk(approvalBlock.id)).unwrap(),
+                      )}
+                    >
+                      ↩️ Reset to Draft
+                    </Button>
+                  )}
+
+                  {[WORKFLOW_STATES.APPROVED, WORKFLOW_STATES.PUBLISHED].includes(stateKey)
+                    && hasPermission('workflow.archive') && (
+                    <Button
+                      variant="ghost"
+                      disabled={actionLoading}
+                      onClick={() => runAction(() =>
+                        dispatch(archiveBlockThunk(approvalBlock.id)).unwrap(),
+                      )}
+                    >
+                      🗄️ Archive Block
+                    </Button>
+                  )}
+
+                  {stateKey === WORKFLOW_STATES.PUBLISHED && (
+                    <div className={styles.alertSuccess}>
+                      ✅ This block is Published — no further transitions available.
+                    </div>
+                  )}
+                  {stateKey === WORKFLOW_STATES.ARCHIVED && (
+                    <div className={styles.alertInfo}>🗄️ This block is Archived.</div>
                   )}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+            )}
+          </>
+        )}
 
-      <h2 className={styles.sectionTitle}>⚙️ Approval Center</h2>
-      {allBlocks.length > 0 ? (
-        <div className={styles.approvalCenter}>
-          <Select
-            label="Select Block"
-            options={allBlocks.map((b) => ({
-              value: String(b.id),
-              label: `#${b.id} — ${(b.block_label || '').slice(0, 40)} [${WORKFLOW_STATE_LABELS[b.workflow_state] || b.workflow_state}]`,
-            }))}
-            value={approvalBlockId != null ? String(approvalBlockId) : ''}
-            onChange={(e) => setApprovalBlockId(Number(e.target.value))}
-          />
-          {approvalBlock && (
-            <div className={styles.approvalDetail}>
-              <p><strong>Block #{approvalBlock.id}</strong> — {approvalBlock.block_label}</p>
-              <p>Status: {WORKFLOW_STATE_LABELS[approvalBlock.workflow_state] || approvalBlock.workflow_state}</p>
-              {approvalBlock.workflow_state === WORKFLOW_STATES.DRAFT && (
-                <div className={styles.approvalActions}>
-                  <input
-                    type="text"
-                    placeholder="Reviewer username"
-                    value={reviewerName}
-                    onChange={(e) => setReviewerName(e.target.value)}
-                    className={styles.reviewerInput}
+        {hasPermission('workflow.bulk_approve') && (
+          <>
+            <hr className={styles.divider} />
+            <section className={styles.bulkSection}>
+              <h2 className={styles.sectionTitle}>⚡ Bulk Approve</h2>
+              {inReviewBlocks.length === 0 ? (
+                <p className={styles.emptyHint}>No blocks are currently In Review.</p>
+              ) : (
+                <>
+                  <MultiSelect
+                    label={`Select blocks to approve (${inReviewBlocks.length} in review)`}
+                    options={bulkOptions}
+                    value={bulkSelected}
+                    onChange={setBulkSelected}
                   />
-                  <Button variant="primary" size="sm" onClick={() => handleAction('submit', approvalBlock.id)}>
-                    📤 Submit for Review
-                  </Button>
-                </div>
+                  {bulkSelected.length > 0 && (
+                    <Button
+                      variant="primary"
+                      disabled={actionLoading}
+                      onClick={() => runAction(async () => {
+                        const result = await dispatch(
+                          bulkApproveThunk(bulkSelected.map(Number)),
+                        ).unwrap();
+                        setBulkResult(result);
+                      })}
+                    >
+                      ✅ Bulk Approve {bulkSelected.length} block(s)
+                    </Button>
+                  )}
+                  {bulkResult && (
+                    <p className={styles.bulkResult}>
+                      Approved: {bulkResult.approved?.length ?? 0} | Skipped: {bulkResult.skipped?.length ?? 0} | Errors: {bulkResult.errors?.length ?? 0}
+                    </p>
+                  )}
+                </>
               )}
-              {approvalBlock.workflow_state === WORKFLOW_STATES.IN_REVIEW && canApprove && (
-                <div className={styles.approvalActions}>
-                  <Button variant="success" size="sm" onClick={() => handleAction('approve', approvalBlock.id)}>✅ Approve</Button>
-                  <Button variant="danger-ghost" size="sm" onClick={() => handleAction('changes', approvalBlock.id)}>🔁 Request Changes</Button>
-                </div>
-              )}
-              {approvalBlock.workflow_state === WORKFLOW_STATES.APPROVED && canApprove && (
-                <Button variant="secondary" size="sm" onClick={() => handleAction('publish', approvalBlock.id)}>🌐 Publish</Button>
-              )}
-            </div>
-          )}
-        </div>
-      ) : (
-        <p className={styles.emptyHint}>No content blocks match your filters. Generate content from the Generate tab to begin.</p>
-      )}
+            </section>
+          </>
+        )}
 
-      <ConfirmDialog
-        open={Boolean(confirmAction)}
-        onClose={() => setConfirmAction(null)}
-        onConfirm={confirmWorkflowAction}
-        title={`${ACTION_LABELS[confirmAction?.type] || 'Confirm'}`}
-        message={`Are you sure you want to ${ACTION_LABELS[confirmAction?.type]?.toLowerCase()} this block?`}
-        confirmLabel={ACTION_LABELS[confirmAction?.type] || 'Confirm'}
-        variant={['changes', 'archive'].includes(confirmAction?.type) ? 'danger' : 'success'}
-      />
+        {showAdminBreakdown && (
+          <>
+            <hr className={styles.divider} />
+            <section className={styles.adminSection}>
+              <h2 className={styles.sectionTitle}>🗂️ Admin — All Projects · User Breakdown</h2>
+              {breakdownLoading ? (
+                <div className={styles.breakdownLoading}><Loader size="md" /></div>
+              ) : adminBreakdown.length === 0 ? (
+                <p className={styles.emptyHint}>No project block data to display.</p>
+              ) : (
+                adminBreakdown.map((proj) => {
+                  const open = expandedProjects[proj.project_id] ?? true;
+                  return (
+                    <div key={proj.project_id} className={styles.projectExpander}>
+                      <button
+                        type="button"
+                        className={styles.projectExpander__header}
+                        onClick={() => setExpandedProjects((p) => ({
+                          ...p,
+                          [proj.project_id]: !open,
+                        }))}
+                      >
+                        <span className={styles.projectExpander__chevron} aria-hidden="true">
+                          {open ? '▼' : '▶'}
+                        </span>
+                        <span className={styles.projectExpander__folder} aria-hidden="true">📁</span>
+                        <span>{proj.project_name}</span>
+                      </button>
+                      {open && (
+                        <div className={styles.projectExpander__body}>
+                          {(proj.users || []).map((u) => (
+                            <div key={u.username} className={styles.userRow}>
+                              <p className={styles.userRow__name}>
+                                <span className={styles.userRow__icon} aria-hidden="true">👤</span>
+                                {u.username} — {u.block_count} block(s)
+                              </p>
+                              <div className={styles.userRow__badges}>
+                                {Object.entries(u.state_counts || {})
+                                  .sort(([a], [b]) => a.localeCompare(b))
+                                  .map(([st, n]) => (
+                                    <span key={st} className={styles.userRow__badgeItem}>
+                                      <WorkflowStatusBadge state={st} />
+                                      <span className={styles.userRow__count}>{n}</span>
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </section>
+          </>
+        )}
       </div>
     </PageContainer>
   );

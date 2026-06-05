@@ -29,9 +29,9 @@
 
 .layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: minmax(300px, 42%) 1fr;
   gap: $space-6;
-  align-items: stretch;
+  align-items: start;
 
   @include max-lg { grid-template-columns: 1fr; }
 }

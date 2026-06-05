@@ -33,7 +33,8 @@ export const fetchPromptVersionsThunk = createAsyncThunk(
 export const aiGeneratePromptThunk = createAsyncThunk(
   'prompts/aiGenerate',
   async (description, { rejectWithValue }) => {
-    try { return await promptsService.aiGenerate({ description }); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+    try {
+      return await promptsService.aiSuggest({ description });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

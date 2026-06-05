@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -201,9 +202,11 @@ def generate_blueprint(
 
     # Persist blueprint.
     bp_title = f"{request_body.selected_module} Blueprint"
+    mod_match = re.search(r"\d+", request_body.selected_module or "")
+    module_number = int(mod_match.group()) if mod_match else 1
     new_bp = ModuleBlueprint(
         title=bp_title,
-        module_number=request_body.selected_module.split("—")[0].strip() if "—" in request_body.selected_module else "",
+        module_number=module_number,
         active_version="v1",
         project_id=request_body.project_id,
         course_id=request_body.course_id,
@@ -361,6 +364,30 @@ def get_blueprint_components(
     return BlueprintComponentsResponse(
         blueprint_id=blueprint_id,
         components=[BlueprintComponent(**c) for c in components],
+    )
+
+
+@router.get(
+    "/{blueprint_id}/completion-status",
+    summary="Module lesson completion status (assessment generation gate)",
+    description="Returns whether all blueprint lessons have been generated.",
+)
+def get_blueprint_completion_status(
+    blueprint_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Gate module assessment generation — mirrors Streamlit get_module_completion_status."""
+    from app.schemas.generation import CompletionStatusResponse
+    from promptops_app.core.content_utils import get_module_completion_status
+
+    _get_blueprint_or_404(db, blueprint_id)
+    status = get_module_completion_status(db, blueprint_id)
+    return CompletionStatusResponse(
+        completed=status.get("completed", False),
+        generated_lessons=status.get("generated_lessons", 0),
+        total_lessons=status.get("total_lessons", 0),
+        missing_lessons=status.get("lesson_labels", []),
     )
 
 

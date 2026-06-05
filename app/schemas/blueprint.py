@@ -5,7 +5,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.json_fields import parse_optional_json_dict
+
+
+def _coerce_module_number(value: object) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        digits = "".join(ch for ch in value.strip() if ch.isdigit())
+        return int(digits) if digits else None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +95,11 @@ class BlueprintVersionRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator("sections", mode="before")
+    @classmethod
+    def _coerce_sections(cls, value: object) -> Optional[dict]:
+        return parse_optional_json_dict(value)
+
 
 class BlueprintVersionListItem(BaseModel):
     version: str
@@ -96,7 +114,7 @@ class BlueprintVersionListItem(BaseModel):
 class BlueprintRead(BaseModel):
     id: int
     title: str
-    module_number: Optional[str] = None
+    module_number: Optional[int] = None
     active_version: Optional[str] = None
     project_id: Optional[int] = None
     course_id: Optional[int] = None
@@ -106,15 +124,25 @@ class BlueprintRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator("module_number", mode="before")
+    @classmethod
+    def _coerce_module_number_field(cls, value: object) -> Optional[int]:
+        return _coerce_module_number(value)
+
 
 class BlueprintListItem(BaseModel):
     id: int
     title: str
-    module_number: Optional[str] = None
+    module_number: Optional[int] = None
     active_version: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("module_number", mode="before")
+    @classmethod
+    def _coerce_module_number_field(cls, value: object) -> Optional[int]:
+        return _coerce_module_number(value)
 
 
 class BlueprintGenerateResponse(BaseModel):

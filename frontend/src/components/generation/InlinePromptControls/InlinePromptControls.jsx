@@ -29,8 +29,8 @@ import { downloadBlob } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
-import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
+import PromptDetailsModal from '@components/generation/PromptDetailsModal/PromptDetailsModal';
 import styles from './InlinePromptControls.module.scss';
 
 const DEFAULTS = {
@@ -38,6 +38,11 @@ const DEFAULTS = {
   blueprint: { system: BLUEPRINT_DEFAULT_SYSTEM, user: BLUEPRINT_DEFAULT_USER },
   generate: { system: GENERATE_DEFAULT_SYSTEM, user: GENERATE_DEFAULT_USER },
 };
+
+function nextPromptVersion(activeVersion) {
+  const n = parseInt(String(activeVersion || '1').replace(/\D/g, ''), 10);
+  return `v${(Number.isNaN(n) ? 0 : n) + 1}`;
+}
 
 export default function InlinePromptControls({
   component = 'cdd',
@@ -85,7 +90,9 @@ export default function InlinePromptControls({
   const defaults = DEFAULTS[component] || { system: '', user: '' };
 
   const filteredPrompts = useMemo(
-    () => (prompts || []).filter((p) => p.component_type === component),
+    () => (prompts || []).filter(
+      (p) => !p.component_type || p.component_type === component,
+    ),
     [prompts, component],
   );
 
@@ -187,21 +194,16 @@ export default function InlinePromptControls({
     loadPromptDetail(p?.id);
   }
 
-  function handleDownload() {
-    const md = buildPromptDownloadMd({
-      projectName: selProject?.name,
-      clusterName: selCluster?.name,
-      courseName: selCourse?.name,
-      component,
-      promptName: selectedPrompt?.name,
-      promptVersion: selectedPrompt?.active_version,
-      systemPrompt: effectiveSystem,
-      userPromptTemplate: effectiveUser,
-      extraInstructions,
-      isAiOverride: hasOverride,
+  function openEditFromView() {
+    setEditForm({
+      version: nextPromptVersion(selectedPrompt?.active_version),
+      reason: '',
+      system: effectiveSystem,
+      user: effectiveUser,
     });
-    const ver = (selectedPrompt?.active_version || 'v1').replace(/\//g, '-');
-    downloadBlob(new Blob([md], { type: 'application/msword' }), `prompt_${component}_${ver}.doc`);
+    setShowEdit(true);
+    setShowCreate(false);
+    setShowImprove(false);
   }
 
   async function handleSaveInstruction() {
@@ -245,7 +247,6 @@ export default function InlinePromptControls({
       user_prompt_template: editForm.user,
       change_reason: editForm.reason || 'Edited via inline controls.',
     });
-    await promptsService.setActive(selectedPrompt.id, editForm.version);
     setShowEdit(false);
     dispatch(fetchPromptsThunk({ component }));
     loadPromptDetail(selectedPrompt.id);
@@ -256,7 +257,7 @@ export default function InlinePromptControls({
     setImproving(true);
     try {
       const desc = `Improve this prompt. Current system: ${effectiveSystem.slice(0, 500)}. Current user: ${effectiveUser.slice(0, 500)}. Instructions: ${improveInstr}`;
-      const result = await promptsService.aiGenerate({ description: desc, model_choice: modelChoice });
+      const result = await promptsService.aiSuggest({ description: desc, model_choice: modelChoice });
       setAiSuggestion({
         system_prompt: result.system_prompt || effectiveSystem,
         user_prompt_template: result.user_prompt_template || effectiveUser,
@@ -305,6 +306,9 @@ export default function InlinePromptControls({
                   {' · '}v<code>{selectedPrompt.active_version || '—'}</code>
                   {selectedPrompt.is_default && ' · 🏷️ default'}
                   {selectedPrompt.owner && ` · owner: ${selectedPrompt.owner}`}
+                  {selectedPrompt.updated_at && (
+                    <> · updated: <code>{new Date(selectedPrompt.updated_at).toISOString().slice(0, 10)}</code></>
+                  )}
                 </p>
               )}
             </div>
@@ -405,7 +409,7 @@ export default function InlinePromptControls({
             </Button>
             <Button variant="ghost" size="sm" onClick={() => {
               setEditForm({
-                version: `v${(selectedPrompt?.active_version || '1').replace(/\D/g, '') || 1}`,
+                version: nextPromptVersion(selectedPrompt?.active_version),
                 reason: '',
                 system: effectiveSystem,
                 user: effectiveUser,
@@ -416,7 +420,28 @@ export default function InlinePromptControls({
             }} disabled={!selectedPrompt}>
               ✏️ Edit Prompt
             </Button>
-            <Button variant="ghost" size="sm" onClick={handleDownload}>⬇️ Download</Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const md = buildPromptDownloadMd({
+                  projectName: selProject?.name,
+                  clusterName: selCluster?.name,
+                  courseName: selCourse?.name,
+                  component,
+                  promptName: selectedPrompt?.name,
+                  promptVersion: selectedPrompt?.active_version,
+                  systemPrompt: effectiveSystem,
+                  userPromptTemplate: effectiveUser,
+                  extraInstructions,
+                  isAiOverride: hasOverride,
+                });
+                const ver = (selectedPrompt?.active_version || 'v1').replace(/\//g, '-');
+                downloadBlob(new Blob([md], { type: 'application/msword' }), `prompt_${component}_${ver}.doc`);
+              }}
+            >
+              ⬇️ Download
+            </Button>
           </div>
 
           {showSaveInstr && (
@@ -494,22 +519,20 @@ export default function InlinePromptControls({
         </>
       )}
 
-      <Modal open={showView} onClose={() => setShowView(false)} title="🔍 Prompt Details" size="lg">
-        <div className={styles.viewModal}>
-          <p><strong>Name:</strong> {selectedPrompt?.name}</p>
-          <p><strong>Version:</strong> {selectedPrompt?.active_version || '—'}</p>
-          <label className={styles.fieldLabel}>System Prompt</label>
-          <pre className={styles.codeBlock}>{effectiveSystem}</pre>
-          <label className={styles.fieldLabel}>User Prompt Template</label>
-          <pre className={styles.codeBlock}>{effectiveUser}</pre>
-          {extraInstructions?.trim() && (
-            <>
-              <label className={styles.fieldLabel}>Additional Instructions</label>
-              <pre className={styles.codeBlock}>{extraInstructions}</pre>
-            </>
-          )}
-        </div>
-      </Modal>
+      <PromptDetailsModal
+        open={showView}
+        onClose={() => setShowView(false)}
+        component={component}
+        promptMeta={selectedPrompt}
+        systemPrompt={effectiveSystem}
+        userPrompt={effectiveUser}
+        extraInstructions={extraInstructions}
+        isAiOverride={hasOverride}
+        projectName={selProject?.name}
+        clusterName={selCluster?.name}
+        courseName={selCourse?.name}
+        onEditPrompt={openEditFromView}
+      />
     </section>
   );
 }

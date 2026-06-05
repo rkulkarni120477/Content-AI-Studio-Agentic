@@ -11,6 +11,17 @@ from pydantic import BaseModel, ConfigDict, Field
 class StyleCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=300, examples=["Clinical Formal"])
     description: Optional[str] = Field(default=None, max_length=2000)
+    custom_instructions: Optional[str] = Field(default=None, max_length=8000)
+    document_ids: list[int] = Field(
+        default_factory=list,
+        description="Library document IDs to link as style references.",
+    )
+    activate: bool = Field(
+        default=True,
+        description="When true, activates the style for the given course/project scope.",
+    )
+    course_id: Optional[int] = Field(default=None, description="Course scope for activation.")
+    project_id: Optional[int] = Field(default=None, description="Project scope for activation.")
 
 
 class StyleUpdateRequest(BaseModel):

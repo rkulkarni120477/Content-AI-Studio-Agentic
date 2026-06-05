@@ -19,7 +19,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.json_fields import parse_optional_json_dict
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +184,16 @@ class CDDVersionRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator("sections", "generation_params", mode="before")
+    @classmethod
+    def _coerce_json_columns(cls, value: object) -> Optional[dict]:
+        return parse_optional_json_dict(value)
+
+    @field_validator("is_active", mode="before")
+    @classmethod
+    def _default_is_active(cls, value: object) -> bool:
+        return bool(value) if value is not None else False
+
 
 class CDDVersionListItem(BaseModel):
     """Lightweight version summary used in the version list endpoint."""
@@ -206,7 +218,7 @@ class CDDRead(BaseModel):
     course_title: Optional[str] = None
     description: Optional[str] = None
     active_version: Optional[str] = None
-    workflow_state: str
+    workflow_state: str = "draft"
     project_id: Optional[int] = None
     course_id: Optional[int] = None
     created_by: Optional[str] = None
@@ -217,6 +229,16 @@ class CDDRead(BaseModel):
     active_content: Optional[CDDVersionRead] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _default_title(cls, value: object) -> str:
+        return value if value else "Untitled"
+
+    @field_validator("workflow_state", mode="before")
+    @classmethod
+    def _default_workflow_state(cls, value: object) -> str:
+        return value if value else "draft"
 
 
 class CDDListItem(BaseModel):
@@ -233,6 +255,16 @@ class CDDListItem(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _default_title(cls, value: object) -> str:
+        return value if value else "Untitled"
+
+    @field_validator("workflow_state", mode="before")
+    @classmethod
+    def _default_workflow_state(cls, value: object) -> str:
+        return value if value else "draft"
 
 
 class CDDGenerateResponse(BaseModel):

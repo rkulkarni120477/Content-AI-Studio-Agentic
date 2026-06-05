@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -55,6 +55,7 @@ from app.schemas.cdd import (
     CDDVersionRead,
 )
 from app.schemas.common import PaginatedResponse
+from app.api.v1.cdd_response import build_cdd_read
 
 _log = logging.getLogger(__name__)
 
@@ -366,10 +367,20 @@ def generate_cdd(
     "/{cdd_id}",
     response_model=CDDRead,
     summary="Get a single CDD with its active version content",
+    description=(
+        "**cdd_id** is the primary key of `course_design_documents` — not the course id. "
+        "To load the CDD pinned on a course, call `GET /api/v1/courses/{course_id}` "
+        "and use the returned `active_cdd_id`, or use "
+        "`GET /api/v1/courses/{course_id}/active-cdd`."
+    ),
     responses={404: {"description": "CDD not found."}},
 )
 def get_cdd(
-    cdd_id: int,
+    cdd_id: int = Path(
+        ...,
+        description="CDD record id (course_design_documents.id). Not the course id.",
+        examples=[12],
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> CDDRead:
@@ -379,19 +390,8 @@ def get_cdd(
     The active version content is embedded in the response to avoid a second
     API call, matching the Streamlit pattern of loading both simultaneously.
     """
-    from promptops_app.repositories import cdd_repository
-
     cdd = _get_cdd_or_404(db, cdd_id)
-
-    active_content = None
-    if cdd.active_version:
-        version_record = cdd_repository.get_cdd_version(db, cdd_id, cdd.active_version)
-        if version_record:
-            active_content = CDDVersionRead.model_validate(version_record)
-
-    result = CDDRead.model_validate(cdd)
-    result.active_content = active_content
-    return result
+    return build_cdd_read(db, cdd)
 
 
 # ---------------------------------------------------------------------------

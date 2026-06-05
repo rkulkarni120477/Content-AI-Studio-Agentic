@@ -36,10 +36,11 @@ import { downloadBlob } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
+import BlueprintContentView from '@components/blueprint/BlueprintContentView/BlueprintContentView';
+import toast from 'react-hot-toast';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
-import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
@@ -79,10 +80,11 @@ export default function BlueprintPage() {
   const [saveInstrNewVer, setSaveInstrNewVer] = useState(false);
   const [viewBpId, setViewBpId] = useState(null);
   const [viewBpDetail, setViewBpDetail] = useState(null);
-  const [showVersionModal, setShowVersionModal] = useState(false);
   const [selectedBpId, setSelectedBpId] = useState(null);
   const [viewVersion, setViewVersion] = useState(null);
-  const [versionContent, setVersionContent] = useState('');
+  const [versionDetail, setVersionDetail] = useState(null);
+  const [moduleConfirmed, setModuleConfirmed] = useState(false);
+  const [showSaveVersion, setShowSaveVersion] = useState(false);
 
   const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
 
@@ -212,20 +214,26 @@ export default function BlueprintPage() {
   }, [selProject?.id, courseId]);
 
   useEffect(() => {
-    if (!displayBp?.id || !viewVersion) return;
+    if (!displayBp?.id || !viewVersion) {
+      setVersionDetail(null);
+      return;
+    }
+    let cancelled = false;
     async function loadVer() {
       try {
         const ver = await blueprintService.getVersion(displayBp.id, viewVersion);
-        setVersionContent(ver?.full_content || '');
+        if (!cancelled) setVersionDetail(ver);
       } catch {
-        setVersionContent(
-          displayBp.active_content?.full_content
-          || displayBp.active_version?.full_content
-          || '',
-        );
+        if (!cancelled) {
+          setVersionDetail(displayBp.active_content || {
+            full_content: displayBp.active_content?.full_content || '',
+            sections: displayBp.active_content?.sections,
+          });
+        }
       }
     }
     loadVer();
+    return () => { cancelled = true; };
   }, [displayBp, viewVersion]);
 
   useEffect(() => {
@@ -234,10 +242,22 @@ export default function BlueprintPage() {
     }
   }, [displayBp?.id, displayBp?.active_version]);
 
+  function onConfirmModule() {
+    if (!selectedModuleOpt) {
+      toast.error('Select a module or course-end item first.');
+      return;
+    }
+    setModuleConfirmed(true);
+    toast.success('Module selection confirmed.');
+  }
+
   async function onGenerate() {
     if (!selProject?.id) return;
     const mod = selectedModuleOpt;
     if (!mod) return;
+    if (!linkedCddId && !cddContent) {
+      toast.error('Link a CDD for best results, or continue with standalone generation.');
+    }
 
     const moduleRef = mod.isCourseEnd
       ? mod.courseEndLabel
@@ -271,10 +291,13 @@ export default function BlueprintPage() {
       const bp = await dispatch(generateBlueprintThunk(payload)).unwrap();
       if (bp?.id) {
         setViewBpId(bp.id);
+        setSelectedBpId(bp.id);
         setViewBpDetail(bp);
         dispatch(fetchBlueprintVersionsThunk(bp.id));
+        await dispatch(setActiveBlueprintThunk({ blueprintId: bp.id, courseId: Number(courseId) }));
       }
       dispatch(fetchBlueprintsThunk(courseId));
+      setModuleConfirmed(false);
     } catch {
       /* error surfaced via slice */
     }
@@ -287,15 +310,18 @@ export default function BlueprintPage() {
 
   async function onCommitVersion(data) {
     if (!selectedBpId || !displayBp) return;
-    const content = versionContent
+    const content = versionDetail?.full_content
       || displayBp.active_content?.full_content
-      || displayBp.active_version?.full_content
       || '';
     await dispatch(commitBlueprintVersionThunk({
       blueprintId: selectedBpId,
-      data: { ...data, full_content: content },
+      data: {
+        ...data,
+        full_content: content,
+        sections: versionDetail?.sections || {},
+      },
     }));
-    setShowVersionModal(false);
+    setShowSaveVersion(false);
     versionForm.reset();
     dispatch(fetchBlueprintVersionsThunk(selectedBpId));
   }
@@ -381,9 +407,21 @@ export default function BlueprintPage() {
     );
   };
 
-  const previewContent = versionContent
+  const previewFullContent = versionDetail?.full_content
     || displayBp?.active_content?.full_content
-    || displayBp?.active_version?.full_content;
+    || '';
+  const previewSections = versionDetail?.sections
+    || displayBp?.active_content?.sections;
+
+  function parseGenParams(raw) {
+    if (!raw) return {};
+    if (typeof raw === 'object') return raw;
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+
+  const viewMode = parseGenParams(versionDetail?.generation_params).mode
+    || parseGenParams(displayBp?.active_content?.generation_params).mode
+    || genMode;
 
   return (
     <PageContainer
@@ -468,6 +506,7 @@ export default function BlueprintPage() {
                 const v = e.target.value;
                 setLinkedCddId(v ? Number(v) : null);
                 setModuleSelKey('');
+                setModuleConfirmed(false);
               }}
             />
 
@@ -481,9 +520,16 @@ export default function BlueprintPage() {
                     label: o.label,
                   }))}
                   value={moduleSelKey || String(moduleOptions[0].key)}
-                  onChange={(e) => setModuleSelKey(e.target.value)}
+                  onChange={(e) => {
+                    setModuleSelKey(e.target.value);
+                    setModuleConfirmed(false);
+                  }}
                 />
-                {moduleStatusBanner()}
+                {moduleConfirmed ? (
+                  <div className={styles.confirmOk}>✅ Module selection confirmed.</div>
+                ) : (
+                  moduleStatusBanner()
+                )}
               </>
             ) : (
               <p className={styles.configPanel__item}>
@@ -502,7 +548,7 @@ export default function BlueprintPage() {
               onChange={(e) => setDocumentTitle(e.target.value)}
             />
 
-            <Button variant="secondary" fullWidth type="button">
+            <Button variant="secondary" fullWidth type="button" onClick={onConfirmModule}>
               Confirm Module Selection
             </Button>
 
@@ -650,35 +696,44 @@ export default function BlueprintPage() {
                     )}
 
                     <div className={styles.activeContent}>
-                      <div className={styles.activeContent__header}>
-                        <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
-                        <div className={styles.activeContent__actions}>
-                          <Button variant="ghost" size="sm" onClick={() => onExport('docx')}>
-                            ⬇️ Word (.docx)
-                          </Button>
-                          <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
-                            + Save Version
-                          </Button>
-                        </div>
-                      </div>
-
-                      {versions.length > 0 && (
-                        <div className={styles.versions}>
-                          <span className={styles.versions__label}>Versions:</span>
-                          {versions.map((v) => (
-                            <span
-                              key={v.version}
-                              className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}
-                            >
-                              {v.version}
-                            </span>
-                          ))}
-                        </div>
+                      <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
+                      {viewMode && (
+                        <p className={styles.configPanel__item}>
+                          Mode: <strong>{viewMode === 'teacher' ? 'Teacher' : 'Student'}</strong>
+                        </p>
                       )}
 
-                      {previewContent && (
-                        <div className={styles.contentPreview}>
-                          <pre className={styles.contentPreview__text}>{previewContent}</pre>
+                      <BlueprintContentView
+                        fullContent={previewFullContent}
+                        sections={previewSections}
+                      />
+
+                      <button
+                        type="button"
+                        className={styles.saveVersionToggle}
+                        onClick={() => setShowSaveVersion((v) => !v)}
+                      >
+                        🚀 Save as New Version {showSaveVersion ? '▾' : '▸'}
+                      </button>
+                      {showSaveVersion && (
+                        <div className={styles.saveVersion}>
+                          <form className={styles.form} onSubmit={versionForm.handleSubmit(onCommitVersion)}>
+                            <Input
+                              label="New Version Tag"
+                              placeholder={`v${versions.length + 1}`}
+                              {...versionForm.register('tag')}
+                            />
+                            <Input
+                              label="Change Reason"
+                              required
+                              placeholder="What changed?"
+                              error={versionForm.formState.errors.reason?.message}
+                              {...versionForm.register('reason')}
+                            />
+                            <Button type="submit" variant="primary" size="sm">
+                              💾 Commit New Blueprint Version
+                            </Button>
+                          </form>
                         </div>
                       )}
                     </div>
@@ -691,6 +746,18 @@ export default function BlueprintPage() {
                     >
                       📌 Set as Active Blueprint for Generation
                     </Button>
+
+                    <div className={styles.downloadBlock}>
+                      <p className={styles.downloadBlock__title}>📥 Download Blueprint</p>
+                      <div className={styles.downloadBlock__row}>
+                        <Button variant="secondary" fullWidth onClick={() => onExport('docx')}>
+                          ⬇️ Word (.docx)
+                        </Button>
+                        <Button variant="secondary" fullWidth onClick={handleDownloadPrompt}>
+                          ⬇️ Download Prompt Used (.doc)
+                        </Button>
+                      </div>
+                    </div>
                   </>
                 )}
               </>
@@ -708,6 +775,12 @@ export default function BlueprintPage() {
           headerHint="📝 Select the source CDD and module on the left, then configure the prompt and generate your Blueprint below."
         />
 
+        {activeStyle && (
+          <div className={styles.styleBanner}>
+            🎨 <strong>Style &quot;{activeStyle.name}&quot;</strong> will be applied to this Blueprint.
+          </div>
+        )}
+
         <div className={styles.generateRow}>
           <Button
             variant="primary"
@@ -723,36 +796,6 @@ export default function BlueprintPage() {
           </Button>
         </div>
       </div>
-
-      <Modal
-        open={showVersionModal}
-        onClose={() => setShowVersionModal(false)}
-        title="Save as New Version"
-        size="sm"
-        footer={(
-          <>
-            <Button variant="ghost" onClick={() => setShowVersionModal(false)}>Cancel</Button>
-            <Button variant="primary" onClick={versionForm.handleSubmit(onCommitVersion)}>
-              💾 Commit New Blueprint Version
-            </Button>
-          </>
-        )}
-      >
-        <form className={styles.form}>
-          <Input
-            label="New Version Tag"
-            placeholder={`v${versions.length + 1}`}
-            {...versionForm.register('tag')}
-          />
-          <Input
-            label="Change Reason"
-            required
-            placeholder="What changed?"
-            error={versionForm.formState.errors.reason?.message}
-            {...versionForm.register('reason')}
-          />
-        </form>
-      </Modal>
     </PageContainer>
   );
 }

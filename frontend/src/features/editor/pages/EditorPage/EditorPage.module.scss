@@ -1,149 +1,259 @@
 .page {
   padding: $space-6;
-  max-width: 1400px;
+  max-width: 100%;
   margin: 0 auto;
+  background: #fafafa;
+  min-height: 100%;
 }
-
-.headerActions { @include flex-start; gap: $space-2; }
 
 .completionBanner {
   display: flex;
-  align-items: center;
-  gap: $space-4;
+  align-items: flex-start;
+  gap: 16px;
   padding: 16px 20px;
   background: #f0fdf4;
   border: 2px solid #86efac;
   border-radius: 12px;
-  font-size: $font-size-sm;
-  color: #166534;
-  margin-bottom: $space-6;
+  margin-bottom: $space-4;
 
-  &__icon { font-size: 2rem; }
-  p { margin: 4px 0 0; font-size: 0.84rem; }
-}
-
-.validation {
-  padding: $space-4;
-  border-radius: $radius-lg;
-  margin-bottom: $space-6;
-
-  &--pass { background: $color-success-bg; color: $color-success; border: 1px solid $color-success-light; }
-  &--fail { background: $color-danger-bg; color: $color-danger; border: 1px solid $color-danger-light; }
-
-  &__issues {
-    list-style: disc;
-    padding-left: $space-5;
-    margin-top: $space-2;
-    font-size: $font-size-sm;
-    li { margin-bottom: $space-1; }
+  &__icon { font-size: 2rem; flex-shrink: 0; }
+  &__body {
+    flex: 1;
+    color: #166534;
+    strong {
+      display: block;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #15803d;
+      margin-bottom: 2px;
+    }
+    p { margin: 0 0 $space-4; font-size: 0.84rem; }
+  }
+  &__valRow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $space-3;
+    margin-bottom: $space-3;
   }
 }
 
-.layout {
+.valBadge {
+  font-size: 0.8rem;
+  padding: 4px 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  &__ok { background: #f0fdf4; color: #166534; }
+  &__warn { background: #fffbeb; color: #92400e; }
+  &__err { background: #fef2f2; color: #991b1b; }
+}
+
+.valInfo {
+  background: #eff6ff;
+  border-radius: 8px;
+  padding: $space-3;
+  font-size: 0.84rem;
+  color: #1e40af;
+  margin-bottom: $space-3;
+}
+
+.templateSelect { max-width: 280px; margin-bottom: $space-3; }
+
+.exportGrid4 {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: $space-6;
+  grid-template-columns: repeat(4, 1fr);
+  gap: $space-2;
+  max-width: 480px;
+}
 
-  &:has(.detailPanel) {
-    grid-template-columns: 1fr 420px;
+.exportGrid5 {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-top: $space-2;
+
+  @include max-md { grid-template-columns: repeat(3, 1fr); }
+}
+
+.streamlitExpander {
+  background: $color-white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: $space-4;
+
+  &__summary {
+    padding: 12px 16px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: $font-size-sm;
+    list-style: none;
+    &::-webkit-details-marker { display: none; }
+    &::before {
+      content: '›';
+      display: inline-block;
+      margin-right: 8px;
+      transition: transform 0.15s;
+    }
   }
 
-  @include max-lg { grid-template-columns: 1fr !important; }
-}
-
-.tablePanel { min-width: 0; }
-
-.blockLink {
-  background: none;
-  border: none;
-  color: $color-primary;
-  cursor: pointer;
-  text-decoration: underline;
-  font-size: $font-size-sm;
-  text-align: left;
-  padding: 0;
-
-  &:hover { color: $color-primary-dark; }
-}
-
-.badge {
-  @include badge($color-gray-100, $color-gray-600);
-
-  &__draft     { background: $color-gray-100; color: $color-gray-600; }
-  &__review    { background: $color-warning-bg; color: $color-warning; }
-  &__changes   { background: #f3e8ff; color: #7c3aed; }
-  &__approved  { background: $color-success-bg; color: $color-success; }
-  &__published { background: $color-info-bg; color: $color-info; }
-  &__archived  { background: $color-gray-100; color: $color-gray-400; }
-  &__type      { @include badge($color-primary-soft, $color-primary); }
-}
-
-.detailPanel {
-  @include card;
-  @include flex-col;
-  gap: $space-4;
-  position: sticky;
-  top: calc($header-height + $space-6);
-  max-height: calc(100vh - $header-height - #{$space-12});
-  overflow-y: auto;
-  @include custom-scrollbar;
-
-  &__header { @include flex-between; }
-  &__title  { font-size: $font-size-base; font-weight: $font-weight-semibold; }
-  &__actions { @include flex-start; gap: $space-2; }
-  &__meta   { @include flex-start; gap: $space-2; flex-wrap: wrap; }
-  &__type   { font-size: $font-size-xs; color: $color-gray-500; }
-}
-
-.workflowActions { @include flex-start; gap: $space-2; flex-wrap: wrap; }
-
-.editForm {
-  @include flex-col;
-  gap: $space-3;
-
-  &__textarea {
-    @include form-field-base;
-    font-family: $font-family-mono;
-    font-size: $font-size-xs;
-    resize: vertical;
-    min-height: 240px;
+  &[open] > &__summary::before {
+    transform: rotate(90deg);
   }
 
-  &__input { @include form-field-base; height: 36px; }
-  &__error { font-size: $font-size-xs; color: $color-danger; }
+  &__body {
+    padding: 0 16px 16px;
+    border-top: 1px solid #f3f4f6;
+  }
 }
 
-.form__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+.searchRow {
+  margin-bottom: $space-4;
 
-.contentView {
-  max-height: 400px;
-  overflow-y: auto;
-  background: $color-gray-50;
-  border-radius: $radius-lg;
-  padding: $space-4;
-  @include custom-scrollbar;
-
-  &__text {
-    font-family: $font-family-mono;
-    font-size: $font-size-xs;
+  &__label {
+    display: block;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
     color: $color-gray-700;
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: $line-height-relaxed;
+    margin-bottom: $space-1;
   }
 }
 
-.versionList { @include flex-col; gap: $space-2; }
-
-.versionItem {
-  @include flex-between;
-  padding: $space-3 $space-4;
-  background: $color-gray-50;
-  border-radius: $radius-lg;
-
-  &__ver    { font-size: $font-size-sm; font-weight: $font-weight-semibold; margin-right: $space-3; }
-  &__date   { font-size: $font-size-xs; color: $color-gray-500; margin-right: $space-3; }
-  &__reason { font-size: $font-size-xs; color: $color-gray-600; }
+.searchInput {
+  @include form-field-base;
+  width: 100%;
+  height: 38px;
 }
 
-.emptyText { font-size: $font-size-sm; color: $color-gray-500; text-align: center; padding: $space-8; }
+.downloadRow {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  margin-bottom: $space-4;
+}
+
+.searchTable {
+  width: 100%;
+  margin-top: $space-3;
+  font-size: $font-size-xs;
+  border-collapse: collapse;
+  th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #f3f4f6;
+  }
+}
+
+.searchEmpty { margin-top: $space-3; font-size: $font-size-sm; color: #6b7280; }
+
+.scopeBanner {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  color: #3730a3;
+  margin-bottom: 10px;
+  span { font-weight: 400; }
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-4;
+  margin-bottom: $space-2;
+  align-items: start;
+
+  @include max-lg { grid-template-columns: 1fr; }
+  &__col { min-width: 0; }
+}
+
+.genExportPanel {
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $space-2;
+    margin-bottom: $space-2;
+  }
+}
+
+.exportLock {
+  font-size: 0.8rem;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: $space-2;
+}
+
+.exportBlockErr {
+  font-size: 0.8rem;
+  color: #991b1b;
+  background: #fef2f2;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: $space-2;
+}
+
+.noGens {
+  padding: 12px;
+  background: #eff6ff;
+  border-radius: 8px;
+  font-size: $font-size-sm;
+  color: #1e40af;
+}
+
+.blockCaption {
+  font-size: 0.8rem;
+  color: #9ca3af;
+  margin: 0 0 $space-4;
+}
+
+.tip {
+  padding: 12px 16px;
+  background: #eff6ff;
+  border-radius: 8px;
+  font-size: $font-size-sm;
+  margin-bottom: $space-4;
+}
+
+.loadingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: $font-size-sm;
+  color: #6b7280;
+  margin-bottom: $space-4;
+}
+
+.inlineError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  font-size: $font-size-sm;
+  color: #991b1b;
+  margin-bottom: $space-4;
+}
+
+.promptDlRow {
+  margin-top: $space-4;
+  padding-top: $space-3;
+  border-top: 1px solid #86efac;
+}
+
+.valBadgeCaption {
+  font-size: 0.8rem;
+  color: #166534;
+}
+
+.searchFound {
+  margin-top: $space-3;
+  font-size: $font-size-xs;
+  color: #6b7280;
+}

@@ -60,14 +60,41 @@ def get_generation_by_id(db, gen_id: int):
     return db.query(Generation).filter(Generation.id == gen_id).first()
 
 
-def list_course_generations(db, project_id: int, course_id: int, limit: int = 200):
-    return (
-        db.query(Generation)
-        .filter(Generation.project_id == project_id, Generation.course_id == course_id)
-        .order_by(Generation.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+def list_course_generations(
+    db,
+    project_id: int | None = None,
+    course_id: int | None = None,
+    limit: int = 200,
+):
+    """List generations for a course; project_id is optional when course_id is set."""
+    q = db.query(Generation)
+    if project_id is not None:
+        q = q.filter(Generation.project_id == project_id)
+    if course_id is not None:
+        q = q.filter(Generation.course_id == course_id)
+    return q.order_by(Generation.created_at.desc()).limit(limit).all()
+
+
+def list_editor_generations(
+    db,
+    *,
+    course_id: int | None = None,
+    project_id: int | None = None,
+    blueprint_id: int | None = None,
+    cdd_id: int | None = None,
+    limit: int = 200,
+):
+    """Editor page list — mirrors Streamlit list_generations_scoped + course context."""
+    q = db.query(Generation).order_by(Generation.created_at.desc())
+    if course_id is not None:
+        q = q.filter(Generation.course_id == course_id)
+    if project_id is not None:
+        q = q.filter(Generation.project_id == project_id)
+    if blueprint_id:
+        q = q.filter(Generation.blueprint_id == blueprint_id)
+    elif cdd_id:
+        q = q.filter(Generation.cdd_id == cdd_id)
+    return q.limit(limit).all()
 
 
 def list_generations_for_project(db, project_id: int, limit: int = 500):

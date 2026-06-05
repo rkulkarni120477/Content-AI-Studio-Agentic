@@ -39,6 +39,7 @@ export const COURSES = {
   USERS:            (id)      => `/api/v1/courses/${id}/users`,
   UNASSIGN_USER:    (id, user) => `/api/v1/courses/${id}/users/${encodeURIComponent(user)}`,
   VALIDATE:         (id)      => `/api/v1/courses/${id}/validate`,
+  ACTIVE_CDD:       (id)      => `/api/v1/courses/${id}/active-cdd`,
 };
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ export const USERS = {
   CREATE:           '/api/v1/users',
   UPDATE:           (id)      => `/api/v1/users/${id}`,
   TOGGLE_ACTIVE:    (id)      => `/api/v1/users/${id}/toggle-active`,
+  REVIEWERS:        '/api/v1/users/reviewers',
 };
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -71,6 +73,7 @@ export const DOCUMENTS = {
   GET:              (id)      => `/api/v1/documents/${id}`,
   CONTENT:          (id)      => `/api/v1/documents/${id}/content`,
   UPLOAD:           '/api/v1/documents/upload',
+  PARSE:            '/api/v1/documents/parse',
   DELETE:           (id)      => `/api/v1/documents/${id}`,
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
 };
@@ -118,27 +121,41 @@ export const GENERATE = {
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
 export const BLOCKS = {
+  SEARCH:           '/api/v1/search',
   LIST:             (genId)    => `/api/v1/generations/${genId}/blocks`,
-  LIST_SCOPED:      '/api/v1/blocks',
-  GET:              (id)       => `/api/v1/blocks/${id}`,
-  UPDATE:           (id)       => `/api/v1/blocks/${id}`,
-  VERSIONS:         (id)       => `/api/v1/blocks/${id}/versions`,
-  RESTORE_VERSION:  (id, v)    => `/api/v1/blocks/${id}/versions/${v}/restore`,
-  EXPORT:           (id)       => `/api/v1/blocks/${id}/export`,
+  LIST_COURSE:      (courseId) => `/api/v1/courses/${courseId}/blocks`,
+  GET:              (id)       => `/api/v1/${id}`,
+  UPDATE:           (id)       => `/api/v1/${id}`,
+  AUTOSAVE:         (id)       => `/api/v1/${id}/autosave`,
+  REGENERATE:       (id)       => `/api/v1/${id}/regenerate`,
+  REGENERATE_ITEM:  (id)       => `/api/v1/${id}/regenerate-item`,
+  VERSIONS:         (id)       => `/api/v1/${id}/versions`,
+  RESTORE_VERSION:  (id, v)    => `/api/v1/${id}/versions/${v}/restore`,
+  SNAPSHOT:         (id)       => `/api/v1/${id}/snapshot`,
+  SCORE:            (id)       => `/api/v1/${id}/score`,
+  VALIDATE:         (id)       => `/api/v1/${id}/validate`,
+  VALIDATE_GEN:     (genId)    => `/api/v1/generations/${genId}/validate`,
+  VALIDATE_COURSE:  (courseId) => `/api/v1/courses/${courseId}/validate`,
+  EXPORT_COURSE:    (courseId) => `/api/v1/courses/${courseId}/export`,
+  RATING:           (id)       => `/api/v1/${id}/rating`,
 };
 
 // ─── Workflow ─────────────────────────────────────────────────────────────────
 export const WORKFLOW = {
   LIST:             '/api/v1/workflow/blocks',
-  SUBMIT:           (id)       => `/api/v1/blocks/${id}/submit`,
-  APPROVE:          (id)       => `/api/v1/blocks/${id}/approve`,
-  REQUEST_CHANGES:  (id)       => `/api/v1/blocks/${id}/request-changes`,
-  REJECT:           (id)       => `/api/v1/blocks/${id}/reject`,
-  PUBLISH:          (id)       => `/api/v1/blocks/${id}/publish`,
-  ARCHIVE:          (id)       => `/api/v1/blocks/${id}/archive`,
+  SUMMARY:          '/api/v1/workflow/summary',
+  SUBMIT:           (id)       => `/api/v1/workflow/blocks/${id}/submit`,
+  APPROVE:          (id)       => `/api/v1/workflow/blocks/${id}/approve`,
+  REQUEST_CHANGES:  (id)       => `/api/v1/workflow/blocks/${id}/request-changes`,
+  REJECT:           (id)       => `/api/v1/workflow/blocks/${id}/reject`,
+  PUBLISH:          (id)       => `/api/v1/workflow/blocks/${id}/publish`,
+  ARCHIVE:          (id)       => `/api/v1/workflow/blocks/${id}/archive`,
+  RESET_DRAFT:      (id)       => `/api/v1/workflow/blocks/${id}/reset-draft`,
+  EVENTS:           (id)       => `/api/v1/workflow/blocks/${id}/events`,
   BULK_APPROVE:     '/api/v1/workflow/bulk-approve',
-  SLA_STATUS:       (id)       => `/api/v1/blocks/${id}/sla`,
+  SLA_STATUS:       (id)       => `/api/v1/workflow/blocks/${id}/sla`,
   PENDING_REVIEWS:  '/api/v1/workflow/pending',
+  ADMIN_BREAKDOWN:  '/api/v1/workflow/admin-breakdown',
 };
 
 // ─── Reviews ──────────────────────────────────────────────────────────────────
@@ -157,6 +174,7 @@ export const PROMPTS = {
   COMMIT_VERSION:   (id)       => `/api/v1/prompts/${id}/versions`,
   SET_ACTIVE:       (id, v)    => `/api/v1/prompts/${id}/versions/${v}/deploy`,
   AI_GENERATE:      '/api/v1/prompts/generate',
+  AI_SUGGEST:       '/api/v1/prompts/suggest',
 };
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
@@ -182,13 +200,12 @@ export const ANALYTICS = {
 
 // ─── Plagiarism ───────────────────────────────────────────────────────────────
 export const PLAGIARISM = {
-  SCAN:             (blockId)  => `/api/v1/blocks/${blockId}/plagiarism-scan`,
-  STATUS:           (blockId)  => `/api/v1/blocks/${blockId}/plagiarism-report`,
+  SCAN:             (blockId)  => `/api/v1/${blockId}/plagiarism`,
+  STATUS:           (blockId, reportId) => `/api/v1/${blockId}/plagiarism/${reportId}`,
 };
 
 // ─── Export ───────────────────────────────────────────────────────────────────
 export const EXPORT = {
-  BLOCK:            (blockId)  => `/api/v1/blocks/${blockId}/export`,
   GENERATION:       (genId)    => `/api/v1/generations/${genId}/export`,
   COURSE:           (courseId) => `/api/v1/courses/${courseId}/export`,
   PROMPT_DOWNLOAD:  '/api/v1/export/prompt',

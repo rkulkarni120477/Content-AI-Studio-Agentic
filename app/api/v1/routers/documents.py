@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError
 from app.schemas.common import PaginatedResponse
-from app.schemas.document import DocumentContentResponse, DocumentListItem, DocumentRead
+from app.schemas.document import DocumentContentResponse, DocumentListItem, DocumentRead, ParsedFileResponse
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,6 +58,39 @@ def list_documents(
         page=page,
         page_size=page_size,
     )
+
+
+@router.post(
+    "/parse",
+    response_model=ParsedFileResponse,
+    summary="Parse an uploaded file without saving to the library",
+    description=(
+        "Extracts text from PDF, DOCX, TXT, or XLSX for supplementary generation context. "
+        "Matches Streamlit's in-form file upload on the Generate page."
+    ),
+)
+async def parse_uploaded_file(
+    file: UploadFile = File(...),
+    source_type: str = Form(default="reference", description="guidelines | checklist | chapter | reference"),
+    current_user=Depends(get_current_user),
+) -> ParsedFileResponse:
+    """Parse file bytes to text — used by the React Generate page supplementary uploads."""
+    import io
+    from promptops_app.parsers.file_parser import _parse_uploaded_file
+
+    raw_bytes = await file.read()
+
+    class _NamedBytesIO(io.BytesIO):
+        def __init__(self, data, name):
+            super().__init__(data)
+            self.name = name
+
+    name, content, err = _parse_uploaded_file(_NamedBytesIO(raw_bytes, file.filename))
+    if err:
+        from app.core.exceptions import ValidationError
+        raise ValidationError(f"Could not parse file '{file.filename}': {err}")
+
+    return ParsedFileResponse(name=name, content=content or "", source_type=source_type)
 
 
 @router.post(

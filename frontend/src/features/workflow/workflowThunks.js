@@ -24,7 +24,7 @@ export const submitBlockThunk = createAsyncThunk(
   async ({ blockId, reviewer }, { rejectWithValue }) => {
     try {
       const result = await workflowService.submit(blockId, { reviewer_username: reviewer });
-      toast.success('Submitted for review.');
+      toast.success(`Block #${blockId} submitted for review.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -32,10 +32,10 @@ export const submitBlockThunk = createAsyncThunk(
 
 export const approveBlockThunk = createAsyncThunk(
   'workflow/approve',
-  async ({ blockId, data }, { rejectWithValue }) => {
+  async ({ blockId, comment }, { rejectWithValue }) => {
     try {
-      const result = await workflowService.approve(blockId, data);
-      toast.success('Block approved.');
+      const result = await workflowService.approve(blockId, { comment: comment || '' });
+      toast.success(`Block #${blockId} approved.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -43,10 +43,21 @@ export const approveBlockThunk = createAsyncThunk(
 
 export const requestChangesThunk = createAsyncThunk(
   'workflow/requestChanges',
-  async ({ blockId, data }, { rejectWithValue }) => {
+  async ({ blockId, reason }, { rejectWithValue }) => {
     try {
-      const result = await workflowService.requestChanges(blockId, data);
-      toast.success('Changes requested.');
+      const result = await workflowService.requestChanges(blockId, { reason });
+      toast.success(`Changes requested for block #${blockId}.`);
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const rejectBlockThunk = createAsyncThunk(
+  'workflow/reject',
+  async ({ blockId, reason }, { rejectWithValue }) => {
+    try {
+      const result = await workflowService.reject(blockId, { reason });
+      toast.success(`Block #${blockId} rejected.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -57,7 +68,7 @@ export const publishBlockThunk = createAsyncThunk(
   async (blockId, { rejectWithValue }) => {
     try {
       const result = await workflowService.publish(blockId);
-      toast.success('Block published.');
+      toast.success(`Block #${blockId} published.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -68,7 +79,18 @@ export const archiveBlockThunk = createAsyncThunk(
   async (blockId, { rejectWithValue }) => {
     try {
       const result = await workflowService.archive(blockId);
-      toast.success('Block archived.');
+      toast.success(`Block #${blockId} archived.`);
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const resetDraftBlockThunk = createAsyncThunk(
+  'workflow/resetDraft',
+  async (blockId, { rejectWithValue }) => {
+    try {
+      const result = await workflowService.resetDraft(blockId);
+      toast.success('Block reset to Draft.');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -79,7 +101,9 @@ export const bulkApproveThunk = createAsyncThunk(
   async (blockIds, { rejectWithValue }) => {
     try {
       const result = await workflowService.bulkApprove(blockIds);
-      toast.success(`${blockIds.length} block(s) approved.`);
+      toast.success(
+        `Approved: ${result.approved?.length ?? 0} | Skipped: ${result.skipped?.length ?? 0}`,
+      );
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },

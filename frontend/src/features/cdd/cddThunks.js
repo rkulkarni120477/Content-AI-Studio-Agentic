@@ -23,14 +23,20 @@ export const fetchCddsThunk = createAsyncThunk(
         project_id: projectId ?? undefined,
         course_id: cid,
       });
-      const course = getState()?.dashboard?.selectedCourse;
-      const activeId = course?.id === Number(courseId) ? course.active_cdd_id : null;
       let activeCdd = null;
-      if (activeId) {
+      if (cid) {
         try {
-          activeCdd = await cddService.getCdd(activeId);
+          activeCdd = await cddService.getActiveCddForCourse(cid);
         } catch {
-          activeCdd = items.find((c) => c.id === activeId) || null;
+          const course = getState()?.dashboard?.selectedCourse;
+          const activeId = course?.id === cid ? course.active_cdd_id : null;
+          if (activeId) {
+            try {
+              activeCdd = await cddService.getCdd(activeId);
+            } catch {
+              activeCdd = items.find((c) => c.id === activeId) || null;
+            }
+          }
         }
       }
       return { items, activeCdd };

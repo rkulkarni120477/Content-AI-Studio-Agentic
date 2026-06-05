@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PromptCreateRequest(BaseModel):
-    """Body for POST /api/v1/prompts — create metadata shell (no version yet)."""
+    """Body for POST /api/v1/prompts — create asset; optional v1 when prompts are supplied."""
 
     name: str = Field(
         ...,
@@ -20,6 +20,13 @@ class PromptCreateRequest(BaseModel):
     )
     description: str = Field(default="", max_length=2000)
     tags: str = Field(default="", max_length=500, description="Comma-separated tags.")
+    component_type: Optional[str] = Field(
+        default=None,
+        description="Pipeline component: style, cdd, blueprint, or generate.",
+    )
+    system_prompt: Optional[str] = Field(default=None, description="Initial system prompt (creates v1).")
+    user_prompt_template: Optional[str] = Field(default=None, description="Initial user template (creates v1).")
+    change_reason: str = Field(default="Initial commit.", max_length=500)
 
 
 class PromptCreateFromTemplateRequest(BaseModel):
@@ -42,6 +49,14 @@ class PromptAIGenerateRequest(BaseModel):
         examples=["I need a prompt that creates interactive coding exercises with hints."],
     )
     model_choice: str = Field(default="GPT-5.4")
+
+
+class PromptAISuggestResponse(BaseModel):
+    """AI suggestion preview — does not persist to the registry."""
+
+    system_prompt: str
+    user_prompt_template: str
+    description: Optional[str] = None
 
 
 class PromptUpdateRequest(BaseModel):
@@ -80,6 +95,9 @@ class PromptVersionListItem(BaseModel):
     is_active: bool
     change_reason: Optional[str] = None
     created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    system_prompt: Optional[str] = None
+    user_prompt_template: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -91,10 +109,22 @@ class PromptRead(BaseModel):
     tags: Optional[str] = None
     owner: Optional[str] = None
     active_version: Optional[str] = None
+    component_type: Optional[str] = None
     is_default: bool = False
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PromptDetailRead(PromptRead):
+    """Prompt metadata plus the active version's prompt text."""
+
+    system_prompt: Optional[str] = None
+    user_prompt_template: Optional[str] = None
+    version_created_by: Optional[str] = None
+    version_created_at: Optional[datetime] = None
+    version_change_reason: Optional[str] = None
 
 
 class PromptListItem(BaseModel):
@@ -102,8 +132,12 @@ class PromptListItem(BaseModel):
     name: str
     description: Optional[str] = None
     tags: Optional[str] = None
+    owner: Optional[str] = None
     active_version: Optional[str] = None
+    component_type: Optional[str] = None
+    is_default: bool = False
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 

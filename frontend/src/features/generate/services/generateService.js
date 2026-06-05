@@ -33,5 +33,8 @@ export const generateService = {
 
   getModuleCompletion: (blueprintId) => api.get(GENERATE.MODULE_COMPLETION(blueprintId)),
 
-  getCourseCompletion: (courseId) => api.get(GENERATE.COURSE_COMPLETION(courseId)),
+  getCourseCompletion: (courseId, cddId) => api.get(
+    GENERATE.COURSE_COMPLETION(courseId),
+    { params: cddId ? { cdd_id: cddId } : {} },
+  ),
 };

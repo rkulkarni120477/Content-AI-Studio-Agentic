@@ -152,6 +152,8 @@ def launch_generation(
 def list_generations(
     project_id: int | None = Query(default=None),
     course_id: int | None = Query(default=None),
+    blueprint_id: int | None = Query(default=None, description="Pin filter — active blueprint."),
+    cdd_id: int | None = Query(default=None, description="Pin filter — active CDD (when no blueprint)."),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -160,7 +162,14 @@ def list_generations(
     """Return recent generations. Used by the Editor page to list available content."""
     from promptops_app.repositories import generation_repository
 
-    generations = generation_repository.list_course_generations(db, project_id, course_id)
+    generations = generation_repository.list_editor_generations(
+        db,
+        course_id=course_id,
+        project_id=project_id,
+        blueprint_id=blueprint_id,
+        cdd_id=cdd_id if not blueprint_id else None,
+        limit=500,
+    )
     total = len(generations)
     start = (page - 1) * page_size
 
@@ -173,6 +182,52 @@ def list_generations(
         items.append(item)
 
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get(
+    "/{generation_id}/export",
+    summary="Export all blocks in a generation as a file",
+    description="Supports md, json, html, docx, pdf. Matches Streamlit per-generation export buttons.",
+)
+def export_generation(
+    generation_id: int,
+    format: str = Query(default="docx", description="md | json | html | docx | pdf"),
+    template: str = Query(default="default"),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> Response:
+    from promptops_app.repositories import generation_repository
+    from promptops_app.services.export_service import ExportRequest, export_content
+    from app.core.exceptions import WorkflowError
+
+    gen = generation_repository.get_generation_by_id(db, generation_id)
+    if not gen:
+        raise NotFoundError("Generation", generation_id)
+
+    blocks = generation_repository.list_blocks_for_generation(db, generation_id)
+    if not blocks:
+        raise WorkflowError("No blocks found for this generation.")
+
+    export_req = ExportRequest(
+        fmt=format,
+        topic=gen.topic or f"Generation #{generation_id}",
+        blocks=[(b.block_label, b.content or "") for b in blocks],
+        user_name=current_user.username,
+        is_admin=(current_user.role == "admin"),
+        entity_type="generation",
+        entity_id=generation_id,
+        template=template,
+        file_name=f"{(gen.topic or 'generation').replace(' ', '_')}.{format}",
+    )
+    result = export_content(db, export_req)
+    if not result.success:
+        raise WorkflowError(result.error_message or "Export failed.")
+
+    return Response(
+        content=result.data,
+        media_type=result.mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+    )
 
 
 @router.get(
@@ -237,20 +292,25 @@ def get_module_completion(
 )
 def get_course_completion(
     course_id: int,
+    cdd_id: int | None = Query(
+        default=None,
+        description="Effective CDD id (e.g. override). Falls back to the course active CDD.",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> CompletionStatusResponse:
     """Check if all modules in the course are complete."""
-    from promptops_app.core.shared import get_all_modules_completion
+    from promptops_app.core.content_utils import get_all_modules_completion
     from promptops_app.repositories import course_repository
 
     course = course_repository.get_course_by_id(db, course_id)
     if not course:
         raise NotFoundError("Course", course_id)
 
-    status = get_all_modules_completion(db, course.active_cdd_id)
+    eff_cdd_id = cdd_id or course.active_cdd_id
+    status = get_all_modules_completion(db, eff_cdd_id)
     return CompletionStatusResponse(
         completed=status.get("completed", False),
-        generated_lessons=status.get("modules_complete", 0),
+        generated_lessons=status.get("completed_modules", 0),
         total_lessons=status.get("total_modules", 0),
     )

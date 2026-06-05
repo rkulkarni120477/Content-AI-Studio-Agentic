@@ -45,8 +45,11 @@ from app.schemas.workflow import (
     SLAStatus,
     SubmitForReviewRequest,
     WorkflowBlockRead,
+    WorkflowEventRead,
+    WorkflowProjectBreakdown,
     WorkflowSummaryResponse,
     WorkflowTransitionResponse,
+    WorkflowUserBreakdown,
 )
 
 _log = logging.getLogger(__name__)
@@ -175,6 +178,57 @@ def get_workflow_summary(
         setattr(summary, state, len(blocks))
 
     return summary
+
+
+@router.get(
+    "/admin-breakdown",
+    response_model=list[WorkflowProjectBreakdown],
+    summary="Admin cross-project user breakdown",
+    description="Powers the Admin — All Projects · User Breakdown section (Streamlit workflow.py).",
+)
+def get_admin_breakdown(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("analytics.view_all")),
+) -> list[WorkflowProjectBreakdown]:
+    """Group blocks by project and generation author — matches Streamlit workflow page."""
+    from promptops_app.repositories import generation_repository, project_repository
+
+    result: list[WorkflowProjectBreakdown] = []
+    for proj in project_repository.list_active_projects(db):
+        proj_gens = generation_repository.list_generations_for_project(db, proj.id)
+        if not proj_gens:
+            continue
+        proj_gen_ids = [g.id for g in proj_gens]
+        user_gen_map: dict[str, list[int]] = {}
+        for g in generation_repository.list_generations_by_ids(db, proj_gen_ids):
+            user_gen_map.setdefault(g.created_by or "Unknown", []).append(g.id)
+
+        users: list[WorkflowUserBreakdown] = []
+        for uname in sorted(user_gen_map):
+            ugen_ids = user_gen_map[uname]
+            ublocks = generation_repository.list_blocks_for_gen_ids(db, ugen_ids)
+            if not ublocks:
+                continue
+            state_counts: dict[str, int] = {}
+            for b in ublocks:
+                st = (b.workflow_state or "draft").lower()
+                state_counts[st] = state_counts.get(st, 0) + 1
+            users.append(
+                WorkflowUserBreakdown(
+                    username=uname,
+                    block_count=len(ublocks),
+                    state_counts=state_counts,
+                )
+            )
+        if users:
+            result.append(
+                WorkflowProjectBreakdown(
+                    project_id=proj.id,
+                    project_name=proj.name,
+                    users=users,
+                )
+            )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -365,3 +419,47 @@ def bulk_approve(
         errors=results["errors"],
         total_approved=len(results["approved"]),
     )
+
+
+@router.get(
+    "/blocks/{block_id}/events",
+    response_model=list[WorkflowEventRead],
+    summary="List workflow transition history for a block",
+)
+def list_block_workflow_events(
+    block_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[WorkflowEventRead]:
+    """Return recent workflow events for the Approval Center history expander."""
+    from promptops_app.repositories import generation_repository
+
+    _get_block_or_404(db, block_id)
+    events = generation_repository.list_workflow_events_for_block(db, block_id, limit=20)
+    return [WorkflowEventRead.model_validate(e) for e in events]
+
+
+@router.post(
+    "/blocks/{block_id}/reset-draft",
+    response_model=WorkflowTransitionResponse,
+    summary="Reset a block back to draft",
+)
+def reset_block_to_draft(
+    block_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("workflow.reset_draft")),
+) -> WorkflowTransitionResponse:
+    """Reset approved/rejected/changes_requested blocks to draft (Streamlit parity)."""
+    from promptops_app.database import apply_transition_local, log_event
+
+    block = _get_block_or_404(db, block_id)
+    apply_transition_local(db, block, "reset_to_draft", current_user.username)
+    log_event(
+        db,
+        "workflow_transition",
+        current_user.username,
+        f"Block #{block_id} reset to Draft",
+        {"block_id": block_id},
+    )
+    _log.info("block_reset_draft  user=%s  block_id=%d", current_user.username, block_id)
+    return WorkflowTransitionResponse(block_id=block_id, workflow_state="draft")

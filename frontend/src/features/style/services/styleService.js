@@ -7,7 +7,7 @@ export const styleService = {
   createStyle:      (data)       => api.post(STYLES.CREATE, data),
   updateStyle:      (id, data)   => api.put(STYLES.UPDATE(id), data),
   deleteStyle:      (id)         => api.delete(STYLES.DELETE(id)),
-  activateStyle:    (id)         => api.post(STYLES.ACTIVATE(id)),
+  activateStyle:    (id, body = {}) => api.post(STYLES.ACTIVATE(id), body),
   deactivateStyle:  (id)         => api.post(STYLES.DEACTIVATE(id)),
   uploadStyleDocs:  (id, formData) => api.upload(DOCUMENTS.STYLE_DOCS(id), formData),
   getVersions:      (id)         => api.get(STYLES.VERSIONS(id)),
@@ -36,5 +36,12 @@ export const styleService = {
   },
   getDocumentContent: (id)        => api.get(DOCUMENTS.CONTENT(id)),
   uploadDocuments:  (formData)   => api.upload(DOCUMENTS.UPLOAD, formData),
+  /** Upload a single file to the global document library (Streamlit style create flow). */
+  uploadLibraryFile: async (file, sourceType = 'style_reference') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('source_type', sourceType);
+    return api.upload(DOCUMENTS.UPLOAD, formData);
+  },
   deleteDocument:   (id)         => api.delete(DOCUMENTS.DELETE(id)),
 };

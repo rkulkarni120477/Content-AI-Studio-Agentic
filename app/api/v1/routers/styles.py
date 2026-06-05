@@ -114,25 +114,40 @@ def create_style(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.create")),
 ) -> StyleRead:
-    """Create a style metadata shell. Documents are uploaded separately."""
-    import re
-    from promptops_app.database import Style
+    """Create a style with optional reference documents and course activation."""
+    from promptops_app.database import create_style as db_create_style, set_active_style
 
-    slug = re.sub(r"[^a-z0-9]+", "_", request_body.name.lower()).strip("_")[:120]
-    style = Style(
-        style_id=slug,
-        name=request_body.name,
-        description=request_body.description,
-        is_active=False,
-        created_by=current_user.username,
+    style = db_create_style(
+        db,
+        request_body.name.strip(),
+        (request_body.description or "").strip(),
+        (request_body.custom_instructions or "").strip(),
+        request_body.document_ids or [],
+        current_user.username,
     )
-    db.add(style)
-    db.commit()
-    db.refresh(style)
 
-    _log.info("style_created  user=%s  style_id=%d  name=%s",
-              current_user.username, style.id, style.name)
-    return _style_to_read(style)
+    if request_body.activate:
+        scope = "course" if request_body.course_id else (
+            "project" if request_body.project_id else "global"
+        )
+        set_active_style(
+            db,
+            style.id,
+            scope=scope,
+            project_id=request_body.project_id,
+            course_id=request_body.course_id,
+        )
+        db.refresh(style)
+
+    _log.info(
+        "style_created  user=%s  style_id=%d  name=%s  docs=%d  activated=%s",
+        current_user.username,
+        style.id,
+        style.name,
+        len(request_body.document_ids or []),
+        request_body.activate,
+    )
+    return _style_to_read(_get_style_or_404(db, style.id, with_documents=True))
 
 
 @router.get(

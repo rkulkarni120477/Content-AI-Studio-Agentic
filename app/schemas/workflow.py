@@ -26,6 +26,8 @@ class WorkflowBlockRead(BaseModel):
     review_comments: Optional[str] = None
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    archived_by: Optional[str] = None
     generation_id: Optional[int] = None
     project_id: Optional[int] = None
     course_id: Optional[int] = None
@@ -108,3 +110,32 @@ class BulkApproveResponse(BaseModel):
     skipped: list[int]
     errors: list[int]
     total_approved: int
+
+
+class WorkflowUserBreakdown(BaseModel):
+    """Per-user block counts within a project (admin breakdown)."""
+
+    username: str
+    block_count: int
+    state_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class WorkflowProjectBreakdown(BaseModel):
+    """Project row in the admin user-breakdown accordion."""
+
+    project_id: int
+    project_name: str
+    users: list[WorkflowUserBreakdown] = Field(default_factory=list)
+
+
+class WorkflowEventRead(BaseModel):
+    """Single workflow transition log entry."""
+
+    created_at: datetime
+    actor: str
+    from_state: str
+    to_state: str
+    action: str
+    comment: str = ""
+
+    model_config = ConfigDict(from_attributes=True)

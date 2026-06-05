@@ -1,7 +1,8 @@
 import { createSlice } from '@reduxjs/toolkit';
 import {
   fetchWorkflowBlocksThunk, submitBlockThunk, approveBlockThunk, requestChangesThunk,
-  publishBlockThunk, archiveBlockThunk, bulkApproveThunk, fetchPendingReviewsThunk,
+  rejectBlockThunk, publishBlockThunk, archiveBlockThunk, resetDraftBlockThunk,
+  bulkApproveThunk, fetchPendingReviewsThunk,
 } from './workflowThunks';
 
 const initialState = {
@@ -18,6 +19,15 @@ const initialState = {
   error:      null,
 };
 
+function applyTransition(s, payload) {
+  const blockId = payload?.block_id ?? payload?.id;
+  const state = payload?.workflow_state;
+  if (!blockId || !state) return;
+  s.blocks = s.blocks.map((b) =>
+    b.id === blockId ? { ...b, workflow_state: state } : b,
+  );
+}
+
 const workflowSlice = createSlice({
   name: 'workflow',
   initialState,
@@ -33,25 +43,26 @@ const workflowSlice = createSlice({
       .addCase(fetchWorkflowBlocksThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
       .addCase(fetchPendingReviewsThunk.fulfilled, (s, { payload }) => {
-        s.pendingCount = payload?.count ?? (Array.isArray(payload?.blocks) ? payload.blocks.length : 0);
+        s.pendingCount = payload?.count ?? (Array.isArray(payload?.items) ? payload.items.length : 0);
       })
       .addCase(bulkApproveThunk.fulfilled, (s, { payload }) => {
-        const approvedIds = new Set(payload.map((b) => b.id));
-        s.blocks = s.blocks.map((b) => approvedIds.has(b.id) ? (payload.find((p) => p.id === b.id) || b) : b);
+        const approvedIds = new Set(payload?.approved || []);
+        s.blocks = s.blocks.map((b) =>
+          approvedIds.has(b.id) ? { ...b, workflow_state: 'approved' } : b,
+        );
       })
-      // All state-transition thunks update the block in-place
       .addMatcher(
         (action) => [
           submitBlockThunk.fulfilled.type,
           approveBlockThunk.fulfilled.type,
           requestChangesThunk.fulfilled.type,
+          rejectBlockThunk.fulfilled.type,
           publishBlockThunk.fulfilled.type,
           archiveBlockThunk.fulfilled.type,
+          resetDraftBlockThunk.fulfilled.type,
         ].includes(action.type),
-        (s, { payload }) => {
-          s.blocks = s.blocks.map((b) => b.id === payload.id ? payload : b);
-        },
-      )
+        (s, { payload }) => applyTransition(s, payload),
+      );
   },
 });
 
@@ -64,7 +75,6 @@ export const selectPendingCount    = (s) => s.workflow.pendingCount;
 export const selectWorkflowLoading = (s) => s.workflow.isLoading;
 export const selectWorkflowError   = (s) => s.workflow.error;
 
-// Derived: blocks grouped by workflow state
 export const selectBlocksByState = (s) => {
   const rawBlocks = s?.workflow?.blocks;
   const blocks = Array.isArray(rawBlocks)

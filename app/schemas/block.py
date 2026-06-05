@@ -19,6 +19,7 @@ class BlockRead(BaseModel):
     block_label: str
     content: Optional[str] = None
     workflow_state: str
+    block_type: Optional[str] = None
     position: int = 0
     rating: Optional[int] = None
     assigned_reviewer: Optional[str] = None
@@ -27,6 +28,12 @@ class BlockRead(BaseModel):
     review_comments: Optional[str] = None
     rejected_reason: Optional[str] = None
     generation_id: Optional[int] = None
+    sources: Optional[str] = None
+    eval_score: Optional[int] = None
+    eval_report: Optional[str] = None
+    ai_review: Optional[str] = None
+    draft_content: Optional[str] = None
+    draft_updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -43,6 +50,7 @@ class BlockListItem(BaseModel):
     workflow_state: str
     position: int = 0
     rating: Optional[int] = None
+    generation_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -127,8 +135,11 @@ class BlockVersionListItem(BaseModel):
     version_id: int
     version_number: Optional[str] = None
     change_source: Optional[str] = None
+    change_note: Optional[str] = None
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    word_count: Optional[int] = None
+    workflow_state_at_save: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

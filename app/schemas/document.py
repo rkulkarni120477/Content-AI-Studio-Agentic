@@ -34,3 +34,11 @@ class DocumentContentResponse(BaseModel):
     id: int
     name: str
     content: str = Field(description="Parsed text extracted from the uploaded file.")
+
+
+class ParsedFileResponse(BaseModel):
+    """Parsed upload for one-off generation context (not saved to the library)."""
+
+    name: str
+    content: str
+    source_type: str = Field(default="reference")

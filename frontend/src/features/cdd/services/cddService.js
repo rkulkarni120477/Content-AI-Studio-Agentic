@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { CDD } from '@services/endpoints';
+import { CDD, COURSES } from '@services/endpoints';
 
 function mapGeneratePayload(data) {
   return {
@@ -34,7 +34,10 @@ export const cddService = {
     });
     return res.items || [];
   },
-  getCdd:        (id)             => api.get(CDD.GET(id)),
+  /** Load CDD by course_design_documents.id (not course id). */
+  getCdd:        (cddId)          => api.get(CDD.GET(cddId)),
+  /** Load pinned CDD for a course — pass course id from /workspace/{courseId}/... */
+  getActiveCddForCourse: (courseId) => api.get(COURSES.ACTIVE_CDD(courseId)),
   generateCdd:   async (data)     => {
     const created = await api.post(CDD.GENERATE, mapGeneratePayload(data));
     if (created?.cdd_id) {

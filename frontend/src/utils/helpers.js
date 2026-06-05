@@ -195,10 +195,28 @@ export function downloadText(content, filename, mimeType = 'text/plain') {
 }
 
 // ─── Error Normalization ──────────────────────────────────────────────────────
+function formatApiDetail(detail) {
+  if (detail == null) return null;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((e) => (typeof e === 'object' ? (e.msg || e.message || JSON.stringify(e)) : String(e)))
+      .join('; ');
+  }
+  if (typeof detail === 'object') {
+    return detail.msg || detail.message || JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 export function extractErrorMessage(error) {
   if (typeof error === 'string') return error;
+  const detail = error?.response?.data?.detail
+    ?? error?.data?.detail
+    ?? error?.detail;
+  const fromDetail = formatApiDetail(detail);
+  if (fromDetail) return fromDetail;
   return (
-    error?.response?.data?.detail ||
     error?.response?.data?.message ||
     error?.message ||
     'An unexpected error occurred.'

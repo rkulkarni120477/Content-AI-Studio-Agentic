@@ -7,7 +7,7 @@ def list_blueprints_for_course(db, course_id: int = None, project_id: int = None
     q = db.query(ModuleBlueprint)
     if course_id:
         q = q.filter(ModuleBlueprint.course_id == course_id)
-    elif project_id:
+    if project_id:
         q = q.filter(ModuleBlueprint.project_id == project_id)
     return q.order_by(ModuleBlueprint.created_at.desc()).limit(limit).all()
 

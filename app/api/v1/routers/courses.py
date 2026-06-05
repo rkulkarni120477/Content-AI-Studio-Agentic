@@ -26,6 +26,8 @@ from app.schemas.course import (
     CourseUserAssignRequest,
     CourseUserListItem,
 )
+from app.schemas.cdd import CDDRead
+from app.api.v1.cdd_response import build_cdd_read
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -107,6 +109,38 @@ def get_course(
 ) -> CourseRead:
     """Return course details including active CDD and Blueprint IDs."""
     return CourseRead.model_validate(_get_course_or_404(db, course_id))
+
+
+@router.get(
+    "/courses/{course_id}/active-cdd",
+    response_model=CDDRead,
+    summary="Get the CDD pinned on a course",
+    description=(
+        "Use this when you have a **course id** (e.g. from `/workspace/7/...`). "
+        "Returns the full CDD for `courses.active_cdd_id`. "
+        "Do not pass the course id to `GET /cdd/{cdd_id}`."
+    ),
+    responses={
+        404: {"description": "Course not found, no CDD pinned, or pinned CDD record missing."},
+    },
+)
+def get_course_active_cdd(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> CDDRead:
+    """Return the active/pinned CDD for a course by course id."""
+    from promptops_app.repositories import cdd_repository
+
+    course = _get_course_or_404(db, course_id)
+    if not course.active_cdd_id:
+        raise NotFoundError("Active CDD for course", course_id)
+
+    cdd = cdd_repository.get_cdd_by_id(db, course.active_cdd_id)
+    if cdd is None:
+        raise NotFoundError("CDD", course.active_cdd_id)
+
+    return build_cdd_read(db, cdd)
 
 
 @router.put(

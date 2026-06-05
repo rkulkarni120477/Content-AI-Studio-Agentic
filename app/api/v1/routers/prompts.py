@@ -24,9 +24,11 @@ from app.core.exceptions import DuplicateResourceError, LLMGenerationError, NotF
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.prompt import (
     PromptAIGenerateRequest,
+    PromptAISuggestResponse,
     PromptCreateFromTemplateRequest,
     PromptCreateRequest,
     PromptDeployResponse,
+    PromptDetailRead,
     PromptListItem,
     PromptRead,
     PromptUpdateRequest,
@@ -46,6 +48,22 @@ def _get_prompt_or_404(db: Session, prompt_id: int):
     if not prompt:
         raise NotFoundError("Prompt", prompt_id)
     return prompt
+
+
+def _prompt_detail(db: Session, prompt) -> PromptDetailRead:
+    """Build prompt metadata plus active version text."""
+    from promptops_app.repositories import prompt_repository
+
+    base = PromptRead.model_validate(prompt)
+    detail = PromptDetailRead.model_validate(base.model_dump())
+    active = prompt_repository.get_active_version(db, prompt.id)
+    if active:
+        detail.system_prompt = active.system_prompt
+        detail.user_prompt_template = active.user_prompt_template
+        detail.version_created_by = active.created_by
+        detail.version_created_at = active.created_at
+        detail.version_change_reason = active.change_reason
+    return detail
 
 
 @router.get(
@@ -89,16 +107,16 @@ def list_prompts(
 
 @router.post(
     "",
-    response_model=PromptRead,
+    response_model=PromptDetailRead,
     status_code=201,
-    summary="Create a new prompt asset (metadata only)",
-    description="Creates the metadata shell. Add versions via POST /prompts/{id}/versions.",
+    summary="Create a new prompt asset",
+    description="Creates metadata; when system/user prompts are supplied, commits and activates v1.",
 )
 def create_prompt(
     request_body: PromptCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.create")),
-) -> PromptRead:
+) -> PromptDetailRead:
     """Create a prompt metadata shell. No version is created here."""
     from promptops_app.database import Prompt
     from promptops_app.repositories import prompt_repository
@@ -106,18 +124,37 @@ def create_prompt(
     if prompt_repository.get_prompt_by_name(db, request_body.name):
         raise DuplicateResourceError("Prompt", request_body.name)
 
+    from promptops_app.database import PromptVersion
+
+    component = request_body.component_type or ""
     prompt = Prompt(
         name=request_body.name,
-        description=request_body.description,
-        tags=request_body.tags,
+        description=request_body.description or None,
+        tags=request_body.tags or component,
         owner=current_user.username,
+        component_type=component or None,
+        is_default=False,
+        active_version="v1" if request_body.system_prompt and request_body.user_prompt_template else None,
     )
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
 
+    if request_body.system_prompt and request_body.user_prompt_template:
+        db.add(PromptVersion(
+            prompt_id=prompt.id,
+            version="v1",
+            system_prompt=request_body.system_prompt,
+            user_prompt_template=request_body.user_prompt_template,
+            change_reason=request_body.change_reason or "Initial commit.",
+            is_active=True,
+            created_by=current_user.username,
+        ))
+        db.commit()
+        db.refresh(prompt)
+
     _log.info("prompt_created  user=%s  name=%s", current_user.username, prompt.name)
-    return PromptRead.model_validate(prompt)
+    return _prompt_detail(db, prompt)
 
 
 @router.post(
@@ -232,10 +269,33 @@ def ai_generate_prompt(
     return PromptRead.model_validate(prompt)
 
 
-@router.get("/{prompt_id}", response_model=PromptRead, summary="Get a prompt")
-def get_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.view"))) -> PromptRead:
-    """Return prompt metadata."""
-    return PromptRead.model_validate(_get_prompt_or_404(db, prompt_id))
+@router.post(
+    "/suggest",
+    response_model=PromptAISuggestResponse,
+    summary="AI-suggest prompt text (preview only)",
+    description="Returns revised system/user prompts without saving to the registry.",
+)
+def suggest_prompt(
+    request_body: PromptAIGenerateRequest,
+    current_user=Depends(require_permission("prompts.view")),
+) -> PromptAISuggestResponse:
+    """Preview AI-improved prompt text — matches Streamlit Improve with AI tab."""
+    from promptops_app.services.evaluation_service import generate_prompt_template_with_llm
+
+    tmpl = generate_prompt_template_with_llm(request_body.description)
+    if not tmpl or "system_prompt" not in tmpl:
+        raise LLMGenerationError("AI prompt generation failed. Please try again with a clearer description.")
+    return PromptAISuggestResponse(
+        system_prompt=tmpl.get("system_prompt", ""),
+        user_prompt_template=tmpl.get("user_prompt_template", ""),
+        description=tmpl.get("description"),
+    )
+
+
+@router.get("/{prompt_id}", response_model=PromptDetailRead, summary="Get a prompt with active version")
+def get_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.view"))) -> PromptDetailRead:
+    """Return prompt metadata and active version prompt text."""
+    return _prompt_detail(db, _get_prompt_or_404(db, prompt_id))
 
 
 @router.put("/{prompt_id}", response_model=PromptRead, summary="Update prompt metadata")
@@ -286,22 +346,19 @@ def create_prompt_version(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.manage")),
 ) -> PromptVersionRead:
-    """Add a new version to a prompt. Does not make it active."""
-    from promptops_app.database import PromptVersion
+    """Deploy a new active version (deactivates prior versions)."""
+    from promptops_app.repositories import prompt_repository
 
-    _get_prompt_or_404(db, prompt_id)
-
-    version = PromptVersion(
-        prompt_id=prompt_id,
-        version=request_body.version,
+    prompt = _get_prompt_or_404(db, prompt_id)
+    version = prompt_repository.deploy_new_version(
+        db,
+        prompt=prompt,
         system_prompt=request_body.system_prompt,
         user_prompt_template=request_body.user_prompt_template,
-        change_reason=request_body.change_reason,
-        is_active=False,
+        version_tag=request_body.version,
+        change_reason=request_body.change_reason or "Manual edit.",
+        created_by=current_user.username,
     )
-    db.add(version)
-    db.commit()
-    db.refresh(version)
 
     _log.info("prompt_version_committed  user=%s  prompt_id=%d  version=%s",
               current_user.username, prompt_id, request_body.version)

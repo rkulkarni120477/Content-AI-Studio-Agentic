@@ -14,6 +14,24 @@ export const blueprintService = {
     return res.items || [];
   },
 
+  /** All blueprints — matches Streamlit generate page override dropdown. */
+  listAllBlueprints: async () => {
+    const pageSize = 100;
+    let page = 1;
+    let items = [];
+    let total = 0;
+    do {
+      const res = await api.get(BLUEPRINT.LIST, {
+        params: { page, page_size: pageSize },
+      });
+      const batch = res.items || [];
+      items = items.concat(batch);
+      total = res.total ?? items.length;
+      page += 1;
+    } while (items.length < total && page <= 20);
+    return items;
+  },
+
   getBlueprint: (id) => api.get(BLUEPRINT.GET(id)),
 
   generateBlueprint: async (data) => {

@@ -16,6 +16,7 @@ const initialState = {
   isLoading:   false,
   isUploadingDoc: false,
   isGenerating:   false,
+  isCreating:     false,
   error:       null,
 };
 
@@ -35,13 +36,9 @@ const styleSlice = createSlice({
       })
       .addCase(fetchStylesThunk.rejected,   (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
-      .addCase(createStyleThunk.pending,    (s) => { s.isGenerating = true; })
-      .addCase(createStyleThunk.fulfilled,  (s, { payload }) => {
-        s.isGenerating = false;
-        s.styles.unshift(payload);
-        if (payload.is_active) s.activeStyle = payload;
-      })
-      .addCase(createStyleThunk.rejected,   (s, { payload }) => { s.isGenerating = false; s.error = payload; })
+      .addCase(createStyleThunk.pending,    (s) => { s.isCreating = true; s.error = null; })
+      .addCase(createStyleThunk.fulfilled,  (s) => { s.isCreating = false; })
+      .addCase(createStyleThunk.rejected,   (s, { payload }) => { s.isCreating = false; s.error = payload; })
 
       .addCase(activateStyleThunk.fulfilled, (s, { payload }) => {
         s.styles = s.styles.map((st) => ({ ...st, is_active: st.id === payload.id }));
@@ -113,4 +110,5 @@ export const selectDocuments   = (s) => s.style.documents;
 export const selectActiveStyle = (s) => s.style.activeStyle;
 export const selectStyleLoading = (s) => s.style.isLoading;
 export const selectStyleGenerating = (s) => s.style.isGenerating;
+export const selectStyleCreating   = (s) => s.style.isCreating;
 export const selectStyleError  = (s) => s.style.error;

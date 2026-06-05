@@ -73,6 +73,35 @@ def _get_block_or_404(db: Session, block_id: int):
 # ---------------------------------------------------------------------------
 
 @router.get(
+    "/search",
+    response_model=list[BlockListItem],
+    summary="Search blocks by label or content (Editor page)",
+)
+def search_blocks(
+    q: str = Query(..., min_length=1, description="Search query."),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[BlockListItem]:
+    """Global block search — matches Streamlit search_blocks()."""
+    from promptops_app.database import search_blocks as _search_blocks
+
+    blocks = _search_blocks(db, q)[:limit]
+    return [
+        BlockListItem(
+            id=b.id,
+            block_label=b.block_label,
+            content_preview=(b.content or "")[:300] if b.content else None,
+            workflow_state=b.workflow_state,
+            position=b.position or 0,
+            rating=b.rating,
+            generation_id=b.generation_id,
+        )
+        for b in blocks
+    ]
+
+
+@router.get(
     "/generations/{generation_id}/blocks",
     response_model=PaginatedResponse[BlockListItem],
     summary="List blocks for a generation",
@@ -100,6 +129,7 @@ def list_blocks(
             workflow_state=b.workflow_state,
             position=b.position or 0,
             rating=b.rating,
+            generation_id=b.generation_id,
         )
         items.append(item)
 
@@ -137,6 +167,7 @@ def list_course_blocks(
             id=b.id, block_label=b.block_label,
             content_preview=(b.content or "")[:300],
             workflow_state=b.workflow_state, position=b.position or 0, rating=b.rating,
+            generation_id=b.generation_id,
         )
         for b in all_blocks[start: start + page_size]
     ]
@@ -434,6 +465,44 @@ def validate_block(
         errors=result.get("errors", []),
         warnings=result.get("warnings", []),
         summary=result.get("summary", {}),
+    )
+
+
+@router.post(
+    "/courses/{course_id}/validate",
+    response_model=GenerationValidateResponse,
+    summary="Validate all blocks in a course",
+)
+def validate_course_blocks(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> GenerationValidateResponse:
+    """Validate all blocks across every generation in a course."""
+    from promptops_app.repositories import generation_repository
+    from promptops_app.services.validation_service import validate_blocks
+
+    gens = generation_repository.list_course_generations(db, course_id=course_id)
+    gen_ids = [g.id for g in gens]
+    blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
+    overall = validate_blocks(blocks)
+
+    block_issues = []
+    for block in blocks:
+        r = validate_blocks([block])
+        if r["summary"]["errors"] or r["summary"]["warnings"]:
+            block_issues.append(ValidationIssue(
+                block_id=block.id,
+                block_label=block.block_label,
+                errors=r.get("errors", []),
+                warnings=r.get("warnings", []),
+            ))
+
+    return GenerationValidateResponse(
+        generation_id=0,
+        passed=overall["summary"]["errors"] == 0,
+        summary=overall["summary"],
+        blocks=block_issues,
     )
 
 

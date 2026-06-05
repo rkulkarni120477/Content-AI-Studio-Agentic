@@ -1,0 +1,67 @@
+@use '@styles/variables' as *;
+@use '@styles/mixins' as *;
+
+.wrap {
+  @include flex-col;
+  gap: $space-2;
+}
+
+.empty {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  padding: $space-4;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+}
+
+.section {
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  overflow: hidden;
+  background: $color-white;
+}
+
+.section__head {
+  width: 100%;
+  text-align: left;
+  padding: $space-3 $space-4;
+  background: $color-gray-50;
+  border: none;
+  cursor: pointer;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-800;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-2;
+
+  &:hover {
+    background: $color-gray-100;
+  }
+}
+
+.section__body {
+  padding: $space-4;
+  border-top: 1px solid $color-gray-200;
+}
+
+.section__text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: $font-size-sm;
+  line-height: 1.55;
+  color: $color-gray-800;
+  font-family: inherit;
+}
+
+.fallback {
+  @extend .section__text;
+  padding: $space-4;
+  background: $color-gray-50;
+  border-radius: $radius-lg;
+  max-height: 480px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}

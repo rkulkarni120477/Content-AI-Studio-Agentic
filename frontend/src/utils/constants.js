@@ -32,6 +32,26 @@ export const WORKFLOW_STATE_LABELS = {
   [WORKFLOW_STATES.REJECTED]:          'Rejected',
 };
 
+export const WORKFLOW_STATE_ICONS = {
+  [WORKFLOW_STATES.DRAFT]:             '📝',
+  [WORKFLOW_STATES.IN_REVIEW]:         '🔍',
+  [WORKFLOW_STATES.CHANGES_REQUESTED]: '🔁',
+  [WORKFLOW_STATES.APPROVED]:          '✅',
+  [WORKFLOW_STATES.PUBLISHED]:         '🚀',
+  [WORKFLOW_STATES.ARCHIVED]:          '🗄️',
+  [WORKFLOW_STATES.REJECTED]:          '❌',
+};
+
+/** Kanban column top-border colours (Streamlit workflow.py). */
+export const WORKFLOW_KANBAN_COLORS = {
+  [WORKFLOW_STATES.DRAFT]:             '#94a3b8',
+  [WORKFLOW_STATES.IN_REVIEW]:         '#f59e0b',
+  [WORKFLOW_STATES.CHANGES_REQUESTED]: '#f97316',
+  [WORKFLOW_STATES.APPROVED]:          '#10b981',
+  [WORKFLOW_STATES.PUBLISHED]:         '#6366f1',
+  [WORKFLOW_STATES.ARCHIVED]:          '#6b7280',
+};
+
 // ─── Generation Modes ────────────────────────────────────────────────────────
 export const GENERATION_MODES = {
   STUDENT: 'student',
@@ -72,6 +92,16 @@ export const PLAGIARISM_STATUSES = {
 };
 
 // ─── Export Formats ───────────────────────────────────────────────────────────
+export const EXPORT_TEMPLATES = {
+  default:       'Default',
+  storyboard:    'Storyboard',
+  teacher_guide: 'Teacher Guide',
+  quiz_bank:     'Quiz Bank',
+  client:        'Client Export',
+};
+
+export const WORKFLOW_EXPORTABLE = ['approved', 'published'];
+
 export const EXPORT_FORMATS = {
   MARKDOWN: 'markdown',
   DOCX:     'docx',
@@ -161,6 +191,24 @@ export const MAX_RATING = 5;
 export const FEEDBACK_SCOPES = {
   LEARNING:  'learning',
   ONE_TIME:  'one_time',
+};
+
+export const FEEDBACK_SCOPE_OPTIONS = [
+  { id: FEEDBACK_SCOPES.ONE_TIME, label: '⚡ Apply Once' },
+  { id: FEEDBACK_SCOPES.LEARNING, label: '🧠 Use as Learning' },
+];
+
+export const FEEDBACK_SCOPE_HINTS = {
+  [FEEDBACK_SCOPES.ONE_TIME]: {
+    icon: '⚡', fg: '#f59e0b', bg: '#fffbeb',
+    title: 'Apply Once',
+    tip: 'Used for this block only. Not stored as a learning signal.',
+  },
+  [FEEDBACK_SCOPES.LEARNING]: {
+    icon: '🧠', fg: '#6366f1', bg: '#eef2ff',
+    title: 'Use as Learning',
+    tip: 'Stored as a reusable signal to improve future generations.',
+  },
 };
 
 // ─── Signal Sources ───────────────────────────────────────────────────────────

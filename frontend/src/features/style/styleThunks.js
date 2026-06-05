@@ -13,10 +13,34 @@ export const fetchStylesThunk = createAsyncThunk(
 
 export const createStyleThunk = createAsyncThunk(
   'style/create',
-  async (data, { rejectWithValue }) => {
+  async (
+    { name, description, custom_instructions, document_ids = [], newFiles = [] },
+    { getState, rejectWithValue, dispatch },
+  ) => {
     try {
-      const result = await styleService.createStyle(data);
-      toast.success('Style created and AI understanding generated.');
+      const state = getState();
+      const courseId = state?.dashboard?.selectedCourse?.id;
+      const projectId = state?.dashboard?.selectedProject?.id;
+      const allDocIds = [...document_ids];
+
+      for (const file of newFiles) {
+        const doc = await styleService.uploadLibraryFile(file, 'style_reference');
+        if (doc?.id) allDocIds.push(doc.id);
+      }
+
+      const result = await styleService.createStyle({
+        name: name.trim(),
+        description: description?.trim() || null,
+        custom_instructions: custom_instructions?.trim() || null,
+        document_ids: [...new Set(allDocIds)],
+        activate: true,
+        course_id: courseId ?? null,
+        project_id: projectId ?? null,
+      });
+
+      toast.success(`Style "${result.name}" created and activated for this course.`);
+      await dispatch(fetchStylesThunk());
+      await dispatch(fetchDocumentsThunk());
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -24,9 +48,13 @@ export const createStyleThunk = createAsyncThunk(
 
 export const activateStyleThunk = createAsyncThunk(
   'style/activate',
-  async (styleId, { rejectWithValue }) => {
+  async (styleId, { getState, rejectWithValue }) => {
     try {
-      const result = await styleService.activateStyle(styleId);
+      const state = getState();
+      const result = await styleService.activateStyle(styleId, {
+        course_id: state?.dashboard?.selectedCourse?.id ?? null,
+        project_id: state?.dashboard?.selectedProject?.id ?? null,
+      });
       toast.success('Style activated.');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
