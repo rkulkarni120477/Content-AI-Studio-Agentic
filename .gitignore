@@ -27,4 +27,5 @@ Thumbs.db
 
 # Claude
 CLAUDE.md
-.env1
+docker.env
+test_copyleaks.py

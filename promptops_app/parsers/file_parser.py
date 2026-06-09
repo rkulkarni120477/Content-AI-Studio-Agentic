@@ -6,6 +6,7 @@ and from future FastAPI endpoints.
 Extracted from core/shared.py (Phase 3 refactoring).
 """
 
+import io
 import logging
 import time
 
@@ -23,6 +24,7 @@ def parse_uploaded_file(uploaded_file) -> tuple:
         (filename: str, content: str, error_msg: str | None)
 
     Safe to call from a ThreadPoolExecutor worker — no st.* calls.
+    Supports: PDF, DOCX, PPTX, XLSX, TXT (and plain text variants).
     """
     name = uploaded_file.name
     fn   = name.lower()
@@ -39,6 +41,31 @@ def parse_uploaded_file(uploaded_file) -> tuple:
         elif fn.endswith(".docx"):
             doc     = DocxDocument(uploaded_file)
             content = "\n".join(p.text for p in doc.paragraphs)
+        elif fn.endswith(".doc"):
+            return name, "", (
+                "Legacy .doc format is not supported. "
+                "Please save the file as .docx and re-upload."
+            )
+        elif fn.endswith(".pptx"):
+            try:
+                from pptx import Presentation as _Pptx  # python-pptx
+                _prs = _Pptx(io.BytesIO(uploaded_file.read()))
+                content = "\n".join(
+                    shape.text
+                    for slide in _prs.slides
+                    for shape in slide.shapes
+                    if hasattr(shape, "text") and shape.text.strip()
+                )
+            except ImportError:
+                return name, "", (
+                    "python-pptx is not installed. "
+                    "Ask your admin to add python-pptx to requirements.txt."
+                )
+        elif fn.endswith(".ppt"):
+            return name, "", (
+                "Legacy .ppt format is not supported. "
+                "Please save the file as .pptx and re-upload."
+            )
         elif fn.endswith(".xlsx"):
             content = pd.read_excel(uploaded_file).to_csv(index=False)
         else:

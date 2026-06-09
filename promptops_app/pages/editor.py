@@ -54,12 +54,14 @@ from promptops_app.ui.generation_controls import render_prompt_download_button
 def _trigger_copyleaks_scan(db, block, project_id, course_id) -> None:
     """Create a PlagiarismReport row and enqueue the Celery scan task.
 
-    Non-blocking — returns immediately after enqueueing.
-    Errors are shown as st.warning so they never block the page.
+    Falls back to the thread-pool job_runner when Redis/Celery is unavailable
+    (e.g. local dev without Docker).  Errors are shown as st.warning.
     """
     import streamlit as _st
     try:
-        from promptops_app.services.plagiarism_service import generate_scan_id
+        from promptops_app.services.plagiarism_service import (
+            generate_scan_id, CopyleaksNotConfigured,
+        )
         from promptops_app.jobs.plagiarism_jobs import run_plagiarism_scan
 
         report = PlagiarismReport(
@@ -73,17 +75,30 @@ def _trigger_copyleaks_scan(db, block, project_id, course_id) -> None:
         db.commit()
         db.refresh(report)
 
-        task = run_plagiarism_scan.delay(report.id, block.content)
-        report.celery_task_id = task.id
-        db.commit()
+        report_id = report.id
+        content   = block.content
+
+        try:
+            task = run_plagiarism_scan.delay(report_id, content)
+            report.celery_task_id = task.id
+            db.commit()
+        except Exception:
+            # Redis / Celery not reachable — run in background thread instead.
+            # Use .apply() so Celery handles the bind=True self argument correctly.
+            from promptops_app.jobs import job_runner
+            job_runner.submit(run_plagiarism_scan.apply, args=[report_id, content])
 
         _st.toast("🔍 Copyleaks plagiarism scan queued.")
         _st.rerun()
 
+    except CopyleaksNotConfigured as _exc:
+        _st.warning(
+            f"Copyleaks not configured: {_exc}  \n"
+            "Add **COPYLEAKS_EMAIL** and **COPYLEAKS_API_KEY** to your .env file."
+        )
     except Exception as _exc:
         _st.warning(
-            f"Could not start plagiarism scan: {_exc}  "
-            "Check that Celery worker and Redis are running."
+            f"Could not start plagiarism scan: {_exc}"
         )
 
 
@@ -452,18 +467,47 @@ def render_page(db, ctx):
             # 📊 Plagiarism & Citation Dashboard (Copyleaks async)
             with st.expander("📊 Plagiarism & Citation Dashboard", expanded=True):
                 # ── Fetch latest Copyleaks report for this block ──────────────
-                _cl_report = (
+                # Priority: active scan (pending/processing) if newest → else
+                # latest completed → else latest of any status (failed).
+                _cl_latest = (
                     db.query(PlagiarismReport)
                     .filter(PlagiarismReport.block_id == b.id)
                     .order_by(PlagiarismReport.created_at.desc())
                     .first()
                 )
+                if _cl_latest and _cl_latest.status in ("pending", "processing"):
+                    _cl_report = _cl_latest
+                else:
+                    _cl_report = (
+                        db.query(PlagiarismReport)
+                        .filter(
+                            PlagiarismReport.block_id == b.id,
+                            PlagiarismReport.status == "completed",
+                        )
+                        .order_by(PlagiarismReport.created_at.desc())
+                        .first()
+                    ) or _cl_latest
 
                 d_col1, d_col2, d_col3 = st.columns(3)
 
                 # Col 1: Copyleaks plagiarism panel
                 with d_col1:
                     st.markdown("**🛡️ Plagiarism (Copyleaks)**")
+
+                    # Detect if block was edited after the last scan was submitted
+                    _submitted_utc = (
+                        _cl_report.submitted_at.replace(tzinfo=timezone.utc)
+                        if _cl_report and _cl_report.submitted_at else None
+                    )
+                    _updated_utc = (
+                        b.updated_at.replace(tzinfo=timezone.utc)
+                        if b.updated_at else None
+                    )
+                    _content_changed = (
+                        _submitted_utc is not None
+                        and _updated_utc is not None
+                        and _updated_utc > _submitted_utc
+                    )
 
                     if _cl_report is None:
                         st.caption("Not checked yet.")
@@ -472,16 +516,36 @@ def render_page(db, ctx):
                             _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
 
                     elif _cl_report.status == "pending":
-                        st.info("⏳ Scan queued…")
-                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
-                                     use_container_width=True):
-                            st.rerun()
+                        _plag_age = (datetime.now(timezone.utc) - _cl_report.created_at.replace(tzinfo=timezone.utc)).total_seconds() if _cl_report.created_at else 9999
+                        if _plag_age > 300:
+                            st.warning("⚠️ Scan stuck (queued > 5 min). Celery worker may not be running.")
+                            if st.button("🔁 Reset & Retry", key=f"plag_reset_{b.id}",
+                                         use_container_width=True):
+                                _cl_report.status = "failed"
+                                _cl_report.error_message = "Reset: stuck in pending state."
+                                db.commit()
+                                _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
+                        else:
+                            st.info("⏳ Scan queued…")
+                            if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                         use_container_width=True):
+                                st.rerun()
 
                     elif _cl_report.status == "processing":
-                        st.info("🔄 Checking via Copyleaks…")
-                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
-                                     use_container_width=True):
-                            st.rerun()
+                        _plag_age = (datetime.now(timezone.utc) - _cl_report.submitted_at.replace(tzinfo=timezone.utc)).total_seconds() if _cl_report.submitted_at else 9999
+                        if _plag_age > 700:
+                            st.warning("⚠️ Scan timed out (processing > 11 min).")
+                            if st.button("🔁 Reset & Retry", key=f"plag_reset_{b.id}",
+                                         use_container_width=True):
+                                _cl_report.status = "failed"
+                                _cl_report.error_message = "Reset: timed out in processing state."
+                                db.commit()
+                                _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
+                        else:
+                            st.info("🔄 Checking via Copyleaks…")
+                            if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                         use_container_width=True):
+                                st.rerun()
 
                     elif _cl_report.status == "completed":
                         _sim  = _cl_report.similarity_score or 0
@@ -501,13 +565,25 @@ def render_page(db, ctx):
                                 f"🤖 AI score: <strong>{_ai:.1f}%</strong></span>",
                                 unsafe_allow_html=True,
                             )
-                        if st.button("🔁 Re-check", key=f"plag_recheck_{b.id}",
+                        if _content_changed:
+                            st.caption("⚠️ Content edited since last scan.")
+                        # Refresh: re-read DB without triggering a new scan
+                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                     use_container_width=True):
+                            st.rerun()
+                        # Recheck: always available; label hints when content changed
+                        _recheck_label = "🔁 Recheck Plagiarism" if _content_changed else "🔁 Check Again"
+                        if st.button(_recheck_label, key=f"plag_recheck_{b.id}",
                                      use_container_width=True):
                             _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
 
                     elif _cl_report.status == "failed":
                         st.warning(f"⚠️ Scan failed: {_cl_report.error_message or 'Unknown error'}")
-                        if st.button("🔄 Retry", key=f"plag_retry_{b.id}",
+                        # Refresh: re-read DB in case another process updated the report
+                        if st.button("🔄 Refresh", key=f"plag_refresh_{b.id}",
+                                     use_container_width=True):
+                            st.rerun()
+                        if st.button("🔍 Check Plagiarism", key=f"plag_trigger_{b.id}",
                                      use_container_width=True):
                             _trigger_copyleaks_scan(db, b, _proj_id, _crs_id)
 
@@ -545,6 +621,46 @@ def render_page(db, ctx):
                     st.markdown(b.ai_review)
                 else:
                     st.caption("No AI review available. Save or Regenerate to trigger.")
+
+                # ── Copyleaks matched sources + highlights ────────────────────
+                if _cl_report and _cl_report.status == "completed":
+                    _sources    = _cl_report.source_urls or []
+                    _highlights = _cl_report.highlights  or []
+
+                    if _sources:
+                        st.divider()
+                        st.markdown("**📎 Matched Sources (Copyleaks)**")
+                        for _src in _sources[:10]:
+                            _s_url   = _src.get("url", "")
+                            _s_sim   = _src.get("similarity", 0)
+                            _s_title = _src.get("title") or _s_url[:60]
+                            st.markdown(
+                                f"<div style='border-left:3px solid #f59e0b;"
+                                f"padding:4px 10px;margin:3px 0;font-size:0.8rem;'>"
+                                f"<a href='{_s_url}' target='_blank'>{_s_title}</a>"
+                                f"&nbsp;<span style='color:#9ca3af;'>{_s_sim:.1f}% similar</span></div>",
+                                unsafe_allow_html=True,
+                            )
+                    else:
+                        st.caption("No matched sources found.")
+
+                    if _highlights:
+                        st.markdown("**🔍 Matched Text Highlights**")
+                        for _h in _highlights[:8]:
+                            st.markdown(
+                                f"<div style='background:#fef9c3;border-left:3px solid #f59e0b;"
+                                f"border-radius:4px;padding:6px 10px;font-size:0.82rem;"
+                                f"margin:3px 0;font-style:italic;'>"
+                                f"\"{_h.get('text', '')}\"</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    with st.expander("🔬 Raw Copyleaks Response", expanded=False):
+                        if _cl_report.raw_response:
+                            try:
+                                st.json(json.loads(_cl_report.raw_response), expanded=False)
+                            except Exception:
+                                st.code(_cl_report.raw_response[:2000])
 
             # ── Scope selectors for feedback signals ─────────────────────────
             _SCOPE_OPTS  = {"⚡ Apply Once": "one_time", "🧠 Use as Learning": "learning"}
@@ -1072,43 +1188,6 @@ def render_page(db, ctx):
                             review_text = llm_evaluate_block(b.content, b.block_type)
                         st.markdown(review_text)
 
-                    # ── Copyleaks source URLs + highlights ────────────────
-                    if _cl_report and _cl_report.status == "completed":
-                        _sources    = _cl_report.source_urls or []
-                        _highlights = _cl_report.highlights  or []
-
-                        if _sources:
-                            st.markdown("**📎 Matched Sources**")
-                            for _src in _sources[:10]:
-                                _s_url  = _src.get("url", "")
-                                _s_sim  = _src.get("similarity", 0)
-                                _s_title = _src.get("title") or _s_url[:60]
-                                st.markdown(
-                                    f"<div style='border-left:3px solid #f59e0b;"
-                                    f"padding:4px 10px;margin:3px 0;font-size:0.8rem;'>"
-                                    f"<a href='{_s_url}' target='_blank'>{_s_title}</a>"
-                                    f" &nbsp;<span style='color:#9ca3af;'>"
-                                    f"{_s_sim:.1f}% similar</span></div>",
-                                    unsafe_allow_html=True,
-                                )
-
-                        if _highlights:
-                            st.markdown("**🔍 Matched Text Highlights**")
-                            for _h in _highlights[:8]:
-                                st.markdown(
-                                    f"<div style='background:#fef9c3;border-left:3px solid #f59e0b;"
-                                    f"border-radius:4px;padding:6px 10px;font-size:0.82rem;"
-                                    f"margin:3px 0;font-style:italic;'>"
-                                    f"\"{_h.get('text', '')}\"</div>",
-                                    unsafe_allow_html=True,
-                                )
-
-                        with st.expander("🔬 Raw Copyleaks Response", expanded=False):
-                            if _cl_report.raw_response:
-                                try:
-                                    st.json(json.loads(_cl_report.raw_response), expanded=False)
-                                except Exception:
-                                    st.code(_cl_report.raw_response[:2000])
 
             # ── Version History ───────────────────────────────────────────────
             with st.expander(f"⏱️ Version History — Block #{b.id}", expanded=False):

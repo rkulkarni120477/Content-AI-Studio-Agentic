@@ -9,6 +9,10 @@ POST /api/plagiarism/check
 GET /api/plagiarism/status/{block_id}
     Poll the scan status and results for a given block.
 
+POST /api/plagiarism/webhook/{status}/{scan_id}
+    Copyleaks webhook receiver — called by Copyleaks when a scan completes.
+    Configure COPYLEAKS_WEBHOOK_URL=https://yourserver.com/api/plagiarism/webhook/{status}/{scanId}
+
 DELETE /api/plagiarism/{block_id}
     Cancel an in-progress scan (marks as failed, cancels Celery task).
 """
@@ -17,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -161,6 +165,95 @@ def get_status(block_id: int, db: Session = Depends(_get_db)):
 # ---------------------------------------------------------------------------
 # DELETE /api/plagiarism/{block_id}
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# POST /api/plagiarism/webhook/{status}/{scan_id}  — Copyleaks callback
+# ---------------------------------------------------------------------------
+
+@router.post("/webhook/{copyleaks_status}/{scan_id}", status_code=status.HTTP_200_OK)
+async def copyleaks_webhook(
+    copyleaks_status: str,
+    scan_id: str,
+    request: Request,
+    db: Session = Depends(_get_db),
+):
+    """Receive Copyleaks async results and update the PlagiarismReport row.
+
+    Copyleaks calls this URL with ``{status}`` = completed | failed | credits-ran-out
+    and ``{scanId}`` = the scan_id we sent during submission.
+    """
+    from promptops_app.database import PlagiarismReport, Block
+    from promptops_app.services.plagiarism_service import parse_results
+    import json as _json
+    from datetime import datetime, timezone
+
+    raw_body = await request.body()
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    _log.info(
+        "Copyleaks webhook: status=%s scan_id=%s payload_size=%d",
+        copyleaks_status, scan_id, len(raw_body),
+    )
+    _log.info("Copyleaks raw payload: %s", raw_body.decode("utf-8", errors="replace")[:3000])
+
+    report = (
+        db.query(PlagiarismReport)
+        .filter(PlagiarismReport.scan_id == scan_id)
+        .first()
+    )
+    if not report:
+        _log.warning("Webhook: no PlagiarismReport found for scan_id=%s", scan_id)
+        return {"ok": False, "reason": "scan_id not found"}
+
+    if copyleaks_status in ("failed", "error", "credits-ran-out"):
+        report.status        = "failed"
+        report.error_message = f"Copyleaks reported status: {copyleaks_status}"
+        report.completed_at  = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": True}
+
+    if copyleaks_status == "completed":
+        try:
+            parsed = parse_results(payload)
+        except Exception as exc:
+            _log.error("Webhook: parse_results failed for scan_id=%s: %s", scan_id, exc)
+            parsed = {
+                "similarity_score": 0,
+                "ai_score":         None,
+                "source_urls":      [],
+                "highlights":       [],
+            }
+
+        report.similarity_score = parsed["similarity_score"]
+        report.ai_score         = parsed.get("ai_score")
+        report.source_urls      = parsed["source_urls"]
+        report.highlights       = parsed["highlights"]
+        report.raw_response     = _json.dumps(payload)
+        report.status           = "completed"
+        report.completed_at     = datetime.now(timezone.utc)
+        db.commit()
+
+        block = db.query(Block).filter(Block.id == report.block_id).first()
+        if block:
+            block.plagiarism_score  = int(round(parsed["similarity_score"]))
+            block.plagiarism_report = (
+                f"Copyleaks similarity: {parsed['similarity_score']}%"
+                + (f" | AI score: {parsed['ai_score']}%" if parsed.get("ai_score") is not None else "")
+            )
+            db.commit()
+
+        _log.info(
+            "Webhook: scan completed scan_id=%s sim=%.1f%% ai=%s",
+            scan_id,
+            parsed["similarity_score"],
+            f"{parsed['ai_score']}%" if parsed.get("ai_score") is not None else "n/a",
+        )
+
+    return {"ok": True}
+
 
 @router.delete("/{block_id}", status_code=status.HTTP_204_NO_CONTENT)
 def cancel_scan(block_id: int, db: Session = Depends(_get_db)):

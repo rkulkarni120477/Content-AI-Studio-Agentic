@@ -56,6 +56,7 @@ from promptops_app.core.content_utils import (
 from promptops_app.jobs.job_status import (
     JobStatus,
     STAGE_CONTEXT,
+    STAGE_CE_VALIDATION,
     STAGE_LLM,
     STAGE_PROMPT,
     STAGE_SAVE,
@@ -164,6 +165,29 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         _ref_ctx, _ref_names = resolve_document_references(db, topic)
         if _ref_names:
             context += _ref_ctx
+
+        # Source documents linked to the active CDD — prepended so they take priority
+        if eff_cdd_id:
+            try:
+                _cdd_ver_for_src = get_active_cdd_version(db, eff_cdd_id)
+                if _cdd_ver_for_src and _cdd_ver_for_src.generation_params:
+                    _cdd_gp = json.loads(_cdd_ver_for_src.generation_params)
+                    # Support new list format and old single-ID format
+                    _src_doc_ids = _cdd_gp.get("source_document_ids") or []
+                    if not _src_doc_ids and _cdd_gp.get("source_document_id"):
+                        _src_doc_ids = [_cdd_gp["source_document_id"]]
+                    _src_prefix = ""
+                    for _src_doc_id in _src_doc_ids:
+                        _src_doc = document_repository.get_document_by_id(db, _src_doc_id)
+                        if _src_doc and _src_doc.content:
+                            _src_prefix += make_source_context(_src_doc.filename, _src_doc.content)
+                    if _src_prefix:
+                        context = _src_prefix + context
+            except Exception as _src_exc:
+                _log.warning(
+                    "Job %s could not load CDD source documents (non-fatal): %s",
+                    job_id, _src_exc,
+                )
 
         if context:
             context = trim_generation_context(context)
@@ -275,7 +299,24 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         out = re.sub(r'  +', ' ', out)
         out = re.sub(r'(?m)^ +$', '', out)
 
-        # ── Stage 4 — Split into blocks ───────────────────────────────
+        # ── Stage 4 — CE Validation ───────────────────────────────────
+        set_running(db, job, *STAGE_CE_VALIDATION)
+        try:
+            from promptops_app.services.ce_validation_service import run_ce_validation
+            out = run_ce_validation(
+                out,
+                db,
+                active_style=_active_style,
+                model_choice=model_choice,
+                llm_call_fn=_llm_call,
+            )
+        except Exception as _ce_exc:
+            _log.warning(
+                "Job %s CE validation failed (non-fatal) — using original output: %s",
+                job_id, _ce_exc,
+            )
+
+        # ── Stage 5 — Split into blocks ───────────────────────────────
         set_running(db, job, *STAGE_SPLIT)
         blocks = (
             split_into_blocks(out)
@@ -283,7 +324,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             else [(b_type or "Body", 1, out, re.findall(r"\[Source:\s*(.*?)\]", out))]
         )
 
-        # ── Stage 5 — Persist ─────────────────────────────────────────
+        # ── Stage 6 — Persist ─────────────────────────────────────────
         set_running(db, job, *STAGE_SAVE)
 
         used_cdd_ver = None
