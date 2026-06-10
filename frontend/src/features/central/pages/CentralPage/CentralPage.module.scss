@@ -68,3 +68,42 @@
 
 .required { color: $color-danger; }
 .fieldError { font-size: $font-size-xs; color: $color-danger; }
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-3;
+  margin-bottom: $space-4;
+  align-items: flex-end;
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-1;
+}
+
+.statusActive { color: $color-success; font-weight: $font-weight-medium; }
+.statusArchived { color: $color-gray-500; }
+
+.importHint {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+  line-height: 1.4;
+}
+
+.viewModal {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+  font-size: $font-size-sm;
+
+  &__note {
+    margin-top: $space-3;
+    padding: $space-3;
+    background: $color-gray-50;
+    border-radius: $radius-md;
+    color: $color-gray-600;
+    font-size: $font-size-xs;
+  }
+}

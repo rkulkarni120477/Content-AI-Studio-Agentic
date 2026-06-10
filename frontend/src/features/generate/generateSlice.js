@@ -1,5 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit';
-import { launchGenerationThunk, pollJobThunk } from './generateThunks';
+import { launchGenerationThunk, pollJobThunk, cancelJobThunk } from './generateThunks';
 import { JOB_STATUSES } from '@utils/constants';
 
 const initialState = {
@@ -58,6 +58,11 @@ const generateSlice = createSlice({
       .addCase(pollJobThunk.rejected, (s, { payload }) => {
         s.isGenerating = false;
         s.error = payload;
+      })
+
+      .addCase(cancelJobThunk.fulfilled, (s) => {
+        s.jobStatus = 'cancelled';
+        s.isGenerating = false;
       });
   },
 });

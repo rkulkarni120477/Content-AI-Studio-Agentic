@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
-import { fetchCentralItemsThunk, createCentralItemThunk, importFromRegistryThunk } from '@features/central/centralThunks';
-import { selectCentralItems, selectCentralTotal, selectCentralLoading, selectCentralError } from '@features/central/centralSlice';
+import {
+  fetchCentralItemsThunk, createCentralItemThunk,
+  importFromRegistryThunk, archiveCentralItemThunk,
+} from '@features/central/centralThunks';
+import {
+  selectCentralItems, selectCentralTotal, selectCentralLoading, selectCentralError,
+} from '@features/central/centralSlice';
 import { createCentralItemSchema, importFromRegistrySchema } from '@utils/validation';
 import { useAuth } from '@hooks/useAuth';
 import { ROLES } from '@utils/constants';
@@ -16,8 +21,17 @@ import { ROUTES } from '@utils/constants';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
 import Table from '@components/common/Table/Table';
+import Modal from '@components/common/Modal/Modal';
+import SearchBar from '@components/common/SearchBar/SearchBar';
 import ErrorState from '@components/common/ErrorState/ErrorState';
+import toast from 'react-hot-toast';
 import styles from './CentralPage.module.scss';
+
+const STATUS_OPTIONS = [
+  { value: '', label: 'All statuses' },
+  { value: 'active', label: 'Active' },
+  { value: 'archived', label: 'Archived' },
+];
 
 export default function CentralPage() {
   const dispatch  = useAppDispatch();
@@ -29,13 +43,31 @@ export default function CentralPage() {
   const error     = useAppSelector(selectCentralError);
 
   const [activeForm, setActiveForm] = useState('create');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [viewItem, setViewItem] = useState(null);
+  const [reuseContent, setReuseContent] = useState('');
 
   const createForm = useForm({ resolver: zodResolver(createCentralItemSchema) });
   const importForm = useForm({ resolver: zodResolver(importFromRegistrySchema) });
 
+  function loadItems() {
+    dispatch(fetchCentralItemsThunk({
+      search: search.trim() || undefined,
+      status: statusFilter || undefined,
+    }));
+  }
+
   useEffect(() => {
-    dispatch(fetchCentralItemsThunk());
-  }, [dispatch]);
+    loadItems();
+  }, [dispatch, search, statusFilter]);
+
+  const metrics = useMemo(() => {
+    const active = items.filter((i) => i.status === 'active').length;
+    const archived = items.filter((i) => i.status === 'archived').length;
+    const prompts = items.filter((i) => (i.item_type || i.tags || '').toLowerCase().includes('prompt')).length;
+    return { active, archived, prompts, total: total || items.length };
+  }, [items, total]);
 
   if (role !== ROLES.ADMIN) {
     return (
@@ -52,15 +84,58 @@ export default function CentralPage() {
 
   async function onImport(data) {
     const result = await dispatch(importFromRegistryThunk(data));
-    if (!result.error) importForm.reset();
+    if (result.error) toast.error(result.payload || 'Import failed.');
+    else importForm.reset();
+  }
+
+  async function onArchive(item) {
+    if (!window.confirm(`Archive "${item.name}"?`)) return;
+    await dispatch(archiveCentralItemThunk(item.id));
+  }
+
+  function onReuse(item) {
+    const stub = [
+      `# ${item.name}`,
+      item.tags ? `Tags: ${item.tags}` : '',
+      item.status ? `Status: ${item.status}` : '',
+      '',
+      '(Full item content is not returned by the list API — reuse metadata or re-import from Prompt Registry.)',
+    ].filter(Boolean).join('\n');
+    setReuseContent(stub);
+    navigator.clipboard?.writeText(stub).then(() => {
+      toast.success('Metadata copied to clipboard.');
+    }).catch(() => {
+      toast.success('Reuse panel opened — copy manually.');
+    });
   }
 
   const COLUMNS = [
-    { key: 'name',        header: 'Name',      sortable: true },
-    { key: 'item_type',   header: 'Type' },
-    { key: 'description', header: 'Description', render: (v) => v || '—' },
-    { key: 'tags',        header: 'Tags',       render: (v) => v || '—' },
-    { key: 'created_at',  header: 'Created',   render: (v) => formatDate(v) },
+    { key: 'name', header: 'Name', sortable: true, render: (_, row) => row.name || row.title },
+    { key: 'item_type', header: 'Type', render: (_, row) => row.item_type || '—' },
+    { key: 'tags', header: 'Tags', render: (v) => v || '—' },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (v) => (
+        <span className={v === 'active' ? styles.statusActive : styles.statusArchived}>
+          {(v || 'active').charAt(0).toUpperCase() + (v || 'active').slice(1)}
+        </span>
+      ),
+    },
+    { key: 'created_at', header: 'Created', render: (v) => formatDate(v) },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (_, row) => (
+        <div className={styles.rowActions}>
+          <Button variant="ghost" size="sm" onClick={() => setViewItem(row)}>View</Button>
+          <Button variant="ghost" size="sm" onClick={() => onReuse(row)}>Reuse</Button>
+          {row.status !== 'archived' && (
+            <Button variant="ghost" size="sm" onClick={() => onArchive(row)}>Archive</Button>
+          )}
+        </div>
+      ),
+    },
   ];
 
   return (
@@ -69,15 +144,27 @@ export default function CentralPage() {
       <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.DASHBOARD)} style={{ marginBottom: '1rem' }}>
         ← Back to Projects
       </Button>
+
       <div className={styles.kpiBar}>
         <div className={styles.kpiCard}>
-          <span className={styles.kpiCard__value}>{total}</span>
+          <span className={styles.kpiCard__value}>{metrics.total}</span>
           <span className={styles.kpiCard__label}>Total Items</span>
+        </div>
+        <div className={styles.kpiCard}>
+          <span className={styles.kpiCard__value}>{metrics.active}</span>
+          <span className={styles.kpiCard__label}>Active</span>
+        </div>
+        <div className={styles.kpiCard}>
+          <span className={styles.kpiCard__value}>{metrics.archived}</span>
+          <span className={styles.kpiCard__label}>Archived</span>
+        </div>
+        <div className={styles.kpiCard}>
+          <span className={styles.kpiCard__value}>{metrics.prompts}</span>
+          <span className={styles.kpiCard__label}>Prompts</span>
         </div>
       </div>
 
       <div className={styles.layout}>
-        {/* Form Panel */}
         <section className={styles.panel}>
           <div className={styles.formToggle} role="tablist">
             {['create', 'import'].map((f) => (
@@ -117,16 +204,27 @@ export default function CentralPage() {
                 {...importForm.register('prompt_name')}
               />
               <Input label="Specific Version (optional)" type="number" {...importForm.register('version', { valueAsNumber: true })} />
+              <p className={styles.importHint}>
+                Imports via Prompt Registry API, then creates a Central Repository item.
+              </p>
               <Button type="submit" variant="primary" fullWidth loading={isLoading}>Import Prompt</Button>
             </form>
           )}
         </section>
 
-        {/* Items Table */}
         <section className={styles.panel}>
           <h2 className={styles.panel__title}>Repository Items</h2>
+          <div className={styles.filters}>
+            <SearchBar value={search} onChange={setSearch} placeholder="Search by keyword…" />
+            <Select
+              label="Status"
+              options={STATUS_OPTIONS}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            />
+          </div>
           {error ? (
-            <ErrorState message={error} onRetry={() => dispatch(fetchCentralItemsThunk())} />
+            <ErrorState message={error} onRetry={loadItems} />
           ) : (
             <Table
               columns={COLUMNS}
@@ -141,6 +239,31 @@ export default function CentralPage() {
           )}
         </section>
       </div>
+
+      <Modal
+        open={Boolean(viewItem)}
+        onClose={() => setViewItem(null)}
+        title={viewItem ? `View: ${viewItem.name}` : 'View Item'}
+        size="md"
+      >
+        {viewItem && (
+          <div className={styles.viewModal}>
+            <p><strong>Type:</strong> {viewItem.item_type || '—'}</p>
+            <p><strong>Status:</strong> {viewItem.status || 'active'}</p>
+            <p><strong>Tags:</strong> {viewItem.tags || '—'}</p>
+            <p><strong>Created:</strong> {formatDate(viewItem.created_at)}</p>
+            <p className={styles.viewModal__note}>
+              Full content is not included in the list API response. Use Import from Registry or create a new item with content.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      {reuseContent && (
+        <Modal open onClose={() => setReuseContent('')} title="Reuse — copied metadata" size="sm">
+          <textarea className={styles.form__textarea} rows={6} readOnly value={reuseContent} />
+        </Modal>
+      )}
     </SelectionLayout>
   );
 }

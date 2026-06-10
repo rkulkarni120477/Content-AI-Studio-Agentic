@@ -27,7 +27,7 @@ export const generateService = {
 
   getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId)),
 
-  cancelJob: (jobId) => api.post(GENERATE.JOB_CANCEL(jobId)),
+  cancelJob: (jobId) => api.delete(GENERATE.JOB_CANCEL(jobId)),
 
   getGeneration: (id) => api.get(GENERATE.GET(id)),
 

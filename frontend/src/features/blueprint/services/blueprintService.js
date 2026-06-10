@@ -57,6 +57,7 @@ export const blueprintService = {
   getVersions: (id) => api.get(BLUEPRINT.VERSIONS(id)),
   getVersion: (id, v) => api.get(BLUEPRINT.GET_VERSION(id, v)),
 
+  activateVersion: (id, version) => api.post(BLUEPRINT.ACTIVATE_VERSION(id, version)),
   commitVersion: (id, data) => api.post(BLUEPRINT.COMMIT_VERSION(id), {
     version_tag: data.version_tag || data.tag || 'v-next',
     full_content: data.full_content,

@@ -1,7 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit';
 import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
-  fetchCddVersionsThunk, commitCddVersionThunk,
+  fetchCddVersionsThunk, commitCddVersionThunk, activateCddVersionThunk,
 } from './cddThunks';
 
 const initialState = {
@@ -46,6 +46,14 @@ const cddSlice = createSlice({
       .addCase(commitCddVersionThunk.fulfilled, (s, { payload }) => {
         s.versions.unshift(payload);
         if (s.activeCdd) s.activeCdd = { ...s.activeCdd, active_version: payload };
+      })
+
+      .addCase(activateCddVersionThunk.fulfilled, (s, { payload }) => {
+        if (payload?.detail) {
+          s.activeCdd = payload.detail;
+          const idx = s.cdds.findIndex((c) => c.id === payload.detail.id);
+          if (idx >= 0) s.cdds[idx] = { ...s.cdds[idx], active_version: payload.detail.active_version };
+        }
       });
   },
 });

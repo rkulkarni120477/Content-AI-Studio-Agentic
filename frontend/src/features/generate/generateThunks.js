@@ -48,6 +48,17 @@ export const pollJobThunk = createAsyncThunk(
   },
 );
 
+export const cancelJobThunk = createAsyncThunk(
+  'generate/cancelJob',
+  async (jobId, { rejectWithValue }) => {
+    try {
+      const result = await generateService.cancelJob(jobId);
+      toast.success('Generation job cancelled.');
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 /** @deprecated use launchGenerationThunk */
 export const runGenerationThunk = launchGenerationThunk;
 export const queueGenerationThunk = launchGenerationThunk;

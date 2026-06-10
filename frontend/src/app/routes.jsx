@@ -73,14 +73,7 @@ export const router = createBrowserRouter([
       { path: 'generate',  element: wrap(<GeneratePage />) },
       { path: 'editor',    element: wrap(<EditorPage />) },
       { path: 'workflow',  element: wrap(<WorkflowPage />) },
-      {
-        path: 'analytics',
-        element: (
-          <ProtectedRoute requiredRole={[ROLES.ADMIN, ROLES.REVIEWER]}>
-            {wrap(<AnalyticsPage />)}
-          </ProtectedRoute>
-        ),
-      },
+      { path: 'analytics', element: wrap(<AnalyticsPage />) },
     ],
   },
 

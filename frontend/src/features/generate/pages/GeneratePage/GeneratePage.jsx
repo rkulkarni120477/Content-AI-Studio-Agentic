@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
-import { launchGenerationThunk, pollJobThunk } from '@features/generate/generateThunks';
+import { launchGenerationThunk, pollJobThunk, cancelJobThunk } from '@features/generate/generateThunks';
 import {
   selectIsGenerating, selectActiveJobId, selectJobStatus,
   selectJobProgress, selectLatestBlocks, selectGenerateError,
@@ -334,6 +334,15 @@ export default function GeneratePage() {
               <Loader size="sm" />
               <strong>Generation in progress</strong>
               <span className={styles.activeJob__status}>{jobStatus === 'running' ? 'Running…' : 'Queued…'}</span>
+              {activeJobId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => dispatch(cancelJobThunk(activeJobId))}
+                >
+                  Cancel Job
+                </Button>
+              )}
             </div>
             {jobProgress.map((msg, i) => (
               <div key={i} className={styles.activeJob__stage}>{msg}</div>

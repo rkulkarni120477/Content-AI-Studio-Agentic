@@ -10,7 +10,6 @@ export const styleService = {
   activateStyle:    (id, body = {}) => api.post(STYLES.ACTIVATE(id), body),
   deactivateStyle:  (id)         => api.post(STYLES.DEACTIVATE(id)),
   uploadStyleDocs:  (id, formData) => api.upload(DOCUMENTS.STYLE_DOCS(id), formData),
-  getVersions:      (id)         => api.get(STYLES.VERSIONS(id)),
   regenerateStyle:  (id, body = {}) => api.post(STYLES.UNDERSTAND(id), body),
   listDocuments:    async (courseId, projectId) => {
     const params = { page: 1, page_size: 500 };

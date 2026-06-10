@@ -6,6 +6,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
+  activateBlueprintVersionThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
@@ -145,6 +146,12 @@ export default function BlueprintPage() {
       dispatch(fetchBlueprintVersionsThunk(activeBlueprint.id));
     }
   }, [activeBlueprint, dispatch]);
+
+  useEffect(() => {
+    if (activeBlueprint?.id && viewBpId === activeBlueprint.id) {
+      setViewBpDetail(activeBlueprint);
+    }
+  }, [activeBlueprint, viewBpId]);
 
   useEffect(() => {
     if (!viewBpId) {
@@ -684,15 +691,29 @@ export default function BlueprintPage() {
                     })()}
 
                     {versions.length > 0 && (
-                      <Select
-                        label="View Version"
-                        options={versions.map((v) => ({
-                          value: v.version,
-                          label: v.version,
-                        }))}
-                        value={viewVersion || displayBp.active_version || ''}
-                        onChange={(e) => setViewVersion(e.target.value)}
-                      />
+                      <div className={styles.versionRow}>
+                        <Select
+                          label="View Version"
+                          options={versions.map((v) => ({
+                            value: v.version,
+                            label: `${v.version}${v.is_active ? ' (active)' : ''}`,
+                          }))}
+                          value={viewVersion || displayBp.active_version || ''}
+                          onChange={(e) => setViewVersion(e.target.value)}
+                        />
+                        {viewVersion && viewVersion !== displayBp.active_version && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => dispatch(activateBlueprintVersionThunk({
+                              blueprintId: displayBp.id,
+                              version: viewVersion,
+                            }))}
+                          >
+                            Set as Active Version
+                          </Button>
+                        )}
+                      </div>
                     )}
 
                     <div className={styles.activeContent}>

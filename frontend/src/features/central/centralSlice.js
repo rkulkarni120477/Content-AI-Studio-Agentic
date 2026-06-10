@@ -1,5 +1,8 @@
 import { createSlice } from '@reduxjs/toolkit';
-import { fetchCentralItemsThunk, createCentralItemThunk, importFromRegistryThunk } from './centralThunks';
+import {
+  fetchCentralItemsThunk, createCentralItemThunk,
+  importFromRegistryThunk, archiveCentralItemThunk,
+} from './centralThunks';
 
 const initialState = {
   items:     [],
@@ -21,8 +24,24 @@ const centralSlice = createSlice({
         s.total     = payload.total;
       })
       .addCase(fetchCentralItemsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
-      .addCase(createCentralItemThunk.fulfilled, (s, { payload }) => { s.items.unshift(payload); s.total += 1; })
-      .addCase(importFromRegistryThunk.fulfilled,(s, { payload }) => { s.items.unshift(payload); s.total += 1; });
+      .addCase(createCentralItemThunk.pending,   (s) => { s.isLoading = true; })
+      .addCase(createCentralItemThunk.fulfilled, (s, { payload }) => {
+        s.isLoading = false;
+        s.items     = payload.items;
+        s.total     = payload.total;
+      })
+      .addCase(createCentralItemThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
+      .addCase(importFromRegistryThunk.pending,   (s) => { s.isLoading = true; })
+      .addCase(importFromRegistryThunk.fulfilled, (s, { payload }) => {
+        s.isLoading = false;
+        s.items     = payload.items;
+        s.total     = payload.total;
+      })
+      .addCase(importFromRegistryThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
+      .addCase(archiveCentralItemThunk.fulfilled, (s, { payload }) => {
+        s.items = payload.items;
+        s.total = payload.total;
+      });
   },
 });
 

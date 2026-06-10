@@ -299,7 +299,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
                 <div className={styles.alertWarn}>
                   ⚠️ Scan failed{plag.error_message ? `: ${plag.error_message}` : ''}
                 </div>
-                <Button variant="ghost" size="sm" fullWidth onClick={onPlagiarism}>🔄 Retry</Button>
+                <Button variant="ghost" size="sm" fullWidth onClick={onPlagiarism}>🔁 Reset & Retry</Button>
               </>
             )}
           </div>

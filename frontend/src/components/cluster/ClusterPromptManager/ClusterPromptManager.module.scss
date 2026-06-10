@@ -1,0 +1,147 @@
+.manager {
+  margin-bottom: 1.5rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.manager__header {
+  padding: 12px 16px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #111827;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0 12px;
+}
+
+.tab {
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+
+  &--active {
+    color: #4338ca;
+    border-bottom-color: #4338ca;
+  }
+}
+
+.panel {
+  padding: 16px;
+}
+
+.aiExpander {
+  margin-bottom: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.aiExpander__toggle {
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #f9fafb;
+  border: none;
+  cursor: pointer;
+}
+
+.aiExpander__body {
+  padding: 14px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.caption {
+  font-size: 0.78rem;
+  color: #6b7280;
+  margin-bottom: 10px;
+}
+
+.radioRow {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.textareaLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.promptList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.promptRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.promptRow__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.promptRow__name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.promptRow__desc {
+  font-weight: 400;
+  color: #6b7280;
+}
+
+.promptRow__preview {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-top: 4px;
+}
+
+.empty {
+  font-size: 0.85rem;
+  color: #6b7280;
+  padding: 8px 0;
+}

@@ -249,6 +249,14 @@
   padding: $space-8;
 }
 
+.versionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-3;
+  align-items: flex-end;
+  margin-bottom: $space-3;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

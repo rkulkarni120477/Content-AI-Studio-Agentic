@@ -59,7 +59,7 @@ function stars(score) {
 
 export default function AnalyticsPage() {
   const dispatch = useAppDispatch();
-  const { isAdmin, isReviewer, user, canManageUsers, canClearDb, hasPermission } = useAuth();
+  const { isAdmin, isReviewer, isAuthor, user, canManageUsers, canClearDb, hasPermission } = useAuth();
   const canViewAudit = isAdmin || isReviewer;
 
   const summary = useAppSelector(selectSummary);
@@ -90,9 +90,10 @@ export default function AnalyticsPage() {
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
 
-  const visibleMainTabs = MAIN_TABS.filter(
-    (t) => (t !== 'Audit Trail' || canViewAudit) && (t !== 'User Management' || canManageUsers),
-  );
+  const visibleMainTabs = MAIN_TABS.filter((t) => {
+    if (isAuthor) return t === 'Dashboard' || t === 'LLM Cost';
+    return (t !== 'Audit Trail' || canViewAudit) && (t !== 'User Management' || canManageUsers);
+  });
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [historyTab, setHistoryTab] = useState(0);
   const [costTab, setCostTab] = useState(0);
@@ -174,7 +175,10 @@ export default function AnalyticsPage() {
 
   async function handleToggleAccess() {
     if (!toggleUserSelect) return;
-    const result = await dispatch(toggleUserActiveThunk(Number(toggleUserSelect)));
+    const result = await dispatch(toggleUserActiveThunk({
+      userId: Number(toggleUserSelect),
+      isActive: selectedToggleUser?.is_active === false,
+    }));
     if (!result.error) dispatch(fetchUsersThunk());
   }
 
@@ -283,7 +287,12 @@ export default function AnalyticsPage() {
           title="Analytics & Observability"
           subtitle="Real-time metrics, prompt performance tracking, and full audit trails for every action on the platform."
         />
-        {!isAdmin && selProject && (
+        {isAuthor && (
+          <p className={styles.scopeCaption}>
+            Personal usage summary — detailed cost breakdowns are available to Admin and Lead roles.
+          </p>
+        )}
+        {!isAdmin && !isAuthor && selProject && (
           <p className={styles.scopeCaption}>
             Showing your metrics for project <strong>{selProject.name}</strong>
             {selCourse ? <> → course <strong>{selCourse.name}</strong></> : null}.

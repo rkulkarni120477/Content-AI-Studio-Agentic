@@ -1,0 +1,21 @@
+.notice {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  color: #92400e;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.notice__title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.notice__list {
+  margin: 6px 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.75rem;
+}

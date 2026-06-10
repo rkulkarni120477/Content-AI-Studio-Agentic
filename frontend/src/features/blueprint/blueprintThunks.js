@@ -78,6 +78,19 @@ export const fetchBlueprintVersionsThunk = createAsyncThunk(
   },
 );
 
+export const activateBlueprintVersionThunk = createAsyncThunk(
+  'blueprint/activateVersion',
+  async ({ blueprintId, version }, { rejectWithValue, dispatch }) => {
+    try {
+      await blueprintService.activateVersion(blueprintId, version);
+      toast.success(`Version ${version} is now active.`);
+      const bp = await blueprintService.getBlueprint(blueprintId);
+      dispatch(fetchBlueprintVersionsThunk(blueprintId));
+      return bp;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 export const commitBlueprintVersionThunk = createAsyncThunk(
   'blueprint/commitVersion',
   async ({ blueprintId, data }, { rejectWithValue }) => {

@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
+import { selectSelectedCluster } from '@features/dashboard/dashboardSlice';
+import {
+  CLUSTER_PROMPT_API_MESSAGE,
+  CLUSTER_PROMPT_REQUIRED_ENDPOINTS,
+  isClusterPromptApiAvailable,
+} from '@features/clusterPrompt/clusterPromptApiDeps';
+import BackendDependencyNotice from '@components/common/BackendDependencyNotice/BackendDependencyNotice';
 import {
   fetchStylesThunk, activateStyleThunk,
   deactivateStyleThunk, fetchDocumentsThunk, uploadDocumentsThunk,
@@ -57,6 +64,8 @@ export default function StylePage() {
   const isLoading   = useAppSelector(selectStyleLoading);
   const isGenerating = useAppSelector(selectStyleGenerating);
   const error       = useAppSelector(selectStyleError);
+  const selCluster  = useAppSelector(selectSelectedCluster);
+  const clusterPromptApiReady = isClusterPromptApiAvailable();
 
   const [activeTab, setActiveTab]         = useState(0);
   const [uploadedFiles, setUploadedFiles] = useState([]);
@@ -277,6 +286,29 @@ export default function StylePage() {
 
   return (
     <PageContainer title="Style Management" breadcrumbs={[{ label: 'Style' }]}>
+      {selCluster?.id && !clusterPromptApiReady && (
+        <>
+          <div className={styles.clusterEmpty} role="note">
+            ⚡ No cluster prompts assigned to this cluster.
+            {' '}Admins/Leads can add them on the Cluster page.
+          </div>
+          <BackendDependencyNotice
+            title="Backend dependency required — Cluster Prompts"
+            message={CLUSTER_PROMPT_API_MESSAGE}
+            endpoints={CLUSTER_PROMPT_REQUIRED_ENDPOINTS.filter((e) => e.path.includes('/clusters/'))}
+          />
+        </>
+      )}
+      {selCluster?.id && clusterPromptApiReady && (
+        <div className={styles.clusterInjected} role="note">
+          <div className={styles.clusterInjected__title}>⚡ Auto-Injected Cluster Prompts</div>
+          <p className={styles.clusterInjected__desc}>
+            These prompts are inherited from this cluster and automatically prepended
+            to the Style context for every course here.
+          </p>
+          <p className={styles.clusterEmpty}>No cluster prompts assigned to this cluster yet.</p>
+        </div>
+      )}
       {!activeStyle && (
         <div className={styles.noActiveBanner} role="status">
           ⚠️ No active style. Create and activate a Style below for consistent tone and structure across all generations.

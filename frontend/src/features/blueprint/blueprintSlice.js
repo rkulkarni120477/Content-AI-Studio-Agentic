@@ -2,6 +2,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, fetchBlueprintComponentsThunk,
+  activateBlueprintVersionThunk,
 } from './blueprintThunks';
 
 const initialState = {
@@ -52,6 +53,9 @@ const blueprintSlice = createSlice({
 
       .addCase(fetchBlueprintVersionsThunk.fulfilled, (s, { payload }) => { s.versions = payload; })
       .addCase(commitBlueprintVersionThunk.fulfilled, (s, { payload }) => { s.versions.unshift(payload); })
+      .addCase(activateBlueprintVersionThunk.fulfilled, (s, { payload }) => {
+        if (s.activeBlueprint?.id === payload?.id) s.activeBlueprint = payload;
+      })
 
       .addCase(fetchBlueprintComponentsThunk.fulfilled, (s, { payload }) => {
         s.components = Array.isArray(payload) ? payload : (payload?.components || []);

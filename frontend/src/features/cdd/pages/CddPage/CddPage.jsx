@@ -6,6 +6,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
+  activateCddVersionThunk,
 } from '@features/cdd/cddThunks';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
@@ -441,12 +442,20 @@ export default function CddPage() {
                         <div className={styles.versions}>
                           <span className={styles.versions__label}>Versions:</span>
                           {versions.map((v) => (
-                            <span
+                            <button
                               key={v.version}
+                              type="button"
                               className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}
+                              title={v.is_active ? 'Active version' : `Set ${v.version} as active`}
+                              disabled={v.is_active}
+                              onClick={() => dispatch(activateCddVersionThunk({
+                                cddId: displayCdd.id,
+                                version: v.version,
+                                courseId: Number(courseId),
+                              }))}
                             >
                               {v.version}
-                            </span>
+                            </button>
                           ))}
                         </div>
                       )}

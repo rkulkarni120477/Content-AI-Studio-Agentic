@@ -47,6 +47,7 @@ export const cddService = {
   },
   getVersions:   (id)             => api.get(CDD.VERSIONS(id)),
   getVersion:    (id, v)          => api.get(CDD.GET_VERSION(id, v)),
+  activateVersion: (id, version)  => api.post(CDD.ACTIVATE_VERSION(id, version)),
   commitVersion: (id, data)       => api.post(CDD.COMMIT_VERSION(id), {
     version_tag: data.version_tag || data.tag || 'v-next',
     full_content: data.full_content,

@@ -185,9 +185,9 @@ export const createUserThunk = createAsyncThunk(
 
 export const toggleUserActiveThunk = createAsyncThunk(
   'analytics/toggleUser',
-  async (userId, { rejectWithValue }) => {
+  async ({ userId, isActive }, { rejectWithValue }) => {
     try {
-      const result = await analyticsService.toggleUserActive(userId);
+      const result = await analyticsService.toggleUserActive(userId, isActive);
       toast.success('User status updated.');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }

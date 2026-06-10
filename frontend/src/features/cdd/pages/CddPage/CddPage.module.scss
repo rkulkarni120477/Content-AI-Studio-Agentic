@@ -231,6 +231,18 @@
   background: $color-gray-100;
   border-radius: $radius-full;
   color: $color-gray-600;
+  border: none;
+  cursor: pointer;
+
+  &:disabled {
+    cursor: default;
+    opacity: 1;
+  }
+
+  &:not(:disabled):hover {
+    background: $color-primary-soft;
+    color: $color-primary;
+  }
 
   &--active {
     background: $color-primary;

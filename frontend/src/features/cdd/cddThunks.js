@@ -3,6 +3,7 @@ import { cddService } from './services/cddService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { extractErrorMessage } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
+import { queueDeferredToast } from '@utils/deferredToast';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -53,6 +54,7 @@ export const generateCddThunk = createAsyncThunk(
       }
       const result = await cddService.generateCdd(payload);
       toast.success('CDD generated and set as active.');
+      queueDeferredToast('CDD created and pinned as active.');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -74,6 +76,19 @@ export const fetchCddVersionsThunk = createAsyncThunk(
   async (cddId, { rejectWithValue }) => {
     try { return await cddService.getVersions(cddId); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const activateCddVersionThunk = createAsyncThunk(
+  'cdd/activateVersion',
+  async ({ cddId, version, courseId }, { rejectWithValue, dispatch }) => {
+    try {
+      await cddService.activateVersion(cddId, version);
+      toast.success(`Version ${version} is now active.`);
+      const detail = await cddService.getCdd(cddId);
+      dispatch(fetchCddVersionsThunk(cddId));
+      return { detail, courseId };
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 

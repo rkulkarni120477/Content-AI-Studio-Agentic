@@ -8,6 +8,7 @@ import { selectIsAuthenticated, selectAuthLoading, selectAuthError, clearError }
 import { loginSchema } from '@utils/validation';
 import { ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
+import AppBrand from '@components/common/AppBrand/AppBrand';
 import styles from './LoginPage.module.scss';
 
 const FEATURES = [
@@ -68,10 +69,7 @@ export default function LoginPage() {
       <main className={styles.main}>
         <div className={styles.hero}>
           <span className={styles.hero__badge}>Enterprise AI Platform</span>
-          <h1 className={styles.hero__title}>
-            <span className={styles.hero__logo} aria-hidden="true">🎓</span>
-            Content AI Studio
-          </h1>
+          <AppBrand variant="hero" showTag={false} className={styles.hero__brand} />
           <p className={styles.hero__desc}>
             The centralised platform for AI-powered eLearning content creation.
             Manage prompts as code, enforce brand consistency, and generate production-ready courses at scale.

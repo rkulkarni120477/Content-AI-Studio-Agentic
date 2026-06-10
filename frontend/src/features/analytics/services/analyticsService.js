@@ -31,5 +31,5 @@ export const analyticsService = {
   exportAudit:          (p)  => api.download(ANALYTICS.AUDIT_EXPORT, { params: p }),
   listUsers:            ()   => api.get(USERS.LIST),
   createUser:           (d)  => api.post(USERS.CREATE, d),
-  toggleUserActive:     (id) => api.post(USERS.TOGGLE_ACTIVE(id)),
+  toggleUserActive:     (id, isActive) => api.put(USERS.TOGGLE_ACTIVE(id), { is_active: isActive }),
 };

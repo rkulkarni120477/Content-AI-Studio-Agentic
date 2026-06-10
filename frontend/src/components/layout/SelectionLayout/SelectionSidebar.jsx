@@ -6,6 +6,12 @@ import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
+import MultiSelect from '@components/common/MultiSelect/MultiSelect';
+import AppBrand from '@components/common/AppBrand/AppBrand';
+import {
+  CLUSTER_PROMPT_API_MESSAGE,
+  isClusterPromptApiAvailable,
+} from '@features/clusterPrompt/clusterPromptApiDeps';
 import styles from './SelectionSidebar.module.scss';
 
 const ROLE_COLORS = {
@@ -46,6 +52,8 @@ export default function SelectionSidebar({
   const [showNewCluster, setShowNewCluster] = useState(false);
   const [showNewCourse, setShowNewCourse] = useState(false);
   const [form, setForm] = useState({ name: '', client: '', description: '' });
+  const [copyPromptIds, setCopyPromptIds] = useState([]);
+  const clusterPromptApiReady = isClusterPromptApiAvailable();
 
   function handleSignOut() {
     logout();
@@ -54,6 +62,7 @@ export default function SelectionSidebar({
 
   function resetForm() {
     setForm({ name: '', client: '', description: '' });
+    setCopyPromptIds([]);
   }
 
   async function submitCreate(e) {
@@ -67,10 +76,15 @@ export default function SelectionSidebar({
       });
       setShowNewProject(false);
     } else if (variant === 'cluster' && onCreateCluster) {
-      await onCreateCluster({
+      const payload = {
         name: form.name.trim(),
         description: form.description.trim() || null,
-      });
+      };
+      // copy_prompt_ids requires GET /cluster-prompts + POST field in Swagger — not available yet
+      if (clusterPromptApiReady && copyPromptIds.length) {
+        payload.copy_prompt_ids = copyPromptIds;
+      }
+      await onCreateCluster(payload);
       setShowNewCluster(false);
     } else if (variant === 'course' && onCreateCourse) {
       await onCreateCourse({
@@ -87,13 +101,7 @@ export default function SelectionSidebar({
 
   return (
     <aside className={styles.sidebar} aria-label="Selection navigation">
-      <div className={styles.brand}>
-        <span className={styles.brand__logo} aria-hidden="true">🎓</span>
-        <div>
-          <div className={styles.brand__title}>Content AI Studio</div>
-          <div className={styles.brand__tag}>Enterprise AI Platform</div>
-        </div>
-      </div>
+      <AppBrand />
 
       <div className={styles.userPill}>
         <div className={styles.userPill__label}>Signed in as</div>
@@ -113,16 +121,16 @@ export default function SelectionSidebar({
 
       {variant === 'cluster' && (
         <div className={styles.navRow}>
-          <Button variant="ghost" size="sm" fullWidth onClick={goDashboard}>
+          <button type="button" className={styles.navBtn} onClick={goDashboard}>
             ← Projects
-          </Button>
+          </button>
         </div>
       )}
 
       {variant === 'course' && (
         <div className={styles.navRow3}>
-          <Button variant="ghost" size="sm" onClick={goDashboard}>← Projects</Button>
-          <Button variant="ghost" size="sm" onClick={goClusters}>← Clusters</Button>
+          <button type="button" className={styles.navBtn} onClick={goDashboard}>← Projects</button>
+          <button type="button" className={styles.navBtn} onClick={goClusters}>← Clusters</button>
         </div>
       )}
 
@@ -159,9 +167,9 @@ export default function SelectionSidebar({
       )}
 
       {isAdmin && variant === 'project' && (
-        <Button variant="ghost" size="sm" fullWidth className={styles.repoBtn} onClick={() => navigate(ROUTES.CENTRAL)}>
+        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.CENTRAL)}>
           🗄️ Repository
-        </Button>
+        </button>
       )}
 
       {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && (
@@ -176,6 +184,18 @@ export default function SelectionSidebar({
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
               </label>
+              <MultiSelect
+                label="Choose Cluster Prompts"
+                hint={
+                  clusterPromptApiReady
+                    ? 'Select cluster prompts to auto-inject into the Style context for every course in this cluster. Optional.'
+                    : `${CLUSTER_PROMPT_API_MESSAGE} Selection is preserved in UI only until APIs are available.`
+                }
+                options={[]}
+                value={copyPromptIds}
+                onChange={setCopyPromptIds}
+                disabled={!clusterPromptApiReady}
+              />
               <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Cluster</Button>
             </form>
           )}
@@ -201,9 +221,9 @@ export default function SelectionSidebar({
       )}
 
       <div className={styles.footer}>
-        <Button variant="ghost" size="sm" fullWidth onClick={handleSignOut}>
+        <button type="button" className={styles.navBtn} onClick={handleSignOut}>
           🚪 Sign Out
-        </Button>
+        </button>
       </div>
     </aside>
   );

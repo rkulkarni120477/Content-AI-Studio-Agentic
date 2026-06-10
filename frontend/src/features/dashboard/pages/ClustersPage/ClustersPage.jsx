@@ -13,10 +13,13 @@ import StreamlitCard from '@components/streamlit/StreamlitCard/StreamlitCard';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import EditEntityModal from '@features/dashboard/components/EditEntityModal/EditEntityModal';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
+import ClusterPromptManager from '@components/cluster/ClusterPromptManager/ClusterPromptManager';
+import Button from '@components/common/Button/Button';
 import { useAuth } from '@hooks/useAuth';
 import { ROUTES } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import gridStyles from '@features/dashboard/styles/selectionGrid.module.scss';
+import pageStyles from './ClustersPage.module.scss';
 
 export default function ClustersPage() {
   const { projectId } = useParams();
@@ -30,6 +33,7 @@ export default function ClustersPage() {
   const [editModal, setEditModal] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [cpMgrOpen, setCpMgrOpen] = useState(false);
 
   const pid = Number(projectId);
   const canManage = hasPermission('course.create') || isAdmin;
@@ -100,10 +104,27 @@ export default function ClustersPage() {
         createLoading,
       }}
     >
-      <SelectionPageHeader
-        title="Select Cluster"
-        subtitle="Choose a domain cluster to browse its courses."
-      />
+      <div className={pageStyles.headerRow}>
+        <SelectionPageHeader
+          eyebrow={`Project: ${selProj.name}`}
+          title="Select Cluster"
+          subtitle="Choose a domain cluster to browse its courses."
+        />
+        {canManage && (
+          <Button
+            type="button"
+            variant="primary"
+            className={pageStyles.cpBtn}
+            onClick={() => setCpMgrOpen((v) => !v)}
+          >
+            ➕ Cluster Prompt
+          </Button>
+        )}
+      </div>
+
+      {cpMgrOpen && canManage && (
+        <ClusterPromptManager clusters={clusters?.items || []} />
+      )}
 
       {clusters?.items?.length === 0 ? (
         <EmptyState title="No clusters" message="Create a cluster using the sidebar panel." />

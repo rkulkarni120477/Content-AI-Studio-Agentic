@@ -31,14 +31,10 @@ export const CLUSTERS = {
 // ─── Courses ──────────────────────────────────────────────────────────────────
 export const COURSES = {
   GET:              (id)      => `/api/v1/courses/${id}`,
-  CREATE:           '/api/v1/courses',
   UPDATE:           (id)      => `/api/v1/courses/${id}`,
   DELETE:           (id)      => `/api/v1/courses/${id}`,
-  SET_ACTIVE_CDD:   (id)      => `/api/v1/courses/${id}/active-cdd`,
-  SET_ACTIVE_BP:    (id)      => `/api/v1/courses/${id}/active-blueprint`,
   USERS:            (id)      => `/api/v1/courses/${id}/users`,
   UNASSIGN_USER:    (id, user) => `/api/v1/courses/${id}/users/${encodeURIComponent(user)}`,
-  VALIDATE:         (id)      => `/api/v1/courses/${id}/validate`,
   ACTIVE_CDD:       (id)      => `/api/v1/courses/${id}/active-cdd`,
 };
 
@@ -48,7 +44,7 @@ export const USERS = {
   GET:              (id)      => `/api/v1/users/${id}`,
   CREATE:           '/api/v1/users',
   UPDATE:           (id)      => `/api/v1/users/${id}`,
-  TOGGLE_ACTIVE:    (id)      => `/api/v1/users/${id}/toggle-active`,
+  TOGGLE_ACTIVE:    (id)      => `/api/v1/users/${id}/toggle`,
   REVIEWERS:        '/api/v1/users/reviewers',
 };
 
@@ -62,7 +58,6 @@ export const STYLES = {
   ACTIVATE:         (id)      => `/api/v1/styles/${id}/activate`,
   DEACTIVATE:       (id)      => `/api/v1/styles/${id}/deactivate`,
   ADD_DOCUMENTS:    (id)      => `/api/v1/styles/${id}/documents`,
-  VERSIONS:         (id)      => `/api/v1/styles/${id}/versions`,
   UNDERSTAND:       (id)      => `/api/v1/styles/${id}/understand`,
   REGENERATE:       (id)      => `/api/v1/styles/${id}/understand`,
 };
@@ -83,10 +78,10 @@ export const CDD = {
   LIST:             () => `/api/v1/cdd`,
   LIST_ALL:         '/api/v1/cdd',
   GET:              (id)       => `/api/v1/cdd/${id}`,
-  CREATE:           '/api/v1/cdd',
   GENERATE:         '/api/v1/cdd/generate',
   VERSIONS:         (id)       => `/api/v1/cdd/${id}/versions`,
   GET_VERSION:      (id, v)    => `/api/v1/cdd/${id}/versions/${v}`,
+  ACTIVATE_VERSION: (id, v)    => `/api/v1/cdd/${id}/versions/${v}/activate`,
   COMMIT_VERSION:   (id)       => `/api/v1/cdd/${id}/versions`,
   PIN:              (id)       => `/api/v1/cdd/${id}/pin`,
   SET_ACTIVE:       (id)       => `/api/v1/cdd/${id}/pin`,
@@ -100,6 +95,7 @@ export const BLUEPRINT = {
   GENERATE:         '/api/v1/blueprints/generate',
   VERSIONS:         (id)       => `/api/v1/blueprints/${id}/versions`,
   GET_VERSION:      (id, v)    => `/api/v1/blueprints/${id}/versions/${v}`,
+  ACTIVATE_VERSION: (id, v)    => `/api/v1/blueprints/${id}/versions/${v}/activate`,
   COMMIT_VERSION:   (id)       => `/api/v1/blueprints/${id}/versions`,
   PIN:              (id)       => `/api/v1/blueprints/${id}/pin`,
   SET_ACTIVE:       (id)       => `/api/v1/blueprints/${id}/pin`,
@@ -116,7 +112,7 @@ export const GENERATE = {
   MODULE_COMPLETION: (bpId)    => `/api/v1/blueprints/${bpId}/completion-status`,
   COURSE_COMPLETION: (courseId) => `/api/v1/generations/course/${courseId}/completion-status`,
   JOB_STATUS:       (jobId)    => `/api/v1/jobs/${jobId}`,
-  JOB_CANCEL:       (jobId)    => `/api/v1/jobs/${jobId}/cancel`,
+  JOB_CANCEL:       (jobId)    => `/api/v1/jobs/${jobId}`,
 };
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
@@ -153,15 +149,8 @@ export const WORKFLOW = {
   RESET_DRAFT:      (id)       => `/api/v1/workflow/blocks/${id}/reset-draft`,
   EVENTS:           (id)       => `/api/v1/workflow/blocks/${id}/events`,
   BULK_APPROVE:     '/api/v1/workflow/bulk-approve',
-  SLA_STATUS:       (id)       => `/api/v1/workflow/blocks/${id}/sla`,
   PENDING_REVIEWS:  '/api/v1/workflow/pending',
   ADMIN_BREAKDOWN:  '/api/v1/workflow/admin-breakdown',
-};
-
-// ─── Reviews ──────────────────────────────────────────────────────────────────
-export const REVIEWS = {
-  CREATE:           (blockId)  => `/api/v1/blocks/${blockId}/reviews`,
-  LIST:             (blockId)  => `/api/v1/blocks/${blockId}/reviews`,
 };
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
@@ -207,8 +196,6 @@ export const PLAGIARISM = {
 // ─── Export ───────────────────────────────────────────────────────────────────
 export const EXPORT = {
   GENERATION:       (genId)    => `/api/v1/generations/${genId}/export`,
-  COURSE:           (courseId) => `/api/v1/courses/${courseId}/export`,
-  PROMPT_DOWNLOAD:  '/api/v1/export/prompt',
 };
 
 // ─── Central Repository ───────────────────────────────────────────────────────

@@ -15,16 +15,6 @@
   @include custom-scrollbar(6px);
 }
 
-.brand {
-  @include flex-start;
-  gap: $space-3;
-  padding: $space-2 0;
-
-  &__logo { font-size: 1.5rem; }
-  &__title { font-size: 1.2rem; font-weight: 800; color: $color-white; letter-spacing: -0.02em; }
-  &__tag { font-size: 0.65rem; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #a5b4fc; }
-}
-
 .userPill {
   background: rgba(255, 255, 255, 0.13);
   border: 1px solid rgba(165, 180, 252, 0.25);
@@ -80,13 +70,24 @@
 
 .backBtn {
   background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(165, 180, 252, 0.25);
+  border: 1px solid rgba(165, 180, 252, 0.35);
   border-radius: $radius-md;
   color: #e0e7ff;
   font-size: 0.68rem;
+  font-weight: 600;
   padding: $space-2 4px;
   cursor: pointer;
-  &:hover { background: rgba(255, 255, 255, 0.14); }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: $color-white;
+    border-color: rgba(165, 180, 252, 0.5);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
 }
 
 .divider {
@@ -139,11 +140,22 @@
 .signOut {
   width: 100%;
   background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(165, 180, 252, 0.25);
+  border: 1px solid rgba(165, 180, 252, 0.35);
   border-radius: $radius-md;
   color: #e0e7ff;
+  font-weight: 600;
   padding: $space-3;
   cursor: pointer;
   font-size: $font-size-sm;
-  &:hover { background: rgba(255, 255, 255, 0.14); }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: $color-white;
+    border-color: rgba(165, 180, 252, 0.5);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
 }

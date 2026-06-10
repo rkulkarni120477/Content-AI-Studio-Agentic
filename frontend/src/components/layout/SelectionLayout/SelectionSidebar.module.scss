@@ -15,29 +15,28 @@
   @include custom-scrollbar(6px);
 }
 
-.brand {
-  @include flex-start;
-  gap: $space-3;
-  padding: $space-4 0 $space-2;
-  text-align: left;
+.navBtn {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-radius: $radius-md;
+  color: #e0e7ff;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  padding: $space-2 $space-3;
+  cursor: pointer;
+  text-align: center;
+  transition: background $transition-fast, color $transition-fast;
 
-  &__logo { font-size: 1.75rem; }
-
-  &__title {
-    font-size: 1.25rem;
-    font-weight: 800;
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
     color: $color-white;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
+    border-color: rgba(165, 180, 252, 0.5);
   }
 
-  &__tag {
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: #a5b4fc;
-    margin-top: 2px;
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
   }
 }
 
@@ -101,8 +100,14 @@
 }
 
 .navRow3 {
-  flex-wrap: wrap;
-  button { flex: 1; min-width: 0; font-size: 0.72rem !important; padding: $space-2 !important; }
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $space-2;
+
+  .navBtn {
+    font-size: 0.72rem;
+    padding: $space-2 4px;
+  }
 }
 
 .divider {
@@ -155,8 +160,6 @@
   font-size: $font-size-sm;
   resize: vertical;
 }
-
-.repoBtn { margin-top: $space-1; }
 
 .footer {
   margin-top: auto;
