@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
