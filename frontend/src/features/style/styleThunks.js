@@ -71,41 +71,27 @@ export const deactivateStyleThunk = createAsyncThunk(
 
 export const fetchDocumentsThunk = createAsyncThunk(
   'style/fetchDocuments',
-  async (_, { getState, rejectWithValue }) => {
-    try {
-      const state = getState();
-      const courseId = state?.dashboard?.selectedCourse?.id;
-      const projectId = state?.dashboard?.selectedProject?.id;
-      return await styleService.listAllDocuments();
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  async (_, { rejectWithValue }) => {
+    try { return await styleService.listAllDocuments(); }
+    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
 export const uploadDocumentsThunk = createAsyncThunk(
   'style/uploadDocuments',
-  async ({ files, sourceType }, { getState, rejectWithValue }) => {
+  async ({ files, sourceType }, { rejectWithValue }) => {
     try {
-      const state = getState();
-      const courseId = state?.dashboard?.selectedCourse?.id;
-      const projectId = state?.dashboard?.selectedProject?.id;
-      if (!courseId || !projectId) {
-        return rejectWithValue('Select a course before uploading documents.');
-      }
-
       const uploaded = [];
-      // Backend expects one file per request with required course_id and project_id.
       for (const file of files) {
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('course_id', String(courseId));
-        formData.append('project_id', String(projectId));
         formData.append('source_type', sourceType || 'reference');
         const doc = await styleService.uploadDocuments(formData);
         uploaded.push(doc);
       }
 
       toast.success(`${uploaded.length} document(s) uploaded.`);
-      const refreshed = await styleService.listDocuments(courseId, projectId);
+      const refreshed = await styleService.listAllDocuments();
       return refreshed;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },

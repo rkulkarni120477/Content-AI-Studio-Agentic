@@ -184,13 +184,14 @@ def get_module_completion_status(db, blueprint_id: int) -> dict:
     Used to gate module assessment generation — all lessons must be
     complete before the assessment can be generated.
 
-    Returns { total_lessons, generated_lessons, completed, lesson_labels }
+    Returns { total_lessons, generated_lessons, completed, lesson_labels, missing_lesson_labels }
     """
     result = {
         "total_lessons":    0,
         "generated_lessons": 0,
         "completed":        False,
         "lesson_labels":    [],
+        "missing_lesson_labels": [],
     }
     try:
         from promptops_app.database import Generation, get_active_blueprint_version
@@ -208,13 +209,13 @@ def get_module_completion_status(db, blueprint_id: int) -> dict:
         gens       = db.query(Generation).filter(Generation.blueprint_id == blueprint_id).all()
         gen_topics = {g.topic.lower() for g in gens}
 
-        generated = sum(
-            1 for lc in lesson_comps
-            if any(lc["label"].lower() in gt or gt in lc["label"].lower()
-                   for gt in gen_topics)
-        )
-        result["generated_lessons"] = generated
-        result["completed"] = generated >= result["total_lessons"] > 0
+        def _is_generated(label: str) -> bool:
+            ll = label.lower()
+            return any(ll in gt or gt in ll for gt in gen_topics)
+
+        result["generated_lessons"] = sum(1 for lc in lesson_comps if _is_generated(lc["label"]))
+        result["missing_lesson_labels"] = [lc["label"] for lc in lesson_comps if not _is_generated(lc["label"])]
+        result["completed"] = result["generated_lessons"] >= result["total_lessons"] > 0
 
     except Exception:
         pass

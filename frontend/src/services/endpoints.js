@@ -43,7 +43,6 @@ export const USERS = {
   LIST:             '/api/v1/users',
   GET:              (id)      => `/api/v1/users/${id}`,
   CREATE:           '/api/v1/users',
-  UPDATE:           (id)      => `/api/v1/users/${id}`,
   TOGGLE_ACTIVE:    (id)      => `/api/v1/users/${id}/toggle`,
   REVIEWERS:        '/api/v1/users/reviewers',
 };
@@ -161,7 +160,6 @@ export const PROMPTS = {
   UPDATE:           (id)       => `/api/v1/prompts/${id}`,
   VERSIONS:         (id)       => `/api/v1/prompts/${id}/versions`,
   COMMIT_VERSION:   (id)       => `/api/v1/prompts/${id}/versions`,
-  SET_ACTIVE:       (id, v)    => `/api/v1/prompts/${id}/versions/${v}/deploy`,
   AI_GENERATE:      '/api/v1/prompts/generate',
   AI_SUGGEST:       '/api/v1/prompts/suggest',
 };

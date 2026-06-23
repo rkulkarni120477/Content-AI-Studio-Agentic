@@ -51,16 +51,6 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         api_model_id="gpt-4o",
         is_default=True,
     ),
-    ModelDef(
-        display_name="GPT-5.5",
-        description=(
-            "Maximum capability for complex, long-form, and highly structured "
-            "course content that demands premium reasoning."
-        ),
-        tags=("premium", "reasoning"),
-        provider="openai",
-        api_model_id="gpt-4o",
-    ),
     # ── AWS Bedrock Models ─────────────────────────────────────────────────
     ModelDef(
         display_name="Claude Sonnet 4.5 (Bedrock)",

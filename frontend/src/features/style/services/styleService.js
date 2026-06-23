@@ -11,13 +11,6 @@ export const styleService = {
   deactivateStyle:  (id)         => api.post(STYLES.DEACTIVATE(id)),
   uploadStyleDocs:  (id, formData) => api.upload(DOCUMENTS.STYLE_DOCS(id), formData),
   regenerateStyle:  (id, body = {}) => api.post(STYLES.UNDERSTAND(id), body),
-  listDocuments:    async (courseId, projectId) => {
-    const params = { page: 1, page_size: 500 };
-    if (courseId) params.course_id = courseId;
-    if (projectId) params.project_id = projectId;
-    const res = await api.get(DOCUMENTS.LIST, { params });
-    return res.items || [];
-  },
   /** Fetch full document library (paginated) for style file picker. */
   listAllDocuments: async () => {
     const pageSize = 100;

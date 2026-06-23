@@ -211,6 +211,10 @@ function formatApiDetail(detail) {
 
 export function extractErrorMessage(error) {
   if (typeof error === 'string') return error;
+  // Custom AppError envelope: { error: { code, message, detail } } — see app/main.py.
+  const appError = error?.response?.data?.error ?? error?.data?.error;
+  if (appError?.message) return appError.message;
+
   const detail = error?.response?.data?.detail
     ?? error?.data?.detail
     ?? error?.detail;

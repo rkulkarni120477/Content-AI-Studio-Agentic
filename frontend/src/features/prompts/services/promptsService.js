@@ -23,7 +23,6 @@ export const promptsService = {
   updatePrompt: (id, d) => api.put(PROMPTS.UPDATE(id), d),
   getVersions: (id) => api.get(PROMPTS.VERSIONS(id)),
   commitVersion: (id, d) => api.post(PROMPTS.COMMIT_VERSION(id), d),
-  setActive: (id, v) => api.post(PROMPTS.SET_ACTIVE(id, v)),
   aiSuggest: (data) => api.post(PROMPTS.AI_SUGGEST, data),
   aiGenerate: (data) => api.post(PROMPTS.AI_GENERATE, data),
 };

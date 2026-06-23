@@ -204,11 +204,21 @@ def clear_preset(
 @router.get(
     "/model-catalog",
     summary="Get available LLM models",
-    description="Returns all configured models and the default. Used to populate the model selector.",
+    description=(
+        "Returns models whose provider credentials are actually configured "
+        "(i.e. usable right now), plus the default. Used to populate the model selector."
+    ),
 )
 def get_model_catalog(current_user=Depends(get_current_user)) -> dict:
-    """Return the LLM model catalog from core/models.py."""
+    """Return the LLM model catalog, filtered to providers with credentials configured."""
+    from app.core.config import settings as _cfg
     from promptops_app.core.models import MODEL_CATALOG, DEFAULT_MODEL_NAME
+
+    provider_ready = {
+        "openai": bool(_cfg.openai_api_key_value),
+        "bedrock": bool(_cfg.aws_access_key_value and _cfg.aws_secret_key_value),
+    }
+    available = [m for m in MODEL_CATALOG if provider_ready.get(m.provider)]
 
     models = [
         {
@@ -216,9 +226,11 @@ def get_model_catalog(current_user=Depends(get_current_user)) -> dict:
             "display_name": m.display_name,
             "provider":     m.provider,
         }
-        for m in MODEL_CATALOG
+        for m in available
     ]
-    return {"models": models, "default": DEFAULT_MODEL_NAME}
+    default = DEFAULT_MODEL_NAME if DEFAULT_MODEL_NAME in {m.display_name for m in available} \
+        else (available[0].display_name if available else None)
+    return {"models": models, "default": default}
 
 
 @router.delete(

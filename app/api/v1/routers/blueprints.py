@@ -387,7 +387,7 @@ def get_blueprint_completion_status(
         completed=status.get("completed", False),
         generated_lessons=status.get("generated_lessons", 0),
         total_lessons=status.get("total_lessons", 0),
-        missing_lessons=status.get("lesson_labels", []),
+        missing_lessons=status.get("missing_lesson_labels", []),
     )
 
 

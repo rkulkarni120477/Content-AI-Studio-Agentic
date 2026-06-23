@@ -18,7 +18,32 @@
 # =============================================================================
 
 services:
- 
+
+  api:
+    build:
+      context: .
+      target: development
+
+    container_name: ${MAIN_API_CONTAINER_NAME}
+
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+    env_file:
+      - .env
+
+    ports:
+      - "${MAIN_API_PORT}:8000"
+
+    volumes:
+      - .:/app
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
   redis:
     image: redis:7-alpine
  

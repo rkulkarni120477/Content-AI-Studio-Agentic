@@ -46,7 +46,7 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[DocumentListItem]:
-    """Return documents in the library, optionally scoped to a course or project."""
+    """Return documents in the global library (not scoped to a course or project)."""
     from promptops_app.repositories import document_repository
 
     documents = document_repository.list_active_documents(db, limit=500)

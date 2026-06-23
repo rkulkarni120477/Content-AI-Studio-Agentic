@@ -359,9 +359,19 @@ def generate_style_intelligence(
             system_prompt=request_body.system_prompt_override,
         )
 
+    if isinstance(result, str) and result.startswith("ERROR: No documents or instructions"):
+        from app.core.exceptions import ValidationError
+        raise ValidationError(
+            "Add at least one document or custom instruction before generating Style "
+            "Understanding."
+        )
+
     if not result or (isinstance(result, str) and result.startswith("ERROR")):
+        # The service layer already produced a user-safe reason (auth/timeout/
+        # rate-limit/provider) — surface it instead of a generic message.
+        reason = result[len("ERROR:"):].strip() if isinstance(result, str) else ""
         raise LLMGenerationError(
-            "Style intelligence generation failed. Check LLM connectivity and retry."
+            reason or "Style intelligence generation failed. Check LLM connectivity and retry."
         )
 
     # Persist the result.

@@ -95,3 +95,30 @@ This starts Redis, the Celery worker, and the API server as containers (see `doc
 npm install
 npm run dev (in new terminal, it will execute the frontend)
 
+## Restart ################################3
+ When you'd actually need to rebuild/restart manually:
+  - Changed requirements.txt, pyproject.toml, or the Dockerfile → rebuild: docker compose up -d --build api
+  - Changed docker-compose.yml or .env → docker compose up -d (recreates affected containers)
+  - Container seems stuck/not picking up reload → docker restart contentai_api
+
+## Start fresh project ##############################
+ 1. Backend + supporting services (Docker) — from the project root:
+  docker compose up -d --build
+  This builds/starts everything: api (FastAPI, port 8000, hot-reload), promptops (Streamlit, port 8501), celery_worker, api_server
+  (Copyleaks webhook, port 8502), and redis. Postgres isn't in this compose file — you're using the remote RDS instance from
+  .env's DATABASE_URL.
+
+  Check it's healthy:
+  docker compose ps
+  curl http://localhost:8000/api/v1/health
+
+  2. Frontend — in a separate terminal:
+  cd frontend
+  npm install
+  npm run dev
+  Vite will print the local URL (typically http://localhost:5173). Open that in your browser.
+
+  That's it — open the Vite URL, log in, and you're running fresh. For day-to-day work after this initial start, you don't need to
+  redo any of this; just edit files and hard-refresh the browser per what I gave you earlier.
+
+  To stop everything later: docker compose down (add -v only if you intentionally want to wipe the redis volume too).
