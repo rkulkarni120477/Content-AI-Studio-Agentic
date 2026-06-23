@@ -245,17 +245,20 @@ Course Details:
 
 Course Structure
 
-Module no.: Module name
+Module 1: Module name
+(Replace "1" with the actual module number — do not write "Module no." literally.)
 **Duration:**
 **Goal:**
 **Lessons:**
-• **Lesson No.: Lesson Name**
+• **Lesson 1.1: Lesson Name**
+(Replace "1.1" with the actual lesson number — do not write "Lesson No." literally.)
 Duration:
 Learning Objective:
 
 [Continue lessons as per the need]
 
-**Module no. Assessment:**
+**Module 1 Assessment:**
+(Replace "1" with the actual module number.)
 • **Title:**
 • **Duration:**
 • **Type:**

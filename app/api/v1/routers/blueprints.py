@@ -119,7 +119,7 @@ def generate_blueprint(
     from promptops_app.parsers.blueprint_parser import (
         parse_blueprint_components, get_blueprint_prompts,
     )
-    from promptops_app.parsers.cdd_parser import extract_cdd_summary
+    from promptops_app.parsers.cdd_parser import extract_cdd_summary, extract_module_section
     from promptops_app.prompts.prompt_builder import build_prompt
     from promptops_app.repositories import blueprint_repository, cdd_repository, style_repository
     from promptops_app.repositories.course_repository import set_active_blueprint
@@ -142,7 +142,15 @@ def generate_blueprint(
     if cdd_id:
         cdd_version = get_active_cdd_version(db, cdd_id)
         if cdd_version:
-            cdd_context = extract_cdd_summary(cdd_version.full_content or "")
+            cdd_context = extract_cdd_summary(cdd_version)
+            module_section = extract_module_section(cdd_version, request_body.selected_module)
+            if module_section:
+                cdd_context = (
+                    f"{cdd_context}\n\n"
+                    f"**FULL DETAIL FOR {request_body.selected_module} "
+                    f"(verbatim from the CDD's Course Structure — lessons, objectives, "
+                    f"assessments defined for this module):**\n{module_section}"
+                )
 
     # Build prompt.
     style_context = ""
@@ -205,7 +213,9 @@ def generate_blueprint(
     mod_match = re.search(r"\d+", request_body.selected_module or "")
     module_number = int(mod_match.group()) if mod_match else 1
     new_bp = ModuleBlueprint(
+        cdd_id=cdd_id,
         title=bp_title,
+        module_title=f"Module {module_number}",
         module_number=module_number,
         active_version="v1",
         project_id=request_body.project_id,

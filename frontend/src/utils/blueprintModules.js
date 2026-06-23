@@ -2,7 +2,7 @@
  * Client-side CDD parsing for Blueprint module / course-end selectors (Streamlit parity).
  */
 
-const MARKER_RE = /(?:^|\n)\s*(?:##\s*)?(Course Details|Course Structure|Course Level Assessment|Validation)\s*:?\s*\n/gi;
+const MARKER_RE = /(?:^|\n)\s*#*\s*(Course Details|Course Structure|Course[\s-]+Level Assessment|Validation)\s*:?\s*\n/gi;
 
 export function parseCddFlat(rawText) {
   const result = {
@@ -17,7 +17,7 @@ export function parseCddFlat(rawText) {
   let m;
   const re = new RegExp(MARKER_RE.source, MARKER_RE.flags);
   while ((m = re.exec(text)) !== null) {
-    const label = m[1].trim().toLowerCase();
+    const label = m[1].trim().toLowerCase().replace(/[\s-]+/g, ' ');
     let key = null;
     if (label === 'course details') key = 'Course Details';
     else if (label === 'course structure') key = 'Course Structure';
@@ -37,8 +37,13 @@ export function parseCddFlat(rawText) {
   return result;
 }
 
+// Tolerates the legacy "Module no.: 1" form some older CDDs produced, and an
+// optional markdown heading prefix ("### Module 1"), in addition to the
+// standard "Module 1" form.
+const MODULE_NUM_RE = '#*\\s*[Mm]odule\\s*(?:[Nn]o\\.?\\s*:?\\s*)?(\\d+)';
+
 function extractModuleCountFromStructure(structure) {
-  const modRe = /(?:^|\n)\s*[Mm]odule\s+(\d+)/g;
+  const modRe = new RegExp(`(?:^|\\n)\\s*${MODULE_NUM_RE}`, 'g');
   let max = 0;
   let match;
   while ((match = modRe.exec(structure || '')) !== null) {
@@ -56,7 +61,7 @@ export function buildModuleOptions(cddContent, existingModuleNumbers = new Set()
   const assessment = flat['Course Level Assessment'] || '';
   const options = [];
 
-  const modTitleRe = /(?:^|\n)\s*[Mm]odule\s+(\d+)[:\s\-—]+([^\n]+)/g;
+  const modTitleRe = new RegExp(`(?:^|\\n)\\s*${MODULE_NUM_RE}[:\\s\\-—]+([^\\n]+)`, 'g');
   const modMatches = [...structure.matchAll(modTitleRe)];
   if (modMatches.length > 0) {
     modMatches.forEach((mm) => {
