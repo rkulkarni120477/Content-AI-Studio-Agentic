@@ -218,7 +218,7 @@ def delete_style(
 )
 async def append_style_documents(
     style_id: int,
-    files: list[UploadFile] | None = File(default=None),
+    files: list[UploadFile] = File(default=None),
     document_ids: str = Form(
         default="",
         description="JSON array of document library IDs to link, e.g. [1, 2, 3]",
@@ -231,6 +231,7 @@ async def append_style_documents(
     current_user=Depends(require_permission("style.upload")),
 ) -> StyleDocumentUploadResponse:
     """Append library documents and/or newly uploaded files to a style."""
+    import io
     import json
     from datetime import datetime, timezone
 
@@ -255,16 +256,10 @@ async def append_style_documents(
     for upload in files or []:
         raw_bytes = await upload.read()
 
-        class _FakeST:
-            name = upload.filename
+        file_obj = io.BytesIO(raw_bytes)
+        file_obj.name = upload.filename
 
-            def read(self):
-                return raw_bytes
-
-            def getvalue(self):
-                return raw_bytes
-
-        name, content, err = _parse_uploaded_file(_FakeST())
+        name, content, err = _parse_uploaded_file(file_obj)
 
         if err:
             errors.append(f"{upload.filename}: {err}")

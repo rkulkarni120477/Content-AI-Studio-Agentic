@@ -63,14 +63,14 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
     ),
     # ── AWS Bedrock Models ─────────────────────────────────────────────────
     ModelDef(
-        display_name="Claude Sonnet 4.6 (Bedrock)",
+        display_name="Claude Sonnet 4.5 (Bedrock)",
         description=(
             "Anthropic Claude Sonnet on AWS Bedrock — excellent structured "
             "outputs, instruction-following, and JSON fidelity."
         ),
         tags=("structured",),
         provider="bedrock",
-        api_model_id="global.anthropic.claude-sonnet-4-6-20250929-v1:0",
+        api_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     ),
     ModelDef(
         display_name="Claude Haiku 4.5 (Bedrock)",
@@ -98,7 +98,8 @@ BEDROCK_MODELS: tuple[ModelDef, ...] = tuple(
 # Backward-compatible aliases — maps an old display_name stored in cookies /
 # session state to its new canonical display_name.
 _COMPAT_ALIASES: dict[str, str] = {
-    "Sonnet 4.5 (Bedrock)": "Claude Sonnet 4.6 (Bedrock)",
+    "Sonnet 4.5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
+    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
 }
 
 _DEFAULT: ModelDef = next((m for m in MODEL_CATALOG if m.is_default), MODEL_CATALOG[0])
