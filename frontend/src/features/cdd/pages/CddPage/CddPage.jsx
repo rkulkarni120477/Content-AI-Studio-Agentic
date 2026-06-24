@@ -8,6 +8,7 @@ import {
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
   activateCddVersionThunk,
 } from '@features/cdd/cddThunks';
+import { cddService } from '@features/cdd/services/cddService';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
   selectCddLoading, selectCddGenerating, selectCddError,
@@ -25,6 +26,8 @@ import { downloadBlob, formatDate } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
+import CddContentView from '@components/cdd/CddContentView/CddContentView';
+import { patchCddBlock } from '@utils/cddContent';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
@@ -64,6 +67,9 @@ export default function CddPage() {
   const [viewCddId, setViewCddId] = useState(null);
   const [showVersionModal, setShowVersionModal] = useState(false);
   const [selectedCddId, setSelectedCddId] = useState(null);
+  const [viewVersion, setViewVersion] = useState(null);
+  const [versionDetail, setVersionDetail] = useState(null);
+  const [savingBlock, setSavingBlock] = useState(false);
 
   const generateForm = useForm({
     resolver: zodResolver(createCddSchema),
@@ -114,6 +120,37 @@ export default function CddPage() {
   }, [activeCdd, dispatch]);
 
   useEffect(() => {
+    if (displayCdd?.active_version) {
+      setViewVersion(displayCdd.active_version);
+    }
+  }, [displayCdd?.id, displayCdd?.active_version]);
+
+  useEffect(() => {
+    if (!displayCdd?.id || !viewVersion) {
+      setVersionDetail(null);
+      return;
+    }
+    let cancelled = false;
+    async function loadVer() {
+      try {
+        const ver = await cddService.getVersion(displayCdd.id, viewVersion);
+        if (!cancelled) setVersionDetail(ver);
+      } catch {
+        if (!cancelled) {
+          setVersionDetail(displayCdd.active_content || {
+            full_content: displayCdd.active_content?.full_content
+              || displayCdd.active_version?.full_content
+              || '',
+            sections: displayCdd.active_content?.sections,
+          });
+        }
+      }
+    }
+    loadVer();
+    return () => { cancelled = true; };
+  }, [displayCdd, viewVersion]);
+
+  useEffect(() => {
     async function loadSaved() {
       if (!selProject?.id) return;
       try {
@@ -159,15 +196,43 @@ export default function CddPage() {
 
   async function onCommitVersion(data) {
     if (!selectedCddId || !displayCdd) return;
-    const content = displayCdd.active_content?.full_content
+    const content = versionDetail?.full_content
+      || displayCdd.active_content?.full_content
       || displayCdd.active_version?.full_content
       || '';
+    const sections = versionDetail?.sections || displayCdd.active_content?.sections || {};
     await dispatch(commitCddVersionThunk({
       cddId: selectedCddId,
-      data: { ...data, full_content: content },
+      data: { ...data, full_content: content, sections },
     }));
     setShowVersionModal(false);
     versionForm.reset();
+    dispatch(fetchCddVersionsThunk(selectedCddId));
+  }
+
+  async function onSaveCddBlock({ blockKey, content, reason }) {
+    if (!displayCdd?.id) return;
+    setSavingBlock(true);
+    try {
+      const fullContent = versionDetail?.full_content
+        || displayCdd.active_content?.full_content
+        || '';
+      const sectionsObj = versionDetail?.sections || displayCdd.active_content?.sections || {};
+      const patched = patchCddBlock(fullContent, sectionsObj, blockKey, content);
+      await dispatch(commitCddVersionThunk({
+        cddId: displayCdd.id,
+        data: {
+          tag: `edit-${blockKey.replace(/\s+/g, '-').toLowerCase()}`,
+          reason,
+          full_content: patched.full_content,
+          sections: patched.sections,
+        },
+      })).unwrap();
+      dispatch(fetchCddVersionsThunk(displayCdd.id));
+      dispatch(fetchCddsThunk(courseId));
+    } finally {
+      setSavingBlock(false);
+    }
   }
 
   async function onExport(format) {
@@ -215,6 +280,12 @@ export default function CddPage() {
   const stylePinLabel = selectedStyle
     ? (selectedStyle.is_active ? 'active style' : 'manually selected')
     : null;
+
+  const previewFullContent = versionDetail?.full_content
+    || displayCdd?.active_content?.full_content
+    || displayCdd?.active_version?.full_content
+    || '';
+  const previewSections = versionDetail?.sections || displayCdd?.active_content?.sections;
 
   return (
     <PageContainer
@@ -432,11 +503,39 @@ export default function CddPage() {
                         <div className={styles.activeContent__actions}>
                           <Button variant="ghost" size="sm" onClick={() => onExport('markdown')}>↓ MD</Button>
                           <Button variant="ghost" size="sm" onClick={() => onExport('docx')}>↓ DOCX</Button>
+                          <Button variant="ghost" size="sm" onClick={handleDownloadPrompt}>⬇️ Prompt</Button>
                           <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
                             + Save Version
                           </Button>
                         </div>
                       </div>
+
+                      {versions.length > 0 && (
+                        <div className={styles.versionRow}>
+                          <Select
+                            label="View Version"
+                            options={versions.map((v) => ({
+                              value: v.version,
+                              label: `${v.version}${v.is_active ? ' (active)' : ''}`,
+                            }))}
+                            value={viewVersion || displayCdd.active_version || ''}
+                            onChange={(e) => setViewVersion(e.target.value)}
+                          />
+                          {viewVersion && viewVersion !== displayCdd.active_version && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => dispatch(activateCddVersionThunk({
+                                cddId: displayCdd.id,
+                                version: viewVersion,
+                                courseId: Number(courseId),
+                              }))}
+                            >
+                              Set as Active Version
+                            </Button>
+                          )}
+                        </div>
+                      )}
 
                       {versions.length > 0 && (
                         <div className={styles.versions}>
@@ -446,13 +545,8 @@ export default function CddPage() {
                               key={v.version}
                               type="button"
                               className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}
-                              title={v.is_active ? 'Active version' : `Set ${v.version} as active`}
-                              disabled={v.is_active}
-                              onClick={() => dispatch(activateCddVersionThunk({
-                                cddId: displayCdd.id,
-                                version: v.version,
-                                courseId: Number(courseId),
-                              }))}
+                              title={v.is_active ? 'Active version' : `View ${v.version}`}
+                              onClick={() => setViewVersion(v.version)}
                             >
                               {v.version}
                             </button>
@@ -460,13 +554,13 @@ export default function CddPage() {
                         </div>
                       )}
 
-                      {(displayCdd.active_content?.full_content || displayCdd.active_version?.full_content) && (
-                        <div className={styles.contentPreview}>
-                          <pre className={styles.contentPreview__text}>
-                            {displayCdd.active_content?.full_content || displayCdd.active_version?.full_content}
-                          </pre>
-                        </div>
-                      )}
+                      <CddContentView
+                        fullContent={previewFullContent}
+                        sections={previewSections}
+                        editable
+                        saving={savingBlock}
+                        onSaveBlock={onSaveCddBlock}
+                      />
                     </div>
 
                     <Button

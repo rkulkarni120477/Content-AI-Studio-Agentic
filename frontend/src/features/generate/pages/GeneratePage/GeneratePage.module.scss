@@ -400,6 +400,48 @@
     border-left: 2px solid $color-primary-light;
     margin-top: 4px;
   }
+
+  &__pct {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    margin-bottom: $space-2;
+  }
+}
+
+.progressBar {
+  height: 8px;
+  background: $color-gray-200;
+  border-radius: $radius-full;
+  overflow: hidden;
+  margin-bottom: $space-2;
+
+  &__fill {
+    height: 100%;
+    background: $color-primary;
+    transition: width 0.3s ease;
+  }
+}
+
+.jobActions {
+  display: flex;
+  gap: $space-2;
+  flex-wrap: wrap;
+  margin-top: $space-3;
+}
+
+.jobErrorDetail {
+  margin-top: $space-2;
+  font-size: $font-size-sm;
+
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: $color-gray-50;
+    padding: $space-3;
+    border-radius: $radius-md;
+    max-height: 200px;
+    overflow-y: auto;
+  }
 }
 
 .readyState {
@@ -506,6 +548,16 @@
     color: $color-gray-600;
     margin: 0;
     white-space: pre-wrap;
+  }
+  &__content {
+    font-size: $font-size-sm;
+    color: $color-gray-700;
+    margin: $space-3 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 400px;
+    overflow-y: auto;
+    @include custom-scrollbar;
   }
 }
 

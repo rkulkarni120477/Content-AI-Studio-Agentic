@@ -30,6 +30,7 @@ import {
   existingModuleNumbersForCdd,
   buildExtraInstructionsBlock,
 } from '@utils/blueprintModules';
+import { parseSectionsFromText } from '@utils/blueprintContent';
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { commitVersionSchema } from '@utils/validation';
 import { GENERATION_MODES } from '@utils/constants';
@@ -86,6 +87,7 @@ export default function BlueprintPage() {
   const [versionDetail, setVersionDetail] = useState(null);
   const [moduleConfirmed, setModuleConfirmed] = useState(false);
   const [showSaveVersion, setShowSaveVersion] = useState(false);
+  const [savingSection, setSavingSection] = useState(false);
 
   const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
 
@@ -331,6 +333,38 @@ export default function BlueprintPage() {
     setShowSaveVersion(false);
     versionForm.reset();
     dispatch(fetchBlueprintVersionsThunk(selectedBpId));
+  }
+
+  async function onSaveBlueprintSection({ sectionTitle, content, reason }) {
+    if (!displayBp?.id) return;
+    setSavingSection(true);
+    try {
+      const fullContent = versionDetail?.full_content
+        || displayBp.active_content?.full_content
+        || '';
+      let sections = versionDetail?.sections;
+      if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
+        sections = parseSectionsFromText(fullContent);
+      }
+      const updatedSections = { ...sections, [sectionTitle]: content };
+      const parts = Object.entries(updatedSections)
+        .filter(([, body]) => body?.trim())
+        .map(([title, body]) => `## ${title}\n${body.trim()}`);
+      const newFull = parts.join('\n\n');
+      await dispatch(commitBlueprintVersionThunk({
+        blueprintId: displayBp.id,
+        data: {
+          tag: `edit-${sectionTitle.replace(/\s+/g, '-').slice(0, 24).toLowerCase()}`,
+          reason,
+          full_content: newFull,
+          sections: updatedSections,
+        },
+      })).unwrap();
+      dispatch(fetchBlueprintVersionsThunk(displayBp.id));
+      dispatch(fetchBlueprintsThunk(courseId));
+    } finally {
+      setSavingSection(false);
+    }
   }
 
   async function onExport(format) {
@@ -727,6 +761,9 @@ export default function BlueprintPage() {
                       <BlueprintContentView
                         fullContent={previewFullContent}
                         sections={previewSections}
+                        editable
+                        saving={savingSection}
+                        onSaveSection={onSaveBlueprintSection}
                       />
 
                       <button

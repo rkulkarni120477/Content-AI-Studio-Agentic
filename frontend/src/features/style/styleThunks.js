@@ -1,7 +1,21 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { styleService } from './services/styleService';
+import { analyticsService } from '@features/analytics/services/analyticsService';
+import { computeDocumentRegistryStats } from '@utils/documentRegistry';
 import { extractErrorMessage } from '@utils/helpers';
 import toast from 'react-hot-toast';
+
+async function loadDocumentRegistry() {
+  const [documents, summary, uploadHistory] = await Promise.all([
+    styleService.listAllDocuments(),
+    analyticsService.getSummary().catch(() => null),
+    analyticsService.getDocumentUploadHistory({ limit: 100 }).catch(() => []),
+  ]);
+  return {
+    documents,
+    stats: computeDocumentRegistryStats(documents, summary, uploadHistory),
+  };
+}
 
 export const fetchStylesThunk = createAsyncThunk(
   'style/fetchStyles',
@@ -48,14 +62,21 @@ export const createStyleThunk = createAsyncThunk(
 
 export const activateStyleThunk = createAsyncThunk(
   'style/activate',
-  async (styleId, { getState, rejectWithValue }) => {
+  async ({ styleId, scope = 'course' }, { getState, rejectWithValue }) => {
     try {
       const state = getState();
-      const result = await styleService.activateStyle(styleId, {
-        course_id: state?.dashboard?.selectedCourse?.id ?? null,
-        project_id: state?.dashboard?.selectedProject?.id ?? null,
-      });
-      toast.success('Style activated.');
+      const courseId = state?.dashboard?.selectedCourse?.id ?? null;
+      const projectId = state?.dashboard?.selectedProject?.id ?? null;
+      let body = {};
+      if (scope === 'course') {
+        body = { course_id: courseId, project_id: projectId };
+      } else if (scope === 'project') {
+        body = { project_id: projectId };
+      }
+      // scope === 'global' → empty body activates globally (admin only in UI)
+      const result = await styleService.activateStyle(styleId, body);
+      const scopeLabel = scope === 'global' ? 'globally' : scope === 'project' ? 'for this project' : 'for this course';
+      toast.success(`Style activated ${scopeLabel}.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -72,7 +93,7 @@ export const deactivateStyleThunk = createAsyncThunk(
 export const fetchDocumentsThunk = createAsyncThunk(
   'style/fetchDocuments',
   async (_, { rejectWithValue }) => {
-    try { return await styleService.listAllDocuments(); }
+    try { return await loadDocumentRegistry(); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -90,9 +111,8 @@ export const uploadDocumentsThunk = createAsyncThunk(
         uploaded.push(doc);
       }
 
-      toast.success(`${uploaded.length} document(s) uploaded.`);
-      const refreshed = await styleService.listAllDocuments();
-      return refreshed;
+      toast.success(`${uploaded.length} document(s) added.`);
+      return await loadDocumentRegistry();
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -188,8 +208,8 @@ export const deleteDocumentThunk = createAsyncThunk(
   async (documentId, { rejectWithValue }) => {
     try {
       await styleService.deleteDocument(documentId);
-      toast.success('Document deleted.');
-      return { id: documentId };
+      toast.success('Document archived.');
+      return { id: documentId, ...(await loadDocumentRegistry()) };
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
