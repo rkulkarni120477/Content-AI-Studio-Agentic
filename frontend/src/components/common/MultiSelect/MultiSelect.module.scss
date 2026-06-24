@@ -119,6 +119,8 @@
     list-style: none;
     margin: 0;
     padding: $space-1 0;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     @include custom-scrollbar;
   }

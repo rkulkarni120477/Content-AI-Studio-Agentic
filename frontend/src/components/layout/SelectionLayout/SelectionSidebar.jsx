@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch } from '@app/hooks';
 import { setSelectedProject, setSelectedCluster, setSelectedCourse } from '@features/dashboard/dashboardSlice';
@@ -12,6 +12,8 @@ import {
   CLUSTER_PROMPT_API_MESSAGE,
   isClusterPromptApiAvailable,
 } from '@features/clusterPrompt/clusterPromptApiDeps';
+import { clusterPromptService } from '@features/clusterPrompt/clusterPromptService';
+import { promptLabel } from '@features/clusterPrompt/clusterPromptUtils';
 import styles from './SelectionSidebar.module.scss';
 
 const ROLE_COLORS = {
@@ -53,7 +55,19 @@ export default function SelectionSidebar({
   const [showNewCourse, setShowNewCourse] = useState(false);
   const [form, setForm] = useState({ name: '', client: '', description: '' });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
+  const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
+
+  useEffect(() => {
+    if (!clusterPromptApiReady || variant !== 'cluster' || !showNewCluster) return;
+    clusterPromptService.list()
+      .then((res) => {
+        setPromptOptions(
+          (res.items || []).map((p) => ({ value: String(p.id), label: promptLabel(p) })),
+        );
+      })
+      .catch(() => setPromptOptions([]));
+  }, [clusterPromptApiReady, variant, showNewCluster]);
 
   function handleSignOut() {
     logout();
@@ -80,9 +94,8 @@ export default function SelectionSidebar({
         name: form.name.trim(),
         description: form.description.trim() || null,
       };
-      // copy_prompt_ids requires GET /cluster-prompts + POST field in Swagger — not available yet
       if (clusterPromptApiReady && copyPromptIds.length) {
-        payload.copy_prompt_ids = copyPromptIds;
+        payload.copy_prompt_ids = copyPromptIds.map(Number);
       }
       await onCreateCluster(payload);
       setShowNewCluster(false);
@@ -191,7 +204,7 @@ export default function SelectionSidebar({
                     ? 'Select cluster prompts to auto-inject into the Style context for every course in this cluster. Optional.'
                     : `${CLUSTER_PROMPT_API_MESSAGE} Selection is preserved in UI only until APIs are available.`
                 }
-                options={[]}
+                options={promptOptions}
                 value={copyPromptIds}
                 onChange={setCopyPromptIds}
                 disabled={!clusterPromptApiReady}

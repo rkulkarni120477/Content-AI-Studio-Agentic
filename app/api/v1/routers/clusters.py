@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.cluster import (
     ClusterCreateRequest,
     ClusterListItem,
@@ -100,7 +100,7 @@ def create_cluster(
     current_user=Depends(require_permission("cluster.create")),
 ) -> ClusterRead:
     """Create a new cluster inside a project. Replaces cluster creation form in Streamlit."""
-    from promptops_app.database import Cluster, Project
+    from promptops_app.database import Cluster, ClusterPrompt, Project
 
     project = db.query(Project).filter(Project.id == project_id).first()
     if project is None:
@@ -113,11 +113,35 @@ def create_cluster(
         created_by=current_user.username,
     )
     db.add(cluster)
+    db.flush()  # obtain cluster.id for the clone below
+
+    # Clone selected ClusterPrompts into the new cluster (copy, not link —
+    # mirrors the Streamlit cluster_selection_page() create-cluster form).
+    if request_body.copy_prompt_ids:
+        source_prompts = (
+            db.query(ClusterPrompt)
+            .filter(
+                ClusterPrompt.id.in_(request_body.copy_prompt_ids),
+                ClusterPrompt.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+        for src in source_prompts:
+            db.add(ClusterPrompt(
+                cluster_id=cluster.id,
+                name=src.name,
+                description=src.description,
+                system_prompt=src.system_prompt,
+                user_prompt_template=src.user_prompt_template,
+                created_by=current_user.username,
+                is_active=True,
+            ))
+
     db.commit()
     db.refresh(cluster)
 
-    _log.info("cluster_created  user=%s  cluster_id=%d  project_id=%d  name=%s",
-              current_user.username, cluster.id, project_id, cluster.name)
+    _log.info("cluster_created  user=%s  cluster_id=%d  project_id=%d  name=%s  copied_prompts=%d",
+              current_user.username, cluster.id, project_id, cluster.name, len(request_body.copy_prompt_ids))
     return ClusterRead.model_validate(cluster)
 
 
@@ -174,7 +198,21 @@ def delete_cluster(
     current_user=Depends(require_permission("cluster.delete")),
 ) -> MessageResponse:
     """Soft-delete a cluster. Replaces cluster delete action in Streamlit."""
+    from promptops_app.database import Course
+
     cluster = _get_cluster_or_404(db, cluster_id)
+
+    active_course_count = (
+        db.query(Course)
+        .filter(Course.cluster_id == cluster_id, Course.is_active == True)  # noqa: E712
+        .count()
+    )
+    if active_course_count > 0:
+        raise ValidationError(
+            f"Cannot delete cluster '{cluster.name}' — it has {active_course_count} active course(s). "
+            "Move or remove those courses first."
+        )
+
     cluster.is_active = False
     db.commit()
 

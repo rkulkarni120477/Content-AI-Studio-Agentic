@@ -131,12 +131,10 @@ def generate_blueprint(
     _log.info("blueprint_generate_start  user=%s  course=%d  module=%s",
               current_user.username, request_body.course_id, request_body.selected_module)
 
-    # Resolve CDD context.
-    cdd_id = request_body.cdd_id
-    if not cdd_id:
-        from promptops_app.repositories import course_repository
-        course = course_repository.get_course_by_id(db, request_body.course_id)
-        cdd_id = course.active_cdd_id if course else None
+    # Resolve course (needed for cluster_id below) and CDD context.
+    from promptops_app.repositories import course_repository
+    course = course_repository.get_course_by_id(db, request_body.course_id)
+    cdd_id = request_body.cdd_id or (course.active_cdd_id if course else None)
 
     cdd_context = ""
     if cdd_id:
@@ -157,7 +155,7 @@ def generate_blueprint(
     if request_body.style_id:
         style = style_repository.get_style_by_id(db, request_body.style_id)
         if style:
-            style_context = build_style_context(db, style, cluster_id=None)
+            style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
 
     extra_block = request_body.extra_instructions or ""
     if style_context:

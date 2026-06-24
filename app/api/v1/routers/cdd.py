@@ -191,7 +191,7 @@ def generate_cdd(
     )
     from promptops_app.parsers.cdd_parser import parse_cdd_flat, parse_sections_from_text
     from promptops_app.repositories import cdd_repository, style_repository
-    from promptops_app.repositories.course_repository import set_active_cdd
+    from promptops_app.repositories.course_repository import get_course_by_id, set_active_cdd
     from promptops_app.services.audit_service import log_audit_event
     from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
@@ -210,11 +210,12 @@ def generate_cdd(
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
     else:
+        course = get_course_by_id(db, request_body.course_id)
         style_context = ""
         if request_body.style_id:
             style = style_repository.get_style_by_id(db, request_body.style_id)
             if style:
-                style_context = build_style_context(db, style, cluster_id=None)
+                style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
 
         extra_block = request_body.extra_instructions or ""
         if style_context:

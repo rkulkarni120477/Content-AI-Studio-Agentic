@@ -1,34 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAppSelector } from '@app/hooks';
 import { selectModelChoice } from '@features/dashboard/dashboardSlice';
-import {
-  CLUSTER_PROMPT_API_MESSAGE,
-  CLUSTER_PROMPT_REQUIRED_ENDPOINTS,
-  isClusterPromptApiAvailable,
-} from '@features/clusterPrompt/clusterPromptApiDeps';
-import BackendDependencyNotice from '@components/common/BackendDependencyNotice/BackendDependencyNotice';
+import { isClusterPromptApiAvailable } from '@features/clusterPrompt/clusterPromptApiDeps';
+import { clusterPromptService } from '@features/clusterPrompt/clusterPromptService';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
+import { extractErrorMessage } from '@utils/helpers';
 import styles from './ClusterPromptManager.module.scss';
 
 const NONE_CLUSTER = '';
-
-function promptLabel(p) {
-  const desc = p.description ? ` — ${p.description.slice(0, 40)}` : '';
-  return `${p.name}${desc}`;
-}
-
-function notifyApiRequired() {
-  toast.error(CLUSTER_PROMPT_API_MESSAGE);
-}
 
 export default function ClusterPromptManager({ clusters = [] }) {
   const modelChoice = useAppSelector(selectModelChoice) || 'GPT-5.4';
   const apiReady = isClusterPromptApiAvailable();
   const [tab, setTab] = useState(0);
 
+  const [aiLoading, setAiLoading] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiMode, setAiMode] = useState('generate');
   const [aiContext, setAiContext] = useState('');
@@ -40,9 +29,11 @@ export default function ClusterPromptManager({ clusters = [] }) {
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [userPrompt, setUserPrompt] = useState('');
+  const [createLoading, setCreateLoading] = useState(false);
 
   const [viewClusterId, setViewClusterId] = useState('unassigned');
-  const [viewPrompts] = useState([]);
+  const [viewPrompts, setViewPrompts] = useState([]);
+  const [viewLoading, setViewLoading] = useState(false);
 
   const clusterOptions = [
     { value: NONE_CLUSTER, label: '— None (unassigned) —' },
@@ -54,42 +45,101 @@ export default function ClusterPromptManager({ clusters = [] }) {
     ...clusters.map((c) => ({ value: String(c.id), label: c.name })),
   ];
 
-  function handleAiGenerate() {
-    if (!apiReady) {
-      notifyApiRequired();
-      return;
+  async function loadViewPrompts() {
+    if (!apiReady) return;
+    setViewLoading(true);
+    try {
+      const res = viewClusterId === 'unassigned'
+        ? await clusterPromptService.listUnassigned()
+        : await clusterPromptService.listForCluster(viewClusterId);
+      setViewPrompts(res.items || []);
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setViewLoading(false);
     }
+  }
+
+  useEffect(() => {
+    if (tab === 1) loadViewPrompts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, viewClusterId]);
+
+  async function handleAiGenerate() {
     if (!aiContext.trim()) {
       toast.error('Provide context or instructions before generating.');
-    }
-  }
-
-  function handleCreate(e) {
-    e.preventDefault();
-    if (!apiReady) {
-      notifyApiRequired();
       return;
     }
-    if (!name.trim()) toast.error('Prompt name is required.');
+    setAiLoading(true);
+    try {
+      const res = await clusterPromptService.aiGenerate({
+        mode: aiMode,
+        context: aiContext.trim(),
+        draft_system_prompt: aiMode === 'refine' ? draftSys : undefined,
+        draft_user_prompt_template: aiMode === 'refine' ? draftUsr : undefined,
+        model_choice: modelChoice,
+      });
+      setSystemPrompt(res.system_prompt || '');
+      setUserPrompt(res.user_prompt_template || '');
+      if (res.fallback_used) {
+        toast('AI returned plain text instead of JSON — loaded as System Prompt. Edit as needed.', { icon: '⚠️' });
+      } else {
+        toast.success('AI suggestion applied — review in the form below.');
+      }
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setAiLoading(false);
+    }
   }
 
-  function handleRemove() {
-    if (!apiReady) notifyApiRequired();
+  async function handleCreate(e) {
+    e.preventDefault();
+    if (!name.trim()) {
+      toast.error('Prompt name is required.');
+      return;
+    }
+    if (!systemPrompt.trim() && !userPrompt.trim()) {
+      toast.error('Provide at least a System Prompt or User Prompt Template.');
+      return;
+    }
+    setCreateLoading(true);
+    try {
+      await clusterPromptService.create({
+        cluster_id: assignClusterId ? Number(assignClusterId) : null,
+        name: name.trim(),
+        description: description.trim() || null,
+        system_prompt: systemPrompt.trim() || null,
+        user_prompt_template: userPrompt.trim() || null,
+      });
+      toast.success(`Cluster prompt '${name.trim()}' created!`);
+      setAssignClusterId(NONE_CLUSTER);
+      setName('');
+      setDescription('');
+      setSystemPrompt('');
+      setUserPrompt('');
+      if (tab === 1) loadViewPrompts();
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
+  async function handleRemove(prompt) {
+    if (!window.confirm(`Delete cluster prompt "${prompt.name}"?`)) return;
+    try {
+      await clusterPromptService.remove(prompt.id);
+      toast.success('Cluster prompt deleted');
+      loadViewPrompts();
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    }
   }
 
   return (
     <section className={styles.manager} aria-label="Cluster Prompt Manager">
       <div className={styles.manager__header}>🗂️ Cluster Prompt Manager</div>
-
-      {!apiReady && (
-        <div style={{ padding: '0 16px', paddingTop: 12 }}>
-          <BackendDependencyNotice
-            title="Backend dependency required"
-            message={CLUSTER_PROMPT_API_MESSAGE}
-            endpoints={CLUSTER_PROMPT_REQUIRED_ENDPOINTS}
-          />
-        </div>
-      )}
 
       <div className={styles.tabs} role="tablist">
         <button
@@ -181,7 +231,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
                     </label>
                   </>
                 )}
-                <Button type="button" variant="primary" size="sm" fullWidth onClick={handleAiGenerate}>
+                <Button type="button" variant="primary" size="sm" fullWidth onClick={handleAiGenerate} loading={aiLoading}>
                   ✨ Generate with AI
                 </Button>
                 <p className={styles.caption}>Model: {modelChoice}</p>
@@ -224,7 +274,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
                 placeholder="Apply the following guidelines: {style_context}"
               />
             </label>
-            <Button type="submit" variant="primary">
+            <Button type="submit" variant="primary" loading={createLoading}>
               💾 Create Cluster Prompt
             </Button>
           </form>
@@ -239,7 +289,9 @@ export default function ClusterPromptManager({ clusters = [] }) {
             value={viewClusterId}
             onChange={(e) => setViewClusterId(e.target.value)}
           />
-          {viewPrompts.length === 0 ? (
+          {viewLoading ? (
+            <p className={styles.empty}>Loading…</p>
+          ) : viewPrompts.length === 0 ? (
             <p className={styles.empty}>
               {viewClusterId === 'unassigned'
                 ? 'No unassigned cluster prompts yet.'
@@ -257,7 +309,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
                       )}
                     </div>
                   </div>
-                  <Button type="button" variant="ghost" size="sm" onClick={handleRemove}>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => handleRemove(p)}>
                     🗑️ Remove
                   </Button>
                 </div>
@@ -269,5 +321,3 @@ export default function ClusterPromptManager({ clusters = [] }) {
     </section>
   );
 }
-
-export { promptLabel };

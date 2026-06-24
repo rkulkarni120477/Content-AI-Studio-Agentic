@@ -95,7 +95,7 @@ This starts Redis, the Celery worker, and the API server as containers (see `doc
 npm install
 npm run dev (in new terminal, it will execute the frontend)
 
-## Restart ################################3
+## Restart ################################
  When you'd actually need to rebuild/restart manually:
   - Changed requirements.txt, pyproject.toml, or the Dockerfile → rebuild: docker compose up -d --build api
   - Changed docker-compose.yml or .env → docker compose up -d (recreates affected containers)

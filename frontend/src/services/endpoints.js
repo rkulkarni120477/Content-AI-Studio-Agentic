@@ -26,6 +26,16 @@ export const CLUSTERS = {
   UPDATE:           (id)      => `/api/v1/clusters/${id}`,
   DELETE:           (id)      => `/api/v1/clusters/${id}`,
   COURSES:          (id)      => `/api/v1/clusters/${id}/courses`,
+  PROMPTS:          (id)      => `/api/v1/clusters/${id}/cluster-prompts`,
+};
+
+// ─── Cluster Prompts ──────────────────────────────────────────────────────────
+export const CLUSTER_PROMPTS = {
+  LIST:             '/api/v1/cluster-prompts',
+  UNASSIGNED:       '/api/v1/cluster-prompts/unassigned',
+  CREATE:           '/api/v1/cluster-prompts',
+  DELETE:           (id)      => `/api/v1/cluster-prompts/${id}`,
+  AI_GENERATE:      '/api/v1/cluster-prompts/ai-generate',
 };
 
 // ─── Courses ──────────────────────────────────────────────────────────────────

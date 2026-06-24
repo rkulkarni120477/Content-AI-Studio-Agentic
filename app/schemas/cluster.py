@@ -11,6 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field
 class ClusterCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, examples=["Science Fundamentals"])
     description: Optional[str] = Field(default=None, max_length=2000)
+    copy_prompt_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "IDs of existing active ClusterPrompts to clone into this new cluster. "
+            "Prompts are copied (new rows), not linked by reference."
+        ),
+    )
 
 
 class ClusterUpdateRequest(BaseModel):

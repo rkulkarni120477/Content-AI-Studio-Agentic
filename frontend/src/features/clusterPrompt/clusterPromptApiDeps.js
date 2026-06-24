@@ -1,8 +1,8 @@
 /**
  * Cluster Prompt — backend API dependency registry.
  *
- * Swagger/OpenAPI is the source of truth. These endpoints are NOT present in the
- * current FastAPI Swagger spec. UI/workflow is preserved; persistence requires backend.
+ * Swagger/OpenAPI is the source of truth. These endpoints are now present in the
+ * FastAPI Swagger spec (app/api/v1/routers/cluster_prompts.py).
  */
 
 export const CLUSTER_PROMPT_REQUIRED_ENDPOINTS = [
@@ -15,9 +15,9 @@ export const CLUSTER_PROMPT_REQUIRED_ENDPOINTS = [
   { method: 'POST',   path: '/api/v1/projects/{project_id}/clusters', field: 'copy_prompt_ids', purpose: 'Copy prompts on cluster create' },
 ];
 
-/** Returns false until Cluster Prompt routes appear in Swagger. */
+/** Cluster Prompt routes are live in Swagger — always true now. */
 export function isClusterPromptApiAvailable() {
-  return false;
+  return true;
 }
 
 export const CLUSTER_PROMPT_API_MESSAGE =
