@@ -208,8 +208,13 @@ def generate_blueprint(
 
     # Persist blueprint.
     bp_title = f"{request_body.selected_module} Blueprint"
-    mod_match = re.search(r"\d+", request_body.selected_module or "")
-    module_number = int(mod_match.group()) if mod_match else 1
+    if request_body.is_course_end:
+        # Sentinel for course-level end items (capstones, etc.) — distinguishes
+        # them from real modules, which are always >= 1.
+        module_number = 0
+    else:
+        mod_match = re.search(r"\d+", request_body.selected_module or "")
+        module_number = int(mod_match.group()) if mod_match else 1
     new_bp = ModuleBlueprint(
         cdd_id=cdd_id,
         title=bp_title,
@@ -224,11 +229,25 @@ def generate_blueprint(
     db.commit()
     db.refresh(new_bp)
 
+    cdd_title = ""
+    if cdd_id:
+        cdd_row = cdd_repository.get_cdd_by_id(db, cdd_id)
+        cdd_title = cdd_row.title if cdd_row else ""
+
+    generation_params = {
+        "cdd_id": cdd_id,
+        "cdd_title": cdd_title,
+        "module_number": module_number,
+        "extra_instructions": request_body.extra_instructions or "",
+        "mode": "teacher" if request_body.teacher_mode else "student",
+    }
+
     version_record = BlueprintVersion(
         blueprint_id=new_bp.id,
         version="v1",
         full_content=raw_output,
         sections=json.dumps(sections),
+        generation_params=json.dumps(generation_params),
         change_reason="Initial AI generation",
         is_active=True,
         created_by=current_user.username,
@@ -407,6 +426,9 @@ def export_blueprint(
     current_user=Depends(require_permission("export.course")),
 ) -> Response:
     """Export the active blueprint version as a downloadable file."""
+    from promptops_app.core.llm_client import safe_json_loads
+    from promptops_app.parsers.blueprint_parser import _is_bp_section_hidden
+    from promptops_app.parsers.cdd_parser import _strip_ui_hidden_text, parse_sections_from_text
     from promptops_app.repositories import blueprint_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
@@ -418,9 +440,32 @@ def export_blueprint(
     if not ver:
         raise NotFoundError(f"Blueprint version '{bp.active_version}'", blueprint_id)
 
+    # Build export blocks from the same UI-visible sections as the renderer —
+    # filtered through _is_bp_section_hidden + _strip_ui_hidden_text so backend-only
+    # scaffolding (Step 1/5, Narrative, Modularity, "blueprint complete/ready") never
+    # leaks into the downloaded file.
+    raw_sections = safe_json_loads(ver.sections) if ver.sections else {}
+    if not raw_sections and ver.full_content:
+        raw_sections = parse_sections_from_text(ver.full_content)
+
+    export_blocks = []
+    for section_key, section_value in raw_sections.items():
+        if _is_bp_section_hidden(section_key):
+            continue
+        content = (section_value or "").strip()
+        if not content:
+            continue
+        content = _strip_ui_hidden_text(content)
+        if not content:
+            continue
+        export_blocks.append((section_key, content))
+
+    if not export_blocks:
+        export_blocks = [("Blueprint Content", ver.full_content or "")]
+
     export_req = ExportRequest(
         fmt=format, topic=bp.title,
-        blocks=[("Blueprint Content", ver.full_content or "")],
+        blocks=export_blocks,
         user_name=current_user.username, is_admin=(current_user.role == "admin"),
         entity_type="blueprint", entity_id=bp.id,
         file_name=f"Blueprint_{bp.title.replace(' ', '_')}_{bp.active_version}.{format}",

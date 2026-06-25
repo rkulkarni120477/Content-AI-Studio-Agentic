@@ -49,7 +49,7 @@ def get_job_status(
     """
     from promptops_app.repositories import job_repository
 
-    job = job_repository.get_job(db, int(job_id))
+    job = job_repository.get_job(db, job_id)
     if not job:
         raise JobNotFoundError(job_id)
 
@@ -85,7 +85,7 @@ def cancel_job(
     from promptops_app.jobs.job_status import set_cancelled
     from promptops_app.repositories import job_repository
 
-    job = job_repository.get_job(db, int(job_id))
+    job = job_repository.get_job(db, job_id)
     if not job:
         raise JobNotFoundError(job_id)
 

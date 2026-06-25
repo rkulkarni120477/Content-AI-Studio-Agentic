@@ -74,8 +74,7 @@ def build_context_injection(
         get_active_blueprint_version,
         get_active_cdd_version,
     )
-    from promptops_app.parsers.cdd_parser import extract_cdd_summary
-    from promptops_app.parsers.blueprint_parser import extract_blueprint_summary
+    from promptops_app.parsers.cdd_parser import extract_blueprint_summary, extract_cdd_summary
     from promptops_app.prompt_templates import CONTEXT_INJECTION_TEMPLATE
 
     cdd_version_label       = "None"

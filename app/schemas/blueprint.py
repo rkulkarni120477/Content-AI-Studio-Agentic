@@ -48,6 +48,14 @@ class BlueprintGenerateRequest(BaseModel):
         default=False,
         description="If True, uses the teacher-facing prompt variant.",
     )
+    is_course_end: bool = Field(
+        default=False,
+        description=(
+            "True when selected_module is a course-level end item (e.g. a capstone) "
+            "rather than a numbered module. Persisted as module_number=0 — a sentinel "
+            "distinguishing it from real modules, which are always >= 1."
+        ),
+    )
     system_prompt_override: Optional[str] = None
     user_prompt_override: Optional[str] = None
 

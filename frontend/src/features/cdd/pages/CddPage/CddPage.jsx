@@ -58,7 +58,7 @@ export default function CddPage() {
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
   const [extraInstructions, setExtraInstructions] = useState('');
-  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '' });
+  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [showSaveInstr, setShowSaveInstr] = useState(false);
@@ -183,8 +183,11 @@ export default function CddPage() {
       target_audience: targetAudience,
       expert_domain: expertDomain,
       audience_category: audienceCategory,
-      system_prompt_override: promptConfig.systemPrompt || undefined,
-      user_prompt_override: promptConfig.userPromptTemplate || undefined,
+      // Only forward as an override when the user explicitly applied one (e.g. via
+      // "Use Now" on an AI suggestion) — the auto-loaded library default must never
+      // be sent raw, since it bypasses all real CDD/style context-building server-side.
+      system_prompt_override: promptConfig.hasOverride ? (promptConfig.systemPrompt || undefined) : undefined,
+      user_prompt_override: promptConfig.hasOverride ? (promptConfig.userPromptTemplate || undefined) : undefined,
     };
     await dispatch(generateCddThunk(payload));
   }
