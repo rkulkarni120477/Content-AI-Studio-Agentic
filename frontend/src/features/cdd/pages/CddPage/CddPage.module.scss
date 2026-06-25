@@ -250,6 +250,14 @@
   }
 }
 
+.versionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-3;
+  align-items: flex-end;
+  margin-bottom: $space-3;
+}
+
 .contentPreview {
   max-height: 360px;
   overflow-y: auto;

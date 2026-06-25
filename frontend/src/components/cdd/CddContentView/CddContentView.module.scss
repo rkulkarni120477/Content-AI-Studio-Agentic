@@ -48,6 +48,16 @@
   gap: $space-3;
 }
 
+.section__preview {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: $font-size-sm;
+  line-height: 1.55;
+  color: $color-gray-800;
+  font-family: inherit;
+}
+
 .editLabel {
   font-size: $font-size-sm;
   font-weight: $font-weight-semibold;
@@ -64,7 +74,6 @@
   line-height: 1.5;
   resize: vertical;
   font-family: inherit;
-  color: $color-gray-800;
 }
 
 .editHint {
@@ -76,18 +85,30 @@
   padding: $space-2 $space-3;
 }
 
-.section__text {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+.scopeRow {
+  display: flex;
+  gap: $space-4;
+  flex-wrap: wrap;
+}
+
+.scopeLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
   font-size: $font-size-sm;
-  line-height: 1.55;
-  color: #fff;
-  font-family: inherit;
+  color: $color-gray-700;
+  cursor: pointer;
+}
+
+.saveRow {
+  display: flex;
+  gap: $space-2;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .fallback {
-  @extend .section__text;
+  @extend .section__preview;
   padding: $space-4;
   background: $color-gray-50;
   border-radius: $radius-lg;

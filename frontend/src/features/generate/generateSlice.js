@@ -6,6 +6,8 @@ const initialState = {
   activeJobId:    null,
   jobStatus:      null,  // pending | running | completed | failed
   jobProgress:    [],    // list of stage messages
+  jobProgressPct: 0,
+  jobErrorDetail: null,
   latestBlocks:   [],    // blocks from the last generation
   isGenerating:   false,
   error:          null,
@@ -19,6 +21,8 @@ const generateSlice = createSlice({
       s.activeJobId  = null;
       s.jobStatus    = null;
       s.jobProgress  = [];
+      s.jobProgressPct = 0;
+      s.jobErrorDetail = null;
     },
     clearError(s)   { s.error = null; },
     addJobStage(s, { payload }) { s.jobProgress.push(payload); },
@@ -28,8 +32,10 @@ const generateSlice = createSlice({
       .addCase(launchGenerationThunk.pending, (s) => {
         s.isGenerating = true;
         s.error = null;
+        s.jobErrorDetail = null;
         s.latestBlocks = [];
         s.jobProgress = [];
+        s.jobProgressPct = 0;
       })
       .addCase(launchGenerationThunk.fulfilled, (s, { payload }) => {
         s.activeJobId = payload.job_id;
@@ -43,15 +49,21 @@ const generateSlice = createSlice({
 
       .addCase(pollJobThunk.fulfilled, (s, { payload }) => {
         s.jobStatus = payload.status;
+        s.jobProgressPct = payload.progress ?? s.jobProgressPct;
         if (payload.current_step && !s.jobProgress.includes(payload.current_step)) {
           s.jobProgress.push(payload.current_step);
         }
         if (payload.status === JOB_STATUSES.COMPLETED || payload.status === 'completed') {
           s.latestBlocks = payload.blocks || [];
           s.isGenerating = false;
+          s.jobErrorDetail = null;
         }
         if (payload.status === JOB_STATUSES.FAILED || payload.status === 'failed') {
           s.error = payload.error_message || payload.error || 'Generation failed.';
+          s.jobErrorDetail = payload.error_message || payload.error || null;
+          s.isGenerating = false;
+        }
+        if (payload.status === 'cancelled') {
           s.isGenerating = false;
         }
       })
@@ -73,6 +85,8 @@ export default generateSlice.reducer;
 export const selectActiveJobId   = (s) => s.generate.activeJobId;
 export const selectJobStatus     = (s) => s.generate.jobStatus;
 export const selectJobProgress   = (s) => s.generate.jobProgress;
+export const selectJobProgressPct = (s) => s.generate.jobProgressPct;
+export const selectJobErrorDetail = (s) => s.generate.jobErrorDetail;
 export const selectLatestBlocks  = (s) => s.generate.latestBlocks;
 export const selectIsGenerating  = (s) => s.generate.isGenerating;
 export const selectGenerateError = (s) => s.generate.error;

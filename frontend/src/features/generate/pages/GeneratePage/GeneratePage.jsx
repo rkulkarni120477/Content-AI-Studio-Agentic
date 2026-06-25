@@ -4,8 +4,9 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { launchGenerationThunk, pollJobThunk, cancelJobThunk } from '@features/generate/generateThunks';
 import {
   selectIsGenerating, selectActiveJobId, selectJobStatus,
-  selectJobProgress, selectLatestBlocks, selectGenerateError,
-  clearJob,
+  selectJobProgress, selectJobProgressPct, selectJobErrorDetail,
+  selectLatestBlocks, selectGenerateError,
+  clearJob, clearError,
 } from '@features/generate/generateSlice';
 import { selectActiveBlueprint, selectBlueprintComponents, selectBlueprints } from '@features/blueprint/blueprintSlice';
 import { selectActiveCdd, selectCdds } from '@features/cdd/cddSlice';
@@ -58,6 +59,8 @@ export default function GeneratePage() {
   const activeJobId = useAppSelector(selectActiveJobId);
   const jobStatus = useAppSelector(selectJobStatus);
   const jobProgress = useAppSelector(selectJobProgress);
+  const jobProgressPct = useAppSelector(selectJobProgressPct);
+  const jobErrorDetail = useAppSelector(selectJobErrorDetail);
   const latestBlocks = useAppSelector(selectLatestBlocks);
   const generateError = useAppSelector(selectGenerateError);
   const activeCdd = useAppSelector(selectActiveCdd);
@@ -318,6 +321,13 @@ export default function GeneratePage() {
   const styleDisp = activeStyle?.name || 'None';
 
   const jobActive = activeJobId && ['pending', 'queued', 'running'].includes(jobStatus);
+  const jobTerminal = activeJobId && ['completed', 'failed', 'cancelled'].includes(jobStatus);
+  const showJobOnly = jobActive || (jobTerminal && latestBlocks.length === 0 && !generateError);
+
+  function handleStartAnother() {
+    dispatch(clearJob());
+    dispatch(clearError());
+  }
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'Generate' }]} noPadding>
@@ -344,12 +354,18 @@ export default function GeneratePage() {
                 </Button>
               )}
             </div>
+            <div className={styles.progressBar} role="progressbar" aria-valuenow={jobProgressPct} aria-valuemin={0} aria-valuemax={100}>
+              <div className={styles.progressBar__fill} style={{ width: `${Math.min(100, jobProgressPct)}%` }} />
+            </div>
+            <div className={styles.activeJob__pct}>{jobProgressPct}%</div>
             {jobProgress.map((msg, i) => (
               <div key={i} className={styles.activeJob__stage}>{msg}</div>
             ))}
           </div>
         )}
 
+        {!showJobOnly && (
+        <>
         <div className={styles.stepper}>
           {[
             { icon: '📘', label: 'Pin CDD', done: Boolean(activeCdd) },
@@ -626,44 +642,63 @@ export default function GeneratePage() {
             </div>
           )
         )}
+        </div>
+        </>
+        )}
 
         {(activeJobId || latestBlocks.length > 0) && (
           <section className={styles.resultsPanel}>
             <h2 className={styles.resultsPanel__title}>
-              {activeJobId ? 'Generation Progress' : 'Latest Results'}
+              {jobActive ? 'Generation Progress' : 'Latest Results'}
             </h2>
-            {activeJobId && !jobActive && (
+            {jobTerminal && !jobActive && (
               <div className={styles.jobProgress}>
                 <div className={styles.jobProgress__status}>
                   {(jobStatus === JOB_STATUSES.COMPLETED || jobStatus === 'completed') && '✅ Completed'}
                   {(jobStatus === JOB_STATUSES.FAILED || jobStatus === 'failed') && '❌ Failed'}
+                  {jobStatus === 'cancelled' && '⏹ Cancelled'}
                 </div>
                 {jobProgress.map((msg, i) => (
                   <div key={i} className={styles.jobProgress__stage}>{msg}</div>
                 ))}
-                <Button variant="ghost" size="sm" onClick={() => dispatch(clearJob())}>Dismiss</Button>
+                {jobErrorDetail && (
+                  <details className={styles.jobErrorDetail}>
+                    <summary>Error details</summary>
+                    <pre>{jobErrorDetail}</pre>
+                  </details>
+                )}
+                <div className={styles.jobActions}>
+                  {(jobStatus === JOB_STATUSES.FAILED || jobStatus === 'failed') && (
+                    <Button variant="primary" size="sm" onClick={handleStartAnother}>Try Again</Button>
+                  )}
+                  {(jobStatus === JOB_STATUSES.COMPLETED || jobStatus === 'completed' || jobStatus === 'cancelled') && (
+                    <Button variant="primary" size="sm" onClick={handleStartAnother}>Start Another Generation</Button>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={() => dispatch(clearJob())}>Dismiss</Button>
+                </div>
               </div>
             )}
             {latestBlocks.length > 0 && (
               <div className={styles.results}>
                 <p className={styles.results__count}>{latestBlocks.length} block(s) generated</p>
                 {latestBlocks.map((block, i) => (
-                  <div key={block.id || i} className={styles.blockCard}>
-                    <div className={styles.blockCard__header}>
+                  <details key={block.id || i} className={styles.blockCard} open={i === 0}>
+                    <summary className={styles.blockCard__header}>
                       <span className={styles.blockCard__label}>{block.block_label || `Block ${i + 1}`}</span>
                       <span className={styles.blockCard__type}>{block.block_type}</span>
-                    </div>
-                    <p className={styles.blockCard__preview}>
-                      {(block.content || '').slice(0, 200)}
-                      {block.content?.length > 200 ? '…' : ''}
-                    </p>
-                  </div>
+                    </summary>
+                    <pre className={styles.blockCard__content}>{block.content || ''}</pre>
+                  </details>
                 ))}
+                {!jobActive && (
+                  <Button variant="secondary" size="sm" onClick={handleStartAnother}>
+                    Start Another Generation
+                  </Button>
+                )}
               </div>
             )}
           </section>
         )}
-        </div>
       </div>
     </PageContainer>
   );

@@ -14,6 +14,8 @@ function mapGeneratePayload(data) {
     target_audience: data.target_audience || '',
     expert_domain: data.expert_domain || '',
     audience_category: data.audience_category || 'Professional/Corporate',
+    system_prompt_override: data.system_prompt_override || undefined,
+    user_prompt_override: data.user_prompt_override || undefined,
   };
 }
 
