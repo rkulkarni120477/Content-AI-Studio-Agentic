@@ -2,6 +2,7 @@
 
 .btn {
   @include btn-base;
+  position: relative;
 
   // ─── Sizes ────────────────────────────────────────────────────────────────
   &--xs {
@@ -139,7 +140,9 @@
   // ─── Inner Elements ───────────────────────────────────────────────────────
   &__spinner {
     position: absolute;
+    inset: 0;
     @include flex-center;
+    pointer-events: none;
   }
 
   &__icon {
