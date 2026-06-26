@@ -305,7 +305,9 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
           </div>
           <div className={styles.dashboard__col}>
             <strong>📚 Citations</strong>
-            {sources.length > 0 ? (
+            {!plag ? (
+              <p className={styles.caption}>Run plagiarism check to view source citations.</p>
+            ) : sources.length > 0 ? (
               <ul className={styles.citeList}>
                 {sources.map((s, i) => <li key={i}><code>{s}</code></li>)}
               </ul>
