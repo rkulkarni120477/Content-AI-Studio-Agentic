@@ -26,19 +26,40 @@ export const pollJobThunk = createAsyncThunk(
   async (jobId, { dispatch, rejectWithValue }) => {
     try {
       const status = await generateService.getJobStatus(jobId);
-      if (status.current_step) {
-        dispatch({ type: 'generate/addJobStage', payload: status.current_step });
-      }
       const active = ['pending', 'queued', 'running'].includes(status.status);
       if (active) {
         setTimeout(() => dispatch(pollJobThunk(jobId)), POLL_INTERVAL_MS);
-      } else if (status.status === JOB_STATUSES.COMPLETED) {
+        return status;
+      }
+      if (status.status === JOB_STATUSES.COMPLETED) {
         toast.success('Generation completed!');
+        let blocks = [];
         if (status.generation_id) {
-          const gen = await generateService.getGeneration(status.generation_id);
-          return { ...status, blocks: gen.blocks || [] };
+          try {
+            const listItems = await generateService.getGenerationBlocks(status.generation_id);
+            if (listItems.length > 0) {
+              blocks = await Promise.all(
+                listItems.map(async (item) => {
+                  try {
+                    return await generateService.getBlock(item.id);
+                  } catch {
+                    return item;
+                  }
+                }),
+              );
+            }
+          } catch {
+            try {
+              const gen = await generateService.getGeneration(status.generation_id);
+              blocks = gen.blocks || [];
+            } catch {
+              // block fetch failed silently — content is available in Editor tab
+            }
+          }
         }
-      } else if (status.status === JOB_STATUSES.FAILED) {
+        return { ...status, blocks };
+      }
+      if (status.status === JOB_STATUSES.FAILED) {
         toast.error(status.error_message || 'Generation failed.');
       }
       return status;

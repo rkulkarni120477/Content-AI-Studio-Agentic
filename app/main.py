@@ -50,15 +50,12 @@ async def lifespan(app: FastAPI):
     """
     _log.info("startup  service=content-ai-api  version=%s", settings.app_version)
 
-    # Create all tables that don't yet exist.  Uses the ORM models from
-    # promptops_app (shared with the Streamlit app) against the FastAPI engine.
-    # This is safe to run on every startup — create_all() is a no-op for tables
-    # that already exist.  Replace with `alembic upgrade head` once migrations
-    # are generated.
-    from promptops_app.database import Base as PromptopsBase
-    from app.core.database import engine as _engine
-    PromptopsBase.metadata.create_all(bind=_engine)
-    _log.info("startup_db_tables_ensured")
+    # Run all DB migrations — creates missing tables AND adds any missing columns.
+    # init_db() is idempotent: CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN
+    # IF NOT EXISTS are both safe to run on every startup.
+    from promptops_app.database import init_db
+    init_db()
+    _log.info("startup_db_migrations_complete")
 
     # Initialise the OpenAI HTTP session and AWS Bedrock client once per
     # process.  This replaces the @st.cache_resource pattern from Streamlit.

@@ -11,19 +11,20 @@ export const fetchBlueprintsThunk = createAsyncThunk(
     try {
       const cid = Number(courseId);
       let projectId = resolveProjectId(getState);
-      if (!projectId && cid) {
+      let freshActiveId = null;
+      if (cid) {
         try {
           const course = await dashboardService.getCourse(cid);
-          projectId = course?.project_id ?? null;
+          if (!projectId) projectId = course?.project_id ?? null;
+          freshActiveId = course?.active_blueprint_id ?? null;
         } catch { /* ignore */ }
       }
       const items = await blueprintService.listBlueprints({
         courseId: cid,
         projectId,
       });
-      const course = getState()?.dashboard?.selectedCourse;
       let activeBlueprint = null;
-      const activeId = course?.active_blueprint_id;
+      const activeId = freshActiveId ?? getState()?.dashboard?.selectedCourse?.active_blueprint_id;
       if (activeId) {
         try {
           activeBlueprint = await blueprintService.getBlueprint(activeId);

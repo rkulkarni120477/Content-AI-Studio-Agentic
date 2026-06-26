@@ -46,8 +46,8 @@ class GenerationLaunchRequest(BaseModel):
     component_label: str = Field(..., description="Human-readable label shown in the dropdown.")
     component_type: str = Field(..., description="Component category: lesson | assessment")
 
-    # Prompt template
-    prompt_name: str = Field(..., description="Name of the prompt template to use.")
+    # Prompt template (optional — prompt is auto-built from CDD/Blueprint context)
+    prompt_name: Optional[str] = Field(default="", description="Prompt template name. Unused when CDD/Blueprint are present.")
 
     # Sidebar config
     model_choice: str = Field(default="GPT-5.4")
@@ -82,7 +82,7 @@ class GenerationBlockSummary(BaseModel):
     id: int
     block_label: str
     workflow_state: str
-    position: int
+    position: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 

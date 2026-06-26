@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { GENERATE } from '@services/endpoints';
+import { GENERATE, BLOCKS } from '@services/endpoints';
 
 function mapLaunchPayload(data) {
   return {
@@ -30,6 +30,13 @@ export const generateService = {
   cancelJob: (jobId) => api.delete(GENERATE.JOB_CANCEL(jobId)),
 
   getGeneration: (id) => api.get(GENERATE.GET(id)),
+
+  getBlock: (blockId) => api.get(BLOCKS.GET(blockId)),
+
+  getGenerationBlocks: async (generationId) => {
+    const res = await api.get(BLOCKS.LIST(generationId), { params: { page: 1, page_size: 100 } });
+    return res.items || [];
+  },
 
   getModuleCompletion: (blueprintId) => api.get(GENERATE.MODULE_COMPLETION(blueprintId)),
 

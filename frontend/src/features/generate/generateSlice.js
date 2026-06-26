@@ -3,14 +3,15 @@ import { launchGenerationThunk, pollJobThunk, cancelJobThunk } from './generateT
 import { JOB_STATUSES } from '@utils/constants';
 
 const initialState = {
-  activeJobId:    null,
-  jobStatus:      null,  // pending | running | completed | failed
-  jobProgress:    [],    // list of stage messages
-  jobProgressPct: 0,
-  jobErrorDetail: null,
-  latestBlocks:   [],    // blocks from the last generation
-  isGenerating:   false,
-  error:          null,
+  activeJobId:         null,
+  jobStatus:           null,  // pending | running | completed | failed
+  jobProgress:         [],    // list of stage messages
+  jobProgressPct:      0,
+  jobErrorDetail:      null,
+  latestBlocks:        [],    // blocks from the last generation
+  latestGenerationId:  null,  // generation_id from the last completed job
+  isGenerating:        false,
+  error:               null,
 };
 
 const generateSlice = createSlice({
@@ -25,7 +26,9 @@ const generateSlice = createSlice({
       s.jobErrorDetail = null;
     },
     clearError(s)   { s.error = null; },
-    addJobStage(s, { payload }) { s.jobProgress.push(payload); },
+    addJobStage(s, { payload }) {
+      if (payload && !s.jobProgress.includes(payload)) s.jobProgress.push(payload);
+    },
   },
   extraReducers: (b) => {
     b
@@ -54,7 +57,9 @@ const generateSlice = createSlice({
           s.jobProgress.push(payload.current_step);
         }
         if (payload.status === JOB_STATUSES.COMPLETED || payload.status === 'completed') {
+          s.jobProgressPct = 100;
           s.latestBlocks = payload.blocks || [];
+          s.latestGenerationId = payload.generation_id ?? null;
           s.isGenerating = false;
           s.jobErrorDetail = null;
         }
@@ -82,11 +87,12 @@ const generateSlice = createSlice({
 export const { clearJob, clearError, addJobStage } = generateSlice.actions;
 export default generateSlice.reducer;
 
-export const selectActiveJobId   = (s) => s.generate.activeJobId;
-export const selectJobStatus     = (s) => s.generate.jobStatus;
-export const selectJobProgress   = (s) => s.generate.jobProgress;
-export const selectJobProgressPct = (s) => s.generate.jobProgressPct;
-export const selectJobErrorDetail = (s) => s.generate.jobErrorDetail;
-export const selectLatestBlocks  = (s) => s.generate.latestBlocks;
-export const selectIsGenerating  = (s) => s.generate.isGenerating;
-export const selectGenerateError = (s) => s.generate.error;
+export const selectActiveJobId        = (s) => s.generate.activeJobId;
+export const selectJobStatus          = (s) => s.generate.jobStatus;
+export const selectJobProgress        = (s) => s.generate.jobProgress;
+export const selectJobProgressPct     = (s) => s.generate.jobProgressPct;
+export const selectJobErrorDetail     = (s) => s.generate.jobErrorDetail;
+export const selectLatestBlocks       = (s) => s.generate.latestBlocks;
+export const selectLatestGenerationId = (s) => s.generate.latestGenerationId;
+export const selectIsGenerating       = (s) => s.generate.isGenerating;
+export const selectGenerateError      = (s) => s.generate.error;
