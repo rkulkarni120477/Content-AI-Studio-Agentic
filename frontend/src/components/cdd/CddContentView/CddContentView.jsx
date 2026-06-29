@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buildCddUiBlocks } from '@utils/cddContent';
+import { renderMarkdownPreview } from '@utils/markdownPreview';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import styles from './CddContentView.module.scss';
@@ -76,7 +77,12 @@ export default function CddContentView({
   }
 
   if (uiBlocks.length === 0) {
-    return <pre className={styles.fallback}>{fullContent}</pre>;
+    return (
+      <div
+        className={`${styles.fallback} markdown-content`}
+        dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(fullContent) }}
+      />
+    );
   }
 
   return (
@@ -102,7 +108,10 @@ export default function CddContentView({
             </button>
             {isOpen && (
               <div className={styles.section__body}>
-                <pre className={styles.section__preview}>{block.content}</pre>
+                <div
+                  className={`${styles.section__preview} markdown-content`}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(block.content) }}
+                />
 
                 {editable && (
                   <>
