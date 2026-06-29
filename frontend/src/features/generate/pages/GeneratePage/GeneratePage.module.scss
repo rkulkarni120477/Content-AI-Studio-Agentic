@@ -559,6 +559,13 @@
     overflow-y: auto;
     @include custom-scrollbar;
   }
+
+  &__tip {
+    font-size: $font-size-sm;
+    color: $color-gray-500;
+    margin: $space-2 0 0;
+    font-style: italic;
+  }
 }
 
 

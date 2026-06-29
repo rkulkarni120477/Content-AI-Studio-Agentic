@@ -61,7 +61,7 @@ def launch_generation(
     creates a GenerationJob row, and submits to the Celery worker.
     """
     from promptops_app.jobs import generation_jobs, job_runner
-    from promptops_app.repositories import blueprint_repository, cdd_repository, job_repository, prompt_repository
+    from promptops_app.repositories import blueprint_repository, cdd_repository, job_repository
     from promptops_app.core.content_utils import get_module_completion_status, get_all_modules_completion
     from promptops_app.parsers.blueprint_parser import is_component_type_module_level, is_component_type_course_level
 
@@ -75,13 +75,6 @@ def launch_generation(
         if course:
             eff_cdd_id = eff_cdd_id or course.active_cdd_id
             eff_bp_id = eff_bp_id or course.active_blueprint_id
-
-    # Validate the prompt template exists and has an active version.
-    prompt = prompt_repository.get_prompt_by_name(db, request_body.prompt_name)
-    if not prompt or not prompt.active_version:
-        raise ValidationError(
-            f"Prompt template '{request_body.prompt_name}' not found or has no active version."
-        )
 
     # Completion gate — check if module/course prerequisites are met.
     if not request_body.assessment_override and eff_bp_id:
@@ -104,7 +97,6 @@ def launch_generation(
     req_params = {
         "topic":               request_body.component_label,
         "b_type":              request_body.component_value,
-        "p_framework":         request_body.prompt_name,
         "eff_cdd_id":          eff_cdd_id,
         "eff_bp_id":           eff_bp_id,
         "model_choice":        request_body.model_choice,

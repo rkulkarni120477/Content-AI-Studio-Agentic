@@ -74,7 +74,7 @@ export default function BlueprintPage() {
   const [moduleSelKey, setModuleSelKey] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
-  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '' });
+  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [showSaveInstr, setShowSaveInstr] = useState(false);
@@ -270,7 +270,7 @@ export default function BlueprintPage() {
 
     const moduleRef = mod.isCourseEnd
       ? mod.courseEndLabel
-      : `Module ${mod.key}`;
+      : (mod.label || `Module ${mod.key}`).replace(/\s*✓\s*$/, '').trim();
 
     const extraBlock = buildExtraInstructionsBlock({
       isCourseEnd: mod.isCourseEnd,
@@ -289,12 +289,16 @@ export default function BlueprintPage() {
       project_id: selProject.id,
       cdd_id: linkedCddId || null,
       selected_module: moduleRef,
+      is_course_end: Boolean(mod.isCourseEnd),
       extra_instructions: titleHint + extraBlock,
       style_id: activeStyle?.id || null,
       model_choice: modelChoice,
       teacher_mode: genMode === GENERATION_MODES.TEACHER,
-      system_prompt_override: promptConfig.systemPrompt || undefined,
-      user_prompt_override: promptConfig.userPromptTemplate || undefined,
+      // Only forward as an override when the user explicitly applied one (e.g. via
+      // "Use Now" on an AI suggestion) — the auto-loaded library default must never
+      // be sent raw, since it bypasses all real CDD/style context-building server-side.
+      system_prompt_override: promptConfig.hasOverride ? (promptConfig.systemPrompt || undefined) : undefined,
+      user_prompt_override: promptConfig.hasOverride ? (promptConfig.userPromptTemplate || undefined) : undefined,
     };
     try {
       const bp = await dispatch(generateBlueprintThunk(payload)).unwrap();
@@ -375,7 +379,9 @@ export default function BlueprintPage() {
 
   function handleDownloadPrompt() {
     const mod = selectedModuleOpt;
-    const moduleRef = mod?.isCourseEnd ? mod.courseEndLabel : `Module ${mod?.key ?? 1}`;
+    const moduleRef = mod?.isCourseEnd
+      ? mod.courseEndLabel
+      : (mod?.label || `Module ${mod?.key ?? 1}`).replace(/\s*✓\s*$/, '').trim();
     const extraBlock = buildExtraInstructionsBlock({
       isCourseEnd: mod?.isCourseEnd,
       courseEndLabel: mod?.courseEndLabel,

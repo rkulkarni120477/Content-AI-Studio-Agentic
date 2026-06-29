@@ -125,6 +125,10 @@ def list_blocks_for_generation(db, gen_id: int):
     )
 
 
+def count_blocks_for_generation(db, gen_id: int) -> int:
+    return db.query(Block).filter(Block.generation_id == gen_id).count()
+
+
 def list_blocks_for_gen_ids(db, gen_ids: list, limit: int = 500):
     if not gen_ids:
         return []

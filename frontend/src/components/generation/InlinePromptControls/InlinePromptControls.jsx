@@ -117,11 +117,16 @@ export default function InlinePromptControls({
   const effectiveUser = overrideUser ?? userPrompt;
   const hasOverride = overrideSystem !== null || overrideUser !== null;
 
-  const notifyParent = useCallback((sys, usr, extra) => {
+  const notifyParent = useCallback((sys, usr, extra, isOverride) => {
     onPromptsChange?.({
       systemPrompt: sys,
       userPromptTemplate: usr,
       extraInstructions: extra ?? extraInstructions,
+      // True only when the user explicitly applied an ad-hoc override (e.g. "Use Now"
+      // on an AI suggestion) — NOT when a library default merely auto-loaded. Callers
+      // must use this to decide whether to send system_prompt_override/user_prompt_override;
+      // sending the raw auto-loaded default bypasses all real context-building server-side.
+      hasOverride: Boolean(isOverride),
     });
   }, [onPromptsChange, extraInstructions]);
 
@@ -182,8 +187,8 @@ export default function InlinePromptControls({
   }, [promptOptions, labelToPrompt, filteredPrompts, defaults, loadPromptDetail, selectedKey]);
 
   useEffect(() => {
-    notifyParent(effectiveSystem, effectiveUser, extraInstructions);
-  }, [effectiveSystem, effectiveUser, extraInstructions, notifyParent]);
+    notifyParent(effectiveSystem, effectiveUser, extraInstructions, hasOverride);
+  }, [effectiveSystem, effectiveUser, extraInstructions, hasOverride, notifyParent]);
 
   function onSelectPrompt(label) {
     setSelectedKey(label);

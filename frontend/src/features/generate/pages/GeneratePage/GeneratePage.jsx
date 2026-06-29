@@ -15,8 +15,6 @@ import { fetchBlueprintsThunk } from '@features/blueprint/blueprintThunks';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { selectActiveStyle } from '@features/style/styleSlice';
-import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
-import { selectPrompts } from '@features/prompts/promptsSlice';
 import {
   selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
   selectModelChoice, selectExpertDomain, selectTargetAudience, selectAudienceCategory,
@@ -69,7 +67,6 @@ export default function GeneratePage() {
   const blueprintsFromStore = useAppSelector(selectBlueprints);
   const components = useAppSelector(selectBlueprintComponents);
   const activeStyle = useAppSelector(selectActiveStyle);
-  const prompts = useAppSelector(selectPrompts);
   const selProject = useAppSelector(selectSelectedProject);
   const selCluster = useAppSelector(selectSelectedCluster);
   const selCourse = useAppSelector(selectSelectedCourse);
@@ -83,9 +80,7 @@ export default function GeneratePage() {
   const [allCdds, setAllCdds] = useState([]);
   const [allBps, setAllBps] = useState([]);
   const [selectedCompValue, setSelectedCompValue] = useState('');
-  const [promptName, setPromptName] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
-  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '' });
   const [assessmentOverride, setAssessmentOverride] = useState(false);
   const [moduleGate, setModuleGate] = useState(null);
   const [courseGate, setCourseGate] = useState(null);
@@ -103,14 +98,6 @@ export default function GeneratePage() {
     () => components.find((c) => c.value === selectedCompValue),
     [components, selectedCompValue],
   );
-
-  const promptOptions = useMemo(() => {
-    const names = [...new Set((prompts || []).map((p) => p.name).filter(Boolean))].sort();
-    return [
-      { value: '', label: '— Select a template —' },
-      ...names.map((n) => ({ value: n, label: n })),
-    ];
-  }, [prompts]);
 
   const docOptions = useMemo(
     () => libraryDocs.map((d) => ({ value: d.name || d.filename, label: d.name || d.filename })),
@@ -169,7 +156,7 @@ export default function GeneratePage() {
     assessmentOverride,
   );
 
-  const isReady = Boolean(effCddId && effBpId && selectedComponent && promptName);
+  const isReady = Boolean(effCddId && effBpId && selectedComponent);
   const launchDisabled = !isReady
     || !moduleLaunchAllowed
     || (showCourseGate && !courseGate?.completed)
@@ -179,7 +166,6 @@ export default function GeneratePage() {
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchBlueprintsThunk(courseId));
     dispatch(fetchStylesThunk());
-    dispatch(fetchPromptsThunk({}));
   }, [courseId, dispatch]);
 
   useEffect(() => {
@@ -194,6 +180,7 @@ export default function GeneratePage() {
       setSelectedCompValue(components[0].value);
     }
   }, [components, selectedCompValue]);
+
 
   useEffect(() => {
     async function loadOverrides() {
@@ -284,7 +271,6 @@ export default function GeneratePage() {
       component_value: selectedComponent.value,
       component_label: selectedComponent.label,
       component_type: selectedComponent.type || 'lesson',
-      prompt_name: promptName,
       model_choice: modelChoice,
       target_audience: targetAudience,
       expert_domain: expertDomain,
@@ -322,7 +308,7 @@ export default function GeneratePage() {
 
   const jobActive = activeJobId && ['pending', 'queued', 'running'].includes(jobStatus);
   const jobTerminal = activeJobId && ['completed', 'failed', 'cancelled'].includes(jobStatus);
-  const showJobOnly = jobActive || (jobTerminal && latestBlocks.length === 0 && !generateError);
+  const showJobOnly = jobTerminal && latestBlocks.length === 0 && !generateError;
 
   function handleStartAnother() {
     dispatch(clearJob());
@@ -342,15 +328,17 @@ export default function GeneratePage() {
           <div className={styles.activeJob}>
             <div className={styles.activeJob__header}>
               <Loader size="sm" />
-              <strong>Generation in progress</strong>
-              <span className={styles.activeJob__status}>{jobStatus === 'running' ? 'Running…' : 'Queued…'}</span>
+              <span>
+                Generating content for{' '}
+                <strong>{selectedComponent?.label || 'selected lesson'}</strong>…
+              </span>
               {activeJobId && (
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => dispatch(cancelJobThunk(activeJobId))}
                 >
-                  Cancel Job
+                  Cancel
                 </Button>
               )}
             </div>
@@ -358,9 +346,6 @@ export default function GeneratePage() {
               <div className={styles.progressBar__fill} style={{ width: `${Math.min(100, jobProgressPct)}%` }} />
             </div>
             <div className={styles.activeJob__pct}>{jobProgressPct}%</div>
-            {jobProgress.map((msg, i) => (
-              <div key={i} className={styles.activeJob__stage}>{msg}</div>
-            ))}
           </div>
         )}
 
@@ -445,7 +430,6 @@ export default function GeneratePage() {
             extraInstructions={extraInstructions}
             onExtraInstructionsChange={setExtraInstructions}
             showExtraInstructions
-            onPromptsChange={setPromptConfig}
           />
         </div>
 
@@ -480,24 +464,11 @@ export default function GeneratePage() {
                 )}
               </div>
 
-              <div>
-                <div className={styles.sectionLabel}>🛠️ Prompt & Source</div>
-                {selectedComponent ? (
-                  <Select
-                    label="Prompt Template"
-                    options={promptOptions}
-                    value={promptName}
-                    onChange={(e) => setPromptName(e.target.value)}
-                  />
-                ) : (
-                  <p className={styles.infoHint}>👉 Select a Content Type to unlock prompt templates.</p>
-                )}
-              </div>
             </div>
 
             <hr className={styles.formDivider} />
 
-            {promptName && (
+            {selectedComponent && (
               <details
                 className={styles.suppPanel}
                 open={showSuppPanel}
@@ -620,9 +591,6 @@ export default function GeneratePage() {
             {!selectedComponent && (
               <p className={styles.validationWarn}>⚠️ Select a Content Type to continue.</p>
             )}
-            {selectedComponent && !promptName && (
-              <p className={styles.validationWarn}>⚠️ Select a Prompt Template to continue.</p>
-            )}
         </section>
 
         {!activeJobId && latestBlocks.length === 0 && (
@@ -654,13 +622,10 @@ export default function GeneratePage() {
             {jobTerminal && !jobActive && (
               <div className={styles.jobProgress}>
                 <div className={styles.jobProgress__status}>
-                  {(jobStatus === JOB_STATUSES.COMPLETED || jobStatus === 'completed') && '✅ Completed'}
-                  {(jobStatus === JOB_STATUSES.FAILED || jobStatus === 'failed') && '❌ Failed'}
+                  {(jobStatus === JOB_STATUSES.COMPLETED || jobStatus === 'completed') && '✅ Generation complete'}
+                  {(jobStatus === JOB_STATUSES.FAILED || jobStatus === 'failed') && '❌ Generation failed'}
                   {jobStatus === 'cancelled' && '⏹ Cancelled'}
                 </div>
-                {jobProgress.map((msg, i) => (
-                  <div key={i} className={styles.jobProgress__stage}>{msg}</div>
-                ))}
                 {jobErrorDetail && (
                   <details className={styles.jobErrorDetail}>
                     <summary>Error details</summary>
@@ -672,7 +637,7 @@ export default function GeneratePage() {
                     <Button variant="primary" size="sm" onClick={handleStartAnother}>Try Again</Button>
                   )}
                   {(jobStatus === JOB_STATUSES.COMPLETED || jobStatus === 'completed' || jobStatus === 'cancelled') && (
-                    <Button variant="primary" size="sm" onClick={handleStartAnother}>Start Another Generation</Button>
+                    <Button variant="primary" size="sm" onClick={handleStartAnother}>Generate Another</Button>
                   )}
                   <Button variant="ghost" size="sm" onClick={() => dispatch(clearJob())}>Dismiss</Button>
                 </div>
@@ -680,19 +645,23 @@ export default function GeneratePage() {
             )}
             {latestBlocks.length > 0 && (
               <div className={styles.results}>
-                <p className={styles.results__count}>{latestBlocks.length} block(s) generated</p>
+                <p className={styles.results__count}>
+                  ✅ {latestBlocks.length} block(s) generated
+                </p>
                 {latestBlocks.map((block, i) => (
                   <details key={block.id || i} className={styles.blockCard} open={i === 0}>
                     <summary className={styles.blockCard__header}>
                       <span className={styles.blockCard__label}>{block.block_label || `Block ${i + 1}`}</span>
-                      <span className={styles.blockCard__type}>{block.block_type}</span>
                     </summary>
-                    <pre className={styles.blockCard__content}>{block.content || ''}</pre>
+                    {block.content || block.content_preview
+                      ? <pre className={styles.blockCard__content}>{block.content || block.content_preview}</pre>
+                      : <p className={styles.blockCard__tip}>Content saved — open the <strong>Editor</strong> tab to view and edit.</p>
+                    }
                   </details>
                 ))}
                 {!jobActive && (
                   <Button variant="secondary" size="sm" onClick={handleStartAnother}>
-                    Start Another Generation
+                    Generate Another
                   </Button>
                 )}
               </div>

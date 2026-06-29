@@ -66,7 +66,7 @@ from promptops_app.jobs.job_status import (
     set_running,
 )
 from promptops_app.parsers.blueprint_parser import build_component_generation_prompt
-from promptops_app.repositories import document_repository, prompt_repository
+from promptops_app.repositories import document_repository
 from promptops_app.services.audit_service import log_audit_event
 from promptops_app.services.evaluation_service import get_initial_quality_metadata
 
@@ -128,7 +128,6 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         topic              = params["topic"]
         b_type             = params["b_type"]
-        p_framework        = params["p_framework"]
         eff_cdd_id         = params.get("eff_cdd_id")
         eff_bp_id          = params.get("eff_bp_id")
         model_choice       = params.get("model_choice", "GPT-5.4")
@@ -195,16 +194,6 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         # ── Stage 2 — Prompt assembly ─────────────────────────────────
         set_running(db, job, *STAGE_PROMPT)
 
-        prompt = prompt_repository.get_prompt_by_name(db, p_framework)
-        if not prompt or not prompt.active_version:
-            set_failed(db, job, f"Prompt '{p_framework}' not found or has no active version.")
-            return
-
-        ver = prompt_repository.get_prompt_version(db, prompt.id, prompt.active_version)
-        if not ver:
-            set_failed(db, job, f"Active version not found for prompt '{p_framework}'.")
-            return
-
         ctx_injection, used_cdd_label, used_bp_label = build_context_injection(
             db, eff_cdd_id, eff_bp_id, target_audience=target_audience
         )
@@ -253,10 +242,13 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 system_p = User_prefix + _comp_sys_p + citation_instruction
                 user_p   = _comp_usr_p + context
         else:
-            system_p = User_prefix + ver.system_prompt + citation_instruction
-            user_p   = fill_template(
-                ver.user_prompt_template,
-                {"topic": topic, "block_type": b_type, "target_audience": target_audience},
+            system_p = User_prefix + LESSON_WITH_CONTEXT_SYSTEM + citation_instruction
+            user_p   = LESSON_WITH_CONTEXT_USER.format(
+                lesson_topic=topic,
+                lesson_title=topic,
+                lesson_objective=f"Generate content for '{topic}'",
+                content_type=b_type,
+                context_injection="",
             ) + context
 
         # Append user's additional instructions if provided
@@ -273,8 +265,8 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             project_id=project_id,
             course_id=course_id,
             entity_type="generation",
-            prompt_template=p_framework,
-            prompt_version=ver.version if ver else "",
+            prompt_template="",
+            prompt_version="",
         ))
 
         if _llm_result.is_error:
@@ -338,8 +330,8 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         g_entry = Generation(
             topic=topic,
-            prompt_name=p_framework,
-            prompt_version=ver.version,
+            prompt_name="",
+            prompt_version="",
             block_type=b_type,
             output_text=out,
             created_by=user_name,
@@ -409,8 +401,8 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             user_name,
             f"Generated '{topic}' ({b_type}) — CDD:{used_cdd_label} BP:{used_bp_label}",
             {
-                "topic": topic, "block_type": b_type, "prompt": p_framework,
-                "version": ver.version, "cdd": used_cdd_label, "blueprint": used_bp_label,
+                "topic": topic, "block_type": b_type,
+                "cdd": used_cdd_label, "blueprint": used_bp_label,
                 "blocks": len(blocks),
             },
         )
@@ -418,7 +410,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         # ── Audit ─────────────────────────────────────────────────────
         log_audit_event(db, user_name, "content.generated", entity_type="generation",
                         entity_id=g_entry.id, project_id=project_id, course_id=course_id,
-                        metadata={"topic": topic, "block_type": b_type, "prompt": p_framework,
+                        metadata={"topic": topic, "block_type": b_type,
                                   "blocks": len(blocks), "cdd": used_cdd_label, "blueprint": used_bp_label})
 
         # ── Done ──────────────────────────────────────────────────────

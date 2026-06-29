@@ -27,6 +27,7 @@ import {
 } from '@features/editor/editorSlice';
 import { selectActiveCdd } from '@features/cdd/cddSlice';
 import { selectActiveBlueprint } from '@features/blueprint/blueprintSlice';
+import { selectLatestGenerationId } from '@features/generate/generateSlice';
 import { fetchBlueprintsThunk } from '@features/blueprint/blueprintThunks';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
 import {
@@ -91,6 +92,7 @@ export default function EditorPage() {
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
   const selCluster = useAppSelector(selectSelectedCluster);
+  const latestGenerationId = useAppSelector(selectLatestGenerationId);
 
   const [genDetail, setGenDetail] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -127,9 +129,12 @@ export default function EditorPage() {
 
     const filtered = normalizeList(list);
     const lastId = sessionStorage.getItem(LAST_GEN_KEY(courseId));
-    const pickId = lastId && filtered.some((g) => String(g.id) === lastId)
-      ? Number(lastId)
-      : filtered[0]?.id;
+    // Prefer the freshly generated one, then sessionStorage, then first in list
+    const pickId = (latestGenerationId && filtered.some((g) => g.id === latestGenerationId))
+      ? latestGenerationId
+      : (lastId && filtered.some((g) => String(g.id) === lastId)
+        ? Number(lastId)
+        : filtered[0]?.id);
     if (pickId) dispatch(setSelectedGenerationAction(pickId));
     return filtered;
   }, [
@@ -140,6 +145,7 @@ export default function EditorPage() {
     selCourse?.project_id,
     activeBlueprint?.id,
     activeCdd?.id,
+    latestGenerationId,
   ]);
 
   useEffect(() => {

@@ -359,6 +359,7 @@ class Block(Base):
     sources = Column(Text) # JSON string of cited filenames
     plagiarism_score = Column(Integer) # 0-100 (AI content score)
     plagiarism_report = Column(Text) # Detail explanation
+    position = Column(Integer, default=0)  # display order within a generation
     eval_score = Column(Integer) # Structural score
     eval_report = Column(Text) # JSON of missing sections etc.
     ai_review = Column(Text) # AI Reviewer feedback
@@ -926,6 +927,7 @@ def init_db():
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
         # blocks
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS sources TEXT",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS plagiarism_score INTEGER",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS plagiarism_report TEXT",

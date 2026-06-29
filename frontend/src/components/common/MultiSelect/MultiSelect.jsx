@@ -29,12 +29,26 @@ export default function MultiSelect({
       setMenuRect(null);
       return;
     }
+    const MARGIN = 8;
+    const PREFERRED_MAX_HEIGHT = 280;
+    const MIN_USABLE_HEIGHT = 120;
     const update = () => {
       const rect = triggerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom - MARGIN;
+      const spaceAbove = rect.top - MARGIN;
+      // Open upward only if downward space is too cramped to be usable AND
+      // there's more room above — otherwise keep the default downward open
+      // and simply clamp height so it never runs past the viewport edge.
+      const openUpward = spaceBelow < MIN_USABLE_HEIGHT && spaceAbove > spaceBelow;
+      const available = openUpward ? spaceAbove : spaceBelow;
+      const maxHeight = Math.max(MIN_USABLE_HEIGHT, Math.min(PREFERRED_MAX_HEIGHT, available));
       setMenuRect({
-        top: rect.bottom + 4,
         left: rect.left,
         width: rect.width,
+        maxHeight,
+        ...(openUpward
+          ? { bottom: window.innerHeight - rect.top + 4 }
+          : { top: rect.bottom + 4 }),
       });
     };
     update();
@@ -120,8 +134,10 @@ export default function MultiSelect({
           style={{
             position: 'fixed',
             top: menuRect.top,
+            bottom: menuRect.bottom,
             left: menuRect.left,
             width: menuRect.width,
+            maxHeight: menuRect.maxHeight,
             zIndex: 10050,
           }}
         >
