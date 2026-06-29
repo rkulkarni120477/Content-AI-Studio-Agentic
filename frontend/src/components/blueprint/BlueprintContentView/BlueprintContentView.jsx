@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buildBlueprintUiSections } from '@utils/blueprintContent';
+import { renderMarkdownPreview } from '@utils/markdownPreview';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import styles from './BlueprintContentView.module.scss';
@@ -73,7 +74,10 @@ export default function BlueprintContentView({
 
   if (uiSections.length === 0) {
     return (
-      <pre className={styles.fallback}>{fullContent}</pre>
+      <div
+        className={`${styles.fallback} markdown-content`}
+        dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(fullContent) }}
+      />
     );
   }
 
@@ -94,7 +98,10 @@ export default function BlueprintContentView({
             </button>
             {isOpen && (
               <div className={styles.section__body}>
-                <pre className={styles.section__text}>{sec.content}</pre>
+                <div
+                  className={`${styles.section__text} markdown-content`}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(sec.content) }}
+                />
                 {editable && (
                   <>
                     <label className={styles.editLabel} htmlFor={`bp-edit-${sec.title}`}>

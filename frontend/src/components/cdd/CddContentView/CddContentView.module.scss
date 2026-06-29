@@ -50,7 +50,8 @@
 
 .section__preview {
   margin: 0;
-  white-space: pre-wrap;
+  padding: 0;
+  background: transparent;
   word-break: break-word;
   font-size: $font-size-sm;
   line-height: 1.55;

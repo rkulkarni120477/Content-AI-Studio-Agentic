@@ -78,11 +78,12 @@
 
 .section__text {
   margin: 0;
-  white-space: pre-wrap;
+  padding: 0;
+  background: transparent;
   word-break: break-word;
   font-size: $font-size-sm;
   line-height: 1.55;
-  color: #fff;
+  color: $color-gray-800;
   font-family: inherit;
 }
 
