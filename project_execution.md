@@ -90,7 +90,7 @@ This starts Redis, the Celery worker, and the API server as containers (see `doc
 3) Install node js on system
 4) take .env from me it will be required
 5) docker-compose up -d --build -> to install dependencies
-6) cd Content-AI-STUDIO -> python -m uvicorn app.main:app --reload --port 8000  (in vscode cmd terminal)
+6) Not required (Go to 7 step) -> cd Content-AI-STUDIO -> python -m uvicorn app.main:app --reload --port 8000  (in vscode cmd terminal)
 7) cd frontend ->
 npm install
 npm run dev (in new terminal, it will execute the frontend)
