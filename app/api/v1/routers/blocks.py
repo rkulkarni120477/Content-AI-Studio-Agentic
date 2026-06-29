@@ -333,25 +333,41 @@ def regenerate_block_item(
 
     Calls regen_single_item() from blueprint_parser.py.
     """
-    from promptops_app.parsers.blueprint_parser import regen_single_item
+    from promptops_app.parsers.blueprint_parser import (
+        parse_items_from_section,
+        patch_item_in_section,
+        regen_single_item,
+    )
 
     block = _get_block_or_404(db, block_id)
 
-    updated_content, patched_item = regen_single_item(
-        block_content=block.content or "",
-        section_key=request_body.section_key,
-        item_index=request_body.item_index,
-        feedback=request_body.feedback,
+    original = block.content or ""
+    item_index = request_body.item_index
+    items = parse_items_from_section(original)
+    if not items or item_index < 0 or item_index >= len(items):
+        raise NotFoundError(f"Item index {item_index} not found in block {block_id}.")
+
+    target = items[item_index]
+    new_item_text = regen_single_item(
+        section_title=request_body.section_key or (block.block_label or "content"),
+        section_content=original,
+        item_index=item_index,
+        item_text=target["text"],
+        custom_instruction=request_body.feedback or "",
         model_choice=request_body.model_choice,
     )
+    updated_content = patch_item_in_section(original, item_index, new_item_text)
 
     block.content = updated_content
     db.commit()
 
+    _log.info("block_item_regenerated  user=%s  block_id=%d  item=%d",
+              current_user.username, block_id, item_index)
+
     return BlockRegenerateItemResponse(
         block_id=block_id,
         updated_content=updated_content,
-        patched_item=patched_item or "",
+        patched_item=new_item_text or "",
     )
 
 

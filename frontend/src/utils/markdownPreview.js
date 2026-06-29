@@ -14,6 +14,16 @@ function renderInline(text) {
 }
 
 /**
+ * Render a single line/fragment of markdown to safe inline HTML (bold + inline
+ * code only). Content is HTML-escaped first, so it is safe to inject. Use for
+ * short labels (e.g. item rows) where the block renderer would be overkill.
+ */
+export function renderInlineMarkdown(text) {
+  if (!text) return '';
+  return renderInline(escapeHtml(text));
+}
+
+/**
  * Block-based renderer: groups consecutive bullets into a single <ul>, emits
  * <p> blocks on blank-line boundaries, and lets the .markdown-content CSS own
  * the vertical spacing (no <br/> between every line). Supports h1–h4, bullet

@@ -6,7 +6,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
-  activateBlueprintVersionThunk,
+  activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
@@ -339,35 +339,90 @@ export default function BlueprintPage() {
     dispatch(fetchBlueprintVersionsThunk(selectedBpId));
   }
 
+  // Version tags live in a String(20) column, so keep them short ("<prefix>-vN")
+  // and put the descriptive detail in the (longer) change reason.
+  function nextBpVersionTag(prefix) {
+    const maxNum = (versions || []).reduce((max, v) => {
+      const m = /(\d+)\s*$/.exec(String(v.version || ''));
+      return m ? Math.max(max, Number(m[1])) : max;
+    }, 0);
+    const tag = `${prefix}-v${maxNum + 1}`;
+    return tag.length <= 20 ? tag : `v${maxNum + 1}`;
+  }
+
+  function patchBlueprintSection(sectionTitle, newContent) {
+    const fullContent = versionDetail?.full_content
+      || displayBp.active_content?.full_content
+      || '';
+    let sections = versionDetail?.sections;
+    if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
+      sections = parseSectionsFromText(fullContent);
+    }
+    const updatedSections = { ...sections, [sectionTitle]: newContent };
+    const newFull = Object.entries(updatedSections)
+      .filter(([, body]) => body?.trim())
+      .map(([title, body]) => `## ${title}\n${body.trim()}`)
+      .join('\n\n');
+    return { updatedSections, newFull };
+  }
+
+  async function commitBlueprintSection(sectionTitle, newContent, reason, tagPrefix) {
+    const { updatedSections, newFull } = patchBlueprintSection(sectionTitle, newContent);
+    await dispatch(commitBlueprintVersionThunk({
+      blueprintId: displayBp.id,
+      data: {
+        tag: nextBpVersionTag(tagPrefix),
+        reason,
+        full_content: newFull,
+        sections: updatedSections,
+      },
+    })).unwrap();
+    dispatch(fetchBlueprintVersionsThunk(displayBp.id));
+    dispatch(fetchBlueprintsThunk(courseId));
+  }
+
   async function onSaveBlueprintSection({ sectionTitle, content, reason }) {
     if (!displayBp?.id) return;
     setSavingSection(true);
     try {
-      const fullContent = versionDetail?.full_content
-        || displayBp.active_content?.full_content
-        || '';
-      let sections = versionDetail?.sections;
-      if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
-        sections = parseSectionsFromText(fullContent);
-      }
-      const updatedSections = { ...sections, [sectionTitle]: content };
-      const parts = Object.entries(updatedSections)
-        .filter(([, body]) => body?.trim())
-        .map(([title, body]) => `## ${title}\n${body.trim()}`);
-      const newFull = parts.join('\n\n');
-      await dispatch(commitBlueprintVersionThunk({
-        blueprintId: displayBp.id,
-        data: {
-          tag: `edit-${sectionTitle.replace(/\s+/g, '-').slice(0, 24).toLowerCase()}`,
-          reason,
-          full_content: newFull,
-          sections: updatedSections,
-        },
-      })).unwrap();
-      dispatch(fetchBlueprintVersionsThunk(displayBp.id));
-      dispatch(fetchBlueprintsThunk(courseId));
+      await commitBlueprintSection(sectionTitle, content, reason || `Edited ${sectionTitle}`, 'edit');
     } finally {
       setSavingSection(false);
+    }
+  }
+
+  async function onRegenerateBlueprintSection({ sectionTitle, instruction }) {
+    if (!displayBp?.id) return;
+    const res = await dispatch(regenerateBlueprintSectionThunk({
+      blueprintId: displayBp.id,
+      sectionKey: sectionTitle,
+      feedback: instruction,
+      modelChoice,
+      teacherMode: viewMode === 'teacher',
+    })).unwrap();
+    if (res?.updated_content != null) {
+      const reason = instruction
+        ? `AI regenerated ${sectionTitle}: ${instruction}`
+        : `AI regenerated ${sectionTitle}`;
+      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen');
+    }
+  }
+
+  async function onRegenerateBlueprintItem({ sectionTitle, sectionContent, itemIndex, instruction }) {
+    if (!displayBp?.id) return;
+    const res = await dispatch(regenerateBlueprintItemThunk({
+      blueprintId: displayBp.id,
+      sectionKey: sectionTitle,
+      sectionContent,
+      itemIndex,
+      feedback: instruction,
+      modelChoice,
+    })).unwrap();
+    if (res?.updated_content != null) {
+      const reason = instruction
+        ? `AI regenerated ${sectionTitle} item ${itemIndex + 1}: ${instruction}`
+        : `AI regenerated ${sectionTitle} item ${itemIndex + 1}`;
+      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen');
     }
   }
 
@@ -770,6 +825,8 @@ export default function BlueprintPage() {
                         editable
                         saving={savingSection}
                         onSaveSection={onSaveBlueprintSection}
+                        onRegenerateSection={onRegenerateBlueprintSection}
+                        onRegenerateItem={onRegenerateBlueprintItem}
                       />
 
                       <button

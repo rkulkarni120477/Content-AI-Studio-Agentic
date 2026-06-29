@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buildBlueprintUiSections } from '@utils/blueprintContent';
-import { renderMarkdownPreview } from '@utils/markdownPreview';
+import { renderMarkdownPreview, renderInlineMarkdown } from '@utils/markdownPreview';
+import { parseItemsFromSection } from '@utils/blockItems';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import styles from './BlueprintContentView.module.scss';
@@ -11,6 +12,8 @@ export default function BlueprintContentView({
   editable = false,
   saving = false,
   onSaveSection,
+  onRegenerateSection,
+  onRegenerateItem,
 }) {
   const uiSections = useMemo(
     () => buildBlueprintUiSections(fullContent, sections),
@@ -20,13 +23,16 @@ export default function BlueprintContentView({
   const [expanded, setExpanded] = useState(() => new Set());
   const [drafts, setDrafts] = useState({});
   const [reasons, setReasons] = useState({});
+  const [regenSection, setRegenSection] = useState(null);
+  const [regenItem, setRegenItem] = useState(null);
 
   useEffect(() => {
-    if (uiSections.length > 0) {
-      setExpanded(new Set([uiSections[0].title]));
-    } else {
-      setExpanded(new Set());
-    }
+    // Preserve which sections the user has open across content updates (e.g.
+    // after a save or regenerate); only seed the default on first render.
+    setExpanded((prev) => {
+      if (prev.size > 0) return prev;
+      return uiSections.length > 0 ? new Set([uiSections[0].title]) : new Set();
+    });
     setDrafts({});
     setReasons({});
   }, [uiSections]);
@@ -68,6 +74,34 @@ export default function BlueprintContentView({
     });
   }
 
+  async function handleRegenSection(sec) {
+    if (!onRegenerateSection) return;
+    setRegenSection(sec.title);
+    try {
+      await onRegenerateSection({
+        sectionTitle: sec.title,
+        instruction: (reasons[sec.title] || '').trim(),
+      });
+    } finally {
+      setRegenSection(null);
+    }
+  }
+
+  async function handleRegenItem(sec, idx) {
+    if (!onRegenerateItem) return;
+    setRegenItem(`${sec.title}:${idx}`);
+    try {
+      await onRegenerateItem({
+        sectionTitle: sec.title,
+        sectionContent: sec.content,
+        itemIndex: idx,
+        instruction: (reasons[sec.title] || '').trim(),
+      });
+    } finally {
+      setRegenItem(null);
+    }
+  }
+
   if (!fullContent?.trim() && uiSections.length === 0) {
     return <p className={styles.empty}>No Blueprint content yet.</p>;
   }
@@ -85,6 +119,8 @@ export default function BlueprintContentView({
     <div className={styles.wrap}>
       {uiSections.map((sec) => {
         const isOpen = expanded.has(sec.title);
+        const items = editable ? parseItemsFromSection(sec.content) : [];
+        const sectionBusy = regenSection === sec.title;
         return (
           <div key={sec.title} className={styles.section}>
             <button
@@ -117,20 +153,68 @@ export default function BlueprintContentView({
                       <p className={styles.editHint}>✏️ Edited. Add a reason before saving.</p>
                     )}
                     <Input
-                      label="Edit reason"
-                      placeholder="What changed?"
+                      label="Edit reason / Regen instruction"
+                      placeholder="What changed? (also used as the AI regeneration instruction)"
                       value={reasons[sec.title] || ''}
                       onChange={(e) => setReasons((r) => ({ ...r, [sec.title]: e.target.value }))}
                     />
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      loading={saving}
-                      disabled={!(reasons[sec.title] || '').trim()}
-                      onClick={() => handleSave(sec)}
-                    >
-                      💾 Save Edit
-                    </Button>
+                    <div className={styles.saveRow}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        loading={saving}
+                        disabled={!(reasons[sec.title] || '').trim()}
+                        onClick={() => handleSave(sec)}
+                      >
+                        💾 Save Edit
+                      </Button>
+                      {onRegenerateSection && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          loading={sectionBusy}
+                          disabled={saving || sectionBusy}
+                          onClick={() => handleRegenSection(sec)}
+                          title="Regenerate this whole section with AI using the instruction above"
+                        >
+                          🔄 Regenerate Section
+                        </Button>
+                      )}
+                    </div>
+
+                    {onRegenerateItem && items.length > 0 && (
+                      <div className={styles.itemRegen}>
+                        <p className={styles.itemRegen__head}>
+                          🔄 Regenerate a single item — click ⟳ next to any item
+                        </p>
+                        <ul className={styles.itemList}>
+                          {items.map((item, idx) => {
+                            const busy = regenItem === `${sec.title}:${idx}`;
+                            return (
+                              <li key={idx} className={styles.itemList__row}>
+                                <span className={styles.itemList__text}>
+                                  <code className={styles.itemList__num}>{idx + 1}</code>
+                                  <span
+                                    className={styles.itemList__md}
+                                    dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.text) }}
+                                  />
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  loading={busy}
+                                  disabled={Boolean(regenItem) || sectionBusy}
+                                  onClick={() => handleRegenItem(sec, idx)}
+                                  title={`Regenerate only item ${idx + 1}. Others stay unchanged.`}
+                                >
+                                  ⟳
+                                </Button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

@@ -42,6 +42,10 @@ from app.schemas.blueprint import (
     BlueprintPinRequest,
     BlueprintPinResponse,
     BlueprintRead,
+    BlueprintRegenerateItemRequest,
+    BlueprintRegenerateItemResponse,
+    BlueprintRegenerateSectionRequest,
+    BlueprintRegenerateSectionResponse,
     BlueprintVersionCreateRequest,
     BlueprintVersionListItem,
     BlueprintVersionRead,
@@ -352,6 +356,124 @@ def create_blueprint_version(blueprint_id: int, request_body: BlueprintVersionCr
     db.refresh(new_ver)
     _log.info("blueprint_version_committed  user=%s  bp_id=%d  version=%s", current_user.username, blueprint_id, request_body.version_tag)
     return BlueprintVersionRead.model_validate(new_ver)
+
+
+# ---------------------------------------------------------------------------
+# Regeneration (AI) — ports the Streamlit blueprint regenerate controls
+# ---------------------------------------------------------------------------
+
+def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
+    """Return a short CDD summary for a blueprint's linked CDD, or '' if none."""
+    if not getattr(bp, "cdd_id", None):
+        return ""
+    from promptops_app.database import get_active_cdd_version
+    from promptops_app.parsers.cdd_parser import extract_cdd_summary
+    cdd_version = get_active_cdd_version(db, bp.cdd_id)
+    if not cdd_version:
+        return ""
+    return extract_cdd_summary(cdd_version, max_chars=max_chars) or ""
+
+
+@router.post(
+    "/{blueprint_id}/regenerate-item",
+    response_model=BlueprintRegenerateItemResponse,
+    summary="Regenerate a single item within a blueprint section",
+    responses={404: {"description": "Blueprint or item not found."}},
+)
+def regenerate_blueprint_item(
+    blueprint_id: int,
+    request_body: BlueprintRegenerateItemRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.version")),
+) -> BlueprintRegenerateItemResponse:
+    """
+    Regenerate one item inside a blueprint section, preserving all siblings.
+    Replicates the per-item "⟳" button in the Streamlit Blueprint tab.
+
+    Stateless: returns the patched section content; the frontend commits a
+    new blueprint version (matching the "Save Edit" flow).
+    """
+    from promptops_app.parsers.blueprint_parser import (
+        parse_items_from_section,
+        patch_item_in_section,
+        regen_single_item,
+    )
+
+    bp = _get_blueprint_or_404(db, blueprint_id)
+
+    original = request_body.section_content or ""
+    item_index = request_body.item_index
+    items = parse_items_from_section(original)
+    if not items or item_index < 0 or item_index >= len(items):
+        raise NotFoundError("Blueprint item", item_index)
+
+    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=800)
+    context = (
+        f"Module: {bp.module_title}. "
+        f"CDD context: {cdd_summary[:300] if cdd_summary else 'N/A'}."
+    )
+    instruction = f"{(request_body.feedback or '').strip()} {context}".strip()
+
+    new_item_text = regen_single_item(
+        section_title=request_body.section_key,
+        section_content=original,
+        item_index=item_index,
+        item_text=items[item_index]["text"],
+        custom_instruction=instruction,
+        model_choice=request_body.model_choice,
+    )
+    updated_content = patch_item_in_section(original, item_index, new_item_text)
+
+    _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d",
+              current_user.username, blueprint_id, request_body.section_key, item_index)
+
+    return BlueprintRegenerateItemResponse(
+        updated_content=updated_content,
+        patched_item=new_item_text or "",
+    )
+
+
+@router.post(
+    "/{blueprint_id}/regenerate-section",
+    response_model=BlueprintRegenerateSectionResponse,
+    summary="Regenerate an entire blueprint section with AI",
+    responses={404: {"description": "Blueprint not found."}},
+)
+def regenerate_blueprint_section(
+    blueprint_id: int,
+    request_body: BlueprintRegenerateSectionRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.version")),
+) -> BlueprintRegenerateSectionResponse:
+    """
+    Regenerate a whole blueprint section using the section-regeneration prompt
+    (student or teacher variant). Replicates "🔄 Regenerate Section" in Streamlit.
+
+    Stateless: returns the new section content; the frontend commits a version.
+    """
+    from promptops_app.parsers.blueprint_parser import get_blueprint_prompts
+    from promptops_app.services.llm_service import generate_text as call_llm
+
+    bp = _get_blueprint_or_404(db, blueprint_id)
+    mode = "teacher" if request_body.teacher_mode else "student"
+    regen_system, _, regen_template = get_blueprint_prompts(mode)
+    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=1500)
+
+    regen_prompt = regen_template.format(
+        section_title=request_body.section_key,
+        module_title=bp.module_title,
+        course_title=bp.title,
+        cdd_summary=cdd_summary or "No CDD linked.",
+        custom_instruction=request_body.feedback or "Improve this section.",
+    )
+    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt)
+    if not new_content or new_content.startswith("ERROR"):
+        raise LLMGenerationError("Section regeneration failed. Please try again.")
+
+    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s",
+              current_user.username, blueprint_id, request_body.section_key, mode)
+
+    return BlueprintRegenerateSectionResponse(updated_content=new_content.strip())
 
 
 @router.post("/{blueprint_id}/pin", response_model=BlueprintPinResponse, summary="Pin blueprint to a course")

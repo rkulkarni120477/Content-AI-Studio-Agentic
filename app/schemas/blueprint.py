@@ -69,6 +69,38 @@ class BlueprintVersionCreateRequest(BaseModel):
     change_reason: str = Field(default="", max_length=500)
 
 
+class BlueprintRegenerateItemRequest(BaseModel):
+    """Body for POST /blueprints/{id}/regenerate-item — regenerate one item."""
+
+    section_key: str = Field(description="Section the item belongs to.")
+    section_content: str = Field(description="Current markdown content of that section.")
+    item_index: int = Field(..., ge=0, description="Index of the item to regenerate.")
+    feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
+    model_choice: str = Field(default="GPT-5.4")
+
+
+class BlueprintRegenerateItemResponse(BaseModel):
+    """New section content with only the targeted item replaced."""
+
+    updated_content: str
+    patched_item: str
+
+
+class BlueprintRegenerateSectionRequest(BaseModel):
+    """Body for POST /blueprints/{id}/regenerate-section — regenerate a section."""
+
+    section_key: str = Field(description="Section to regenerate, e.g. 'Learning Objectives'.")
+    feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
+    model_choice: str = Field(default="GPT-5.4")
+    teacher_mode: bool = Field(default=False, description="Use teacher-facing prompts when true.")
+
+
+class BlueprintRegenerateSectionResponse(BaseModel):
+    """Freshly generated content for the section."""
+
+    updated_content: str
+
+
 class BlueprintPinRequest(BaseModel):
     """Pin a blueprint as active for generation on a course."""
 

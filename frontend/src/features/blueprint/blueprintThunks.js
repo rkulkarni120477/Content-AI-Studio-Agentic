@@ -105,6 +105,28 @@ export const commitBlueprintVersionThunk = createAsyncThunk(
   },
 );
 
+export const regenerateBlueprintItemThunk = createAsyncThunk(
+  'blueprint/regenerateItem',
+  async ({ blueprintId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
+    try {
+      return await blueprintService.regenerateItem(blueprintId, {
+        sectionKey, sectionContent, itemIndex, feedback, modelChoice,
+      });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const regenerateBlueprintSectionThunk = createAsyncThunk(
+  'blueprint/regenerateSection',
+  async ({ blueprintId, sectionKey, feedback, modelChoice, teacherMode }, { rejectWithValue }) => {
+    try {
+      return await blueprintService.regenerateSection(blueprintId, {
+        sectionKey, feedback, modelChoice, teacherMode,
+      });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 export const exportBlueprintThunk = createAsyncThunk(
   'blueprint/export',
   async ({ blueprintId, format }, { rejectWithValue }) => {

@@ -103,6 +103,26 @@ export const commitCddVersionThunk = createAsyncThunk(
   },
 );
 
+export const regenerateCddItemThunk = createAsyncThunk(
+  'cdd/regenerateItem',
+  async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
+    try {
+      return await cddService.regenerateItem(cddId, {
+        sectionKey, sectionContent, itemIndex, feedback, modelChoice,
+      });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const regenerateCddSectionThunk = createAsyncThunk(
+  'cdd/regenerateSection',
+  async ({ cddId, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
+    try {
+      return await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 export const exportCddThunk = createAsyncThunk(
   'cdd/export',
   async ({ cddId, format }, { rejectWithValue }) => {
