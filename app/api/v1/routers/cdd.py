@@ -50,6 +50,10 @@ from app.schemas.cdd import (
     CDDPinRequest,
     CDDPinResponse,
     CDDRead,
+    CDDRegenerateItemRequest,
+    CDDRegenerateItemResponse,
+    CDDRegenerateSectionRequest,
+    CDDRegenerateSectionResponse,
     CDDVersionCreateRequest,
     CDDVersionListItem,
     CDDVersionRead,
@@ -576,6 +580,111 @@ def create_cdd_version(
     )
 
     return CDDVersionRead.model_validate(new_version)
+
+
+# ---------------------------------------------------------------------------
+# Regeneration (AI) — ports the Streamlit CDD regenerate controls
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{cdd_id}/regenerate-item",
+    response_model=CDDRegenerateItemResponse,
+    summary="Regenerate a single item within a CDD section",
+    responses={
+        404: {"description": "CDD or item not found."},
+        403: {"description": "Requires cdd.version permission."},
+    },
+)
+def regenerate_cdd_item(
+    cdd_id: int,
+    request_body: CDDRegenerateItemRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.version")),
+) -> CDDRegenerateItemResponse:
+    """
+    Regenerate one bullet/line/paragraph inside a CDD section, preserving all
+    siblings. Replicates the per-item "⟳" button in the Streamlit CDD tab.
+
+    Stateless: returns the patched section content. The frontend commits a new
+    CDD version, matching the existing "Save Edit" flow.
+    """
+    from promptops_app.parsers.blueprint_parser import (
+        parse_items_from_section,
+        patch_item_in_section,
+        regen_single_item,
+    )
+
+    _get_cdd_or_404(db, cdd_id)
+
+    original = request_body.section_content or ""
+    item_index = request_body.item_index
+    items = parse_items_from_section(original)
+    if not items or item_index < 0 or item_index >= len(items):
+        raise NotFoundError("CDD item", item_index)
+
+    target = items[item_index]
+    new_item_text = regen_single_item(
+        section_title=request_body.section_key,
+        section_content=original,
+        item_index=item_index,
+        item_text=target["text"],
+        custom_instruction=request_body.feedback or "",
+        model_choice=request_body.model_choice,
+    )
+    updated_content = patch_item_in_section(original, item_index, new_item_text)
+
+    _log.info("cdd_item_regenerated  user=%s  cdd_id=%d  section=%s  item=%d",
+              current_user.username, cdd_id, request_body.section_key, item_index)
+
+    return CDDRegenerateItemResponse(
+        updated_content=updated_content,
+        patched_item=new_item_text or "",
+    )
+
+
+@router.post(
+    "/{cdd_id}/regenerate-section",
+    response_model=CDDRegenerateSectionResponse,
+    summary="Regenerate an entire CDD section with AI",
+    responses={
+        404: {"description": "CDD not found."},
+        403: {"description": "Requires cdd.version permission."},
+    },
+)
+def regenerate_cdd_section(
+    cdd_id: int,
+    request_body: CDDRegenerateSectionRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.version")),
+) -> CDDRegenerateSectionResponse:
+    """
+    Regenerate a whole CDD section using the section-regeneration prompt.
+    Replicates the "🔄 Regenerate Section" button in the Streamlit CDD tab.
+
+    Stateless: returns the new section content; the frontend commits a version.
+    """
+    from promptops_app.prompt_templates import (
+        CDD_SECTION_REGENERATE_PROMPT,
+        CDD_SYSTEM_PROMPT,
+    )
+    from promptops_app.services.llm_service import generate_text as call_llm
+
+    cdd = _get_cdd_or_404(db, cdd_id)
+    course_title = getattr(cdd, "course_title", None) or request_body.section_key
+
+    regen_prompt = CDD_SECTION_REGENERATE_PROMPT.format(
+        section_title=request_body.section_key,
+        course_title=course_title,
+        custom_instruction=request_body.feedback or "Improve and expand this section.",
+    )
+    new_content = call_llm(request_body.model_choice, CDD_SYSTEM_PROMPT, regen_prompt)
+    if not new_content or new_content.startswith("ERROR"):
+        raise LLMGenerationError("Section regeneration failed. Please try again.")
+
+    _log.info("cdd_section_regenerated  user=%s  cdd_id=%d  section=%s",
+              current_user.username, cdd_id, request_body.section_key)
+
+    return CDDRegenerateSectionResponse(updated_content=new_content.strip())
 
 
 # ---------------------------------------------------------------------------
