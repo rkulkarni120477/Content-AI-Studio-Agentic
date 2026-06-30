@@ -60,5 +60,17 @@ export const cddService = {
     await api.post(CDD.PIN(cddId), { course_id: courseId });
     return api.get(CDD.GET(cddId));
   },
+  regenerateItem: (id, data)      => api.post(CDD.REGENERATE_ITEM(id), {
+    section_key: data.sectionKey,
+    section_content: data.sectionContent,
+    item_index: data.itemIndex,
+    feedback: data.feedback || '',
+    model_choice: data.modelChoice,
+  }),
+  regenerateSection: (id, data)   => api.post(CDD.REGENERATE_SECTION(id), {
+    section_key: data.sectionKey,
+    feedback: data.feedback || '',
+    model_choice: data.modelChoice,
+  }),
   exportCdd:     (id, format)     => api.download(CDD.EXPORT(id), { params: { format } }),
 };

@@ -305,3 +305,39 @@ class CDDPinResponse(BaseModel):
     cdd_id: int
     course_id: int
     pinned: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Regeneration (AI) — ports the Streamlit CDD "🔄 Regenerate Section" button
+# and the per-item "⟳" regeneration into the React UI.
+# ---------------------------------------------------------------------------
+
+class CDDRegenerateItemRequest(BaseModel):
+    """Body for POST /cdd/{id}/regenerate-item — regenerate one item in a section."""
+
+    section_key: str = Field(description="Section the item belongs to, e.g. 'Course Details'.")
+    section_content: str = Field(description="Current markdown content of that section.")
+    item_index: int = Field(..., ge=0, description="Index of the item to regenerate.")
+    feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
+    model_choice: str = Field(default="GPT-5.4")
+
+
+class CDDRegenerateItemResponse(BaseModel):
+    """New section content with only the targeted item replaced."""
+
+    updated_content: str
+    patched_item: str
+
+
+class CDDRegenerateSectionRequest(BaseModel):
+    """Body for POST /cdd/{id}/regenerate-section — regenerate a whole section."""
+
+    section_key: str = Field(description="Section to regenerate, e.g. 'Course Structure'.")
+    feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
+    model_choice: str = Field(default="GPT-5.4")
+
+
+class CDDRegenerateSectionResponse(BaseModel):
+    """Freshly generated content for the section."""
+
+    updated_content: str

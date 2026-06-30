@@ -24,6 +24,7 @@ import {
   FEEDBACK_SCOPE_HINTS,
 } from '@utils/constants';
 import { parseItemsFromSection } from '@utils/blockItems';
+import { renderInlineMarkdown } from '@utils/markdownPreview';
 import { formatDateTime } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
@@ -459,7 +460,11 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
                 {parsedItems.map((item, idx) => (
                   <li key={idx} className={styles.itemList__row}>
                     <span className={styles.itemList__text}>
-                      <code>{idx + 1}</code> {item.text.slice(0, 75)}{item.text.length > 75 ? '...' : ''}
+                      <code>{idx + 1}</code>
+                      <span
+                        className={styles.itemList__md}
+                        dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.text) }}
+                      />
                     </span>
                     <Button
                       variant="ghost"

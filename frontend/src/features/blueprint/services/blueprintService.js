@@ -65,6 +65,20 @@ export const blueprintService = {
     change_reason: data.change_reason || data.reason || '',
   }),
 
+  regenerateItem: (id, data) => api.post(BLUEPRINT.REGENERATE_ITEM(id), {
+    section_key: data.sectionKey,
+    section_content: data.sectionContent,
+    item_index: data.itemIndex,
+    feedback: data.feedback || '',
+    model_choice: data.modelChoice,
+  }),
+  regenerateSection: (id, data) => api.post(BLUEPRINT.REGENERATE_SECTION(id), {
+    section_key: data.sectionKey,
+    feedback: data.feedback || '',
+    model_choice: data.modelChoice,
+    teacher_mode: Boolean(data.teacherMode),
+  }),
+
   pinBlueprint: async (bpId, courseId) => {
     await api.post(BLUEPRINT.PIN(bpId), { course_id: courseId });
     return api.get(BLUEPRINT.GET(bpId));

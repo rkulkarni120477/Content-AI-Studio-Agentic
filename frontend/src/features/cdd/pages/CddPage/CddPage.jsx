@@ -6,7 +6,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
-  activateCddVersionThunk,
+  activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
 } from '@features/cdd/cddThunks';
 import { cddService } from '@features/cdd/services/cddService';
 import {
@@ -213,6 +213,18 @@ export default function CddPage() {
     dispatch(fetchCddVersionsThunk(selectedCddId));
   }
 
+  // Version tags are stored in a String(20) column, so they must stay short.
+  // We use a numeric "<prefix>-vN" label and keep the human-readable detail in
+  // the change reason (which is unbounded text).
+  function nextVersionTag(prefix) {
+    const maxNum = (versions || []).reduce((max, v) => {
+      const m = /(\d+)\s*$/.exec(String(v.version || ''));
+      return m ? Math.max(max, Number(m[1])) : max;
+    }, 0);
+    const tag = `${prefix}-v${maxNum + 1}`;
+    return tag.length <= 20 ? tag : `v${maxNum + 1}`;
+  }
+
   async function onSaveCddBlock({ blockKey, content, reason }) {
     if (!displayCdd?.id) return;
     setSavingBlock(true);
@@ -225,8 +237,8 @@ export default function CddPage() {
       await dispatch(commitCddVersionThunk({
         cddId: displayCdd.id,
         data: {
-          tag: `edit-${blockKey.replace(/\s+/g, '-').toLowerCase()}`,
-          reason,
+          tag: nextVersionTag('edit'),
+          reason: reason || `Edited ${blockKey}`,
           full_content: patched.full_content,
           sections: patched.sections,
         },
@@ -235,6 +247,59 @@ export default function CddPage() {
       dispatch(fetchCddsThunk(courseId));
     } finally {
       setSavingBlock(false);
+    }
+  }
+
+  async function commitRegeneratedBlock(blockKey, newContent, reason) {
+    const fullContent = versionDetail?.full_content
+      || displayCdd.active_content?.full_content
+      || '';
+    const sectionsObj = versionDetail?.sections || displayCdd.active_content?.sections || {};
+    const patched = patchCddBlock(fullContent, sectionsObj, blockKey, newContent);
+    await dispatch(commitCddVersionThunk({
+      cddId: displayCdd.id,
+      data: {
+        tag: nextVersionTag('regen'),
+        reason,
+        full_content: patched.full_content,
+        sections: patched.sections,
+      },
+    })).unwrap();
+    dispatch(fetchCddVersionsThunk(displayCdd.id));
+    dispatch(fetchCddsThunk(courseId));
+  }
+
+  async function onRegenerateCddSection({ blockKey, instruction }) {
+    if (!displayCdd?.id) return;
+    const res = await dispatch(regenerateCddSectionThunk({
+      cddId: displayCdd.id,
+      sectionKey: blockKey,
+      feedback: instruction,
+      modelChoice,
+    })).unwrap();
+    if (res?.updated_content != null) {
+      const reason = instruction
+        ? `AI regenerated ${blockKey}: ${instruction}`
+        : `AI regenerated ${blockKey}`;
+      await commitRegeneratedBlock(blockKey, res.updated_content, reason);
+    }
+  }
+
+  async function onRegenerateCddItem({ blockKey, sectionContent, itemIndex, instruction }) {
+    if (!displayCdd?.id) return;
+    const res = await dispatch(regenerateCddItemThunk({
+      cddId: displayCdd.id,
+      sectionKey: blockKey,
+      sectionContent,
+      itemIndex,
+      feedback: instruction,
+      modelChoice,
+    })).unwrap();
+    if (res?.updated_content != null) {
+      const reason = instruction
+        ? `AI regenerated ${blockKey} item ${itemIndex + 1}: ${instruction}`
+        : `AI regenerated ${blockKey} item ${itemIndex + 1}`;
+      await commitRegeneratedBlock(blockKey, res.updated_content, reason);
     }
   }
 
@@ -563,6 +628,8 @@ export default function CddPage() {
                         editable
                         saving={savingBlock}
                         onSaveBlock={onSaveCddBlock}
+                        onRegenerateSection={onRegenerateCddSection}
+                        onRegenerateItem={onRegenerateCddItem}
                       />
                     </div>
 
