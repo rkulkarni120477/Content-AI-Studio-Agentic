@@ -1,0 +1,150 @@
+@use '@styles/variables' as *;
+@use '@styles/mixins' as *;
+
+.body {
+  @include flex-col;
+  gap: $space-4;
+  min-height: 200px;
+}
+
+.center {
+  @include flex-center;
+  padding: $space-8;
+}
+
+.metaCard {
+  background: #f8faff;
+  border: 1.5px solid #c7d2fe;
+  border-radius: 12px;
+  padding: 16px 22px;
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  font-size: 0.875rem;
+  align-items: baseline;
+}
+
+.metaLabel {
+  color: $color-gray-500;
+  font-weight: $font-weight-medium;
+}
+
+.metaValue {
+  color: $color-gray-800;
+  font-weight: $font-weight-bold;
+}
+
+.metaValueComponent {
+  color: $color-primary;
+  font-weight: $font-weight-bold;
+}
+
+.metaValueVersion {
+  code {
+    background: #eef2ff;
+    color: #4338ca;
+    padding: 2px 9px;
+    border-radius: 5px;
+    font-size: 0.82rem;
+    font-weight: $font-weight-semibold;
+  }
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 0.72rem;
+  font-weight: $font-weight-bold;
+  padding: 1px 8px;
+  border-radius: 12px;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.badgeAi {
+  display: inline-block;
+  margin-left: 6px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.72rem;
+  font-weight: $font-weight-bold;
+  padding: 1px 8px;
+  border-radius: 12px;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.scope {
+  font-size: 0.83rem;
+  color: $color-gray-700;
+
+  strong {
+    font-weight: $font-weight-semibold;
+  }
+
+  .sep {
+    margin: 0 6px;
+    color: $color-gray-400;
+  }
+}
+
+.aiNotice {
+  padding: $space-3 $space-4;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: #1d4ed8;
+  line-height: 1.5;
+}
+
+.codeSection {
+  @include flex-col;
+  gap: $space-1;
+}
+
+.codeLabel {
+  font-size: 0.82rem;
+  font-weight: $font-weight-bold;
+  color: $color-gray-700;
+  margin: 0;
+}
+
+.codeBlock {
+  margin: 0;
+  padding: $space-4;
+  background: #f8fafc;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  font-family: $font-family-mono;
+  font-size: $font-size-xs;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+  color: $color-gray-900;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid $color-gray-200;
+  margin: $space-2 0;
+}
+
+.footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.85fr;
+  gap: $space-3;
+  width: 100%;
+
+  @include max-md {
+    grid-template-columns: 1fr;
+  }
+}

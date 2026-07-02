@@ -1,0 +1,324 @@
+.page {
+  padding: $space-6;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.scopeCaption {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin: $space-2 0 $space-4;
+}
+
+.sectionTitle {
+  font-size: $font-size-md;
+  font-weight: $font-weight-semibold;
+  margin: $space-5 0 $space-3;
+}
+
+.pendingBanner {
+  padding: $space-3 $space-4;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: #92400e;
+  margin-bottom: $space-5;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: $space-3;
+  margin-bottom: $space-3;
+
+  @include max-md { grid-template-columns: repeat(2, 1fr); }
+
+  &__row2 {
+    display: grid;
+    grid-template-columns: 1fr 3fr;
+    gap: $space-3;
+    margin-bottom: $space-5;
+    max-width: 50%;
+
+    @include max-md { max-width: 100%; grid-template-columns: 1fr; }
+  }
+
+  &__projectCaption {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    align-self: end;
+    padding-bottom: $space-2;
+  }
+
+  &__noCourses {
+    font-size: $font-size-sm;
+    color: $color-gray-500;
+    align-self: end;
+    padding-bottom: $space-2;
+  }
+}
+
+.loading { @include flex-center; padding: $space-20; }
+
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: $space-3;
+  overflow-x: auto;
+  padding-bottom: $space-4;
+  margin-bottom: $space-6;
+
+  @include max-lg { grid-template-columns: repeat(3, 1fr); }
+  @include max-md { grid-template-columns: repeat(2, 1fr); }
+}
+
+.column {
+  @include flex-col;
+  min-width: 140px;
+
+  &__header {
+    background: rgba(148, 163, 184, 0.05);
+    padding: 10px;
+    border-radius: 8px;
+    text-align: center;
+    font-weight: $font-weight-semibold;
+    font-size: $font-size-sm;
+    margin-bottom: 10px;
+    border-bottom: 2px solid $color-gray-300;
+  }
+
+  &__count {
+    font-size: 0.8rem;
+    margin-left: 6px;
+  }
+
+  &__cards { @include flex-col; gap: 6px; }
+}
+
+.kanbanCard {
+  background: rgba(255, 255, 255, 0.6);
+  padding: 8px;
+  border-radius: 6px;
+  border-left: 3px solid rgba(148, 163, 184, 0.15);
+
+  &__label {
+    font-size: 0.85rem;
+    font-weight: $font-weight-medium;
+    margin-bottom: 2px;
+    @include text-clamp(2);
+  }
+
+  &__meta {
+    font-size: 0.7rem;
+    color: $color-gray-500;
+  }
+
+  &__reviewer { color: $color-gray-400; }
+  &__sla { color: #f59e0b; }
+}
+
+.emptyDash {
+  text-align: center;
+  color: $color-gray-500;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid $color-gray-200;
+  margin: $space-6 0;
+}
+
+.approvalCenter {
+  margin-bottom: $space-6;
+}
+
+.approvalGrid {
+  display: grid;
+  grid-template-columns: 45% 55%;
+  gap: $space-5;
+  margin-top: $space-4;
+
+  @include max-md { grid-template-columns: 1fr; }
+}
+
+.approvalMeta {
+  @include flex-col;
+  gap: $space-2;
+
+  p { margin: 0; font-size: $font-size-sm; }
+
+  small, .metaLine {
+    font-size: $font-size-xs;
+    color: $color-gray-600;
+  }
+}
+
+.actionsCard {
+  @include card($space-4);
+  border: 1px solid $color-gray-200;
+
+  h3 {
+    margin: 0 0 $space-3;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+  }
+}
+
+.actionForm {
+  @include flex-col;
+  gap: $space-3;
+}
+
+.reviewBtns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $space-2;
+}
+
+.textarea {
+  @include form-field-base;
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  font-size: $font-size-sm;
+}
+
+.history {
+  margin-top: $space-3;
+
+  summary {
+    cursor: pointer;
+    font-size: $font-size-sm;
+    color: $color-gray-700;
+  }
+
+  &__item {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    margin: $space-1 0;
+  }
+}
+
+.alertSuccess, .alertInfo {
+  padding: $space-3;
+  border-radius: $radius-md;
+  font-size: $font-size-sm;
+  margin-top: $space-2;
+}
+
+.alertSuccess {
+  background: $color-success-bg;
+  color: $color-success;
+  border: 1px solid $color-success-light;
+}
+
+.alertInfo {
+  background: $color-info-bg;
+  color: $color-info;
+  border: 1px solid $color-info-light;
+}
+
+.emptyHint {
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  padding: $space-3 $space-4;
+  background: $color-info-bg;
+  border-radius: $radius-md;
+  margin-bottom: $space-6;
+}
+
+.bulkSection {
+  margin-bottom: $space-6;
+}
+
+.bulkResult {
+  font-size: $font-size-sm;
+  color: $color-success;
+  margin-top: $space-2;
+}
+
+.adminSection {
+  margin-bottom: $space-8;
+}
+
+.breakdownLoading {
+  @include flex-center;
+  padding: $space-8;
+}
+
+.projectExpander {
+  @include card(0);
+  margin-bottom: $space-3;
+  overflow: hidden;
+
+  &__header {
+    @include flex-start;
+    gap: $space-2;
+    width: 100%;
+    padding: $space-3 $space-4;
+    background: rgba(99, 102, 241, 0.06);
+    border: none;
+    cursor: pointer;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-800;
+    text-align: left;
+
+    &:hover { background: rgba(99, 102, 241, 0.1); }
+  }
+
+  &__chevron {
+    font-size: 0.75rem;
+    color: $color-gray-500;
+    width: 1rem;
+  }
+
+  &__folder {
+    font-size: 1rem;
+  }
+
+  &__body {
+    padding: $space-3 $space-4 $space-4;
+    border-top: 1px solid $color-gray-100;
+  }
+}
+
+.userRow {
+  margin-bottom: $space-4;
+
+  &:last-child { margin-bottom: 0; }
+
+  &__name {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    margin: 0 0 $space-2;
+    @include flex-start;
+    gap: $space-2;
+  }
+
+  &__icon {
+    font-size: 1rem;
+  }
+
+  &__badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $space-3;
+    align-items: center;
+  }
+
+  &__badgeItem {
+    display: inline-flex;
+    align-items: center;
+    gap: $space-1;
+  }
+
+  &__count {
+    font-size: $font-size-xs;
+    color: $color-gray-700;
+    font-weight: $font-weight-medium;
+  }
+}

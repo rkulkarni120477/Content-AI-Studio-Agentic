@@ -1,0 +1,83 @@
+.compact {
+  font-size: 0.8rem;
+  padding: 4px 12px;
+  border-radius: 10px;
+  font-weight: 700;
+
+  &__ok { background: #f0fdf4; color: #166534; }
+  &__warn { background: #fffbeb; color: #92400e; }
+  &__err { background: #fef2f2; color: #991b1b; }
+}
+
+.panel {
+  margin: $space-4 0;
+  padding: $space-4;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+
+  &__title {
+    margin: 0 0 $space-3;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+  }
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: $space-3;
+  margin-bottom: $space-4;
+
+  @include max-md { grid-template-columns: repeat(2, 1fr); }
+}
+
+.metric {
+  border-radius: 10px;
+  padding: 12px 10px;
+  text-align: center;
+  border: 1px solid;
+
+  &__value { display: block; font-size: 1.5rem; font-weight: 800; }
+  &__label { font-size: 0.7rem; color: #94a3b8; margin-top: 2px; display: block; }
+
+  &__pass { border-color: #10b98133; .metric__value { color: #10b981; } }
+  &__warn { border-color: #f59e0b33; .metric__value { color: #f59e0b; } }
+  &__err { border-color: #ef444433; .metric__value { color: #ef4444; } }
+  &__total { border-color: #6366f133; .metric__value { color: #6366f1; } }
+}
+
+.issues {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.issue {
+  &__err, &__warn {
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    margin: 4px 0;
+    font-size: 0.8rem;
+  }
+
+  &__err {
+    background: #fef2f2;
+    border-left: 3px solid #ef4444;
+    color: #991b1b;
+  }
+
+  &__warn {
+    background: #fffbeb;
+    border-left: 3px solid #f59e0b;
+    color: #92400e;
+  }
+
+  &__loc {
+    display: block;
+    font-size: 0.7rem;
+    color: #6b7280;
+    margin-top: 2px;
+    font-style: italic;
+  }
+}

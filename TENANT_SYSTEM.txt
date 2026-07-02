@@ -1,0 +1,1432 @@
+================================================================================
+  PROMPT LIBRARY — TENANT-BASED SYSTEM: COMPLETE REFERENCE
+================================================================================
+
+BASE URLS
+  Local dev  :  http://localhost:5000
+  Production :  https://api.promptlibrary.academian.com
+
+All curl examples use http://localhost:5000. Replace with production URL as needed.
+Session cookies are handled automatically by curl's -c / -b flags.
+API key calls use "Authorization: Bearer <key>" or "X-API-Key: <key>".
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 1 — WHAT IS THE TENANT SYSTEM?
+════════════════════════════════════════════════════════════════════════════════
+
+The Prompt Library is a MULTI-TENANT SaaS platform. Every piece of data — users,
+prompts, teams, roles, requests, audit logs, API keys — belongs to exactly one
+TENANT. Tenants are completely isolated from each other. A user in tenant "acme"
+can never see, touch, or even know about data in tenant "academian".
+
+A TENANT is an organization. They log in with an "org code" (the slug), like:
+  - "academian"
+  - "acme-corp"
+  - "my-school"
+
+There is one special reserved level above all tenants: the PLATFORM ADMIN.
+The platform admin uses the reserved org code "platform" to log in, and can
+manage all tenants, create new ones, and view everything across the system.
+
+IMPORTANT: The string "platform" is hard-blocked as a tenant slug. No tenant
+can be created with slug "platform". It is reserved exclusively for platform
+administrator access.
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 2 — THE TWO-TIER IDENTITY MODEL
+════════════════════════════════════════════════════════════════════════════════
+
+TIER 1: PLATFORM ADMIN
+  - User row: is_platform_admin = TRUE, tenant_id = NULL
+  - Role: "admin" with ALL 19 permission codes (including tenants.read, tenants.manage)
+  - Logs in with org code "platform" (or ticks "Platform administrator" checkbox)
+  - Can list/create/update/suspend any tenant
+  - Can create/edit/delete users in any tenant
+  - When calling tenant-scoped GET endpoints: sees ALL rows unless ?tenant_id= is passed
+  - When calling write endpoints: must provide tenant_id in request body
+
+TIER 2: TENANT USER
+  - User row: is_platform_admin = FALSE, tenant_id = <uuid>
+  - Permanently bound to exactly one tenant — can never cross into another
+  - Gets one of: tenant_admin, prompt_manager, or user role
+  - Sees only data belonging to their own tenant — enforced at ORM query level
+
+There is NO third level. An API key is always tenant-scoped (never platform-scoped).
+Microsoft OAuth users always land in a specific tenant — never at platform level.
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 3 — THE TENANT DATABASE MODEL
+════════════════════════════════════════════════════════════════════════════════
+
+TABLE: tenants
+  id                    VARCHAR(36)   UUID primary key
+  slug                  VARCHAR(64)   UNIQUE — the org code users type to log in
+                                      Rules: lowercase, alphanumeric + hyphens,
+                                      must start/end with letter or number,
+                                      max 64 chars, cannot be "platform"
+  name                  VARCHAR(200)  Display name ("Academian", "Acme Corp")
+  max_users             INTEGER       License cap — max number of active users
+  status                VARCHAR(20)   "active" | "suspended"
+                                      Suspended = nobody from this tenant can log in
+  microsoft_auth_enabled BOOLEAN      Whether MS sign-in is allowed for this tenant
+  azure_tenant_id       VARCHAR(64)   Tenant's own Azure AD tenant (overrides platform)
+  azure_client_id       VARCHAR(64)   Tenant's own Azure app client ID
+  azure_client_secret   VARCHAR(512)  Tenant's own Azure app secret (stored in plain)
+  azure_new_user_role   VARCHAR(32)   Role given to auto-provisioned MS users
+                                      ("user" | "prompt_manager" | "tenant_admin")
+  allowed_email_domains VARCHAR(500)  Comma-separated, e.g. "academian.com,academian.edu"
+                                      If set, only these MS email domains can enter
+  created_at            TIMESTAMP
+  created_by            VARCHAR(100)  Username of platform admin who created it
+
+TABLE: users
+  id                    VARCHAR(36)   UUID primary key
+  tenant_id             VARCHAR(36)   FK → tenants.id (NULL for platform admins)
+  is_platform_admin     BOOLEAN       TRUE only for platform-level admin accounts
+  username              VARCHAR(100)  UNIQUE per tenant (same username can exist in two tenants)
+  email                 VARCHAR(255)  UNIQUE per tenant
+  microsoft_oid         VARCHAR(64)   UNIQUE per tenant (Azure object ID)
+  password_hash         VARCHAR(255)  bcrypt hash (NULL for pure Microsoft users)
+  display_name          VARCHAR(200)
+  role                  VARCHAR(20)   Legacy string: "admin"|"tenant_admin"|"prompt_manager"|"user"
+  role_id               VARCHAR(36)   FK → roles.id (new RBAC — overrides string role)
+  team_id               VARCHAR(20)   FK → teams.id (primary team assignment)
+  active                BOOLEAN       Inactive users cannot log in; don't count against license
+  created_at, created_by, last_login_at
+
+UNIQUE CONSTRAINTS ON USERS:
+  (tenant_id, username)       — same username allowed in different tenants
+  (tenant_id, email)
+  (tenant_id, microsoft_oid)
+
+TABLE: roles
+  id           VARCHAR(36)   UUID PK
+  tenant_id    VARCHAR(36)   FK → tenants.id  (NULL for the global platform "admin" role)
+  name         VARCHAR(64)   UNIQUE per tenant
+  description  VARCHAR(255)
+  is_system    BOOLEAN       TRUE = cannot be deleted (seeded system roles)
+
+  System roles seeded per tenant: tenant_admin, prompt_manager, user
+  Platform role (tenant_id=NULL): admin
+
+TABLE: tenant_api_keys
+  id           VARCHAR(36)   UUID PK
+  tenant_id    VARCHAR(36)   FK → tenants.id (CASCADE delete)
+  name         VARCHAR(100)
+  key_prefix   VARCHAR(24)   First 16 chars of the key (used for DB lookup)
+  key_hash     VARCHAR(255)  bcrypt hash of the full key
+  scopes       JSON          List of permission codes the key grants
+  active       BOOLEAN
+  created_at, created_by
+  last_used_at               Updated on every successful validation
+  expires_at                 Optional — NULL means never expires
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 4 — REQUEST AUTH FLOW (happens on EVERY request)
+════════════════════════════════════════════════════════════════════════════════
+
+Flask runs init_request_auth() as a before_request hook for every call.
+
+Step 1: Look for Authorization: Bearer <token> or X-API-Key: <token> header.
+
+Step 2a: If token present AND starts with "pl_live_":
+  - Look up key by prefix in tenant_api_keys where active=TRUE
+  - bcrypt-compare full token against key_hash
+  - Check expires_at if set
+  - Check tenant.status == "active"
+  - Build AuthContext(auth_type="api_key", tenant_id=key.tenant_id,
+                      permissions=frozenset(key.scopes), is_platform_admin=False)
+  - Store in Flask g.auth_context
+
+Step 2b: If token present but DOES NOT start with "pl_live_":
+  - Set g.invalid_bearer = True
+  - Any route with @api_login_required or @require_permission returns 401
+    {"error": "Invalid API key"}
+
+Step 3: If no token:
+  - Build session auth context from Flask session cookie
+  - AuthContext(auth_type="session", tenant_id=session["tenant_id"],
+                permissions=frozenset(session["permissions"]),
+                is_platform_admin=session["is_platform_admin"])
+  - Store in Flask g.auth_context
+
+Step 4: If no session either:
+  - g.auth_context = None
+  - Any protected route returns 401 {"error": "Login required"}
+
+The AuthContext is the single source of truth for the entire request. All
+permission checks, tenant scoping, and identity lookups read from it.
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 5 — PERMISSIONS (19 codes)
+════════════════════════════════════════════════════════════════════════════════
+
+PROMPTS
+  prompts.read        Browse and copy prompts
+  prompts.write       Create and edit prompts
+  prompts.delete      Delete prompts
+
+REVIEWS
+  reviews.read_all    View all reviews (staff view)
+
+REQUESTS
+  requests.read_all   View all prompt requests (admin view)
+  requests.manage     Update request status and notes
+
+USERS
+  users.read          List users
+  users.write         Update user profile/team
+  users.create        Create new users
+  users.delete        Delete and activate/deactivate users
+
+TEAMS
+  teams.read          List teams
+  teams.write         Create, update, delete teams
+
+ROLES
+  roles.read          View roles and permission assignments
+  roles.manage        Create, update, delete roles
+
+AUDIT
+  audit.read          Browse audit log
+  audit.export        Export audit log to CSV
+
+PLATFORM (tenants only)
+  tenants.read        List and view tenants (platform admin only)
+  tenants.manage      Create and manage tenants (platform admin only)
+
+INTEGRATION
+  integration.manage  Create and revoke API keys
+
+WHAT EACH ROLE GETS BY DEFAULT:
+  admin (platform)    ALL 19 codes
+  tenant_admin        All EXCEPT tenants.read + tenants.manage  (17 codes)
+  prompt_manager      All EXCEPT users.create, users.delete, roles.read,
+                      roles.manage, teams.write, audit.read, audit.export,
+                      tenants.read, tenants.manage  (10 codes)
+  user                prompts.read only  (1 code)
+
+NOTE: Tenant admins can create CUSTOM roles with any subset of the 17
+tenant-level codes (all codes except tenants.*). These are stored in the
+roles table with role.tenant_id = <tenant_id>.
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 6 — TENANT SCOPING IN CODE
+════════════════════════════════════════════════════════════════════════════════
+
+Every database query that touches tenant-owned data is scoped by:
+
+  apply_tenant_filter(query, Model)
+    - API key: always filters by key.tenant_id
+    - Platform admin: filters by ?tenant_id= if provided; shows ALL if not
+    - Regular user: always filters by session.tenant_id
+
+  get_scoped(Model, pk)
+    - Wraps apply_tenant_filter + .first()
+    - Used for single-row lookups to prevent cross-tenant ID guessing
+
+  require_tenant_id_for_write()
+    - API key: returns key.tenant_id (aborts 403 if somehow missing)
+    - Platform admin: reads tenant_id from request body or query string (aborts 400 if missing)
+    - Regular user: returns session.tenant_id (aborts 403 if missing)
+
+FILE STORAGE:
+  Attachments are stored at: ATTACHMENTS_DIR/<tenant_id>/<filename>
+  So even the filesystem is isolated by tenant.
+
+AUDIT EVENTS:
+  audit_events.tenant_id is set to the current session's tenant_id.
+  Platform admin events have tenant_id = NULL.
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 7 — LOGIN FLOWS
+════════════════════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────
+  7A. LOCAL LOGIN
+────────────────────────────────────────────────
+
+POST /api/auth/login
+Body: { "tenant_slug": "<slug>", "username": "<user>", "password": "<pass>" }
+
+For platform admin:
+  Body: { "tenant_slug": "platform", "username": "<user>", "password": "<pass>" }
+  OR:   { "platform_admin": true, "username": "<user>", "password": "<pass>" }
+
+What happens server-side:
+  1. Normalize slug to lowercase
+  2. If slug != "platform": look up Tenant by slug, check status == "active"
+  3. Look up User by (slug→tenant_id, username)
+  4. bcrypt-verify password
+  5. Check user.active == True (403 if deactivated)
+  6. Update user.last_login_at
+  7. Call establish_session(user) → writes to Flask session cookie
+  8. Log audit event auth.login
+
+Edge case: a platform admin can log in using any tenant's slug (or "platform").
+If credentials match a platform admin account, they get platform admin context
+regardless of which slug they typed.
+
+────────────────────────────────────────────────
+  7B. MICROSOFT OAUTH LOGIN
+────────────────────────────────────────────────
+
+Step 1: Browser navigates to:
+  GET /login/microsoft?tenant_slug=<slug>
+
+  Server:
+  - Looks up tenant by slug, checks status == "active"
+  - Checks microsoft_auth_enabled on tenant
+  - Resolves Azure credentials (tenant's own or platform-wide)
+  - Generates CSRF state token, stores in session
+  - Stores tenant_slug in session as "oauth_tenant_slug"
+  - Redirects to Microsoft authorize URL
+
+Step 2: Microsoft redirects back to:
+  GET /auth/microsoft/callback?code=<code>&state=<state>
+
+  Server:
+  - Validates state matches session (CSRF protection)
+  - Calls msal to exchange code for claims (oid, email, name)
+  - Calls find_or_create_user(claims, tenant_slug):
+      a. Tries to find existing user by microsoft_oid
+      b. Falls back to find by email
+      c. Falls back to find by username_base(email)
+      d. If found: links OID/email if not already linked, checks active
+      e. If not found: checks license cap, checks allowed_email_domains,
+         creates new User with role from tenant.azure_new_user_role
+  - establish_session(user)
+  - Redirects to frontend (SPA)
+
+DOMAIN ALLOWLIST:
+  If tenant.allowed_email_domains is set (e.g. "academian.com,academian.edu"),
+  then any Microsoft account whose email is NOT in that domain list is rejected
+  with: "This Microsoft account is not authorized for organization '<slug>'."
+
+MICROSOFT CREDENTIALS RESOLUTION ORDER (per-tenant first, then platform):
+  azure_tenant_id:    tenant.azure_tenant_id  || Config.AZURE_TENANT_ID  || "common"
+  azure_client_id:    tenant.azure_client_id  || Config.AZURE_CLIENT_ID
+  azure_client_secret: tenant.azure_client_secret || Config.AZURE_CLIENT_SECRET
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 8 — API KEY AUTH (MACHINE-TO-MACHINE)
+════════════════════════════════════════════════════════════════════════════════
+
+API keys are always tenant-scoped. A key can NEVER be a platform admin key.
+
+KEY FORMAT: pl_live_<24 random URL-safe bytes>
+            First 16 characters ("pl_live_xxxxxxxx") are stored as key_prefix for lookup.
+            Full key is bcrypt-hashed and stored as key_hash.
+
+SCOPE PRESETS:
+  read_only:
+    prompts.read, teams.read
+
+  prompt_manager:
+    prompts.read, prompts.write, prompts.delete,
+    teams.read, reviews.read_all,
+    requests.read_all, requests.manage
+
+  full_integration:
+    All tenant codes EXCEPT integration.manage
+    (keys cannot create more keys — prevents privilege escalation)
+
+HOW VALIDATION WORKS:
+  1. Extract prefix (first 16 chars) from the incoming token
+  2. SELECT FROM tenant_api_keys WHERE key_prefix = <prefix> AND active = TRUE
+  3. bcrypt-compare full token against each candidate's key_hash
+  4. If match: check expires_at, check tenant.status == "active"
+  5. Update last_used_at
+  6. Build AuthContext with tenant_id, permissions=frozenset(key.scopes),
+     is_platform_admin=False
+
+RESTRICTIONS FOR API KEY CALLERS:
+  - Cannot access: /api/platform/tenants/* (blocked by before_request guard)
+  - Cannot access: /api/integration/keys (integration management is session-only)
+  - Cannot access: /api/auth/* (login/logout/me — session-only)
+  - is_platform_admin is always False regardless of scopes
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 9 — TENANT LIFECYCLE (LICENSE + SUSPENSION)
+════════════════════════════════════════════════════════════════════════════════
+
+LICENSE ENFORCEMENT:
+  tenant.max_users is the cap on ACTIVE users.
+  assert_can_add_user() is called before:
+    - Creating a user (both by tenant admin and platform admin)
+    - Reactivating a deactivated user
+    - Microsoft auto-provisioning a new user
+
+  If count(active users) >= max_users:
+    Returns 403: "User license limit reached (N/M). Contact your platform administrator."
+
+  Deactivated users (active=FALSE) do NOT count toward the cap.
+  Deleting a user frees up a seat immediately.
+
+SUSPENSION:
+  Set tenant.status = "suspended" via PUT /api/platform/tenants/<id>
+  Effect:
+    - Any login attempt (local or Microsoft) gets 403 "This organization has been suspended."
+    - Any API key belonging to this tenant stops working (validate_api_key checks status)
+    - Existing sessions remain valid until cookie expires or browser closes
+      (no immediate session invalidation — consider that a known gap)
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 10 — COMPLETE API REFERENCE WITH CURL COMMANDS
+════════════════════════════════════════════════════════════════════════════════
+
+Save your session cookie with -c cookies.txt and reuse with -b cookies.txt.
+Replace values in <ANGLE BRACKETS> with actual values.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.1  HEALTH (public, no auth)
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/health
+Returns: {"status": "ok"}
+
+  curl http://localhost:5000/api/health
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.2  AUTH — Config (public, no auth)
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/auth/config
+Returns: microsoft_enabled, local_login_enabled, platform_slug, frontend_url
+
+  curl http://localhost:5000/api/auth/config
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.3  AUTH — Tenant login info (public, no auth)
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/auth/tenant-login/<slug>
+Returns: valid, slug, name, status, microsoft_enabled, allowed_email_domains, etc.
+Used by the frontend to validate an org code before showing the login form.
+
+  curl http://localhost:5000/api/auth/tenant-login/academian
+
+  # Suspended tenant:
+  curl http://localhost:5000/api/auth/tenant-login/suspendedorg
+  # Returns 403 with {"valid": false, "error": "Organization suspended"}
+
+  # Unknown slug:
+  curl http://localhost:5000/api/auth/tenant-login/doesnotexist
+  # Returns 404 with {"valid": false, "error": "Unknown organization code"}
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.4  AUTH — Local Login (session cookie)
+────────────────────────────────────────────────────────────────────────────────
+
+POST /api/auth/login
+Body: { tenant_slug, username, password }
+
+  # Tenant user login
+  curl -c cookies.txt -X POST http://localhost:5000/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"tenant_slug": "academian", "username": "alice", "password": "secret123"}'
+
+  # Platform admin login — using reserved slug
+  curl -c cookies.txt -X POST http://localhost:5000/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"tenant_slug": "platform", "username": "platformadmin", "password": "adminpass"}'
+
+  # Platform admin login — using platform_admin flag
+  curl -c cookies.txt -X POST http://localhost:5000/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"platform_admin": true, "username": "platformadmin", "password": "adminpass"}'
+
+Returns on success: {"ok": true, "user": { username, role, tenant_slug, permissions, ... }}
+Returns on failure:
+  400 — missing fields or Microsoft-only account
+  401 — invalid credentials or wrong slug type (platform admin used tenant slug)
+  403 — account deactivated or org suspended
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.5  AUTH — Get current user
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/auth/me
+Requires: session cookie
+
+  curl -b cookies.txt http://localhost:5000/api/auth/me
+
+Returns: {"authenticated": true, "user": { username, role, role_id, team,
+          tenant_id, tenant_slug, is_platform_admin, permissions, display_name,
+          active_users, max_users, ... }}
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.6  AUTH — Logout
+────────────────────────────────────────────────────────────────────────────────
+
+POST /api/auth/logout
+
+  curl -b cookies.txt -c cookies.txt -X POST http://localhost:5000/api/auth/logout
+
+Returns: {"ok": true}
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.7  AUTH — Microsoft OAuth (browser flow, not curl-able directly)
+────────────────────────────────────────────────────────────────────────────────
+
+Step 1 — redirect user's browser to:
+  GET /login/microsoft?tenant_slug=<slug>
+
+Step 2 — Microsoft calls back:
+  GET /auth/microsoft/callback?code=<code>&state=<state>
+  (Handled server-side, redirects to frontend with session established)
+
+These cannot be done with curl because they involve browser redirects and the
+Microsoft authorization page. They are browser-only flows.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.8  PLATFORM TENANTS — Requires tenants.read / tenants.manage
+  NOTE: These endpoints REJECT API key auth — session only.
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/platform/tenants
+List all tenants (platform admin only)
+
+  curl -b cookies.txt http://localhost:5000/api/platform/tenants
+
+Returns: array of tenant objects with id, slug, name, max_users, status,
+         active_users, microsoft config flags, created_at, created_by
+
+
+POST /api/platform/tenants
+Create a new tenant (requires tenants.manage)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/platform/tenants \
+    -H "Content-Type: application/json" \
+    -d '{
+      "slug": "new-org",
+      "name": "New Organization",
+      "max_users": 25,
+      "admin_username": "orgadmin",
+      "admin_password": "SecurePass123",
+      "admin_display_name": "Org Administrator"
+    }'
+
+What happens:
+  - Validates slug (no "platform", no spaces, lowercase only)
+  - Checks slug uniqueness
+  - Creates Tenant row
+  - Seeds 3 system roles for this tenant (tenant_admin, prompt_manager, user)
+  - Creates initial tenant_admin user
+  - Returns tenant dict + initial_admin user dict
+
+Returns: 201 on success, 409 if slug exists or constraint violation, 400 if missing fields
+
+
+PUT /api/platform/tenants/<tenant_id>
+Update a tenant (requires tenants.manage)
+
+  # Suspend a tenant
+  curl -b cookies.txt -X PUT http://localhost:5000/api/platform/tenants/<tenant_id> \
+    -H "Content-Type: application/json" \
+    -d '{"status": "suspended"}'
+
+  # Reactivate
+  curl -b cookies.txt -X PUT http://localhost:5000/api/platform/tenants/<tenant_id> \
+    -H "Content-Type: application/json" \
+    -d '{"status": "active"}'
+
+  # Change license cap
+  curl -b cookies.txt -X PUT http://localhost:5000/api/platform/tenants/<tenant_id> \
+    -H "Content-Type: application/json" \
+    -d '{"max_users": 50}'
+
+  # Configure per-tenant Microsoft auth
+  curl -b cookies.txt -X PUT http://localhost:5000/api/platform/tenants/<tenant_id> \
+    -H "Content-Type: application/json" \
+    -d '{
+      "microsoft_auth_enabled": true,
+      "azure_tenant_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "azure_client_id": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+      "azure_client_secret": "~SecretValue~",
+      "azure_new_user_role": "user",
+      "allowed_email_domains": "academian.com,academian.edu"
+    }'
+
+  Updatable fields: name, max_users, status, microsoft_auth_enabled,
+                    azure_tenant_id, azure_client_id, azure_client_secret,
+                    azure_new_user_role, allowed_email_domains
+  azure_new_user_role must be one of: "user", "prompt_manager", "tenant_admin"
+
+
+GET /api/platform/tenants/<tenant_id>/usage
+Get active user count vs max for a tenant (requires tenants.read)
+
+  curl -b cookies.txt http://localhost:5000/api/platform/tenants/<tenant_id>/usage
+
+Returns: {"active_users": 12, "max_users": 25}
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.9  PLATFORM TENANT USERS — Requires tenants.read / tenants.manage
+  NOTE: Session only — API keys rejected.
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/platform/tenants/<tenant_id>/users
+List all users in a specific tenant
+
+  curl -b cookies.txt \
+    http://localhost:5000/api/platform/tenants/<tenant_id>/users
+
+Returns: { tenant: {...}, usage: {active_users, max_users}, users: [...] }
+
+
+POST /api/platform/tenants/<tenant_id>/users
+Create a user in a specific tenant (requires tenants.manage)
+
+  curl -b cookies.txt -X POST \
+    http://localhost:5000/api/platform/tenants/<tenant_id>/users \
+    -H "Content-Type: application/json" \
+    -d '{
+      "username": "newuser",
+      "password": "TempPass123",
+      "display_name": "New User",
+      "role": "user"
+    }'
+
+  role must be one of: "user", "prompt_manager", "tenant_admin"
+  Checks license cap before creating.
+
+
+PUT /api/platform/tenants/<tenant_id>/users/<username>
+Update a user in a specific tenant (requires tenants.manage)
+
+  curl -b cookies.txt -X PUT \
+    http://localhost:5000/api/platform/tenants/<tenant_id>/users/<username> \
+    -H "Content-Type: application/json" \
+    -d '{
+      "display_name": "Updated Name",
+      "role": "prompt_manager",
+      "password": "NewPass456",
+      "active": true,
+      "team": "<team_id>"
+    }'
+
+  # Deactivate a user (frees up a license seat)
+  curl -b cookies.txt -X PUT \
+    http://localhost:5000/api/platform/tenants/<tenant_id>/users/<username> \
+    -H "Content-Type: application/json" \
+    -d '{"active": false}'
+
+
+DELETE /api/platform/tenants/<tenant_id>/users/<username>
+Permanently delete a user from a tenant (requires tenants.manage)
+
+  curl -b cookies.txt -X DELETE \
+    http://localhost:5000/api/platform/tenants/<tenant_id>/users/<username>
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.10  USERS — Tenant admin manages their own tenant's users
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/users
+List users in the current tenant (requires users.read)
+Auto-scoped: tenant users see only their tenant; platform admin sees all (or ?tenant_id=)
+
+  curl -b cookies.txt http://localhost:5000/api/users
+  curl -b cookies.txt "http://localhost:5000/api/users?page=2&limit=50"
+
+  # Platform admin, specific tenant:
+  curl -b cookies.txt "http://localhost:5000/api/users?tenant_id=<tenant_id>"
+
+
+GET /api/users/license
+Get license usage for the current tenant (requires users.read)
+
+  curl -b cookies.txt http://localhost:5000/api/users/license
+
+Returns: {"active_users": 8, "max_users": 25}
+
+
+POST /api/users
+Create a user in current tenant (requires users.create)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/users \
+    -H "Content-Type: application/json" \
+    -d '{
+      "username": "bob",
+      "password": "TempPass123",
+      "display_name": "Bob Smith",
+      "role": "user",
+      "team": "<team_id>"
+    }'
+
+  # Platform admin creating in a specific tenant:
+  curl -b cookies.txt -X POST http://localhost:5000/api/users \
+    -H "Content-Type: application/json" \
+    -d '{
+      "tenant_id": "<tenant_id>",
+      "username": "bob",
+      "password": "TempPass123",
+      "role": "user"
+    }'
+
+
+PUT /api/users/<username>
+Update a user (requires users.write or users.delete for role/password/active changes)
+
+  # Update display name and team (prompt_manager can do this)
+  curl -b cookies.txt -X PUT http://localhost:5000/api/users/bob \
+    -H "Content-Type: application/json" \
+    -d '{"display_name": "Robert Smith", "team": "<team_id>"}'
+
+  # Change role (requires users.delete permission — tenant_admin level)
+  curl -b cookies.txt -X PUT http://localhost:5000/api/users/bob \
+    -H "Content-Type: application/json" \
+    -d '{"role": "prompt_manager"}'
+
+  # Change password
+  curl -b cookies.txt -X PUT http://localhost:5000/api/users/bob \
+    -H "Content-Type: application/json" \
+    -d '{"password": "NewSecurePass789"}'
+
+  NOTE: Admins cannot change their own role.
+
+
+DELETE /api/users/<username>
+Delete a user (requires users.delete)
+
+  curl -b cookies.txt -X DELETE http://localhost:5000/api/users/bob
+  # Cannot delete your own account (returns 400)
+
+
+POST /api/users/<username>/activate
+Reactivate a deactivated user (requires users.delete)
+Checks license cap before activating.
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/users/bob/activate
+
+
+POST /api/users/<username>/deactivate
+Deactivate a user — frees license seat (requires users.delete)
+Cannot deactivate your own account.
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/users/bob/deactivate
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.11  TEAMS — Tenant-scoped
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/teams
+List teams in current tenant (requires teams.read)
+
+  curl -b cookies.txt http://localhost:5000/api/teams
+
+  # API key:
+  curl -H "Authorization: Bearer pl_live_<key>" http://localhost:5000/api/teams
+
+
+POST /api/teams
+Create a team (requires teams.write)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/teams \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Product Team"}'
+
+
+PUT /api/teams/<team_id>
+Update a team name (requires teams.write)
+
+  curl -b cookies.txt -X PUT http://localhost:5000/api/teams/<team_id> \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Renamed Team"}'
+
+
+DELETE /api/teams/<team_id>
+Delete a team (requires teams.write)
+
+  curl -b cookies.txt -X DELETE http://localhost:5000/api/teams/<team_id>
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.12  ROLES — Tenant-scoped custom RBAC
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/permissions
+List all permission codes (requires roles.read)
+
+  curl -b cookies.txt http://localhost:5000/api/permissions
+
+
+GET /api/roles
+List roles in current tenant (requires roles.read)
+System roles (is_system=TRUE) are included; custom roles also shown.
+
+  curl -b cookies.txt http://localhost:5000/api/roles
+
+  # Platform admin — specify tenant:
+  curl -b cookies.txt "http://localhost:5000/api/roles?tenant_id=<tenant_id>"
+
+
+POST /api/roles
+Create a custom role (requires roles.manage)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/roles \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "Content Writer",
+      "description": "Can read and write prompts only",
+      "permission_ids": ["<permission_id_for_prompts.read>", "<permission_id_for_prompts.write>"]
+    }'
+
+  # Platform admin creates role in specific tenant:
+  curl -b cookies.txt -X POST http://localhost:5000/api/roles \
+    -H "Content-Type: application/json" \
+    -d '{
+      "tenant_id": "<tenant_id>",
+      "name": "Reviewer",
+      "description": "Read and review only",
+      "permission_ids": ["<id>", "<id>"]
+    }'
+
+
+PUT /api/roles/<role_id>
+Update a custom role (requires roles.manage)
+System roles (is_system=TRUE) cannot be deleted but can be updated.
+
+  curl -b cookies.txt -X PUT http://localhost:5000/api/roles/<role_id> \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "Senior Writer",
+      "description": "Updated description",
+      "permission_ids": ["<id1>", "<id2>", "<id3>"]
+    }'
+
+
+DELETE /api/roles/<role_id>
+Delete a custom role (requires roles.manage)
+Blocked if role is_system=TRUE.
+
+  curl -b cookies.txt -X DELETE http://localhost:5000/api/roles/<role_id>
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.13  PROMPTS — Core tenant-scoped content
+────────────────────────────────────────────────────────────────────────────────
+
+Prompt visibility rules (within a tenant):
+  draft   = only managers (tenant_admin, prompt_manager, admin) can see
+  global  = all active users in the tenant
+  team    = only users whose team is in the prompt's prompt_teams list
+            (managers also see all team prompts regardless of their own team)
+
+GET /api/prompts
+List prompts (requires prompts.read)
+Auto-applies tenant filter and visibility filter based on caller's role/team.
+
+  curl -b cookies.txt http://localhost:5000/api/prompts
+
+  # With filters:
+  curl -b cookies.txt "http://localhost:5000/api/prompts?category=Marketing&sort=title&page=1&limit=20"
+  curl -b cookies.txt "http://localhost:5000/api/prompts?visibility=draft"
+  curl -b cookies.txt "http://localhost:5000/api/prompts?tag=email"
+  curl -b cookies.txt "http://localhost:5000/api/prompts?q=newsletter"
+
+  # API key (read_only scope):
+  curl -H "Authorization: Bearer pl_live_<key>" http://localhost:5000/api/prompts
+
+  # Platform admin — scoped to one tenant:
+  curl -b cookies.txt "http://localhost:5000/api/prompts?tenant_id=<tenant_id>"
+
+
+GET /api/prompts/search
+Dedicated search (requires prompts.read)
+
+  curl -b cookies.txt "http://localhost:5000/api/prompts/search?q=email+marketing"
+
+
+GET /api/prompts/<prompt_id>
+Get a single prompt (requires prompts.read)
+
+  curl -b cookies.txt http://localhost:5000/api/prompts/<prompt_id>
+
+  # API key:
+  curl -H "Authorization: Bearer pl_live_<key>" http://localhost:5000/api/prompts/<prompt_id>
+
+
+POST /api/prompts
+Create a prompt (requires prompts.write)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Email Campaign Prompt",
+      "content": "Write a marketing email about {{product}} targeting {{audience}}.",
+      "description": "General email marketing template",
+      "category": "Marketing",
+      "visibility": "global",
+      "tags": ["email", "marketing"],
+      "variables": [
+        {"name": "product", "label": "Product Name", "hint": "e.g. Pro Plan"},
+        {"name": "audience", "label": "Target Audience", "hint": "e.g. small businesses"}
+      ],
+      "teams": ["<team_id>"]
+    }'
+
+  # Team-visible prompt:
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Internal HR Template",
+      "content": "...",
+      "visibility": "team",
+      "teams": ["<hr_team_id>"]
+    }'
+
+  # Child prompt (one-level hierarchy):
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Variant A",
+      "content": "...",
+      "parent_id": "<parent_prompt_id>",
+      "visibility": "global"
+    }'
+
+  # API key with prompt_manager scope:
+  curl -X POST http://localhost:5000/api/prompts \
+    -H "Authorization: Bearer pl_live_<key>" \
+    -H "Content-Type: application/json" \
+    -d '{"title": "API Created Prompt", "content": "...", "visibility": "global"}'
+
+
+PUT /api/prompts/<prompt_id>
+Update a prompt (requires prompts.write)
+If content or visibility changes, emails are sent to all affected users.
+
+  curl -b cookies.txt -X PUT http://localhost:5000/api/prompts/<prompt_id> \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Updated Title",
+      "content": "Updated content with {{new_var}}",
+      "visibility": "global",
+      "category": "Sales"
+    }'
+
+
+DELETE /api/prompts/<prompt_id>
+Soft-delete a prompt (requires prompts.delete)
+Sets deleted_at timestamp; never physically deleted.
+
+  curl -b cookies.txt -X DELETE http://localhost:5000/api/prompts/<prompt_id>
+
+
+POST /api/prompts/<prompt_id>/duplicate
+Create a copy of a prompt (requires prompts.write)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts/<prompt_id>/duplicate
+
+
+POST /api/prompts/<prompt_id>/use
+Track last_used_at (requires prompts.read)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts/<prompt_id>/use
+
+
+GET /api/prompts/<prompt_id>/versions
+List version history (requires prompts.read)
+
+  curl -b cookies.txt http://localhost:5000/api/prompts/<prompt_id>/versions
+
+
+POST /api/prompts/<prompt_id>/versions
+Create a new version snapshot (requires prompts.write)
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts/<prompt_id>/versions \
+    -H "Content-Type: application/json" \
+    -d '{"content": "Updated content here", "note": "Fixed typo in line 3"}'
+
+
+GET /api/meta
+Get categories and teams for filter UI (requires prompts.read)
+
+  curl -b cookies.txt http://localhost:5000/api/meta
+
+  # API key:
+  curl -H "Authorization: Bearer pl_live_<key>" http://localhost:5000/api/meta
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.14  REVIEWS — Tenant-scoped ratings
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/prompts/<prompt_id>/reviews
+List reviews for a prompt (requires prompts.read)
+
+  curl -b cookies.txt http://localhost:5000/api/prompts/<prompt_id>/reviews
+
+
+POST /api/prompts/<prompt_id>/reviews
+Submit or update your review (requires prompts.read)
+One review per user per prompt — submitting again updates the existing one.
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/prompts/<prompt_id>/reviews \
+    -H "Content-Type: application/json" \
+    -d '{"rating": 5, "feedback": "Very useful template!"}'
+
+
+GET /api/reviews
+Staff view of all reviews in the tenant (requires reviews.read_all)
+
+  curl -b cookies.txt http://localhost:5000/api/reviews
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.15  REQUESTS — Prompt change/new prompt requests
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/requests
+List requests (regular user: sees own; admin/manager with requests.read_all: sees all)
+
+  curl -b cookies.txt http://localhost:5000/api/requests
+
+
+POST /api/requests
+Submit a new request (requires prompts.read — any logged-in user)
+
+  # Request for a new prompt:
+  curl -b cookies.txt -X POST http://localhost:5000/api/requests \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Need a sales follow-up template",
+      "description": "We need a prompt for follow-up emails after demos.",
+      "type": "new"
+    }'
+
+  # Request a change to an existing prompt:
+  curl -b cookies.txt -X POST http://localhost:5000/api/requests \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Update the email template",
+      "description": "The current template is outdated.",
+      "type": "change",
+      "prompt_id": "<prompt_id>"
+    }'
+
+
+PUT /api/requests/<request_id>
+Update request status (requires requests.manage)
+Sends email to submitter on status change.
+
+  curl -b cookies.txt -X PUT http://localhost:5000/api/requests/<request_id> \
+    -H "Content-Type: application/json" \
+    -d '{"status": "in_progress", "admin_notes": "Working on this now."}'
+
+  curl -b cookies.txt -X PUT http://localhost:5000/api/requests/<request_id> \
+    -H "Content-Type: application/json" \
+    -d '{"status": "approved", "admin_notes": "Prompt has been created."}'
+
+  curl -b cookies.txt -X PUT http://localhost:5000/api/requests/<request_id> \
+    -H "Content-Type: application/json" \
+    -d '{"status": "rejected", "admin_notes": "Out of scope for now."}'
+
+  Valid status values: "open", "in_progress", "approved", "rejected"
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.16  ATTACHMENTS — Files attached to prompts
+────────────────────────────────────────────────────────────────────────────────
+
+Files are stored at ATTACHMENTS_DIR/<tenant_id>/<stored_filename>
+
+POST /api/prompts/<prompt_id>/attachments
+Upload a file (requires prompts.write)
+Allowed types: pdf, doc, docx, txt, png, jpg, jpeg, gif, xlsx, pptx, csv, zip
+Max size: 10 MB (configurable via MAX_FILE_MB)
+
+  curl -b cookies.txt -X POST \
+    http://localhost:5000/api/prompts/<prompt_id>/attachments \
+    -F "file=@/path/to/document.pdf"
+
+
+GET /api/prompts/<prompt_id>/attachments/<attachment_id>
+Download an attachment (requires prompts.read)
+
+  curl -b cookies.txt -OJ \
+    http://localhost:5000/api/prompts/<prompt_id>/attachments/<attachment_id>
+
+
+DELETE /api/prompts/<prompt_id>/attachments/<attachment_id>
+Delete an attachment (requires prompts.write)
+
+  curl -b cookies.txt -X DELETE \
+    http://localhost:5000/api/prompts/<prompt_id>/attachments/<attachment_id>
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.17  AUDIT LOG — Tenant-scoped compliance trail
+────────────────────────────────────────────────────────────────────────────────
+
+Every mutation (create/update/delete) is logged with:
+  event_type, action, actor_username, actor_role, entity_type, entity_id,
+  summary, changes (JSON diff), ip_address, user_agent, created_at, tenant_id
+
+GET /api/audit
+Browse audit log (requires audit.read)
+Auto-scoped to current tenant (platform admin sees all if no ?tenant_id=)
+
+  curl -b cookies.txt http://localhost:5000/api/audit
+
+  # Filters:
+  curl -b cookies.txt "http://localhost:5000/api/audit?event_type=user.create"
+  curl -b cookies.txt "http://localhost:5000/api/audit?actor=alice"
+  curl -b cookies.txt "http://localhost:5000/api/audit?entity_type=prompt"
+  curl -b cookies.txt "http://localhost:5000/api/audit?from=2025-01-01&to=2025-12-31"
+  curl -b cookies.txt "http://localhost:5000/api/audit?page=1&limit=100"
+
+  # Platform admin — specific tenant:
+  curl -b cookies.txt "http://localhost:5000/api/audit?tenant_id=<tenant_id>"
+
+
+GET /api/audit/export
+Download audit log as CSV (requires audit.export)
+Max 10,000 rows (configurable via AUDIT_EXPORT_MAX_ROWS)
+
+  curl -b cookies.txt -OJ "http://localhost:5000/api/audit/export"
+  curl -b cookies.txt -OJ \
+    "http://localhost:5000/api/audit/export?from=2025-01-01&to=2025-06-30"
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.18  INTEGRATION — API Key Management
+  NOTE: These endpoints require SESSION auth — API keys cannot manage API keys.
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/integration/keys
+List API keys for current tenant (requires integration.manage)
+Returns prefix and metadata ONLY — the full key is never shown again after creation.
+
+  curl -b cookies.txt http://localhost:5000/api/integration/keys
+
+
+POST /api/integration/keys
+Create a new API key (requires integration.manage)
+
+  # Using a preset:
+  curl -b cookies.txt -X POST http://localhost:5000/api/integration/keys \
+    -H "Content-Type: application/json" \
+    -d '{"name": "CAS Integration Key", "preset": "read_only"}'
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/integration/keys \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Content Pipeline Key", "preset": "prompt_manager"}'
+
+  curl -b cookies.txt -X POST http://localhost:5000/api/integration/keys \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Full Access Key", "preset": "full_integration"}'
+
+  # Custom scopes:
+  curl -b cookies.txt -X POST http://localhost:5000/api/integration/keys \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "Read and review key",
+      "scopes": ["prompts.read", "reviews.read_all"]
+    }'
+
+  # With expiry:
+  curl -b cookies.txt -X POST http://localhost:5000/api/integration/keys \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Temp Key", "preset": "read_only", "expires_at": "2026-12-31T23:59:59Z"}'
+
+Returns: {"key": "pl_live_xxxxxxxxxxxxxxxxxxxx...", "record": {...}}
+IMPORTANT: The full key is returned ONCE at creation. Store it securely.
+
+
+DELETE /api/integration/keys/<key_id>
+Revoke an API key (requires integration.manage)
+Sets active=FALSE. The key immediately stops working.
+
+  curl -b cookies.txt -X DELETE http://localhost:5000/api/integration/keys/<key_id>
+
+
+GET /api/integration/presets
+List available preset names and their scopes (requires integration.manage)
+
+  curl -b cookies.txt http://localhost:5000/api/integration/presets
+
+
+GET /api/integration/scopes
+List all assignable permission codes for API keys (requires integration.manage)
+
+  curl -b cookies.txt http://localhost:5000/api/integration/scopes
+
+
+GET /api/integration/docs
+Public — returns links to documentation
+
+  curl http://localhost:5000/api/integration/docs
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.19  PLATFORM AUDIT LOG
+────────────────────────────────────────────────────────────────────────────────
+
+Platform admins can query audit events across ALL tenants:
+
+  curl -b cookies.txt "http://localhost:5000/api/audit"
+  # Returns all tenants' events because platform admin has no tenant_id filter
+
+  # Filter to specific tenant:
+  curl -b cookies.txt "http://localhost:5000/api/audit?tenant_id=<tenant_id>"
+
+  # Filter by event type (tenant.create, tenant.update, user.create, etc.):
+  curl -b cookies.txt "http://localhost:5000/api/audit?event_type=tenant.create"
+
+
+────────────────────────────────────────────────────────────────────────────────
+  10.20  API DOCS (public)
+────────────────────────────────────────────────────────────────────────────────
+
+  # Swagger UI:
+  curl http://localhost:5000/docs
+
+  # OpenAPI YAML spec:
+  curl http://localhost:5000/docs/openapi.yaml
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 11 — USING API KEYS (MACHINE-TO-MACHINE)
+════════════════════════════════════════════════════════════════════════════════
+
+Both Authorization: Bearer and X-API-Key headers are accepted.
+
+# List prompts via API key:
+curl -H "Authorization: Bearer pl_live_<your_key>" \
+  http://localhost:5000/api/prompts
+
+curl -H "X-API-Key: pl_live_<your_key>" \
+  http://localhost:5000/api/prompts
+
+# Search prompts:
+curl -H "Authorization: Bearer pl_live_<your_key>" \
+  "http://localhost:5000/api/prompts?q=email+marketing&category=Marketing"
+
+# Get a specific prompt:
+curl -H "Authorization: Bearer pl_live_<your_key>" \
+  http://localhost:5000/api/prompts/<prompt_id>
+
+# Track usage (useful for analytics):
+curl -X POST -H "Authorization: Bearer pl_live_<your_key>" \
+  http://localhost:5000/api/prompts/<prompt_id>/use
+
+# Create a prompt (needs prompts.write in key scopes):
+curl -X POST \
+  -H "Authorization: Bearer pl_live_<your_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "New Prompt", "content": "...", "visibility": "global"}' \
+  http://localhost:5000/api/prompts
+
+# List teams (for filtering prompts by team):
+curl -H "Authorization: Bearer pl_live_<your_key>" \
+  http://localhost:5000/api/teams
+
+# Get meta (categories and teams):
+curl -H "Authorization: Bearer pl_live_<your_key>" \
+  http://localhost:5000/api/meta
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 12 — COMMON ERROR RESPONSES
+════════════════════════════════════════════════════════════════════════════════
+
+401 {"error": "Login required"}
+  — No session cookie and no API key header.
+
+401 {"error": "Invalid API key"}
+  — Bearer token present but does not match any active key, or is expired.
+
+403 {"error": "Insufficient permissions"}
+  — Authenticated but missing required permission code.
+
+403 {"error": "Tenant context required"}
+  — Platform admin called a tenant-scoped endpoint without providing tenant_id.
+
+403 {"error": "This endpoint requires a browser session login"}
+  — API key tried to call a session-only endpoint (platform_tenants, integration).
+
+403 {"error": "User license limit reached (N/M). Contact your platform administrator."}
+  — Tried to create or reactivate a user at max capacity.
+
+403 {"error": "Your account has been deactivated. Contact an admin."}
+  — Login attempt with active=FALSE user.
+
+403 {"error": "This organization has been suspended."}
+  — Login attempt against a tenant with status="suspended".
+
+404 {"error": "Unknown organization code"}
+  — tenant_slug not found in tenants table during login or tenant-login lookup.
+
+409 {"error": "Username already exists"}
+  — Create user with duplicate (tenant_id, username).
+
+409 {"error": "Organization code already exists"}
+  — Create tenant with duplicate slug.
+
+400 {"error": "tenant_id required for platform admin"}
+  — Platform admin POST/PUT without providing tenant_id in body.
+
+400 {"error": "Organization code must be lowercase letters, numbers, and hyphens"}
+  — Slug validation failed.
+
+400 {"error": "Reserved organization code"}
+  — Tried to create a tenant with slug="platform".
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 13 — KEY DESIGN DECISIONS / GOTCHAS
+════════════════════════════════════════════════════════════════════════════════
+
+1. USERNAMES ARE UNIQUE PER TENANT, NOT GLOBALLY.
+   "alice" in tenant "acme" and "alice" in tenant "academian" are two completely
+   different users. The DB constraint is (tenant_id, username) — not just username.
+
+2. PLATFORM ADMIN HAS NO TENANT_ID.
+   session["tenant_id"] is NULL for platform admins. This is by design.
+   apply_tenant_filter() detects this and returns all rows (or filters by
+   ?tenant_id= if provided).
+
+3. SESSION PERMISSIONS ARE CACHED AT LOGIN TIME.
+   session["permissions"] is written when establish_session() is called.
+   If you change a user's role, their existing session still has the OLD permissions
+   until they log out and log back in. The /api/auth/me endpoint re-fetches and
+   refreshes the session, so the frontend can call /me to get fresh permissions.
+
+4. API KEYS HAVE HARD RESTRICTIONS:
+   - Cannot be platform admin (is_platform_admin always False)
+   - Cannot manage integration (integration.manage excluded from full_integration)
+   - Cannot access platform_tenants endpoints
+   - Cannot access auth endpoints (login/logout/me)
+
+5. SUSPENDED TENANTS:
+   - All new logins are blocked
+   - All API keys are invalidated immediately
+   - But existing sessions remain valid until they expire
+   - There is no active session kill mechanism currently
+
+6. SOFT DELETES ON PROMPTS.
+   DELETE sets deleted_at = now(). The prompt is not physically removed.
+   base_prompt_query() always filters WHERE deleted_at IS NULL.
+   Attachments, versions, reviews, etc. remain linked but are unreachable.
+
+7. ATTACHMENT FILE STORAGE IS TENANT-ISOLATED.
+   ATTACHMENTS_DIR/<tenant_id>/<filename>
+   Even if someone guesses a stored_name, they cannot download it via the API
+   because get_scoped() checks tenant ownership before serving the file.
+
+8. ROLE SEEDING IS PER-TENANT.
+   When a tenant is created, 3 system roles (tenant_admin, prompt_manager, user)
+   are created with tenant_id = the new tenant's id. These are copies — not shared.
+   The global platform "admin" role has tenant_id = NULL and is created once at
+   startup by ensure_rbac_seeded().
+
+9. MICROSOFT AUTH CAN USE PER-TENANT AZURE APP REGISTRATIONS.
+   A large enterprise tenant might want their own Azure app. Platform provides
+   fallback credentials for smaller tenants. Resolution order:
+     tenant.azure_* fields → Config.AZURE_* env vars → "common" authority
+
+10. LICENSE IS COUNTED ON ACTIVE USERS ONLY.
+    Deactivating a user immediately frees a seat. This is how you "scale down"
+    without deleting data — deactivate instead of delete.
+
+
+════════════════════════════════════════════════════════════════════════════════
+  PART 14 — COMPLETE FLOW EXAMPLE: ONBOARDING A NEW TENANT
+════════════════════════════════════════════════════════════════════════════════
+
+# Step 1: Platform admin logs in
+curl -c cookies.txt -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_slug": "platform", "username": "platformadmin", "password": "adminpass"}'
+
+# Step 2: Create the tenant with 20 user slots
+curl -b cookies.txt -X POST http://localhost:5000/api/platform/tenants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "slug": "new-company",
+    "name": "New Company Inc.",
+    "max_users": 20,
+    "admin_username": "newcoadmin",
+    "admin_password": "SecurePass123!",
+    "admin_display_name": "Admin User"
+  }'
+# Returns: tenant object (save the "id") + initial_admin user
+
+# Step 3: (Optional) Enable Microsoft auth for this tenant
+curl -b cookies.txt -X PUT http://localhost:5000/api/platform/tenants/<tenant_id> \
+  -H "Content-Type: application/json" \
+  -d '{
+    "microsoft_auth_enabled": true,
+    "azure_new_user_role": "user",
+    "allowed_email_domains": "newcompany.com"
+  }'
+
+# Step 4: New tenant admin logs in
+curl -c tenant_cookies.txt -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_slug": "new-company", "username": "newcoadmin", "password": "SecurePass123!"}'
+
+# Step 5: Create a team
+curl -b tenant_cookies.txt -X POST http://localhost:5000/api/teams \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Sales Team"}'
+# Returns: {"id": "<team_id>", "name": "Sales Team", ...}
+
+# Step 6: Create a user in that team
+curl -b tenant_cookies.txt -X POST http://localhost:5000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"username": "salesuser", "password": "pass123", "role": "user", "team": "<team_id>"}'
+
+# Step 7: Create a team-visible prompt
+curl -b tenant_cookies.txt -X POST http://localhost:5000/api/prompts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Sales Intro Email",
+    "content": "Hi {{first_name}}, I wanted to reach out about {{product}}...",
+    "visibility": "team",
+    "teams": ["<team_id>"],
+    "variables": [
+      {"name": "first_name", "label": "Customer First Name"},
+      {"name": "product", "label": "Product Name"}
+    ]
+  }'
+
+# Step 8: Create an API key for external CRM integration
+curl -b tenant_cookies.txt -X POST http://localhost:5000/api/integration/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "CRM Integration", "preset": "read_only"}'
+# Returns: {"key": "pl_live_...", "record": {...}}
+# Save the key — it is shown only once.
+
+# Step 9: CRM uses the key to fetch prompts
+curl -H "Authorization: Bearer pl_live_<saved_key>" \
+  "http://localhost:5000/api/prompts?category=Sales"
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

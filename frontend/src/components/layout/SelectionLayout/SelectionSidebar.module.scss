@@ -1,0 +1,179 @@
+.sidebar {
+  @include flex-col;
+  width: $sidebar-width;
+  min-height: 100vh;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  background: #1e1b4b;
+  border-right: 1px solid rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+  flex-shrink: 0;
+  padding: $space-4;
+  gap: $space-3;
+  overflow-y: auto;
+  @include custom-scrollbar(6px);
+}
+
+.navBtn {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-radius: $radius-md;
+  color: #e0e7ff;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  padding: $space-2 $space-3;
+  cursor: pointer;
+  text-align: center;
+  transition: background $transition-fast, color $transition-fast;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: $color-white;
+    border-color: rgba(165, 180, 252, 0.5);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
+
+  &--active {
+    background: rgba(99, 102, 241, 0.35);
+    border-color: rgba(165, 180, 252, 0.6);
+    color: $color-white;
+  }
+}
+
+.dashNav {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+}
+
+.userPill {
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(165, 180, 252, 0.25);
+  border-radius: $radius-lg;
+  padding: $space-3;
+
+  &__label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: #a5b4fc;
+    margin-bottom: 2px;
+  }
+
+  &__name {
+    color: $color-white;
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  &__role {
+    display: inline-block;
+    margin-top: $space-2;
+    color: $color-white;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
+.contextPill {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(165, 180, 252, 0.22);
+  border-radius: $radius-lg;
+  padding: $space-3;
+  font-size: 0.75rem;
+  color: #e0e7ff;
+  line-height: 1.6;
+
+  &__label {
+    color: #a5b4fc;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: $space-2;
+  }
+
+  strong { color: $color-white; font-weight: 700; }
+}
+
+.navRow, .navRow3 {
+  display: flex;
+  gap: $space-2;
+}
+
+.navRow3 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $space-2;
+
+  .navBtn {
+    font-size: 0.72rem;
+    padding: $space-2 4px;
+  }
+}
+
+.divider {
+  height: 1px;
+  background: rgba(165, 180, 252, 0.2);
+  margin: $space-2 0;
+}
+
+.expander {
+  &__toggle {
+    width: 100%;
+    text-align: left;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(165, 180, 252, 0.25);
+    border-radius: $radius-md;
+    color: #e0e7ff;
+    padding: $space-3;
+    font-size: $font-size-sm;
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover { background: rgba(255, 255, 255, 0.1); }
+  }
+}
+
+.form {
+  @include flex-col;
+  gap: $space-3;
+  margin-top: $space-3;
+  padding: $space-3;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: $radius-md;
+}
+
+.textareaLabel {
+  @include flex-col;
+  gap: $space-1;
+  font-size: $font-size-sm;
+  color: #a5b4fc;
+  font-weight: 500;
+}
+
+.textarea {
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  border: 1px solid rgba(165, 180, 252, 0.55);
+  border-radius: 6px;
+  padding: $space-2 $space-3;
+  font-family: inherit;
+  font-size: $font-size-sm;
+  resize: vertical;
+}
+
+.footer {
+  margin-top: auto;
+  padding-top: $space-4;
+}

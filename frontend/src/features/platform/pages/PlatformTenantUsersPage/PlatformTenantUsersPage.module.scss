@@ -1,0 +1,410 @@
+// ─── Page Shell ───────────────────────────────────────────────────────────────
+// Padding/bg handled by SelectionLayout.main
+.page {
+  max-width: $content-max-width;
+}
+
+// ─── Breadcrumb ───────────────────────────────────────────────────────────────
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+  color: $color-gray-400;
+  margin-bottom: $space-6;
+
+  a, button {
+    background: none;
+    border: none;
+    color: $color-primary;
+    cursor: pointer;
+    font-size: inherit;
+    padding: 0;
+    text-decoration: none;
+    &:hover { text-decoration: underline; }
+  }
+}
+
+.crumb__sep { color: $color-gray-300; }
+
+// ─── Header ───────────────────────────────────────────────────────────────────
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: $space-8;
+  gap: $space-4;
+  flex-wrap: wrap;
+}
+
+.header__title {
+  font-size: $font-size-2xl;
+  font-weight: $font-weight-bold;
+  color: $color-gray-900;
+  line-height: $line-height-tight;
+}
+
+.header__slug {
+  font-size: $font-size-sm;
+  font-family: $font-family-mono;
+  color: $color-gray-400;
+  margin-top: $space-1;
+  background: $color-gray-100;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: $radius-sm;
+}
+
+// ─── Stats Bar ────────────────────────────────────────────────────────────────
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $space-4;
+  margin-bottom: $space-8;
+
+  @media (max-width: $bp-sm) { grid-template-columns: 1fr 1fr; }
+}
+
+.stat {
+  background: $color-white;
+  border-radius: $radius-xl;
+  padding: $space-5 $space-6;
+  box-shadow: $shadow-xs;
+  border: 1px solid $color-gray-100;
+
+  &__value {
+    font-size: $font-size-2xl;
+    font-weight: $font-weight-bold;
+    color: $color-gray-900;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    margin-bottom: $space-1;
+  }
+
+  &__label {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    font-weight: $font-weight-medium;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  &--active .stat__value   { color: $color-success; }
+  &--license .stat__value  { color: $color-primary; }
+}
+
+// ─── License Progress ─────────────────────────────────────────────────────────
+.licenseBar {
+  height: 8px;
+  background: $color-gray-100;
+  border-radius: $radius-full;
+  overflow: hidden;
+  margin-top: $space-2;
+}
+
+.licenseBarFill {
+  height: 100%;
+  border-radius: $radius-full;
+  background: $color-primary;
+  transition: width 0.4s ease;
+
+  &--warn  { background: $color-warning; }
+  &--crit  { background: $color-danger; }
+}
+
+// ─── Section Row ─────────────────────────────────────────────────────────────
+.section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $space-4;
+}
+
+.section__title {
+  font-size: $font-size-base;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-700;
+}
+
+// ─── User List ───────────────────────────────────────────────────────────────
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+}
+
+.userRow {
+  background: $color-white;
+  border-radius: $radius-xl;
+  border: 1px solid $color-gray-100;
+  padding: $space-4 $space-5;
+  display: flex;
+  align-items: center;
+  gap: $space-4;
+  box-shadow: $shadow-xs;
+  transition: box-shadow $transition-fast;
+
+  &:hover { box-shadow: $shadow-sm; }
+
+  &--inactive { opacity: 0.6; }
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: $radius-full;
+  background: $color-primary-soft;
+  color: $color-primary;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: $font-weight-semibold;
+  font-size: $font-size-sm;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.userInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.username {
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-900;
+  font-family: $font-family-mono;
+}
+
+.userMeta {
+  font-size: $font-size-xs;
+  color: $color-gray-400;
+  margin-top: 2px;
+}
+
+.userActions {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  flex-shrink: 0;
+}
+
+// ─── Role Badges ──────────────────────────────────────────────────────────────
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: $radius-full;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+
+  &--admin    { background: #ede9fe; color: #6d28d9; }
+  &--author   { background: $color-primary-soft; color: $color-primary; }
+  &--reviewer { background: $color-info-bg; color: $color-info; }
+  &--inactive { background: $color-gray-100; color: $color-gray-400; }
+  &--active   { background: $color-success-bg; color: $color-success; }
+}
+
+// ─── Buttons ─────────────────────────────────────────────────────────────────
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-2 $space-4;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  border: none;
+  transition: all $transition-fast;
+  white-space: nowrap;
+
+  &--primary {
+    background: $color-primary;
+    color: $color-white;
+    &:hover { background: $color-primary-dark; }
+  }
+
+  &--ghost {
+    background: $color-gray-50;
+    color: $color-gray-700;
+    border: 1px solid $color-gray-200;
+    &:hover { background: $color-gray-100; }
+  }
+
+  &--danger {
+    background: $color-danger-bg;
+    color: $color-danger;
+    border: 1px solid $color-danger-light;
+    &:hover { background: #fecaca; }
+  }
+
+  &--warn {
+    background: $color-warning-bg;
+    color: $color-warning;
+    border: 1px solid $color-warning-light;
+    &:hover { background: #fde68a; }
+  }
+
+  &--activate {
+    background: $color-success-bg;
+    color: $color-success;
+    border: 1px solid $color-success-light;
+    &:hover { background: #bbf7d0; }
+  }
+
+  &--icon {
+    padding: $space-2;
+    font-size: $font-size-base;
+    background: none;
+    color: $color-gray-400;
+    border: 1px solid transparent;
+    &:hover { background: $color-danger-bg; color: $color-danger; border-color: $color-danger-light; }
+  }
+
+  &--sm {
+    padding: $space-1 $space-3;
+    font-size: $font-size-xs;
+  }
+}
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+.alert {
+  background: $color-danger-bg;
+  border: 1px solid $color-danger-light;
+  border-radius: $radius-lg;
+  padding: $space-3 $space-5;
+  color: $color-danger;
+  font-size: $font-size-sm;
+  margin-bottom: $space-6;
+}
+
+// ─── Empty State ──────────────────────────────────────────────────────────────
+.empty {
+  text-align: center;
+  padding: $space-16 $space-8;
+  color: $color-gray-400;
+
+  &__icon { font-size: 2.5rem; margin-bottom: $space-4; }
+  &__text { font-size: $font-size-sm; }
+}
+
+// ─── Confirm Dialog ──────────────────────────────────────────────────────────
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: $z-modal;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: $space-4;
+}
+
+.modal {
+  background: $color-white;
+  border-radius: $radius-2xl;
+  box-shadow: $shadow-xl;
+  width: 100%;
+  max-width: 480px;
+  overflow: hidden;
+
+  &__header {
+    padding: $space-6 $space-8;
+    border-bottom: 1px solid $color-gray-100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__title {
+    font-size: $font-size-lg;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+  }
+
+  &__close {
+    background: none;
+    border: none;
+    font-size: 1.25rem;
+    cursor: pointer;
+    color: $color-gray-400;
+    padding: $space-1;
+    border-radius: $radius-md;
+    line-height: 1;
+    &:hover { color: $color-gray-700; background: $color-gray-100; }
+  }
+
+  &__body {
+    padding: $space-6 $space-8;
+    display: flex;
+    flex-direction: column;
+    gap: $space-4;
+  }
+
+  &__footer {
+    padding: $space-4 $space-8 $space-6;
+    display: flex;
+    gap: $space-3;
+    justify-content: flex-end;
+  }
+}
+
+// ─── Form ─────────────────────────────────────────────────────────────────────
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+
+  &__label {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    color: $color-gray-700;
+  }
+}
+
+.input {
+  padding: $space-3 $space-4;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: $color-gray-900;
+  background: $color-white;
+  transition: border-color $transition-fast, box-shadow $transition-fast;
+  width: 100%;
+
+  &:focus {
+    outline: none;
+    border-color: $color-primary;
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+  }
+
+  &::placeholder { color: $color-gray-400; }
+}
+
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-4;
+}
+
+// ─── Loading ─────────────────────────────────────────────────────────────────
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  color: $color-gray-400;
+  font-size: $font-size-sm;
+}

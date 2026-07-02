@@ -1,0 +1,151 @@
+@use '@styles/variables' as *;
+@use '@styles/mixins' as *;
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+}
+
+.header {
+  @include flex-col;
+  gap: $space-1;
+}
+
+.header__title {
+  font-size: $font-size-md;
+  font-weight: $font-weight-bold;
+  color: $color-gray-900;
+  margin: 0;
+}
+
+.header__intro {
+  font-size: 0.82rem;
+  color: $color-gray-500;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.restricted {
+  text-align: center;
+  padding: $space-6 $space-5;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+
+  &__icon { font-size: 2rem; margin-bottom: $space-2; }
+  &__title {
+    font-weight: $font-weight-bold;
+    color: $color-gray-700;
+    margin-bottom: $space-1;
+  }
+  &__text {
+    font-size: 0.82rem;
+    color: $color-gray-500;
+    line-height: 1.5;
+    margin: 0;
+  }
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+}
+
+.sectionLabel {
+  font-size: 0.75rem;
+  font-weight: $font-weight-bold;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: $color-primary;
+  margin: $space-2 0 $space-1;
+}
+
+.fieldRow {
+  @include flex-col;
+  gap: $space-1;
+}
+
+.fieldLabel {
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  color: $color-gray-700;
+  display: flex;
+  align-items: center;
+  gap: $space-1;
+}
+
+.helpIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: $color-gray-200;
+  color: $color-gray-600;
+  font-size: 0.65rem;
+  font-weight: $font-weight-bold;
+  cursor: help;
+}
+
+.textarea {
+  @include form-field-base;
+  resize: vertical;
+  width: 100%;
+  min-height: 130px;
+}
+
+.uploadBlock {
+  @include flex-col;
+  gap: $space-2;
+}
+
+.uploadBox {
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  padding: $space-4;
+}
+
+.uploadHint {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+  margin: $space-1 0 0;
+}
+
+.fileTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-2;
+}
+
+.fileTag {
+  @include badge($color-primary-soft, $color-primary);
+  font-size: $font-size-xs;
+}
+
+.saveRow {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  gap: $space-2;
+  margin-top: $space-2;
+
+  @include max-sm {
+    grid-template-columns: 1fr;
+  }
+}
+
+.saveBtn {
+  grid-column: 2;
+
+  @include max-sm {
+    grid-column: 1;
+  }
+}
+
+.fieldError {
+  font-size: $font-size-xs;
+  color: $color-danger;
+  margin: 0;
+}

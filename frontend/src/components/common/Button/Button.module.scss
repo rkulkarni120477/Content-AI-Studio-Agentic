@@ -1,0 +1,158 @@
+@use "sass:color";
+
+.btn {
+  @include btn-base;
+  position: relative;
+
+  // ─── Sizes ────────────────────────────────────────────────────────────────
+  &--xs {
+    padding: $space-1 $space-2;
+    font-size: $font-size-xs;
+  }
+
+  &--sm {
+    padding: $space-1 $space-3;
+    font-size: $font-size-xs;
+  }
+
+  &--md {
+    padding: $space-2 $space-4;
+    font-size: $font-size-sm;
+  }
+
+  &--lg {
+    padding: $space-3 $space-6;
+    font-size: $font-size-base;
+  }
+
+  &--xl {
+    padding: $space-4 $space-8;
+    font-size: $font-size-md;
+  }
+
+  // ─── Variants ─────────────────────────────────────────────────────────────
+  &--primary {
+    background: $color-primary;
+    color: $color-white;
+    border-color: $color-primary;
+
+    &:hover:not(:disabled) {
+      background: $color-primary-dark;
+      border-color: $color-primary-dark;
+    }
+
+    &:active:not(:disabled) {
+      background: color.adjust($color-primary-dark, $lightness: -5%);
+    }
+  }
+
+  &--secondary {
+    background: $color-white;
+    color: $color-primary;
+    border-color: $color-primary;
+
+    &:hover:not(:disabled) {
+      background: $color-primary-soft;
+    }
+
+    &:active:not(:disabled) {
+      background: color.adjust($color-primary-soft, $lightness: -5%);
+    }
+  }
+
+  &--ghost {
+    background: transparent;
+    color: $color-gray-700;
+    border-color: $color-gray-200;
+
+    &:hover:not(:disabled) {
+      background: $color-gray-50;
+      border-color: $color-gray-300;
+    }
+
+    &:active:not(:disabled) {
+      background: $color-gray-100;
+    }
+  }
+
+  &--danger {
+    background: $color-danger;
+    color: $color-white;
+    border-color: $color-danger;
+
+    &:hover:not(:disabled) {
+      background: color.adjust($color-danger, $lightness: -10%);
+      border-color: color.adjust($color-danger, $lightness: -10%);
+    }
+  }
+
+  &--danger-ghost {
+    background: transparent;
+    color: $color-danger;
+    border-color: $color-danger-light;
+
+    &:hover:not(:disabled) {
+      background: $color-danger-bg;
+      border-color: $color-danger;
+    }
+  }
+
+  &--success {
+    background: $color-success;
+    color: $color-white;
+    border-color: $color-success;
+
+    &:hover:not(:disabled) {
+      background: color.adjust($color-success, $lightness: -10%);
+    }
+  }
+
+  &--link {
+    background: transparent;
+    color: $color-primary;
+    border-color: transparent;
+    padding-left: 0;
+    padding-right: 0;
+    text-decoration: underline;
+
+    &:hover:not(:disabled) {
+      color: $color-primary-dark;
+    }
+  }
+
+  // ─── Modifiers ────────────────────────────────────────────────────────────
+  &--full {
+    width: 100%;
+  }
+
+  &--loading {
+    cursor: wait;
+
+    .btn__label {
+      visibility: hidden;
+    }
+
+    .btn__icon {
+      visibility: hidden;
+    }
+  }
+
+  // ─── Inner Elements ───────────────────────────────────────────────────────
+  &__spinner {
+    position: absolute;
+    inset: 0;
+    @include flex-center;
+    pointer-events: none;
+  }
+
+  &__icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    font-size: 1em;
+    line-height: 1;
+  }
+
+  &__label {
+    line-height: 1;
+  }
+}

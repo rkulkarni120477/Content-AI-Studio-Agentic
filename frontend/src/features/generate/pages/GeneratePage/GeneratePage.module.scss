@@ -1,0 +1,575 @@
+.page {
+  padding: $space-6;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: $space-4;
+  flex-wrap: wrap;
+}
+
+.step {
+  flex: 1;
+  min-width: 100px;
+  text-align: center;
+  padding: 7px 10px;
+  margin: 0 3px;
+  border-radius: 8px;
+  border: 1px solid $color-gray-200;
+  background: $color-gray-50;
+
+  &--done {
+    border-color: #86efac;
+    background: #f0fdf4;
+  }
+
+  &__icon { font-size: 1rem; }
+  &__label { font-size: 0.72rem; font-weight: $font-weight-bold; color: $color-gray-500; }
+  &__status { font-size: 0.65rem; }
+  &--done &__label,
+  &--done &__status { color: #16a34a; }
+}
+
+.stepArrow {
+  color: #d1d5db;
+  font-size: 1.2rem;
+  padding: 0 2px;
+}
+
+.contextBanner {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  background: $color-white;
+  border: 1px solid #e4e7ef;
+  border-radius: 12px;
+  padding: 14px 20px;
+  margin-bottom: $space-4;
+  flex-wrap: wrap;
+
+  &__col {
+    flex: 1;
+    min-width: 140px;
+    padding-right: 20px;
+  }
+
+  &__divider {
+    width: 1px;
+    background: #e4e7ef;
+    margin: 0 20px;
+  }
+
+  &__heading {
+    font-size: 0.7rem;
+    font-weight: $font-weight-semibold;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: $color-gray-500;
+    margin-bottom: 4px;
+  }
+
+  &__value {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.9rem;
+    font-weight: $font-weight-semibold;
+  }
+
+  &__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  &__hint {
+    margin-left: auto;
+    align-self: center;
+    font-size: 0.78rem;
+    color: $color-gray-400;
+    padding-left: 20px;
+  }
+}
+
+.compOk {
+  padding: 7px 12px;
+  background: #f0fdf4;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #065f46;
+  margin-bottom: 0;
+}
+
+.compWarn {
+  padding: 10px 14px;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  border-radius: 8px;
+  font-size: 0.83rem;
+  color: #854d0e;
+  margin-bottom: $space-2;
+}
+
+.sectionStack {
+  display: flex;
+  flex-direction: column;
+  gap: $space-6;
+}
+
+.promptWrap {
+  /* InlinePromptControls ships with margin-top; neutralize so sectionStack gap is even */
+  margin: 0;
+
+  :global(section) {
+    margin-top: 0;
+  }
+}
+
+.overridePanel {
+  @include card;
+  padding: $space-4;
+  margin-bottom: 0;
+
+  &__caption {
+    font-size: 0.8rem;
+    color: $color-gray-500;
+    margin: 8px 0;
+  }
+
+  &__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: $space-4;
+
+    @include max-md {
+      grid-template-columns: 1fr;
+    }
+  }
+}
+
+.configCard {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+  padding: $space-5 $space-6;
+  margin-bottom: 0;
+}
+
+.resultsPanel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+  padding: $space-5 $space-6;
+  margin-top: 0;
+
+  &__title {
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    margin: 0;
+  }
+
+  &__hint {
+    font-size: $font-size-sm;
+    color: $color-gray-400;
+    text-align: center;
+    margin: $space-4 0;
+  }
+}
+
+.configureEmpty {
+  text-align: center;
+  padding: 3rem 2rem;
+  color: $color-gray-500;
+
+  &__icon {
+    font-size: 2.5rem;
+    display: block;
+    margin-bottom: $space-4;
+  }
+
+  &__title {
+    color: #374151;
+    font-size: $font-size-lg;
+    font-weight: $font-weight-semibold;
+    margin: 0 0 $space-2;
+  }
+
+  &__text {
+    max-width: 420px;
+    margin: 0 auto;
+    line-height: 1.6;
+    font-size: $font-size-sm;
+    color: #6b7280;
+  }
+}
+
+.sectionLabel {
+  font-size: 0.75rem;
+  font-weight: $font-weight-bold;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #4f46e5;
+  margin-bottom: 8px;
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-4;
+
+  @include max-md {
+    grid-template-columns: 1fr;
+  }
+}
+
+.formDivider {
+  border: none;
+  border-top: 1px solid $color-gray-200;
+  margin: $space-4 0;
+}
+
+.compCaption {
+  font-size: 0.8rem;
+  color: $color-gray-500;
+  margin: 4px 0 0;
+}
+
+.infoHint {
+  font-size: 0.83rem;
+  color: #1e40af;
+  margin: 0;
+  padding: 10px 14px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+}
+
+.suppPanel {
+  margin-top: $space-4;
+  padding: $space-3;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-gray-50;
+
+  &__caption {
+    font-size: 0.8rem;
+    color: $color-gray-500;
+    margin: 8px 0 $space-3;
+  }
+
+  &__grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: $space-3;
+    margin-bottom: $space-4;
+
+    @include max-lg {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  &__fileLabel {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: $font-weight-medium;
+    margin-bottom: 6px;
+    color: $color-gray-700;
+  }
+
+  &__ok {
+    font-size: 0.75rem;
+    color: #065f46;
+    margin: 4px 0 0;
+  }
+
+  &__err {
+    font-size: 0.75rem;
+    color: #b91c1c;
+    margin: 4px 0 0;
+  }
+}
+
+.ctxHint {
+  margin-top: $space-2;
+  padding: 8px 12px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: #0369a1;
+}
+
+.gateOk {
+  padding: $space-3;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  color: #065f46;
+  margin-top: $space-3;
+}
+
+.gateWarn {
+  padding: $space-3;
+  background: #fff7ed;
+  border: 1.5px solid #fdba74;
+  border-radius: 9px;
+  font-size: $font-size-sm;
+  color: #7c2d12;
+  margin-top: $space-3;
+
+  p { margin: 6px 0 0; }
+}
+
+.gateBlock {
+  padding: $space-3;
+  background: #fef2f2;
+  border: 1.5px solid #fca5a5;
+  border-radius: 9px;
+  font-size: $font-size-sm;
+  color: #7f1d1d;
+  margin-top: $space-3;
+
+  p { margin: 6px 0 0; }
+
+  &__bar {
+    margin-top: 8px;
+    background: #fee2e2;
+    border-radius: 6px;
+    height: 10px;
+    overflow: hidden;
+  }
+
+  &__fill {
+    background: #ef4444;
+    height: 100%;
+    transition: width 0.2s ease;
+  }
+
+  &__count {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.78rem;
+  }
+}
+
+.validationWarn {
+  font-size: $font-size-sm;
+  color: #854d0e;
+  margin: $space-4 0 0;
+  padding: $space-2 $space-3;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.activeJob {
+  @include card;
+  padding: $space-4;
+  margin-bottom: $space-4;
+  border-color: #93c5fd;
+  background: #eff6ff;
+
+  &__header {
+    @include flex-start;
+    gap: $space-2;
+    margin-bottom: $space-2;
+  }
+
+  &__status {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+  }
+
+  &__stage {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    padding-left: $space-2;
+    border-left: 2px solid $color-primary-light;
+    margin-top: 4px;
+  }
+
+  &__pct {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    margin-bottom: $space-2;
+  }
+}
+
+.progressBar {
+  height: 8px;
+  background: $color-gray-200;
+  border-radius: $radius-full;
+  overflow: hidden;
+  margin-bottom: $space-2;
+
+  &__fill {
+    height: 100%;
+    background: $color-primary;
+    transition: width 0.3s ease;
+  }
+}
+
+.jobActions {
+  display: flex;
+  gap: $space-2;
+  flex-wrap: wrap;
+  margin-top: $space-3;
+}
+
+.jobErrorDetail {
+  margin-top: $space-2;
+  font-size: $font-size-sm;
+
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: $color-gray-50;
+    padding: $space-3;
+    border-radius: $radius-md;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+}
+
+.readyState {
+  padding: 1rem 1.25rem;
+  background: #f0fdf4;
+  border: 1px solid #a7f3d0;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  color: #065f46;
+  text-align: center;
+  margin: 0;
+}
+
+.empty {
+  @include flex-col;
+  @include flex-center;
+  gap: $space-2;
+  padding: 3rem 2rem;
+  color: $color-gray-500;
+  text-align: center;
+
+  &__icon {
+    font-size: 2.5rem;
+  }
+
+  h3 {
+    color: #374151;
+    margin: 0 0 0.5rem;
+    font-size: $font-size-md;
+  }
+
+  p {
+    max-width: 420px;
+    margin: 0 auto;
+    line-height: 1.6;
+    font-size: $font-size-sm;
+  }
+}
+
+.checkLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+}
+
+.launchRow {
+  display: flex;
+  justify-content: center;
+  margin-top: $space-4;
+  padding-top: $space-4;
+
+  &__btn {
+    min-width: 220px;
+    width: 100%;
+    max-width: 280px;
+  }
+}
+
+.jobProgress {
+  @include flex-col;
+  gap: $space-2;
+
+  &__status {
+    @include flex-start;
+    gap: $space-2;
+    font-weight: $font-weight-medium;
+  }
+
+  &__stage {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    padding-left: $space-2;
+    border-left: 2px solid $color-primary-light;
+  }
+}
+
+.results {
+  @include flex-col;
+  gap: $space-3;
+
+  &__count {
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    margin: 0;
+  }
+}
+
+.blockCard {
+  padding: $space-3;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-gray-50;
+
+  &__header {
+    @include flex-between;
+    margin-bottom: $space-2;
+  }
+
+  &__label { font-weight: $font-weight-medium; font-size: $font-size-sm; }
+  &__type { font-size: $font-size-xs; color: $color-gray-500; }
+  &__preview {
+    font-size: $font-size-xs;
+    color: $color-gray-600;
+    margin: 0;
+    white-space: pre-wrap;
+  }
+  &__content {
+    font-size: $font-size-sm;
+    color: $color-gray-700;
+    margin: $space-3 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 400px;
+    overflow-y: auto;
+    @include custom-scrollbar;
+  }
+
+  &__tip {
+    font-size: $font-size-sm;
+    color: $color-gray-500;
+    margin: $space-2 0 0;
+    font-style: italic;
+  }
+}
+
+
+.center {
+  @include flex-center;
+  padding: $space-8;
+}

@@ -1,0 +1,46 @@
+.wrap {
+  @include flex-col;
+  gap: $space-2;
+  margin-bottom: $space-2;
+}
+
+.card {
+  background: $color-white;
+  border: 1.5px solid #d1d5db;
+  border-radius: 12px;
+  padding: 1.2rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+
+  &__title {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: #111827;
+    margin-bottom: 4px;
+  }
+
+  &__client {
+    font-size: 0.75rem;
+    color: #4f46e5;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  &__desc {
+    font-size: 0.82rem;
+    color: #1f2937;
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+
+  &__footer {
+    font-size: 0.72rem;
+    color: #374151;
+    font-weight: 500;
+  }
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: $space-2;
+}

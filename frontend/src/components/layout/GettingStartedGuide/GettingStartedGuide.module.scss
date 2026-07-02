@@ -1,0 +1,23 @@
+.guide {
+  margin-bottom: $space-3;
+  font-size: $font-size-xs;
+
+  &__summary {
+    cursor: pointer;
+    font-weight: $font-weight-medium;
+    color: $color-gray-700;
+    padding: $space-2 0;
+    list-style: none;
+
+    &::-webkit-details-marker { display: none; }
+  }
+
+  &__list {
+    margin: $space-2 0 0 $space-4;
+    padding: 0;
+    color: $color-gray-600;
+    line-height: 1.5;
+
+    li { margin-bottom: $space-1; }
+  }
+}

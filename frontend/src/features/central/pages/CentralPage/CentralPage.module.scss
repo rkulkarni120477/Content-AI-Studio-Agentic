@@ -1,0 +1,109 @@
+.kpiBar {
+  display: flex;
+  gap: $space-4;
+  margin-bottom: $space-6;
+}
+
+.kpiCard {
+  @include card($space-4);
+  @include flex-start;
+  gap: $space-3;
+  min-width: 160px;
+
+  &__value { font-size: $font-size-2xl; font-weight: $font-weight-bold; color: $color-primary; }
+  &__label { font-size: $font-size-sm; color: $color-gray-500; }
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: $space-6;
+  align-items: start;
+
+  @include max-lg { grid-template-columns: 1fr; }
+}
+
+.panel {
+  @include card;
+  @include flex-col;
+  gap: $space-4;
+
+  &__title { font-size: $font-size-md; font-weight: $font-weight-semibold; }
+}
+
+.formToggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-2;
+}
+
+.formToggleBtn {
+  padding: $space-2 $space-3;
+  border: 2px solid $color-gray-200;
+  border-radius: $radius-lg;
+  background: $color-white;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: all $transition-fast;
+  color: $color-gray-600;
+
+  &--active { border-color: $color-primary; background: $color-primary-soft; color: $color-primary; }
+  &:hover:not(&--active) { border-color: $color-gray-300; }
+  &:focus-visible { @include focus-ring; }
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+
+  &__field { @include flex-col; gap: $space-1; }
+  &__label { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-700; }
+  &__textarea {
+    @include form-field-base;
+    resize: vertical;
+    &--error { border-color: $color-danger; }
+  }
+}
+
+.required { color: $color-danger; }
+.fieldError { font-size: $font-size-xs; color: $color-danger; }
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-3;
+  margin-bottom: $space-4;
+  align-items: flex-end;
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-1;
+}
+
+.statusActive { color: $color-success; font-weight: $font-weight-medium; }
+.statusArchived { color: $color-gray-500; }
+
+.importHint {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+  line-height: 1.4;
+}
+
+.viewModal {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+  font-size: $font-size-sm;
+
+  &__note {
+    margin-top: $space-3;
+    padding: $space-3;
+    background: $color-gray-50;
+    border-radius: $radius-md;
+    color: $color-gray-600;
+    font-size: $font-size-xs;
+  }
+}

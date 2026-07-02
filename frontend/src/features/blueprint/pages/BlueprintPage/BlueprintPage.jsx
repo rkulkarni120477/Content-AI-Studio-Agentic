@@ -1,0 +1,922 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useAppDispatch, useAppSelector } from '@app/hooks';
+import {
+  fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
+  activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
+} from '@features/blueprint/blueprintThunks';
+import { blueprintService } from '@features/blueprint/services/blueprintService';
+import {
+  selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
+  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintError,
+  selectBlueprintGenerationMode, setGenerationMode,
+} from '@features/blueprint/blueprintSlice';
+import { selectActiveCdd, selectCdds } from '@features/cdd/cddSlice';
+import { fetchCddsThunk } from '@features/cdd/cddThunks';
+import { cddService } from '@features/cdd/services/cddService';
+import {
+  selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
+  selectModelChoice,
+} from '@features/dashboard/dashboardSlice';
+import { selectActiveStyle } from '@features/style/styleSlice';
+import { fetchStylesThunk } from '@features/style/styleThunks';
+import { selectIsAdmin } from '@features/auth/authSlice';
+import { adminService } from '@features/admin/services/adminService';
+import {
+  buildModuleOptions,
+  existingModuleNumbersForCdd,
+  buildExtraInstructionsBlock,
+} from '@utils/blueprintModules';
+import { parseSectionsFromText } from '@utils/blueprintContent';
+import { buildPromptDownloadMd } from '@utils/promptDefaults';
+import { commitVersionSchema } from '@utils/validation';
+import { GENERATION_MODES } from '@utils/constants';
+import { downloadBlob } from '@utils/helpers';
+import PageContainer from '@components/layout/PageContainer/PageContainer';
+import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
+import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
+import BlueprintContentView from '@components/blueprint/BlueprintContentView/BlueprintContentView';
+import toast from 'react-hot-toast';
+import Button from '@components/common/Button/Button';
+import Input from '@components/common/Input/Input';
+import Select from '@components/common/Select/Select';
+import Loader from '@components/common/Loader/Loader';
+import EmptyState from '@components/common/EmptyState/EmptyState';
+import ErrorState from '@components/common/ErrorState/ErrorState';
+import styles from './BlueprintPage.module.scss';
+
+const NONE_CDD = '';
+
+export default function BlueprintPage() {
+  const { courseId } = useParams();
+  const dispatch = useAppDispatch();
+  const blueprints = useAppSelector(selectBlueprints);
+  const activeBlueprint = useAppSelector(selectActiveBlueprint);
+  const versions = useAppSelector(selectBlueprintVersions);
+  const cdds = useAppSelector(selectCdds);
+  const activeCdd = useAppSelector(selectActiveCdd);
+  const activeStyle = useAppSelector(selectActiveStyle);
+  const selProject = useAppSelector(selectSelectedProject);
+  const selCluster = useAppSelector(selectSelectedCluster);
+  const selCourse = useAppSelector(selectSelectedCourse);
+  const modelChoice = useAppSelector(selectModelChoice);
+  const genMode = useAppSelector(selectBlueprintGenerationMode);
+  const isAdmin = useAppSelector(selectIsAdmin);
+  const isLoading = useAppSelector(selectBlueprintLoading);
+  const isGenerating = useAppSelector(selectBlueprintGenerating);
+  const error = useAppSelector(selectBlueprintError);
+
+  const [linkedCddId, setLinkedCddId] = useState(null);
+  const [cddContent, setCddContent] = useState('');
+  const [moduleSelKey, setModuleSelKey] = useState('');
+  const [documentTitle, setDocumentTitle] = useState('');
+  const [extraInstructions, setExtraInstructions] = useState('');
+  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
+  const [savedInstrs, setSavedInstrs] = useState([]);
+  const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
+  const [showSaveInstr, setShowSaveInstr] = useState(false);
+  const [saveInstrName, setSaveInstrName] = useState('');
+  const [saveInstrNewVer, setSaveInstrNewVer] = useState(false);
+  const [viewBpId, setViewBpId] = useState(null);
+  const [viewBpDetail, setViewBpDetail] = useState(null);
+  const [selectedBpId, setSelectedBpId] = useState(null);
+  const [viewVersion, setViewVersion] = useState(null);
+  const [versionDetail, setVersionDetail] = useState(null);
+  const [moduleConfirmed, setModuleConfirmed] = useState(false);
+  const [showSaveVersion, setShowSaveVersion] = useState(false);
+  const [savingSection, setSavingSection] = useState(false);
+
+  const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
+
+  const displayBp = viewBpDetail
+    || (viewBpId
+      ? (blueprints.find((b) => b.id === viewBpId) || (activeBlueprint?.id === viewBpId ? activeBlueprint : null))
+      : activeBlueprint);
+
+  const cddOptions = useMemo(() => {
+    const opts = [{ value: NONE_CDD, label: '— None (standalone) —' }];
+    cdds.forEach((c) => {
+      opts.push({
+        value: String(c.id),
+        label: `${c.title || c.course_title} (${c.active_version || 'v1'})`,
+      });
+    });
+    return opts;
+  }, [cdds]);
+
+  const existingNums = useMemo(
+    () => existingModuleNumbersForCdd(blueprints, linkedCddId),
+    [blueprints, linkedCddId],
+  );
+
+  const moduleOptions = useMemo(
+    () => buildModuleOptions(cddContent, existingNums),
+    [cddContent, existingNums],
+  );
+
+  const selectedModuleOpt = moduleOptions.find(
+    (o) => String(o.key) === String(moduleSelKey),
+  ) || moduleOptions[0];
+
+  const linkedCdd = linkedCddId
+    ? cdds.find((c) => c.id === linkedCddId)
+    : null;
+
+  const projectId = selProject?.id ?? selCourse?.project_id;
+
+  useEffect(() => {
+    if (!courseId) return;
+    dispatch(fetchBlueprintsThunk(courseId));
+    dispatch(fetchCddsThunk(courseId));
+    dispatch(fetchStylesThunk());
+  }, [courseId, projectId, dispatch]);
+
+  useEffect(() => {
+    if (activeCdd?.id && linkedCddId === null) {
+      setLinkedCddId(activeCdd.id);
+    }
+  }, [activeCdd, linkedCddId]);
+
+  useEffect(() => {
+    if (activeBlueprint?.id) {
+      setViewBpId(activeBlueprint.id);
+      setSelectedBpId(activeBlueprint.id);
+      setViewBpDetail(activeBlueprint);
+      dispatch(fetchBlueprintVersionsThunk(activeBlueprint.id));
+    }
+  }, [activeBlueprint, dispatch]);
+
+  useEffect(() => {
+    if (activeBlueprint?.id && viewBpId === activeBlueprint.id) {
+      setViewBpDetail(activeBlueprint);
+    }
+  }, [activeBlueprint, viewBpId]);
+
+  useEffect(() => {
+    if (!viewBpId) {
+      setViewBpDetail(null);
+      return;
+    }
+    let cancelled = false;
+    blueprintService.getBlueprint(viewBpId).then((bp) => {
+      if (!cancelled) setViewBpDetail(bp);
+    }).catch(() => {
+      if (!cancelled) {
+        setViewBpDetail(
+          blueprints.find((b) => b.id === viewBpId)
+          || (activeBlueprint?.id === viewBpId ? activeBlueprint : null),
+        );
+      }
+    });
+    return () => { cancelled = true; };
+  }, [viewBpId, blueprints, activeBlueprint]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCddContent() {
+      if (!linkedCddId) {
+        setCddContent('');
+        return;
+      }
+      try {
+        const detail = await cddService.getCdd(linkedCddId);
+        const content = detail?.active_content?.full_content
+          || detail?.active_version?.full_content
+          || '';
+        if (!cancelled) setCddContent(content);
+      } catch {
+        const local = cdds.find((c) => c.id === linkedCddId);
+        const content = local?.active_content?.full_content
+          || local?.active_version?.full_content
+          || '';
+        if (!cancelled) setCddContent(content);
+      }
+    }
+    loadCddContent();
+    return () => { cancelled = true; };
+  }, [linkedCddId, cdds]);
+
+  useEffect(() => {
+    if (moduleOptions.length > 0 && !moduleSelKey) {
+      setModuleSelKey(String(moduleOptions[0].key));
+    }
+  }, [moduleOptions, moduleSelKey]);
+
+  useEffect(() => {
+    async function loadSaved() {
+      if (!selProject?.id) return;
+      try {
+        const list = await adminService.listInstructions({
+          component: 'blueprint',
+          project_id: selProject.id,
+          course_id: Number(courseId),
+        });
+        setSavedInstrs(list || []);
+      } catch {
+        setSavedInstrs([]);
+      }
+    }
+    loadSaved();
+  }, [selProject?.id, courseId]);
+
+  useEffect(() => {
+    if (!displayBp?.id || !viewVersion) {
+      setVersionDetail(null);
+      return;
+    }
+    let cancelled = false;
+    async function loadVer() {
+      try {
+        const ver = await blueprintService.getVersion(displayBp.id, viewVersion);
+        if (!cancelled) setVersionDetail(ver);
+      } catch {
+        if (!cancelled) {
+          setVersionDetail(displayBp.active_content || {
+            full_content: displayBp.active_content?.full_content || '',
+            sections: displayBp.active_content?.sections,
+          });
+        }
+      }
+    }
+    loadVer();
+    return () => { cancelled = true; };
+  }, [displayBp, viewVersion]);
+
+  useEffect(() => {
+    if (displayBp?.active_version) {
+      setViewVersion(displayBp.active_version);
+    }
+  }, [displayBp?.id, displayBp?.active_version]);
+
+  function onConfirmModule() {
+    if (!selectedModuleOpt) {
+      toast.error('Select a module or course-end item first.');
+      return;
+    }
+    setModuleConfirmed(true);
+    toast.success('Module selection confirmed.');
+  }
+
+  async function onGenerate() {
+    if (!selProject?.id) return;
+    const mod = selectedModuleOpt;
+    if (!mod) return;
+    if (!linkedCddId && !cddContent) {
+      toast.error('Link a CDD for best results, or continue with standalone generation.');
+    }
+
+    const moduleRef = mod.isCourseEnd
+      ? mod.courseEndLabel
+      : (mod.label || `Module ${mod.key}`).replace(/\s*✓\s*$/, '').trim();
+
+    const extraBlock = buildExtraInstructionsBlock({
+      isCourseEnd: mod.isCourseEnd,
+      courseEndLabel: mod.courseEndLabel,
+      moduleNum: mod.key,
+      extraInstructions,
+    });
+
+    let titleHint = '';
+    if (documentTitle.trim()) {
+      titleHint = `Preferred blueprint title: ${documentTitle.trim()}\n\n`;
+    }
+
+    const payload = {
+      course_id: Number(courseId),
+      project_id: selProject.id,
+      cdd_id: linkedCddId || null,
+      selected_module: moduleRef,
+      is_course_end: Boolean(mod.isCourseEnd),
+      extra_instructions: titleHint + extraBlock,
+      style_id: activeStyle?.id || null,
+      model_choice: modelChoice,
+      teacher_mode: genMode === GENERATION_MODES.TEACHER,
+      // Only forward as an override when the user explicitly applied one (e.g. via
+      // "Use Now" on an AI suggestion) — the auto-loaded library default must never
+      // be sent raw, since it bypasses all real CDD/style context-building server-side.
+      system_prompt_override: promptConfig.hasOverride ? (promptConfig.systemPrompt || undefined) : undefined,
+      user_prompt_override: promptConfig.hasOverride ? (promptConfig.userPromptTemplate || undefined) : undefined,
+    };
+    try {
+      const bp = await dispatch(generateBlueprintThunk(payload)).unwrap();
+      if (bp?.id) {
+        setViewBpId(bp.id);
+        setSelectedBpId(bp.id);
+        setViewBpDetail(bp);
+        dispatch(fetchBlueprintVersionsThunk(bp.id));
+        await dispatch(setActiveBlueprintThunk({ blueprintId: bp.id, courseId: Number(courseId) }));
+      }
+      dispatch(fetchBlueprintsThunk(courseId));
+      setModuleConfirmed(false);
+    } catch {
+      /* error surfaced via slice */
+    }
+  }
+
+  async function onPin(bpId) {
+    await dispatch(setActiveBlueprintThunk({ blueprintId: bpId, courseId: Number(courseId) }));
+    setViewBpId(bpId);
+  }
+
+  async function onCommitVersion(data) {
+    if (!selectedBpId || !displayBp) return;
+    const content = versionDetail?.full_content
+      || displayBp.active_content?.full_content
+      || '';
+    await dispatch(commitBlueprintVersionThunk({
+      blueprintId: selectedBpId,
+      data: {
+        ...data,
+        full_content: content,
+        sections: versionDetail?.sections || {},
+      },
+    }));
+    setShowSaveVersion(false);
+    versionForm.reset();
+    dispatch(fetchBlueprintVersionsThunk(selectedBpId));
+  }
+
+  // Version tags live in a String(20) column, so keep them short ("<prefix>-vN")
+  // and put the descriptive detail in the (longer) change reason.
+  function nextBpVersionTag(prefix) {
+    const maxNum = (versions || []).reduce((max, v) => {
+      const m = /(\d+)\s*$/.exec(String(v.version || ''));
+      return m ? Math.max(max, Number(m[1])) : max;
+    }, 0);
+    const tag = `${prefix}-v${maxNum + 1}`;
+    return tag.length <= 20 ? tag : `v${maxNum + 1}`;
+  }
+
+  function patchBlueprintSection(sectionTitle, newContent) {
+    const fullContent = versionDetail?.full_content
+      || displayBp.active_content?.full_content
+      || '';
+    let sections = versionDetail?.sections;
+    if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
+      sections = parseSectionsFromText(fullContent);
+    }
+    const updatedSections = { ...sections, [sectionTitle]: newContent };
+    const newFull = Object.entries(updatedSections)
+      .filter(([, body]) => body?.trim())
+      .map(([title, body]) => `## ${title}\n${body.trim()}`)
+      .join('\n\n');
+    return { updatedSections, newFull };
+  }
+
+  async function commitBlueprintSection(sectionTitle, newContent, reason, tagPrefix) {
+    const { updatedSections, newFull } = patchBlueprintSection(sectionTitle, newContent);
+    await dispatch(commitBlueprintVersionThunk({
+      blueprintId: displayBp.id,
+      data: {
+        tag: nextBpVersionTag(tagPrefix),
+        reason,
+        full_content: newFull,
+        sections: updatedSections,
+      },
+    })).unwrap();
+    dispatch(fetchBlueprintVersionsThunk(displayBp.id));
+    dispatch(fetchBlueprintsThunk(courseId));
+  }
+
+  async function onSaveBlueprintSection({ sectionTitle, content, reason }) {
+    if (!displayBp?.id) return;
+    setSavingSection(true);
+    try {
+      await commitBlueprintSection(sectionTitle, content, reason || `Edited ${sectionTitle}`, 'edit');
+    } finally {
+      setSavingSection(false);
+    }
+  }
+
+  async function onRegenerateBlueprintSection({ sectionTitle, instruction }) {
+    if (!displayBp?.id) return;
+    const res = await dispatch(regenerateBlueprintSectionThunk({
+      blueprintId: displayBp.id,
+      sectionKey: sectionTitle,
+      feedback: instruction,
+      modelChoice,
+      teacherMode: viewMode === 'teacher',
+    })).unwrap();
+    if (res?.updated_content != null) {
+      const reason = instruction
+        ? `AI regenerated ${sectionTitle}: ${instruction}`
+        : `AI regenerated ${sectionTitle}`;
+      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen');
+    }
+  }
+
+  async function onRegenerateBlueprintItem({ sectionTitle, sectionContent, itemIndex, instruction }) {
+    if (!displayBp?.id) return;
+    const res = await dispatch(regenerateBlueprintItemThunk({
+      blueprintId: displayBp.id,
+      sectionKey: sectionTitle,
+      sectionContent,
+      itemIndex,
+      feedback: instruction,
+      modelChoice,
+    })).unwrap();
+    if (res?.updated_content != null) {
+      const reason = instruction
+        ? `AI regenerated ${sectionTitle} item ${itemIndex + 1}: ${instruction}`
+        : `AI regenerated ${sectionTitle} item ${itemIndex + 1}`;
+      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen');
+    }
+  }
+
+  async function onExport(format) {
+    if (!displayBp?.id) return;
+    const response = await dispatch(exportBlueprintThunk({ blueprintId: displayBp.id, format })).unwrap();
+    downloadBlob(response.data, `blueprint-${displayBp.id}.${format === 'docx' ? 'docx' : format}`);
+  }
+
+  function handleDownloadPrompt() {
+    const mod = selectedModuleOpt;
+    const moduleRef = mod?.isCourseEnd
+      ? mod.courseEndLabel
+      : (mod?.label || `Module ${mod?.key ?? 1}`).replace(/\s*✓\s*$/, '').trim();
+    const extraBlock = buildExtraInstructionsBlock({
+      isCourseEnd: mod?.isCourseEnd,
+      courseEndLabel: mod?.courseEndLabel,
+      moduleNum: mod?.key ?? 1,
+      extraInstructions,
+    });
+    const md = buildPromptDownloadMd({
+      projectName: selProject?.name,
+      clusterName: selCluster?.name,
+      courseName: selCourse?.name,
+      component: 'blueprint',
+      promptName: 'blueprint_generation',
+      promptVersion: 'active',
+      systemPrompt: promptConfig.systemPrompt,
+      userPromptTemplate: promptConfig.userPromptTemplate,
+      extraInstructions: extraBlock,
+    });
+    downloadBlob(new Blob([md], { type: 'application/msword' }), 'prompt_blueprint_active.doc');
+  }
+
+  async function handleSaveInstructions() {
+    if (!saveInstrName.trim() || !extraInstructions.trim()) return;
+    await adminService.saveInstruction({
+      name: saveInstrName.trim(),
+      component: 'blueprint',
+      content: extraInstructions.trim(),
+      project_id: selProject?.id,
+      cluster_id: selCluster?.id,
+      course_id: Number(courseId),
+      as_new_version: saveInstrNewVer,
+    });
+    setShowSaveInstr(false);
+    setSaveInstrName('');
+    const list = await adminService.listInstructions({
+      component: 'blueprint',
+      project_id: selProject?.id,
+      course_id: Number(courseId),
+    });
+    setSavedInstrs(list || []);
+  }
+
+  const styleLabel = activeStyle?.name || 'None — no active style';
+  const styleOk = Boolean(activeStyle);
+  const cddLabel = activeCdd
+    ? `${activeCdd.title || activeCdd.course_title}`
+  : 'None — no CDD pinned';
+  const cddOk = Boolean(activeCdd);
+
+  const moduleStatusBanner = () => {
+    if (!selectedModuleOpt) return null;
+    if (selectedModuleOpt.isCourseEnd) {
+      return (
+        <div className={styles.statusInfo}>
+          📋 Course-end item selected: <strong>{selectedModuleOpt.courseEndLabel}</strong>
+        </div>
+      );
+    }
+    const num = selectedModuleOpt.key;
+    if (existingNums.has(num)) {
+      return (
+        <div className={styles.statusWarn}>
+          ⚠️ Blueprint already exists for Module {num}. Generating again will create a new version.
+        </div>
+      );
+    }
+    return (
+      <div className={styles.statusOk}>
+        ✅ Ready to generate Module {num} Blueprint.
+      </div>
+    );
+  };
+
+  const previewFullContent = versionDetail?.full_content
+    || displayBp?.active_content?.full_content
+    || '';
+  const previewSections = versionDetail?.sections
+    || displayBp?.active_content?.sections;
+
+  function parseGenParams(raw) {
+    if (!raw) return {};
+    if (typeof raw === 'object') return raw;
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+
+  const viewMode = parseGenParams(versionDetail?.generation_params).mode
+    || parseGenParams(displayBp?.active_content?.generation_params).mode
+    || genMode;
+
+  return (
+    <PageContainer
+      title=""
+      breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'Blueprint' }]}
+      noPadding
+    >
+      <div className={styles.page}>
+        <SectionBadge
+          icon="🧩"
+          title="Module Blueprint"
+          subtitle="Generates directly from the linked CDD — module structure, lessons, and all components are derived automatically. No need to re-enter course metadata."
+        />
+
+        <div className={styles.configPanel}>
+          <div className={styles.configPanel__heading}>Approved Configuration (Read-Only)</div>
+          <div className={styles.configPanel__row}>
+            <div>
+              <div className={styles.configPanel__item}>🎨 Style</div>
+              <div className={styles.configPanel__value} style={{ color: styleOk ? '#10b981' : '#f59e0b' }}>
+                {styleLabel}
+                <span className={styles.configPanel__status} style={{ color: styleOk ? '#10b981' : '#f59e0b' }}>
+                  {styleOk ? '● Active' : '○ Not set'}
+                </span>
+              </div>
+            </div>
+            <div>
+              <div className={styles.configPanel__item}>📘 CDD</div>
+              <div className={styles.configPanel__value} style={{ color: cddOk ? '#6366f1' : '#f59e0b' }}>
+                {cddLabel}
+                <span className={styles.configPanel__status} style={{ color: cddOk ? '#6366f1' : '#f59e0b' }}>
+                  {cddOk ? `📌 Pinned (${activeCdd.active_version || 'v1'})` : '○ Not pinned'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {!isAdmin && (
+          activeCdd ? (
+            <div className={styles.ctaBanner}>
+              👇 <strong>Generate Blueprint from Approved CDD:</strong>
+              {' '}Use the form below to create a new module blueprint based on the pinned CDD above.
+            </div>
+          ) : (
+            <div className={styles.warnBanner}>
+              No CDD is pinned yet. Create and pin a CDD in the CDD tab first, then return here to generate blueprints.
+            </div>
+          )
+        )}
+
+        <div className={styles.modeRadio} role="radiogroup" aria-label="Generation mode">
+          <label>
+            <input
+              type="radio"
+              name="bp_mode"
+              checked={genMode === GENERATION_MODES.STUDENT}
+              onChange={() => dispatch(setGenerationMode(GENERATION_MODES.STUDENT))}
+            />
+            Student
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="bp_mode"
+              checked={genMode === GENERATION_MODES.TEACHER}
+              onChange={() => dispatch(setGenerationMode(GENERATION_MODES.TEACHER))}
+            />
+            Teacher
+          </label>
+        </div>
+
+        <div className={styles.layout}>
+          <section className={styles.panel}>
+            <h2 className={styles.panel__title}>➕ Create New Blueprint</h2>
+
+            <Select
+              label="📘 Source CDD"
+              options={cddOptions}
+              value={linkedCddId != null ? String(linkedCddId) : NONE_CDD}
+              onChange={(e) => {
+                const v = e.target.value;
+                setLinkedCddId(v ? Number(v) : null);
+                setModuleSelKey('');
+                setModuleConfirmed(false);
+              }}
+            />
+
+            {moduleOptions.length > 0 ? (
+              <>
+                <div className={styles.moduleLabel}>Select Module / Course-End Item</div>
+                <Select
+                  label=""
+                  options={moduleOptions.map((o) => ({
+                    value: String(o.key),
+                    label: o.label,
+                  }))}
+                  value={moduleSelKey || String(moduleOptions[0].key)}
+                  onChange={(e) => {
+                    setModuleSelKey(e.target.value);
+                    setModuleConfirmed(false);
+                  }}
+                />
+                {moduleConfirmed ? (
+                  <div className={styles.confirmOk}>✅ Module selection confirmed.</div>
+                ) : (
+                  moduleStatusBanner()
+                )}
+              </>
+            ) : (
+              <p className={styles.configPanel__item}>
+                ℹ️ Module number will be 1 (no module structure detected in CDD).
+              </p>
+            )}
+
+            <Input
+              label="Blueprint Title (optional)"
+              placeholder={
+                selectedModuleOpt
+                  ? `e.g. Module ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
+                  : 'e.g. Module 1 — Patient Assessment Blueprint'
+              }
+              value={documentTitle}
+              onChange={(e) => setDocumentTitle(e.target.value)}
+            />
+
+            <Button variant="secondary" fullWidth type="button" onClick={onConfirmModule}>
+              Confirm Module Selection
+            </Button>
+
+            <div className={styles.extraSection}>
+              <label className={styles.extraSection__label}>
+                💬 Additional Instructions <span className={styles.optional}>(optional)</span>
+              </label>
+              {savedInstrs.length > 0 && (
+                <div className={styles.instrLoad}>
+                  <Select
+                    label=""
+                    options={[
+                      { value: '— Start fresh —', label: '— Start fresh —' },
+                      ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
+                    ]}
+                    value={loadInstrSel}
+                    onChange={(e) => setLoadInstrSel(e.target.value)}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    type="button"
+                    onClick={() => {
+                      if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
+                      else {
+                        const rec = savedInstrs.find((r) => r.name === loadInstrSel);
+                        if (rec) setExtraInstructions(rec.content);
+                      }
+                    }}
+                  >
+                    📥 Load
+                  </Button>
+                </div>
+              )}
+              <textarea
+                className={styles.textarea}
+                rows={4}
+                placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson."
+                value={extraInstructions}
+                onChange={(e) => setExtraInstructions(e.target.value)}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                type="button"
+                fullWidth
+                onClick={() => setShowSaveInstr(!showSaveInstr)}
+              >
+                💾 Save Instructions
+              </Button>
+              {showSaveInstr && (
+                <div className={styles.saveInstrPanel}>
+                  <Input
+                    placeholder="e.g. Simulation-based lessons"
+                    value={saveInstrName}
+                    onChange={(e) => setSaveInstrName(e.target.value)}
+                  />
+                  <label className={styles.checkLabel}>
+                    <input
+                      type="checkbox"
+                      checked={saveInstrNewVer}
+                      onChange={(e) => setSaveInstrNewVer(e.target.checked)}
+                    />
+                    New version
+                  </label>
+                  <Button variant="primary" size="sm" type="button" onClick={handleSaveInstructions}>
+                    Confirm
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {error && (
+              <ErrorState message={error} onRetry={() => dispatch(fetchBlueprintsThunk(courseId))} />
+            )}
+          </section>
+
+          <section className={styles.panel}>
+            <h2 className={styles.panel__title}>📂 Your Module Blueprints</h2>
+
+            {isLoading ? (
+              <div className={styles.center}><Loader size="lg" /></div>
+            ) : blueprints.length === 0 ? (
+              <EmptyState
+                title="No Blueprints yet"
+                message="Create your first Blueprint using the form on the left."
+              />
+            ) : (
+              <>
+                <Select
+                  label="Select Blueprint to View/Edit"
+                  options={blueprints.map((bp) => ({
+                    value: String(bp.id),
+                    label: `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                  }))}
+                  value={viewBpId != null ? String(viewBpId) : ''}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setViewBpId(id);
+                    setSelectedBpId(id);
+                    if (id) dispatch(fetchBlueprintVersionsThunk(id));
+                  }}
+                />
+
+                {displayBp && (
+                  <>
+                    <div className={styles.metrics}>
+                      <div className={styles.metric}>
+                        <span className={styles.metric__label}>Active Version</span>
+                        <span className={styles.metric__value}>{displayBp.active_version || '—'}</span>
+                      </div>
+                      <div className={styles.metric}>
+                        <span className={styles.metric__label}>State</span>
+                        <span className={styles.metric__value}>
+                          {(displayBp.workflow_state || 'draft').replace(/^\w/, (c) => c.toUpperCase())}
+                        </span>
+                      </div>
+                      <div className={styles.metric}>
+                        <span className={styles.metric__label}>Total Versions</span>
+                        <span className={styles.metric__value}>{versions.length}</span>
+                      </div>
+                    </div>
+
+                    {displayBp.cdd_id && (() => {
+                      const bpCdd = cdds.find((c) => c.id === displayBp.cdd_id);
+                      if (!bpCdd) return null;
+                      return (
+                        <div className={styles.cddLink}>
+                          🔗 Linked to CDD: <strong>{bpCdd.title || bpCdd.course_title}</strong>
+                          {' '}({bpCdd.active_version || 'v1'})
+                        </div>
+                      );
+                    })()}
+
+                    {versions.length > 0 && (
+                      <div className={styles.versionRow}>
+                        <Select
+                          label="View Version"
+                          options={versions.map((v) => ({
+                            value: v.version,
+                            label: `${v.version}${v.is_active ? ' (active)' : ''}`,
+                          }))}
+                          value={viewVersion || displayBp.active_version || ''}
+                          onChange={(e) => setViewVersion(e.target.value)}
+                        />
+                        {viewVersion && viewVersion !== displayBp.active_version && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => dispatch(activateBlueprintVersionThunk({
+                              blueprintId: displayBp.id,
+                              version: viewVersion,
+                            }))}
+                          >
+                            Set as Active Version
+                          </Button>
+                        )}
+                      </div>
+                    )}
+
+                    <div className={styles.activeContent}>
+                      <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
+                      {viewMode && (
+                        <p className={styles.configPanel__item}>
+                          Mode: <strong>{viewMode === 'teacher' ? 'Teacher' : 'Student'}</strong>
+                        </p>
+                      )}
+
+                      <BlueprintContentView
+                        fullContent={previewFullContent}
+                        sections={previewSections}
+                        editable
+                        saving={savingSection}
+                        onSaveSection={onSaveBlueprintSection}
+                        onRegenerateSection={onRegenerateBlueprintSection}
+                        onRegenerateItem={onRegenerateBlueprintItem}
+                      />
+
+                      <button
+                        type="button"
+                        className={styles.saveVersionToggle}
+                        onClick={() => setShowSaveVersion((v) => !v)}
+                      >
+                        🚀 Save as New Version {showSaveVersion ? '▾' : '▸'}
+                      </button>
+                      {showSaveVersion && (
+                        <div className={styles.saveVersion}>
+                          <form className={styles.form} onSubmit={versionForm.handleSubmit(onCommitVersion)}>
+                            <Input
+                              label="New Version Tag"
+                              placeholder={`v${versions.length + 1}`}
+                              {...versionForm.register('tag')}
+                            />
+                            <Input
+                              label="Change Reason"
+                              required
+                              placeholder="What changed?"
+                              error={versionForm.formState.errors.reason?.message}
+                              {...versionForm.register('reason')}
+                            />
+                            <Button type="submit" variant="primary" size="sm">
+                              💾 Commit New Blueprint Version
+                            </Button>
+                          </form>
+                        </div>
+                      )}
+                    </div>
+
+                    <Button
+                      variant="primary"
+                      fullWidth
+                      onClick={() => onPin(displayBp.id)}
+                      disabled={activeBlueprint?.id === displayBp.id}
+                    >
+                      📌 Set as Active Blueprint for Generation
+                    </Button>
+
+                    <div className={styles.downloadBlock}>
+                      <p className={styles.downloadBlock__title}>📥 Download Blueprint</p>
+                      <div className={styles.downloadBlock__row}>
+                        <Button variant="secondary" fullWidth onClick={() => onExport('docx')}>
+                          ⬇️ Word (.docx)
+                        </Button>
+                        <Button variant="secondary" fullWidth onClick={handleDownloadPrompt}>
+                          ⬇️ Download Prompt Used (.doc)
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+
+        <hr className={styles.divider} />
+
+        <InlinePromptControls
+          component="blueprint"
+          extraInstructions={extraInstructions}
+          showExtraInstructions={false}
+          onPromptsChange={setPromptConfig}
+          headerHint="📝 Select the source CDD and module on the left, then configure the prompt and generate your Blueprint below."
+        />
+
+        {activeStyle && (
+          <div className={styles.styleBanner}>
+            🎨 <strong>Style &quot;{activeStyle.name}&quot;</strong> will be applied to this Blueprint.
+          </div>
+        )}
+
+        <div className={styles.generateRow}>
+          <Button
+            variant="primary"
+            size="lg"
+            className={styles.generateRow__main}
+            loading={isGenerating}
+            onClick={onGenerate}
+          >
+            {isGenerating ? 'Generating Blueprint…' : '🤖 Generate Blueprint with AI'}
+          </Button>
+          <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
+            ⬇️ Download Prompt
+          </Button>
+        </div>
+      </div>
+    </PageContainer>
+  );
+}

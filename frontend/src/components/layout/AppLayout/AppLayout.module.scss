@@ -1,0 +1,12 @@
+.layout {
+  display: flex;
+  min-height: 100vh;
+  background: $color-gray-50;
+
+  &__main {
+    flex: 1;
+    @include flex-col;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+}

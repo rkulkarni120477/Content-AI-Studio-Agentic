@@ -1,0 +1,125 @@
+# =============================================================================
+# Content AI Studio — Docker Compose
+#
+# Services:
+#   api           FastAPI backend (port 8000)
+#   celery-worker Background job processor (no exposed port)
+#   redis         Celery broker + result backend (port 6379)
+#   postgres      Local dev database (port 5432) — prod uses AWS RDS
+#
+# Usage:
+#   Start all:         docker-compose up -d --build
+#   View API logs:     docker-compose logs -f api
+#   View worker logs:  docker-compose logs -f celery-worker
+#   Stop all:          docker-compose down
+#
+# During Streamlit → FastAPI transition, the legacy Streamlit app can be
+# run manually on a separate port alongside this stack.
+# =============================================================================
+
+services:
+
+  api:
+    build:
+      context: .
+      target: development
+
+    container_name: ${MAIN_API_CONTAINER_NAME}
+
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+    env_file:
+      - .env
+
+    ports:
+      - "${MAIN_API_PORT}:8000"
+
+    volumes:
+      - .:/app
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
+  redis:
+    image: redis:7-alpine
+ 
+    container_name: ${REDIS_CONTAINER_NAME}
+ 
+    restart: unless-stopped
+ 
+    ports:
+      - "${REDIS_PORT}:6379"
+ 
+    volumes:
+      - ${REDIS_VOLUME}:/data
+ 
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+ 
+ 
+  promptops:
+    build: .
+ 
+    container_name: ${APP_CONTAINER_NAME}
+ 
+    ports:
+      - "${APP_PORT}:8501"
+ 
+    env_file:
+      - .env
+ 
+    depends_on:
+      redis:
+        condition: service_healthy
+ 
+    restart: unless-stopped
+ 
+ 
+  celery_worker:
+    build: .
+
+    container_name: ${CELERY_CONTAINER_NAME}
+
+    command: celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
+
+    env_file:
+      - .env
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
+  api_server:
+    build: .
+
+    container_name: ${API_CONTAINER_NAME}
+
+    command: uvicorn api_server:app --host 0.0.0.0 --port 8502
+
+    env_file:
+      - .env
+
+    ports:
+      - "${API_PORT}:8502"
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
+volumes:
+  redis_local_data:
+  redis_data:
+  redis_dev_data:

@@ -1,0 +1,36 @@
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+
+  &__icon {
+    position: absolute;
+    left: $space-3;
+    font-size: $font-size-sm;
+    pointer-events: none;
+  }
+
+  &__input {
+    @include form-field-base;
+    height: 36px;
+    padding-left: $space-8;
+    padding-right: $space-8;
+
+    &::-webkit-search-cancel-button { display: none; }
+  }
+
+  &__clear {
+    position: absolute;
+    right: $space-3;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: $color-gray-400;
+    font-size: $font-size-xs;
+    @include flex-center;
+    padding: 2px;
+    border-radius: $radius-sm;
+
+    &:hover { color: $color-gray-700; }
+  }
+}

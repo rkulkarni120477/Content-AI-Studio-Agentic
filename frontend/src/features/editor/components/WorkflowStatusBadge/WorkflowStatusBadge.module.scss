@@ -1,0 +1,19 @@
+.badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1.5px solid transparent;
+  vertical-align: middle;
+}
+
+.draft { background: #f9fafb; color: #6b7280; border-color: #6b728044; }
+.inReview { background: #fffbeb; color: #b45309; border-color: #b4530944; }
+.changes { background: #fff7ed; color: #9a3412; border-color: #9a341244; }
+.approved { background: #ecfdf5; color: #059669; border-color: #05966944; }
+.published { background: #eef2ff; color: #4f46e5; border-color: #4f46e544; }
+.rejected { background: #fef2f2; color: #dc2626; border-color: #dc262644; }
+.archived { background: #f3f4f6; color: #4b5563; border-color: #4b556344; }

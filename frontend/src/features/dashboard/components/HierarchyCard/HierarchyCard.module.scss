@@ -1,0 +1,62 @@
+.card {
+  @include flex-col;
+  gap: $space-3;
+  padding: $space-4;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  transition: all $transition-fast;
+
+  &--active {
+    border-color: $color-primary;
+    background: $color-primary-soft;
+  }
+
+  &__body {
+    display: flex;
+    align-items: flex-start;
+    gap: $space-3;
+  }
+
+  &__icon {
+    font-size: 1.5rem;
+    flex-shrink: 0;
+  }
+
+  &__info {
+    @include flex-col;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__name {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    @include text-truncate;
+  }
+
+  &__meta {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    @include text-truncate;
+  }
+
+  &__check {
+    color: $color-primary;
+    font-weight: $font-weight-bold;
+    flex-shrink: 0;
+  }
+
+  &__actions {
+    @include flex-col;
+    gap: $space-2;
+  }
+
+  &__secondary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $space-2;
+  }
+}

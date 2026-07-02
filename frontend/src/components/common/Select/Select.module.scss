@@ -1,0 +1,45 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: $space-1;
+
+  &__label {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    color: $color-gray-700;
+    display: flex;
+    align-items: center;
+    gap: $space-1;
+  }
+
+  &__required { color: $color-danger; }
+
+  &__wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  &__select {
+    @include form-field-base;
+    height: 38px;
+    padding-right: $space-8;
+    cursor: pointer;
+
+    &--error {
+      border-color: $color-danger;
+      &:focus { box-shadow: 0 0 0 3px rgb(220 38 38 / 0.15); }
+    }
+  }
+
+  &__chevron {
+    position: absolute;
+    right: $space-3;
+    pointer-events: none;
+    color: $color-gray-400;
+    font-size: $font-size-xs;
+  }
+
+  &__hint  { font-size: $font-size-xs; color: $color-gray-500; }
+  &__error { font-size: $font-size-xs; color: $color-danger; }
+}

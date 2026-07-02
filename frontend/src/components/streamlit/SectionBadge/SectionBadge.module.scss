@@ -1,0 +1,29 @@
+.badge {
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+  border: 1px solid #c7d2fe;
+  border-left: 4px solid #6366f1;
+  border-radius: 0 10px 10px 0;
+  padding: 0.6rem 1rem;
+  margin-bottom: 1rem;
+
+  &__title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #3730a3;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  &__icon {
+    font-size: 1.1rem;
+  }
+
+  &__subtitle {
+    font-size: 0.78rem;
+    color: #6b7280;
+    margin: 2px 0 0;
+    font-weight: 400;
+    line-height: 1.45;
+  }
+}
