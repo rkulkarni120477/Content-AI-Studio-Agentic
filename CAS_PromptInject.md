@@ -216,6 +216,17 @@ db.add(PromptVersion(prompt_id, version, system_prompt, user_prompt_template, is
   future CDD / Blueprint / Style generation uses it automatically.
 - This is a real, versioned, auditable change — the opposite of the one-shot inline override.
 
+> ⚠️ **Correction (verified 2026-07-03):** the bullet above is only true if the edited row's `name`
+> **exactly matches the stem the loader queries** (`style_understanding` / `cdd_generation` /
+> `blueprint_generation` / `content_generation`). The rows seeded by `seed_data()` are named
+> `default_style_prompt` / `default_cdd_prompt` / … and carry `component_type` + `is_default=True`
+> instead — these **do not match** the loader's exact-`name` lookup (`prompt_loader.py:182`), so today
+> the seeded DB defaults are **dormant** and generation actually resolves to the `.md` file tier (or
+> inline constants), not the DB. Editing a `default_*` row therefore changes nothing in generation.
+> Fixing this — resolving pipeline prompts by `component_type` + `is_default` (+ scope) rather than by
+> stem name — is a **prerequisite** in `PROMPT_CONSOLIDATION_PLAN.md` Phase 8, and is what makes the
+> Prompt-Library-as-management-console vision actually take effect.
+
 ### Side note: "Prompt Fixing" (scope locking) exists in the DB but isn't wired to the API yet
 The schema supports locking a specific prompt to a **course → cluster → project → global** scope
 (`prompt_fixings` table, `resolve_fixed_prompt()`). Today that resolver is **only called from the
