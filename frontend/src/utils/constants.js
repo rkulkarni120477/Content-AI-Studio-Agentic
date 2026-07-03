@@ -152,7 +152,7 @@ export const ROUTES = {
   EDITOR:       (courseId) => `/workspace/${courseId}/editor`,
   WORKFLOW:     (courseId) => `/workspace/${courseId}/workflow`,
   ANALYTICS:    (courseId) => `/workspace/${courseId}/analytics`,
-  CENTRAL:      '/central',
+  PROMPT_LIBRARY: '/prompt-library',
 };
 
 // ─── Local Storage Keys ───────────────────────────────────────────────────────

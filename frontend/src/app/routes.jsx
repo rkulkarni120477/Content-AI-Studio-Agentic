@@ -1,9 +1,10 @@
 import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import ProtectedRoute from '@components/layout/ProtectedRoute/ProtectedRoute';
 import WorkspaceLayout from '@components/layout/WorkspaceLayout/WorkspaceLayout';
-import { ROUTES, ROLES } from '@utils/constants';
+import { ROUTES } from '@utils/constants';
 import { lazy, Suspense } from 'react';
 import Loader from '@components/common/Loader/Loader';
+import { promptLibraryRoute } from '@features/promptLibrary/routes';
 
 const lazy$ = (factory) => {
   const Comp = lazy(factory);
@@ -25,7 +26,6 @@ const EditorPage    = lazy(() => import('@features/editor/pages/EditorPage/Edito
 const WorkflowPage  = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
 const StylePage     = lazy(() => import('@features/style/pages/StylePage/StylePage'));
 const AnalyticsPage = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
-const CentralPage   = lazy(() => import('@features/central/pages/CentralPage/CentralPage'));
 
 const wrap = (comp) => (
   <Suspense fallback={<Loader size="xl" overlay />}>
@@ -47,14 +47,7 @@ export const router = createBrowserRouter([
       { path: ROUTES.DASHBOARD, element: wrap(<ProjectsPage />) },
       { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
       { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
-      {
-        path: ROUTES.CENTRAL,
-        element: (
-          <ProtectedRoute requiredRole={ROLES.ADMIN}>
-            {wrap(<CentralPage />)}
-          </ProtectedRoute>
-        ),
-      },
+      promptLibraryRoute,
     ],
   },
 

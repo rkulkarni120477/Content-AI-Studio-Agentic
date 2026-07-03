@@ -11,7 +11,7 @@ const NAV_ITEMS = [
   { label: 'Workflow',     icon: '⚙️',  to: ROUTES.WORKFLOW,   roles: null },
   { label: 'Prompts',      icon: '📝', to: ROUTES.PROMPTS,    roles: null },
   { label: 'Analytics',   icon: '📊', to: ROUTES.ANALYTICS,  roles: [ROLES.ADMIN, ROLES.REVIEWER] },
-  { label: 'Central Repo',icon: '🗄️', to: ROUTES.CENTRAL,    roles: [ROLES.ADMIN] },
+  { label: 'Prompt Library', icon: '📚', to: ROUTES.PROMPT_LIBRARY, roles: null },
 ];
 
 const WORKSPACE_ITEMS = [

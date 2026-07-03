@@ -1,0 +1,204 @@
+import { useCallback, useEffect, useState } from 'react';
+import {
+  deletePrompt,
+  duplicatePrompt,
+  fetchMeta,
+  fetchPrompts,
+  markPromptUsed,
+} from '../api/prompts';
+import PromptCard from '../components/prompts/PromptCard';
+import PromptListTable from '../components/prompts/PromptListTable';
+import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
+import { exportPromptsCsv } from '../utils/csvExport';
+import { canManagePrompts } from '../utils/permissions';
+
+export default function PromptListPage() {
+  const { user } = useAuth();
+  const { show } = useToast();
+  const canEdit = canManagePrompts(user);
+
+  const [prompts, setPrompts] = useState([]);
+  const [meta, setMeta] = useState({ categories: [], tags: [] });
+  const [q, setQ] = useState('');
+  const [category, setCategory] = useState('');
+  const [tag, setTag] = useState('');
+  const [sort, setSort] = useState('updated');
+  const [view, setView] = useState(() => localStorage.getItem('plib_view') || 'card');
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+
+  function buildFilterParams() {
+    const params = { roots_only: '1' };
+    if (q) params.q = q;
+    if (category) params.category = category;
+    if (tag) params.tag = tag;
+    if (sort) params.sort = sort;
+    return params;
+  }
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await fetchPrompts(buildFilterParams());
+      setPrompts(list);
+    } catch {
+      setPrompts([]);
+      show('Could not load prompts.');
+    } finally {
+      setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, category, tag, sort]);
+
+  useEffect(() => {
+    void fetchMeta().then(setMeta).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  function setViewMode(v) {
+    setView(v);
+    localStorage.setItem('plib_view', v);
+  }
+
+  async function handleCopy(id, content) {
+    await navigator.clipboard.writeText(content);
+    await markPromptUsed(id);
+    show('Copied! Paste it into ChatGPT ✓');
+  }
+
+  async function handleDuplicate(id) {
+    await duplicatePrompt(id);
+    show('Prompt duplicated!');
+    void load();
+  }
+
+  async function handleDelete(id) {
+    if (!window.confirm('Delete this prompt?')) return;
+    await deletePrompt(id);
+    show('Prompt deleted.');
+    void load();
+  }
+
+  function filterByTag(t) {
+    setTag(t);
+  }
+
+  async function handleExportCsv() {
+    if (loading || exporting) return;
+    setExporting(true);
+    try {
+      const list = await fetchPrompts(buildFilterParams());
+      if (!list.length) {
+        show('No prompts to export for the current filters.');
+        return;
+      }
+      exportPromptsCsv(list);
+      show(`Exported ${list.length} prompt${list.length !== 1 ? 's' : ''} to CSV.`);
+    } catch {
+      show('Export failed. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="library-toolbar">
+        <div className="toolbar">
+          <div className="search-wrap">
+            <input
+              type="text"
+              placeholder="Search prompts…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              aria-label="Search prompts"
+            />
+            <svg className="search-ico" width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+              <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="10.354" y1="10.354" x2="13.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
+          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">All Categories</option>
+            {meta.categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <select value={tag} onChange={(e) => setTag(e.target.value)}>
+            <option value="">All Tags</option>
+            {meta.tags.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="updated">Recently Updated</option>
+            <option value="created">Recently Created</option>
+            <option value="title">A → Z</option>
+            <option value="category">Category</option>
+          </select>
+          <div className="view-toggle">
+            <button type="button" className={view === 'card' ? 'active' : ''} onClick={() => setViewMode('card')}>
+              ⊞ Cards
+            </button>
+            <button type="button" className={view === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>
+              ☰ List
+            </button>
+          </div>
+          <span className="count">
+            {prompts.length} prompt{prompts.length !== 1 ? 's' : ''}
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={handleExportCsv}
+            disabled={loading || exporting || prompts.length === 0}
+            title="Download filtered prompts as CSV (includes full prompt text)"
+          >
+            {exporting ? 'Exporting…' : '⬇ Export CSV'}
+          </button>
+        </div>
+      </div>
+
+      <div className="page-card">
+        {loading ? (
+          <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 48 }}>Loading…</p>
+        ) : !prompts.length ? (
+          <div className="empty">
+            <div className="big">📭</div>
+            <p>No prompts found.{canEdit ? ' Add your first one!' : ''}</p>
+          </div>
+        ) : view === 'list' ? (
+          <PromptListTable
+            prompts={prompts}
+            isAdmin={canEdit}
+            onCopy={handleCopy}
+            onDelete={handleDelete}
+            onTagClick={filterByTag}
+          />
+        ) : (
+          <div className="grid">
+            {prompts.map((p) => (
+              <PromptCard
+                key={p.id}
+                prompt={p}
+                isAdmin={canEdit}
+                onCopy={(id) => void handleCopy(id, p.content)}
+                onDuplicate={handleDuplicate}
+                onDelete={handleDelete}
+                onTagClick={filterByTag}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}

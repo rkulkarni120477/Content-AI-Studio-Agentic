@@ -179,9 +179,9 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {isAdmin && variant === 'project' && (
-        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.CENTRAL)}>
-          🗄️ Repository
+      {variant === 'project' && (
+        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.PROMPT_LIBRARY)}>
+          📚 Prompt Library
         </button>
       )}
 
