@@ -1,5 +1,8 @@
 # Content AI Studio — Local Execution Guide
 
+Issues:
+Generate is the one fully hard-coded stage, confirmed.
+
 Step-by-step instructions to run this project locally for development.
 
 ## 1. Prerequisites
