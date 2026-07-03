@@ -916,6 +916,11 @@ class CentralRepository(Base):
 # =============================================================================
 
 def init_db():
+    # Register the Prompt Library models on this Base's metadata so their pl_*
+    # tables are included in create_all below. Imported here (not at module top)
+    # to avoid a circular import, since pl_models imports Base from this module.
+    import promptops_app.pl_models  # noqa: F401
+
     # Create all tables that don't exist yet (safe to run on every startup).
     Base.metadata.create_all(bind=engine)
 

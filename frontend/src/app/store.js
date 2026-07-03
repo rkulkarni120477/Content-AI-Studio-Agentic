@@ -9,7 +9,6 @@ import workflowReducer   from '@features/workflow/workflowSlice';
 import styleReducer      from '@features/style/styleSlice';
 import promptsReducer    from '@features/prompts/promptsSlice';
 import analyticsReducer  from '@features/analytics/analyticsSlice';
-import centralReducer    from '@features/central/centralSlice';
 
 const store = configureStore({
   reducer: {
@@ -23,7 +22,6 @@ const store = configureStore({
     style:     styleReducer,
     prompts:   promptsReducer,
     analytics: analyticsReducer,
-    central:   centralReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

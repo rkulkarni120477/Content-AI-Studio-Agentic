@@ -145,6 +145,15 @@ _PERMISSIONS: dict[str, list[str]] = {
     "central.edit":          [_ADMIN],
     "central.delete":        [_ADMIN],
 
+    # ── Prompt Library (ported standalone app; replaces Central Repository) ────
+    "prompt_library.view":            [_ADMIN, _REVIEWER, _AUTHOR],
+    "prompt_library.manage":          [_ADMIN, _REVIEWER],
+    "prompt_library.request":         [_ADMIN, _REVIEWER, _AUTHOR],
+    "prompt_library.request_manage":  [_ADMIN, _REVIEWER],
+    "prompt_library.review":          [_ADMIN, _REVIEWER, _AUTHOR],
+    "prompt_library.review_read_all": [_ADMIN, _REVIEWER],
+    "prompt_library.audit":           [_ADMIN],
+
     # ── System administration ─────────────────────────────────────────────────
     "system.clear_db":       [_ADMIN],
     "system.view_logs":      [_ADMIN, _REVIEWER],
