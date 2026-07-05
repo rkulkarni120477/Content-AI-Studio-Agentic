@@ -24,6 +24,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # Claude
 CLAUDE.md
