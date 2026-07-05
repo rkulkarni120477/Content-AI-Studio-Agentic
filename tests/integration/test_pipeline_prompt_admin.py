@@ -341,3 +341,52 @@ class TestScopeLocks:
                              "prompt_id": lib.id},
                        headers=auth_headers)
         assert r.status_code == 422
+
+
+class TestVariantAuthoring:
+    """Phase 7b console support: create rows with a variant; re-key
+    component_type/variant via PUT /{id} (admin-only; defaults must be
+    demoted first)."""
+
+    def test_create_with_variant(self, client, auth_headers):
+        r = client.post(
+            BASE,
+            json={"name": "bp_teacher", "component_type": "blueprint",
+                  "variant": "teacher",
+                  "system_prompt": "S", "user_prompt_template": "U"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["variant"] == "teacher"
+
+    def test_admin_can_rekey_component_and_variant(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "rekey_me")
+        r = client.put(f"{BASE}/{p['id']}",
+                       json={"component_type": "blueprint", "variant": "student"},
+                       headers=auth_headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["component_type"] == "blueprint"
+        assert body["variant"] == "student"
+        # Empty string clears to NULL.
+        r = client.put(f"{BASE}/{p['id']}", json={"variant": ""},
+                       headers=auth_headers)
+        assert r.status_code == 200 and r.json()["variant"] is None
+
+    def test_reviewer_cannot_rekey(self, client, auth_headers, reviewer_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "rekey_denied")
+        r = client.put(f"{BASE}/{p['id']}", json={"variant": "teacher"},
+                       headers=reviewer_headers)
+        assert r.status_code == 403
+        # Plain metadata updates stay reviewer-accessible.
+        r = client.put(f"{BASE}/{p['id']}", json={"description": "new desc"},
+                       headers=reviewer_headers)
+        assert r.status_code == 200
+
+    def test_default_row_cannot_be_rekeyed(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "default_locked")
+        client.put(f"{BASE}/{p['id']}/default", json={"is_default": True},
+                   headers=auth_headers)
+        r = client.put(f"{BASE}/{p['id']}", json={"variant": "teacher"},
+                       headers=auth_headers)
+        assert r.status_code == 422

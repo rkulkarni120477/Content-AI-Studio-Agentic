@@ -31,6 +31,13 @@ export function canManagePrompts(user) {
 export function canDeletePrompts(user) {
   return isManager(user);
 }
+// Pipeline prompts (the rows generation resolves) are a stricter tier than
+// library management: admin-only, mirroring the backend's prompt.pipeline.edit.
+// Reviewers can commit draft versions via the registry API but cannot
+// activate, set defaults, or see the pipeline editing controls.
+export function canManagePipelinePrompts(user) {
+  return role(user) === ROLES.ADMIN;
+}
 
 // ── Requests / reviews ─────────────────────────────────────────────────────────
 export function canReadAllRequests(user) {

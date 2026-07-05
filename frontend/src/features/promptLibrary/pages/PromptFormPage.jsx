@@ -8,9 +8,10 @@ import {
   updatePrompt,
   uploadAttachment,
 } from '../api/prompts';
+import { commitPipelineVersion, createPipelinePrompt, updatePipelineMeta } from '../api/pipeline';
 import { fetchTeams } from '../api/teams';
 import { useToast } from '../context/ToastContext';
-import { canManagePrompts } from '../utils/permissions';
+import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 import { useAuth } from '../context/AuthContext';
 import TeamMultiSelect from '../components/TeamMultiSelect';
 import { extractVarNames, findLegacyVarNames, toLabel } from '../utils/prompt';
@@ -42,8 +43,17 @@ export default function PromptFormPage() {
   const [attachments, setAttachments] = useState([]);
   const [saving, setSaving] = useState(false);
 
+  // Pipeline-kind state (Phase 7b dual editor).
+  const [kind, setKind] = useState('library');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [componentType, setComponentType] = useState('');
+  const [variant, setVariant] = useState('');
+  const [changeNote, setChangeNote] = useState('');
+
   const { user } = useAuth();
   const canEdit = canManagePrompts(user);
+  const canPipeline = canManagePipelinePrompts(user);
+  const isPipeline = isEdit ? loadedPrompt?.prompt_kind === 'pipeline' : kind === 'pipeline';
 
   useEffect(() => {
     void fetchTeams().then(setTeamOptions);
@@ -69,6 +79,11 @@ export default function PromptFormPage() {
         setParentId(p.parent_id || '');
         setLoadedPrompt(p);
         setAttachments(p.attachments || []);
+        if (p.prompt_kind === 'pipeline') {
+          setSystemPrompt(p.pipeline?.system_prompt || '');
+          setComponentType(p.pipeline?.component_type || '');
+          setVariant(p.pipeline?.variant || '');
+        }
         const defs = {};
         (p.variables || []).forEach((v) => {
           defs[v.name] = { label: v.label || '', hint: v.hint || '' };
@@ -95,12 +110,75 @@ export default function PromptFormPage() {
     hint: d.hint || '',
   }));
 
-  const legacyVars = findLegacyVarNames(content);
+  const legacyVars = findLegacyVarNames(isPipeline ? `${systemPrompt}\n${content}` : content);
+
+  // Version tags follow the numeric ladder ("v3"); the serializer's numeric
+  // `version` field is version_number, so max+1 is always fresh.
+  function nextVersionTag(p) {
+    const nums = (p?.versions || []).map((v) => v.version || 0);
+    return `v${(nums.length ? Math.max(...nums) : 0) + 1}`;
+  }
+
+  async function handlePipelineSubmit() {
+    setSaving(true);
+    try {
+      if (!isEdit) {
+        const created = await createPipelinePrompt({
+          name: title.trim(),
+          description: description.trim(),
+          componentType: componentType || null,
+          variant: variant || null,
+          systemPrompt: systemPrompt,
+          userPromptTemplate: content,
+          changeReason: changeNote.trim() || 'Created via console.',
+        });
+        show('Pipeline prompt created!');
+        navigate(plPrompt(created.id));
+        return;
+      }
+      const pipe = loadedPrompt?.pipeline || {};
+      const rekeyChanged =
+        componentType !== (pipe.component_type || '') || variant !== (pipe.variant || '');
+      const descChanged = description.trim() !== (loadedPrompt?.description || '');
+      if (rekeyChanged || descChanged) {
+        // Send component/variant only when actually changed — re-keying is
+        // admin-gated and 422s on default rows.
+        await updatePipelineMeta(id, {
+          ...(descChanged ? { description: description.trim() } : {}),
+          ...(rekeyChanged ? { componentType, variant } : {}),
+        });
+      }
+      const contentChanged =
+        content !== (loadedPrompt?.content ?? '') || systemPrompt !== (pipe.system_prompt ?? '');
+      if (contentChanged) {
+        await commitPipelineVersion(id, {
+          version: nextVersionTag(loadedPrompt),
+          systemPrompt,
+          userPromptTemplate: content,
+          changeReason: changeNote.trim() || 'Edited via console.',
+        });
+      }
+      show(contentChanged ? 'New version committed ✓' : 'Prompt updated!');
+      navigate(plPrompt(id));
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     if (!title.trim() || !content.trim()) {
-      show('Title and content are required.');
+      show(isPipeline ? 'Registry name and user prompt template are required.' : 'Title and content are required.');
+      return;
+    }
+    if (isPipeline) {
+      if (!systemPrompt.trim()) {
+        show('System prompt is required for pipeline prompts.');
+        return;
+      }
+      await handlePipelineSubmit();
       return;
     }
     if (visibility === 'team' && selectedTeamIds.length === 0) {
@@ -186,7 +264,22 @@ export default function PromptFormPage() {
       </div>
 
       <form className="page-card" onSubmit={(e) => void handleSubmit(e)}>
-        {loadedPrompt?.parent && (
+        {!isEdit && canPipeline && (
+          <div className="field">
+            <label>Prompt kind</label>
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="library">Library — shareable freeform prompt</option>
+              <option value="pipeline">Pipeline — drives live generation (admin)</option>
+            </select>
+            {kind === 'pipeline' && (
+              <p className="var-tip" style={{ marginTop: 6 }}>
+                Pipeline prompts are resolved by generation. Saving commits
+                through the approval gate; admins instant-deploy.
+              </p>
+            )}
+          </div>
+        )}
+        {!isPipeline && loadedPrompt?.parent && (
           <div className="field">
             <label>Parent prompt</label>
             <p style={{ fontSize: '.9rem' }}>
@@ -194,7 +287,7 @@ export default function PromptFormPage() {
             </p>
           </div>
         )}
-        {!isEdit && canEdit && loadedPrompt?.can_have_children !== false && (
+        {!isEdit && !isPipeline && canEdit && loadedPrompt?.can_have_children !== false && (
           <div className="field">
             <label>Parent prompt (optional)</label>
             <select value={parentId} onChange={(e) => setParentId(e.target.value)} disabled={Boolean(initialParentId)}>
@@ -212,7 +305,7 @@ export default function PromptFormPage() {
             </p>
           </div>
         )}
-        {isEdit && loadedPrompt?.children && loadedPrompt.children.length > 0 && (
+        {isEdit && !isPipeline && loadedPrompt?.children && loadedPrompt.children.length > 0 && (
           <div className="detail-section" style={{ marginTop: 0, paddingTop: 0, border: 'none' }}>
             <div className="section-hdr">Follow-up prompts</div>
             <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -225,11 +318,73 @@ export default function PromptFormPage() {
           </div>
         )}
         <div className="field">
-          <label>Title *</label>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} required />
+          <label>{isPipeline ? 'Registry name *' : 'Title *'}</label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+            readOnly={isPipeline && isEdit}
+            placeholder={isPipeline ? 'unique_slug_generation' : undefined}
+          />
+          {isPipeline && isEdit && (
+            <p className="var-tip" style={{ marginTop: 6 }}>
+              The registry name is the row&apos;s identity — it cannot be renamed.
+            </p>
+          )}
         </div>
+        {isPipeline && (
+          <>
+            <div className="inline-fields">
+              <div className="field">
+                <label>Component</label>
+                <select
+                  value={componentType}
+                  onChange={(e) => setComponentType(e.target.value)}
+                  disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
+                >
+                  <option value="">— none —</option>
+                  <option value="style">style</option>
+                  <option value="cdd">cdd</option>
+                  <option value="blueprint">blueprint</option>
+                  <option value="generate">generate</option>
+                  <option value="quiz">quiz</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Variant (optional)</label>
+                <input
+                  value={variant}
+                  onChange={(e) => setVariant(e.target.value)}
+                  list="variantList"
+                  placeholder="e.g. teacher, student, interactive"
+                  disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
+                />
+                <datalist id="variantList">
+                  <option value="teacher" />
+                  <option value="student" />
+                  <option value="interactive" />
+                </datalist>
+              </div>
+            </div>
+            {isEdit && loadedPrompt?.pipeline?.is_default && (
+              <p className="var-tip" style={{ marginTop: -6 }}>
+                This row is the component default — clear the default flag (on
+                the detail page) before re-keying component/variant.
+              </p>
+            )}
+            <div className="field">
+              <label>System prompt *</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={6}
+                required
+              />
+            </div>
+          </>
+        )}
         <div className="field">
-          <label>Content *</label>
+          <label>{isPipeline ? 'User prompt template *' : 'Content *'}</label>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={10} required />
           {legacyVars.length > 0 && (
             <p className="var-tip" style={{ color: 'var(--warning, #b45309)' }}>
@@ -244,6 +399,7 @@ export default function PromptFormPage() {
           <label>Description</label>
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
         </div>
+        {!isPipeline && (
         <div className="inline-fields">
           <div className="field">
             <label>Category</label>
@@ -255,6 +411,8 @@ export default function PromptFormPage() {
             <input value={tags} onChange={(e) => setTags(e.target.value)} />
           </div>
         </div>
+        )}
+        {!isPipeline && (
         <div className="vis-row">
           <div className="field">
             <label>Visibility</label>
@@ -277,8 +435,28 @@ export default function PromptFormPage() {
             </div>
           )}
         </div>
+        )}
 
-        {Object.keys(varDefs).length > 0 && (
+        {isPipeline && (
+          <div className="field">
+            <label>Change note</label>
+            <input
+              value={changeNote}
+              onChange={(e) => setChangeNote(e.target.value)}
+              placeholder={isEdit ? 'Why this version?' : 'Initial commit.'}
+            />
+            {isEdit && (
+              <p className="var-tip" style={{ marginTop: 6 }}>
+                Changing the prompt text commits a new version
+                {canPipeline
+                  ? ' and deploys it immediately (admin instant-deploy).'
+                  : ' as a draft for admin approval.'}
+              </p>
+            )}
+          </div>
+        )}
+
+        {!isPipeline && Object.keys(varDefs).length > 0 && (
           <div className="field">
             <label>Variables</label>
             <div className="var-editor">
@@ -313,11 +491,11 @@ export default function PromptFormPage() {
             </div>
           </div>
         )}
-        {!Object.keys(varDefs).length && (
+        {!isPipeline && !Object.keys(varDefs).length && (
           <p className="var-tip">💡 Add {'{{variable_name}}'} in content and fields appear here.</p>
         )}
 
-        {isEdit && (
+        {isEdit && !isPipeline && (
           <>
             <div className="field">
               <label>

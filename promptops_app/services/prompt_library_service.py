@@ -469,6 +469,21 @@ def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> di
         ],
         "prompt_kind": p.prompt_kind,
     }
+    if p.prompt_kind == "pipeline":
+        # Additive pipeline block for the console (Phase 7b). Only admins ever
+        # receive pipeline rows (browse strips them server-side for everyone
+        # else), so exposing the resolution keys + workflow state here leaks
+        # nothing. Library dicts keep their exact legacy shape.
+        av = active_version(p)
+        d["pipeline"] = {
+            "name": p.name or "",
+            "component_type": p.component_type,
+            "variant": p.variant,
+            "is_default": bool(p.is_default),
+            "active_version": p.active_version,
+            "system_prompt": (av.system_prompt if av else "") or "",
+            "workflow_state": av.workflow_state if av else None,
+        }
     if include_relations:
         parent = p.parent if p.parent_id else None
         children = list(p.children) if p.children else list_children(db, p.id)
@@ -483,6 +498,16 @@ def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> di
                 "note": v.change_reason or "",
                 "created_by": v.created_by or "",
                 "created_at": fmt_dt(v.created_at),
+                # Pipeline-only extras; library version dicts keep their shape.
+                **(
+                    {
+                        "label": v.version,
+                        "system_prompt": v.system_prompt or "",
+                        "workflow_state": v.workflow_state,
+                        "is_active": bool(v.is_active),
+                    }
+                    if p.prompt_kind == "pipeline" else {}
+                ),
             }
             for v in sorted(p.versions or [], key=lambda x: x.version_number or 0)
         ]

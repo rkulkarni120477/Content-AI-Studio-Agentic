@@ -22,7 +22,14 @@ class PromptCreateRequest(BaseModel):
     tags: str = Field(default="", max_length=500, description="Comma-separated tags.")
     component_type: Optional[str] = Field(
         default=None,
-        description="Pipeline component: style, cdd, blueprint, or generate.",
+        description="Pipeline component: style, cdd, blueprint, generate, or quiz.",
+    )
+    variant: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description="Pipeline variant within the component, e.g. teacher/student "
+                    "(blueprint) or interactive (generate). NULL = the component's "
+                    "base slot.",
     )
     system_prompt: Optional[str] = Field(default=None, description="Initial system prompt (creates v1).")
     user_prompt_template: Optional[str] = Field(default=None, description="Initial user template (creates v1).")
@@ -62,6 +69,11 @@ class PromptAISuggestResponse(BaseModel):
 class PromptUpdateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     tags: Optional[str] = Field(default=None, max_length=500)
+    # Re-keying fields — change what generation resolves, so the endpoint
+    # accepts them only from prompt.pipeline.edit holders (403 otherwise).
+    # Omit/None = untouched; empty string = clear to NULL.
+    component_type: Optional[str] = Field(default=None, max_length=50)
+    variant: Optional[str] = Field(default=None, max_length=50)
 
 
 class PromptVersionCreateRequest(BaseModel):
@@ -112,6 +124,7 @@ class PromptRead(BaseModel):
     owner: Optional[str] = None
     active_version: Optional[str] = None
     component_type: Optional[str] = None
+    variant: Optional[str] = None
     is_default: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -137,6 +150,7 @@ class PromptListItem(BaseModel):
     owner: Optional[str] = None
     active_version: Optional[str] = None
     component_type: Optional[str] = None
+    variant: Optional[str] = None
     is_default: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

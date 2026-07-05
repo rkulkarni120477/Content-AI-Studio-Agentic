@@ -9,11 +9,42 @@ import {
   submitReview,
   uploadAttachment,
 } from '../api/prompts';
+import { setPipelineDefault, setPipelineVersionState } from '../api/pipeline';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { canManagePrompts } from '../utils/permissions';
+import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 import { fillPromptContent, starsDisplay } from '../utils/prompt';
 import { plHome, plPrompt, plPromptEdit, plPromptNewChild, plRequestNew } from '../paths';
+
+// Mirrors the backend's _STATE_TRANSITIONS (illegal moves 409 server-side).
+const STATE_ACTIONS = {
+  draft: [{ to: 'in_review', label: 'Submit for review' }],
+  in_review: [
+    { to: 'approved', label: 'Approve' },
+    { to: 'draft', label: 'Reject to draft' },
+  ],
+  approved: [
+    { to: 'active', label: 'Deploy (activate)' },
+    { to: 'draft', label: 'Reject to draft' },
+  ],
+  active: [],
+};
+
+const STATE_BADGE = {
+  draft: 'badge-draft',
+  in_review: 'badge-team',
+  approved: 'badge-global',
+  active: 'badge-global',
+};
+
+function StateBadge({ state }) {
+  if (!state) return null;
+  return (
+    <span className={`badge ${STATE_BADGE[state] || 'badge-draft'}`}>
+      {state.replace('_', ' ')}
+    </span>
+  );
+}
 
 export default function PromptDetailPage() {
   const { id } = useParams();
@@ -143,10 +174,38 @@ export default function PromptDetailPage() {
     show('Review submitted! ⭐');
   }
 
+  async function refetch() {
+    const p = await fetchPrompt(id);
+    if (p) setPrompt(p);
+  }
+
+  async function handleTransition(versionLabel, to) {
+    try {
+      await setPipelineVersionState(prompt.id, versionLabel, to);
+      await refetch();
+      show(to === 'active' ? `Version ${versionLabel} deployed ✓` : `Version ${versionLabel} → ${to.replace('_', ' ')}`);
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Transition failed');
+    }
+  }
+
+  async function handleToggleDefault() {
+    try {
+      await setPipelineDefault(prompt.id, !prompt.pipeline?.is_default);
+      await refetch();
+      show(prompt.pipeline?.is_default ? 'Default flag cleared.' : 'This prompt is now the component default ✓');
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Update failed');
+    }
+  }
+
   if (loading || !prompt) {
     return <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 48 }}>Loading…</p>;
   }
 
+  const isPipeline = prompt.prompt_kind === 'pipeline';
+  const pipe = prompt.pipeline || null;
+  const canPipeline = canManagePipelinePrompts(user);
   const vars = prompt.variables || [];
   const atts = prompt.attachments || [];
   const reviewStats = prompt._review_stats || { count: 0, avg: 0 };
@@ -173,13 +232,31 @@ export default function PromptDetailPage() {
               Parent: <Link to={plPrompt(prompt.parent.id)}>{prompt.parent.title}</Link>
             </p>
           )}
-          <p className="view-meta">
-            Category: {prompt.category || '—'} ·{' '}
-            {prompt.visibility === 'team' && (prompt.teams || []).length
-              ? `Teams: ${(prompt.teams || []).join(', ')}`
-              : `Visibility: ${prompt.visibility}`}{' '}
-            · Updated: {prompt.updated_at ? new Date(prompt.updated_at).toLocaleDateString() : '—'}
-          </p>
+          {isPipeline && pipe ? (
+            <p className="view-meta">
+              <span className="badge badge-team" style={{ marginRight: 6 }}>
+                Pipeline · {pipe.component_type || 'no component'}
+                {pipe.variant ? ` / ${pipe.variant}` : ''}
+              </span>
+              {pipe.is_default && (
+                <span className="badge badge-global" style={{ marginRight: 6 }}>
+                  Default
+                </span>
+              )}
+              <StateBadge state={pipe.workflow_state} />
+              {' '}· Registry name: <code>{pipe.name}</code>
+              {' '}· Active: {pipe.active_version || '—'}
+              {' '}· Updated: {prompt.updated_at ? new Date(prompt.updated_at).toLocaleDateString() : '—'}
+            </p>
+          ) : (
+            <p className="view-meta">
+              Category: {prompt.category || '—'} ·{' '}
+              {prompt.visibility === 'team' && (prompt.teams || []).length
+                ? `Teams: ${(prompt.teams || []).join(', ')}`
+                : `Visibility: ${prompt.visibility}`}{' '}
+              · Updated: {prompt.updated_at ? new Date(prompt.updated_at).toLocaleDateString() : '—'}
+            </p>
+          )}
         </div>
         <div className="page-actions">
           <button
@@ -191,20 +268,25 @@ export default function PromptDetailPage() {
           >
             {vars.length ? '📋 Copy Filled Prompt' : '📋 Copy Prompt'}
           </button>
-          {!canManage && (
+          {!canManage && !isPipeline && (
             <Link to={`${plRequestNew}?promptId=${prompt.id}`} className="btn btn-ghost">
               Request update
             </Link>
           )}
-          {canManage && (
+          {(isPipeline ? canPipeline : canManage) && (
             <Link to={plPromptEdit(prompt.id)} className="btn btn-ghost">
               Edit
             </Link>
           )}
-          {canManage && prompt.can_have_children && (
+          {canManage && !isPipeline && prompt.can_have_children && (
             <Link to={plPromptNewChild(prompt.id)} className="btn btn-ghost">
               ＋ Add follow-up
             </Link>
+          )}
+          {isPipeline && canPipeline && pipe?.component_type && (
+            <button type="button" className="btn btn-ghost" onClick={() => void handleToggleDefault()}>
+              {pipe.is_default ? 'Clear default' : `Make default for ${pipe.component_type}${pipe.variant ? ` / ${pipe.variant}` : ''}`}
+            </button>
           )}
         </div>
       </div>
@@ -242,10 +324,71 @@ export default function PromptDetailPage() {
           </div>
         )}
 
-        <div className="section-hdr">Prompt content</div>
+        {isPipeline && pipe && (
+          <>
+            <div className="section-hdr">System prompt</div>
+            <div className="view-content" style={{ whiteSpace: 'pre-wrap' }}>
+              {pipe.system_prompt || <span style={{ color: 'var(--muted)' }}>(none)</span>}
+            </div>
+          </>
+        )}
+        <div className="section-hdr">{isPipeline ? 'User prompt template' : 'Prompt content'}</div>
         <div className="view-content">{renderPreviewHtml()}</div>
 
-        {(atts.length > 0 || canManage) && (
+        {isPipeline && (
+          <div className="detail-section">
+            <div className="section-hdr">Version history</div>
+            {(prompt.versions || []).length === 0 ? (
+              <div style={{ fontSize: '.8rem', color: 'var(--muted)' }}>
+                No versions yet — commit one from the edit page.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[...(prompt.versions || [])].reverse().map((v) => (
+                  <div
+                    key={v.version}
+                    style={{
+                      padding: '10px 12px',
+                      border: '1px solid var(--border)',
+                      borderRadius: 8,
+                      background: v.is_active ? 'var(--card-highlight, rgba(64,120,255,.06))' : undefined,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <strong>{v.label || `v${v.version}`}</strong>
+                      <StateBadge state={v.workflow_state} />
+                      {v.is_active && <span className="badge badge-global">live</span>}
+                      <span style={{ fontSize: '.75rem', color: 'var(--muted)' }}>
+                        {v.created_by || '—'}
+                        {v.created_at ? ` · ${new Date(v.created_at).toLocaleDateString()}` : ''}
+                      </span>
+                      {canPipeline && (
+                        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                          {(STATE_ACTIONS[v.workflow_state] || []).map((a) => (
+                            <button
+                              key={a.to}
+                              type="button"
+                              className={a.to === 'active' ? 'btn btn-primary' : 'btn btn-ghost'}
+                              style={{ padding: '2px 10px', fontSize: '.75rem' }}
+                              onClick={() => void handleTransition(v.label || `v${v.version}`, a.to)}
+                            >
+                              {a.label}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                    {v.note && (
+                      <div style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 4 }}>{v.note}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isPipeline && (atts.length > 0 || canManage) && (
           <div className="detail-section">
             <div className="section-hdr">Attachments</div>
             <div className="attach-list">
@@ -281,7 +424,7 @@ export default function PromptDetailPage() {
           </div>
         )}
 
-        {prompt.children && prompt.children.length > 0 && (
+        {!isPipeline && prompt.children && prompt.children.length > 0 && (
           <div className="detail-section">
             <div className="section-hdr">Follow-up prompts</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -308,6 +451,7 @@ export default function PromptDetailPage() {
           </div>
         )}
 
+        {!isPipeline && (
         <div className="detail-section">
           <div className="section-hdr">Reviews</div>
           {!hasReviews ? (
@@ -367,6 +511,7 @@ export default function PromptDetailPage() {
             </button>
           </form>
         </div>
+        )}
       </div>
     </>
   );

@@ -145,6 +145,7 @@ def create_prompt(
         tags=request_body.tags or component,
         owner=current_user.username,
         component_type=component or None,
+        variant=request_body.variant or None,
         is_default=False,
         active_version="v1" if request_body.system_prompt and request_body.user_prompt_template else None,
     )
@@ -448,8 +449,25 @@ def update_prompt(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.manage")),
 ) -> PromptRead:
-    """Update description or tags. Does not affect versions."""
+    """Update description or tags. Does not affect versions.
+
+    ``component_type``/``variant`` re-key what generation resolves, so they are
+    accepted only from ``prompt.pipeline.edit`` holders (admin). Omit/None =
+    untouched; empty string = clear to NULL.
+    """
     prompt = _get_prompt_or_404(db, prompt_id)
+    if request_body.component_type is not None or request_body.variant is not None:
+        if not rbac_check(current_user.role, "prompt.pipeline.edit"):
+            raise PermissionDeniedError("prompt.pipeline.edit", user_role=current_user.role)
+        if prompt.is_default:
+            raise ValidationError(
+                "This prompt is a component default — clear the default flag "
+                "before re-keying its component_type/variant."
+            )
+        if request_body.component_type is not None:
+            prompt.component_type = request_body.component_type or None
+        if request_body.variant is not None:
+            prompt.variant = request_body.variant or None
     if request_body.description is not None:
         prompt.description = request_body.description
     if request_body.tags is not None:

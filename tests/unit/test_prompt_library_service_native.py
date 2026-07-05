@@ -76,6 +76,40 @@ class TestSerializerShapes:
         assert d["variables"] == [{"name": "name", "label": "Name", "hint": ""}]
         assert d["versions"][0]["version"] == 1    # numeric, from version_number
         assert d["versions"][0]["note"] == "Initial version"  # change_reason -> note
+        # Library dicts carry NO pipeline block (exact legacy shape).
+        assert "pipeline" not in d
+        assert "system_prompt" not in d["versions"][0]
+
+    def test_pipeline_rows_serialize_the_console_block(self, db):
+        from promptops_app.database import PromptVersion
+
+        p = _mk_pipeline_prompt(db, name="default_blueprint_prompt",
+                                component_type="blueprint")
+        p.variant = "teacher"
+        p.active_version = "v1"
+        db.add(PromptVersion(
+            prompt_id=p.id, version="v1", version_number=1,
+            system_prompt="SYS", user_prompt_template="USER {{cdd_context}}",
+            workflow_state="active", is_active=True, created_by="admin",
+        ))
+        db.flush()
+
+        d = svc.prompt_to_dict(db, p)
+        assert d["prompt_kind"] == "pipeline"
+        assert d["pipeline"] == {
+            "name": "default_blueprint_prompt",
+            "component_type": "blueprint",
+            "variant": "teacher",
+            "is_default": True,
+            "active_version": "v1",
+            "system_prompt": "SYS",
+            "workflow_state": "active",
+        }
+        v = d["versions"][0]
+        assert v["label"] == "v1"
+        assert v["system_prompt"] == "SYS"
+        assert v["workflow_state"] == "active"
+        assert v["is_active"] is True
 
     def test_review_request_team_dict_shapes(self, db):
         p = _mk_library_prompt(db)
