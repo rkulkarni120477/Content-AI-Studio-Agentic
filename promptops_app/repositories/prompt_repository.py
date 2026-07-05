@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from promptops_app.database import Prompt, PromptVersion, PromptFixing, UserPromptPreference
 
@@ -27,21 +27,39 @@ def count_prompts(db) -> int:
 # Component-scoped queries
 # ---------------------------------------------------------------------------
 
-def get_default_prompt(db, component_type: str) -> Prompt | None:
-    """Return the single is_default=True asset for *component_type*, or None.
+def get_default_prompt(
+    db,
+    component_type: str,
+    variant: str | None = None,
+    *,
+    variant_fallback: bool = True,
+) -> Prompt | None:
+    """Return the is_default=True asset for *(component_type, variant)*, or None.
 
     Pipeline rows only — library rows can never resolve for generation, even
     if one were mislabeled with a component_type/is_default.
+
+    Variant semantics (the partial unique index guarantees at most one default
+    per exact ``(component_type, variant)`` pair):
+    - ``variant=None`` — the NULL-variant default only. A variant-specific
+      default can never resolve for a variant-less request (no sideways match).
+    - ``variant="x"`` — the exact ``(component_type, "x")`` default first; when
+      *variant_fallback* (default), fall back to the NULL-variant default —
+      never to a different variant.
+    - ``variant_fallback=False`` — exact variant only; callers with their own
+      bespoke fallback (Generate's interactive path) use this so a requested
+      variant can never silently resolve another variant's template.
     """
-    return (
-        db.query(Prompt)
-        .filter(
-            Prompt.component_type == component_type,
-            Prompt.is_default == True,  # noqa: E712
-            Prompt.prompt_kind == "pipeline",
-        )
-        .first()
+    base = db.query(Prompt).filter(
+        Prompt.component_type == component_type,
+        Prompt.is_default == True,  # noqa: E712
+        Prompt.prompt_kind == "pipeline",
     )
+    if variant is not None:
+        row = base.filter(Prompt.variant == variant).first()
+        if row is not None or not variant_fallback:
+            return row
+    return base.filter(Prompt.variant.is_(None)).first()
 
 
 def list_prompts_by_component(db, component_type: str) -> list[Prompt]:
@@ -200,6 +218,7 @@ def resolve_fixed_prompt(
     project_id=None,
     cluster_id=None,
     course_id=None,
+    acceptable_variants: "tuple | list | None" = None,
 ) -> "PromptFixing | None":
     """Return the most-specific PromptFixing for component + context, or None.
 
@@ -211,6 +230,14 @@ def resolve_fixed_prompt(
     A course-scope fix is found by ``course_id`` alone, regardless of which
     project or cluster the course belongs to.  This keeps lookup correct
     even when the caller only knows some of the hierarchy IDs (e.g. cluster_id=None).
+
+    acceptable_variants:
+        ``None`` (default) — legacy behavior: no variant/kind filtering.
+        Otherwise a sequence of acceptable ``Prompt.variant`` values (``None``
+        meaning the NULL variant); a fixing whose bound prompt is not a
+        pipeline row with an acceptable variant is skipped, and the next
+        (broader) scope is consulted instead — a scope lock for one variant
+        never hijacks a request for another.
     """
     # Build a prioritised list of (scope_level, id_column, id_value).
     # Skip a scope when its key ID is None — no fix could have been set that way.
@@ -233,6 +260,15 @@ def resolve_fixed_prompt(
         )
         if id_col is not None:
             q = q.filter(id_col == id_val)
+        if acceptable_variants is not None:
+            variant_conds = [
+                Prompt.variant.is_(None) if v is None else Prompt.variant == v
+                for v in acceptable_variants
+            ]
+            q = q.join(Prompt, PromptFixing.prompt_id == Prompt.id).filter(
+                Prompt.prompt_kind == "pipeline",
+                or_(*variant_conds) if variant_conds else False,
+            )
         fixing = q.first()
         if fixing and fixing.prompt_id:
             return fixing

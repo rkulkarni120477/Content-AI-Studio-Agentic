@@ -31,7 +31,12 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
-from app.core.exceptions import LLMGenerationError, NotFoundError, WorkflowError
+from app.core.exceptions import (
+    LLMGenerationError,
+    NotFoundError,
+    PromptConfigurationError,
+    WorkflowError,
+)
 from app.schemas.blueprint import (
     BlueprintActivateVersionResponse,
     BlueprintComponent,
@@ -124,7 +129,7 @@ def generate_blueprint(
         parse_blueprint_components, get_blueprint_prompts,
     )
     from promptops_app.parsers.cdd_parser import extract_cdd_summary, extract_module_section
-    from promptops_app.prompts.prompt_builder import build_prompt
+    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt
     from promptops_app.repositories import blueprint_repository, cdd_repository, style_repository
     from promptops_app.repositories.course_repository import set_active_blueprint
     from promptops_app.services.audit_service import log_audit_event
@@ -183,7 +188,19 @@ def generate_blueprint(
                 project_id=course.project_id if course else request_body.project_id,
                 cluster_id=course.cluster_id if course else None,
                 course_id=request_body.course_id,
+                # Student/teacher are independently-versioned rows once authored
+                # (variant-exact wins); the NULL-variant seeded default serves
+                # both modes until then. Ignored while the resolution flag is off.
+                variant="teacher" if request_body.teacher_mode else "student",
             )
+        except PromptVariableError as exc:
+            # A declared-variable violation is a template misconfiguration —
+            # surface it to the admin; never silently swap in the constant
+            # fallback (that would mask which prompt generation actually used).
+            raise PromptConfigurationError(
+                str(exc),
+                detail={"template": exc.template, "missing": exc.missing},
+            ) from exc
         except Exception:
             mode = "teacher" if request_body.teacher_mode else "student"
             system_prompt, user_prompt_tmpl, _ = get_blueprint_prompts(mode)

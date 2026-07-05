@@ -41,7 +41,12 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
-from app.core.exceptions import LLMGenerationError, NotFoundError, WorkflowError
+from app.core.exceptions import (
+    LLMGenerationError,
+    NotFoundError,
+    PromptConfigurationError,
+    WorkflowError,
+)
 from app.schemas.cdd import (
     CDDActivateVersionResponse,
     CDDGenerateRequest,
@@ -199,7 +204,7 @@ def generate_cdd(
     from promptops_app.services.audit_service import log_audit_event
     from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
-    from promptops_app.prompts.prompt_builder import build_prompt
+    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt
 
     _log.info(
         "cdd_generate_start  user=%s  course=%d  title=%s  model=%s",
@@ -245,6 +250,14 @@ def generate_cdd(
                 cluster_id=course.cluster_id if course else None,
                 course_id=request_body.course_id,
             )
+        except PromptVariableError as exc:
+            # A declared-variable violation is a template misconfiguration —
+            # surface it to the admin; never silently swap in the constant
+            # fallback (that would mask which prompt generation actually used).
+            raise PromptConfigurationError(
+                str(exc),
+                detail={"template": exc.template, "missing": exc.missing},
+            ) from exc
         except Exception:
             # Fall back to inline constants if the prompt library fails.
             from promptops_app.prompt_templates import (

@@ -35,6 +35,28 @@ if TYPE_CHECKING:
 _VAR_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
 
 
+class PromptVariableError(ValueError):
+    """A resolved template's DECLARED required variables are not all supplied.
+
+    Deliberately narrower than ``render(strict=True)`` (which would fail on
+    every ``{{placeholder}}`` in the body, including deliberately-optional
+    ones): only variables an admin declared for the prompt (``prompt_variables``
+    rows, or the registry's ``required_vars`` for file-tier templates) are
+    enforced. Raised so a misconfigured declaration surfaces loudly instead of
+    silently degrading to the constant-fallback tier or emitting literal
+    placeholder text.
+    """
+
+    def __init__(self, template: str, version: str, missing: list[str]):
+        self.template = template
+        self.version = version
+        self.missing = list(missing)
+        super().__init__(
+            f"Prompt template '{template}' ({version}) declares required "
+            f"variables this call does not supply: {', '.join(sorted(missing))}"
+        )
+
+
 # ── Core primitives ───────────────────────────────────────────────────────────
 
 def extract_variables(template: str) -> list[str]:
@@ -110,6 +132,8 @@ def build_prompt(
     project_id=None,
     cluster_id=None,
     course_id=None,
+    variant=None,
+    require_variant: bool = False,
 ) -> tuple[str, str, str, str]:
     """Load a named template, optionally validate variables, and render both parts.
 
@@ -133,6 +157,11 @@ def build_prompt(
     project_id / cluster_id / course_id:
         Optional generation context, forwarded to the loader for scope-fixed
         resolution when component-keyed resolution is enabled.
+    variant / require_variant:
+        Optional pipeline variant (exact match preferred, NULL-variant row as
+        fallback, never a different variant); ``require_variant=True`` allows
+        only an exact-variant DB row — no fallback tier at all (the caller
+        keeps its own bespoke fallback).  See ``load_template``.
 
     Returns
     -------
@@ -145,7 +174,20 @@ def build_prompt(
     tmpl = load_template(
         template_name, version=version, db=db,
         project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+        variant=variant, require_variant=require_variant,
     )
+
+    # Declared-variable enforcement (Phase 8): required_vars comes from the
+    # prompt's prompt_variables declarations (DB tier) or the registry (file
+    # tier). Gated behind the resolution flag so flag-off stays byte-identical
+    # to the legacy leave-placeholders-in-place behavior. A `None` value counts
+    # as supplied (mirrors validate()) — only an absent key is a violation.
+    from promptops_app.prompts.prompt_loader import component_resolution_enabled
+
+    if component_resolution_enabled():
+        _missing = [v for v in tmpl.required_vars if v not in variables]
+        if _missing:
+            raise PromptVariableError(tmpl.name, tmpl.version, _missing)
 
     system = render(tmpl.system_template, variables, strict=strict)
     user   = render(tmpl.user_template,   variables, strict=strict)

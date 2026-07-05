@@ -248,6 +248,80 @@ class TestComponentKeyedRouterResolution:
         assert capture_llm[0]["system"] == "FIXED BP SYS"
         assert capture_llm[0]["user"] == "module=Module 1: Introduction"
 
+    def test_blueprint_teacher_and_student_resolve_their_own_variants(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        # The Phase 8 variant split: once teacher/student rows exist, each mode
+        # resolves its own independently-versioned row.
+        make_db_prompt(db, "bp-teacher", system="TEACHER SYS",
+                       user="teacher module={{selected_module}}",
+                       component_type="blueprint", is_default=True,
+                       variant="teacher")
+        make_db_prompt(db, "bp-student", system="STUDENT SYS",
+                       user="student module={{selected_module}}",
+                       component_type="blueprint", is_default=True,
+                       variant="student")
+
+        payload = {"course_id": course.id, "project_id": project.id,
+                   "selected_module": "Module 1: Introduction",
+                   "model_choice": "GPT-5.4"}
+
+        resp = client.post("/api/v1/blueprints/generate",
+                           json={**payload, "teacher_mode": True},
+                           headers=auth_headers)
+        assert resp.status_code in (200, 201), resp.text
+        assert capture_llm[0]["system"] == "TEACHER SYS"
+
+        resp = client.post("/api/v1/blueprints/generate",
+                           json={**payload, "teacher_mode": False},
+                           headers=auth_headers)
+        assert resp.status_code in (200, 201), resp.text
+        assert capture_llm[1]["system"] == "STUDENT SYS"
+
+    def test_blueprint_variant_request_uses_null_variant_seeded_default(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        # No teacher/student rows authored yet → both modes keep resolving the
+        # NULL-variant default (the seeded-default fallback promise).
+        make_db_prompt(db, "bp-base", system="BASE BP SYS",
+                       user="module={{selected_module}} teacher={{teacher_mode}}",
+                       component_type="blueprint", is_default=True)
+
+        resp = client.post(
+            "/api/v1/blueprints/generate",
+            json={"course_id": course.id, "project_id": project.id,
+                  "selected_module": "Module 1: Introduction",
+                  "model_choice": "GPT-5.4", "teacher_mode": True},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (200, 201), resp.text
+        assert capture_llm[0]["system"] == "BASE BP SYS"
+        assert capture_llm[0]["user"] == "module=Module 1: Introduction teacher=Yes"
+
+    def test_declared_variable_violation_surfaces_not_fallback(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        # Strict-variable enforcement: a default row declaring a variable the
+        # CDD call cannot supply must 500 PROMPT_MISCONFIGURED — never
+        # silently regenerate from the constant fallback.
+        from promptops_app.database import PromptVariable
+
+        row = make_db_prompt(db, "strict-cdd", system="s", user="{{no_such_var}}",
+                             component_type="cdd", is_default=True)
+        db.add(PromptVariable(prompt_id=row.id, name="no_such_var"))
+        db.commit()
+
+        resp = client.post(
+            "/api/v1/cdd/generate",
+            json=_cdd_payload(course, project),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 500, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "PROMPT_MISCONFIGURED"
+        assert "no_such_var" in body["error"]["message"]
+        assert capture_llm == []  # the LLM was never called
+
 
 class TestStyleResolution:
     def test_system_prompt_resolves_from_file_by_default(self, db):

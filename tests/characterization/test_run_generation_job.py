@@ -230,6 +230,91 @@ class TestGenerateWiring:
         gen = db.query(Generation).order_by(Generation.id.desc()).first()
         assert gen.prompt_name == "quiz_generation"
 
+    def test_interactive_component_resolves_exact_variant_row(
+        self, db, job_env, capture_llm
+    ):
+        from promptops_app.database import Generation
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        from .conftest import make_db_prompt
+
+        # The NULL-variant lesson default must NOT be what interactive gets.
+        make_db_prompt(
+            db, "console-generate", system="LESSON SYS", user="lesson body",
+            component_type="generate", is_default=True,
+        )
+        make_db_prompt(
+            db, "console-interactive", system="DB INTERACTIVE SYSTEM",
+            user="component={{component_label}} topic={{topic}}",
+            component_type="generate", is_default=True, variant="interactive",
+        )
+        job = _make_job(
+            db, selected_component={"type": "component", "label": "Reflection"},
+        )
+        run_generation_job(job.id)
+
+        call = capture_llm[0]
+        assert "DB INTERACTIVE SYSTEM" in call["system"]
+        assert "LESSON SYS" not in call["system"]
+        assert call["user"] == "component=Reflection topic=Infection Control"
+
+        db.expire_all()
+        gen = db.query(Generation).order_by(Generation.id.desc()).first()
+        assert gen.prompt_name == "content_generation"
+        assert gen.prompt_version == "v1"
+
+    def test_interactive_never_falls_back_to_lesson_default(
+        self, db, job_env, capture_llm
+    ):
+        # No interactive-variant row authored → the NULL-variant generate
+        # default (a lesson template) must NOT hijack the component; the
+        # legacy bespoke path keeps control (here: the no-context lesson
+        # constants, with no template recorded).
+        from promptops_app.database import Generation
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        from .conftest import make_db_prompt
+
+        make_db_prompt(
+            db, "console-generate", system="LESSON DEFAULT SYS", user="lesson body",
+            component_type="generate", is_default=True,
+        )
+        job = _make_job(
+            db, selected_component={"type": "component", "label": "Reflection"},
+        )
+        run_generation_job(job.id)
+
+        assert "LESSON DEFAULT SYS" not in capture_llm[0]["system"]
+        db.expire_all()
+        gen = db.query(Generation).order_by(Generation.id.desc()).first()
+        assert gen.prompt_name == "" and gen.prompt_version == ""
+
+    def test_declared_variable_violation_fails_the_job(
+        self, db, job_env, capture_llm
+    ):
+        # Strict-variable enforcement: a misconfigured declaration must fail
+        # the job visibly, not silently regenerate with the legacy constants.
+        from promptops_app.database import GenerationJob, PromptVariable
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        from .conftest import make_db_prompt
+
+        row = make_db_prompt(
+            db, "console-generate", system="s", user="{{no_such_var}}",
+            component_type="generate", is_default=True,
+        )
+        db.add(PromptVariable(prompt_id=row.id, name="no_such_var"))
+        db.commit()
+
+        job = _make_job(db)
+        run_generation_job(job.id)
+
+        assert capture_llm == []  # never reached the LLM
+        db.expire_all()
+        refreshed = db.query(GenerationJob).filter_by(id=job.id).first()
+        assert refreshed.status == "failed"
+        assert "no_such_var" in (refreshed.error_message or "")
+
     def test_flag_off_keeps_legacy_constants(self, db, job_env, capture_llm,
                                              monkeypatch):
         from promptops_app.database import Generation

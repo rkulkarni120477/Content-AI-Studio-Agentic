@@ -48,6 +48,10 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 #   3. legacy stem name    — Prompt.name == stem (secondary key, kept for
 #                            admin-created stem-named rows)
 #
+# Both DB tiers are variant-aware: an exact (component_type, variant) row wins,
+# the NULL-variant row is the fallback, and a different variant never matches
+# (see _acceptable_variants).
+#
 # The flag defaults OFF: the seeded default rows' bodies still carry legacy
 # ``{single}``-brace text that the ``{{double}}`` renderer would pass through
 # verbatim — verify/convert the default rows' bodies in an environment before
@@ -157,6 +161,8 @@ def load_template(
     project_id=None,
     cluster_id=None,
     course_id=None,
+    variant=None,
+    require_variant: bool = False,
 ) -> PromptTemplate:
     """Load a prompt template by name.
 
@@ -174,14 +180,32 @@ def load_template(
         Optional generation context, honored only when component-keyed
         resolution is enabled: the most specific ``PromptFixing`` for the
         stem's component wins over the component default.
+    variant:
+        Optional pipeline variant (e.g. ``"teacher"``/``"student"`` for
+        blueprint, ``"interactive"`` for generate), honored only when
+        component-keyed resolution is enabled.  An exact
+        ``(component_type, variant)`` row wins; the NULL-variant row is the
+        fallback; a different variant never matches.
+    require_variant:
+        When ``True``, only a DB row whose variant exactly equals *variant*
+        may resolve — no NULL-variant, stem-name, or file fallback (those are
+        all a *different* variant's template; the caller keeps its own bespoke
+        fallback).  Raises ``FileNotFoundError`` when no such row exists.
     """
     if db is not None:
         tmpl = _from_db(
             db, name, version,
             project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+            variant=variant, require_variant=require_variant,
         )
         if tmpl is not None:
             return tmpl
+
+    if require_variant:
+        raise FileNotFoundError(
+            f"No '{name}' pipeline row with variant={variant!r} is resolvable "
+            f"(require_variant — stem/file tiers are not variant-eligible)"
+        )
 
     return _from_file(name)
 
@@ -223,7 +247,28 @@ def _from_file(name: str) -> PromptTemplate:
     )
 
 
-def _resolve_pipeline_row(db, stem: str, *, project_id, cluster_id, course_id):
+def _acceptable_variants(variant, require_variant: bool) -> tuple:
+    """The Prompt.variant values a resolution may return, in preference order.
+
+    - no variant requested        → NULL-variant rows only
+    - variant requested           → exact variant, then NULL-variant fallback
+    - require_variant             → exact variant only (caller has its own
+                                    bespoke fallback — Generate's interactive path)
+
+    Never sideways: a request for one variant can never resolve another.
+    """
+    if variant is None:
+        return (None,)
+    if require_variant:
+        return (variant,)
+    return (variant, None)
+
+
+def _resolve_pipeline_row(
+    db, stem: str, *,
+    project_id, cluster_id, course_id,
+    variant=None, require_variant: bool = False,
+):
     """Component-keyed row resolution: scope fixing → component default → None.
 
     Only ever returns ``prompt_kind='pipeline'`` rows — a library row can never
@@ -239,9 +284,12 @@ def _resolve_pipeline_row(db, stem: str, *, project_id, cluster_id, course_id):
         resolve_fixed_prompt,
     )
 
+    acceptable = _acceptable_variants(variant, require_variant)
+
     fixing = resolve_fixed_prompt(
         db, component,
         project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+        acceptable_variants=acceptable,
     )
     if fixing is not None and fixing.prompt_id:
         row = (
@@ -253,12 +301,15 @@ def _resolve_pipeline_row(db, stem: str, *, project_id, cluster_id, course_id):
         if row is not None:
             return row
 
-    return get_default_prompt(db, component)
+    return get_default_prompt(
+        db, component, variant, variant_fallback=not require_variant,
+    )
 
 
 def _from_db(
     db, name: str, version: str,
     *, project_id=None, cluster_id=None, course_id=None,
+    variant=None, require_variant: bool = False,
 ) -> PromptTemplate | None:
     """Try to load from the Prompt / PromptVersion ORM tables.  Returns None on any miss."""
     try:
@@ -269,8 +320,12 @@ def _from_db(
             prompt = _resolve_pipeline_row(
                 db, name,
                 project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+                variant=variant, require_variant=require_variant,
             )
         if prompt is None:
+            if require_variant:
+                # The stem-named row is not variant-keyed — never eligible here.
+                return None
             # Legacy secondary key: exact stem-named row.
             prompt = db.query(Prompt).filter(Prompt.name == name).first()
         if not prompt:
@@ -302,13 +357,31 @@ def _from_db(
             return None
 
         meta = _REGISTRY.get(name, {})
+
+        # DB-backed variable declarations (prompt_variables) supersede the
+        # static registry for this row: an admin's declared variables are what
+        # build_prompt enforces. Rows with no declarations keep the registry
+        # metadata (matching the file tier).
+        from promptops_app.database import PromptVariable
+
+        declared = (
+            db.query(PromptVariable)
+            .filter(PromptVariable.prompt_id == prompt.id)
+            .order_by(PromptVariable.sort_order, PromptVariable.id)
+            .all()
+        )
+        required_vars = (
+            [v.name for v in declared] if declared
+            else list(meta.get("required_vars", []))
+        )
+
         return PromptTemplate(
             name            = name,
             version         = pv.version,
             description     = prompt.description or "",
             system_template = pv.system_prompt or "",
             user_template   = pv.user_prompt_template or "",
-            required_vars   = list(meta.get("required_vars", [])),
+            required_vars   = required_vars,
             optional_vars   = list(meta.get("optional_vars", [])),
             source          = "db",
         )

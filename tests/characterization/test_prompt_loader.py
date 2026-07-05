@@ -260,3 +260,145 @@ class TestComponentKeyedResolution:
         make_db_prompt(db, "validation", system="v", user="val-user")
         tmpl = load_template("validation", db=db)
         assert tmpl.source == "db" and tmpl.user_template == "val-user"
+
+
+class TestVariantAwareResolution:
+    """Phase 8 variant split: exact (component_type, variant) match first, then
+    the NULL-variant row only when a variant was requested — never sideways
+    across variants."""
+
+    @pytest.fixture(autouse=True)
+    def _flag_on(self, monkeypatch):
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+
+    def test_exact_variant_default_beats_null_variant_default(self, db):
+        make_db_prompt(db, "bp-base", system="b", user="base-user",
+                       component_type="blueprint", is_default=True)
+        make_db_prompt(db, "bp-teacher", system="t", user="teacher-user",
+                       component_type="blueprint", is_default=True,
+                       variant="teacher")
+        tmpl = load_template("blueprint_generation", db=db, variant="teacher")
+        assert tmpl.user_template == "teacher-user"
+
+    def test_variant_request_falls_back_to_null_variant_default(self, db):
+        # The Blueprint refinement case: no teacher/student row authored yet →
+        # the NULL-variant seeded default keeps serving both modes.
+        make_db_prompt(db, "bp-base", system="b", user="base-user",
+                       component_type="blueprint", is_default=True)
+        for v in ("teacher", "student"):
+            assert load_template(
+                "blueprint_generation", db=db, variant=v,
+            ).user_template == "base-user"
+
+    def test_never_sideways_across_variants(self, db):
+        # Only a student-variant default exists → a teacher request must NOT
+        # get it; with no NULL default either, it degrades to the file tier.
+        make_db_prompt(db, "bp-student", system="s", user="student-user",
+                       component_type="blueprint", is_default=True,
+                       variant="student")
+        tmpl = load_template("blueprint_generation", db=db, variant="teacher")
+        assert tmpl.source == "file"
+
+    def test_variantless_request_ignores_variant_defaults(self, db):
+        # No sideways in the other direction: a variant-specific default can
+        # never satisfy a request that asked for no variant.
+        make_db_prompt(db, "bp-teacher", system="t", user="teacher-user",
+                       component_type="blueprint", is_default=True,
+                       variant="teacher")
+        assert load_template("blueprint_generation", db=db).source == "file"
+
+    def test_require_variant_resolves_only_the_exact_row(self, db):
+        make_db_prompt(db, "gen-interactive", system="i", user="interactive-user",
+                       component_type="generate", is_default=True,
+                       variant="interactive")
+        tmpl = load_template(
+            "content_generation", db=db,
+            variant="interactive", require_variant=True,
+        )
+        assert tmpl.source == "db"
+        assert tmpl.user_template == "interactive-user"
+
+    def test_require_variant_refuses_every_fallback_tier(self, db):
+        # NULL-variant default + stem-named row + .md file all exist — none of
+        # them is the interactive variant, so resolution must fail outright
+        # (the caller keeps its own bespoke fallback).
+        make_db_prompt(db, "gen-base", system="g", user="base-user",
+                       component_type="generate", is_default=True)
+        make_db_prompt(db, "content_generation", system="st", user="stem-user")
+        with pytest.raises(FileNotFoundError):
+            load_template(
+                "content_generation", db=db,
+                variant="interactive", require_variant=True,
+            )
+
+    def test_fixing_bound_to_other_variant_is_skipped(self, db, course):
+        from promptops_app.repositories.prompt_repository import set_fixed_prompt
+
+        make_db_prompt(db, "bp-base", system="b", user="base-user",
+                       component_type="blueprint", is_default=True)
+        teacher_row = make_db_prompt(
+            db, "bp-teacher", system="t", user="teacher-user",
+            component_type="blueprint", variant="teacher",
+        )
+        set_fixed_prompt(
+            db, component="blueprint", scope_level="course",
+            course_id=course.id, prompt_id=teacher_row.id,
+            fixed_by="test_admin", fixed_by_role="admin",
+        )
+        # Teacher request honors the course lock…
+        assert load_template(
+            "blueprint_generation", db=db, course_id=course.id,
+            variant="teacher",
+        ).user_template == "teacher-user"
+        # …a student request skips it and lands on the NULL-variant default.
+        assert load_template(
+            "blueprint_generation", db=db, course_id=course.id,
+            variant="student",
+        ).user_template == "base-user"
+
+    def test_incompatible_narrow_fixing_falls_through_to_broader_scope(
+        self, db, course,
+    ):
+        from promptops_app.repositories.prompt_repository import set_fixed_prompt
+
+        teacher_row = make_db_prompt(
+            db, "bp-teacher", system="t", user="teacher-user",
+            component_type="blueprint", variant="teacher",
+        )
+        global_row = make_db_prompt(
+            db, "bp-global", system="g", user="global-user",
+            component_type="blueprint",
+        )
+        set_fixed_prompt(
+            db, component="blueprint", scope_level="course",
+            course_id=course.id, prompt_id=teacher_row.id,
+            fixed_by="test_admin", fixed_by_role="admin",
+        )
+        set_fixed_prompt(
+            db, component="blueprint", scope_level="global",
+            prompt_id=global_row.id,
+            fixed_by="test_admin", fixed_by_role="admin",
+        )
+        # Student request: course lock is teacher-only → the global fixing
+        # (NULL-variant row, compatible) applies instead.
+        assert load_template(
+            "blueprint_generation", db=db, course_id=course.id,
+            variant="student",
+        ).user_template == "global-user"
+
+    def test_null_variant_fixing_serves_variant_requests(self, db, course):
+        from promptops_app.repositories.prompt_repository import set_fixed_prompt
+
+        make_db_prompt(db, "bp-base", system="b", user="base-user",
+                       component_type="blueprint", is_default=True)
+        locked = make_db_prompt(db, "bp-locked", system="l", user="locked-user",
+                                component_type="blueprint")
+        set_fixed_prompt(
+            db, component="blueprint", scope_level="course",
+            course_id=course.id, prompt_id=locked.id,
+            fixed_by="test_admin", fixed_by_role="admin",
+        )
+        for v in ("teacher", "student"):
+            assert load_template(
+                "blueprint_generation", db=db, course_id=course.id, variant=v,
+            ).user_template == "locked-user"

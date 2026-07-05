@@ -73,25 +73,51 @@ from promptops_app.services.evaluation_service import get_initial_quality_metada
 _log = logging.getLogger(__name__)
 
 
-def _db_backed_prompt(db, stem, variables, *, project_id=None, course_id=None):
+def _db_backed_prompt(
+    db, stem, variables, *,
+    project_id=None, course_id=None,
+    variant=None, require_variant=False,
+):
     """Resolve a Generate-stage template via the registry (Phase 8 wiring).
 
     Returns ``(system, user, template_name, template_version)`` or ``None``
     when component-keyed resolution is off or resolution fails — the caller
-    then falls back to the legacy hard-coded constants, which remain the
+    then falls back to the legacy hard-coded constants (or, for interactive
+    components, the bespoke component prompt builder), which remain the
     inline fallback tier.
+
+    ``require_variant=True`` (the interactive path) means "an exact-variant DB
+    row or nothing": until an admin authors one, the miss is expected and
+    quiet, and the bespoke builder keeps full control.
+
+    A ``PromptVariableError`` is NOT swallowed: a declared-variable violation
+    on the resolved template is a misconfiguration that must fail the job
+    visibly, not silently regenerate with the legacy constants.
     """
     from promptops_app.prompts.prompt_loader import component_resolution_enabled
 
     if not component_resolution_enabled():
         return None
     try:
-        from promptops_app.prompts.prompt_builder import build_prompt
+        from promptops_app.prompts.prompt_builder import (
+            PromptVariableError,
+            build_prompt,
+        )
 
         return build_prompt(
             stem, variables, db=db,
             project_id=project_id, course_id=course_id,
+            variant=variant, require_variant=require_variant,
         )
+    except PromptVariableError:
+        raise
+    except FileNotFoundError:
+        if not require_variant:
+            _log.warning(
+                "DB-backed prompt resolution failed for %s — using legacy constants",
+                stem, exc_info=True,
+            )
+        return None
     except Exception:
         _log.warning(
             "DB-backed prompt resolution failed for %s — using legacy constants",
@@ -254,10 +280,14 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         # ── Phase 8 Generate wiring (flag-gated) ──────────────────────
         # Lesson components resolve `content_generation`, quiz/assessment
         # components `quiz_generation`, through the registry (scope lock →
-        # component default → stem row → .md file). Persona prefix, style,
-        # citation instruction and source context stay code-injected exactly
-        # as in the legacy path. Anything unresolved falls through to the
-        # hard-coded constants below.
+        # component default → stem row → .md file). Everything else fills the
+        # taxonomy's "interactive" slot: it resolves ONLY an exact
+        # (generate, variant='interactive') row — never the NULL-variant
+        # lesson default, stem row, or file (all lesson-shaped) — so until an
+        # admin authors one, the bespoke component builder keeps full control.
+        # Persona prefix, style, citation instruction and source context stay
+        # code-injected exactly as in the legacy path. Anything unresolved
+        # falls through to the hard-coded constants below.
         _has_ctx  = bool(eff_cdd_id or eff_bp_id)
         _is_quiz  = (
             _comp_type == "assessment"
@@ -265,32 +295,42 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             or "quiz" in _comp_label.lower()
         )
         _tpl_name = _tpl_ver = ""
-        _resolved = None
-        if _comp_type == "lesson" or _is_quiz:
-            from promptops_app.prompts.prompt_builder import build_context_variables
 
-            _objective = (
-                f"As defined in the Blueprint for '{topic}'" if _has_ctx
-                else f"Generate content for '{topic}'"
-            )
-            _gen_vars = build_context_variables(
-                learning_objectives=_objective,
-                style_guidelines=_style_inj,
-                output_format=b_type,
-                topic=topic,
-                lesson_topic=topic,
-                lesson_title=topic,
-                lesson_objective=_objective,
-                content_type=b_type,
-                context_injection=ctx_injection if _has_ctx else "",
-                target_audience=target_audience,
-            )
+        from promptops_app.prompts.prompt_builder import build_context_variables
+
+        _objective = (
+            f"As defined in the Blueprint for '{topic}'" if _has_ctx
+            else f"Generate content for '{topic}'"
+        )
+        _gen_vars = build_context_variables(
+            learning_objectives=_objective,
+            style_guidelines=_style_inj,
+            output_format=b_type,
+            topic=topic,
+            lesson_topic=topic,
+            lesson_title=topic,
+            lesson_objective=_objective,
+            content_type=b_type,
+            context_injection=ctx_injection if _has_ctx else "",
+            target_audience=target_audience,
+            component_label=_comp_label,
+            component_type=_comp_type,
+        )
+        if _comp_type == "lesson" or _is_quiz:
             _resolved = _db_backed_prompt(
                 db,
                 "quiz_generation" if _is_quiz else "content_generation",
                 _gen_vars,
                 project_id=project_id,
                 course_id=course_id,
+            )
+        else:
+            _resolved = _db_backed_prompt(
+                db, "content_generation", _gen_vars,
+                project_id=project_id,
+                course_id=course_id,
+                variant="interactive",
+                require_variant=True,
             )
 
         if _resolved:

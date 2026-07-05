@@ -88,6 +88,72 @@ class TestBuildPrompt:
             build_prompt("no_such_template", {})
 
 
+class TestDeclaredVariableEnforcement:
+    """Phase 8 strict-variable enforcement: with PROMPT_RESOLVE_BY_COMPONENT
+    on, build_prompt raises PromptVariableError when a template's DECLARED
+    required variables (prompt_variables rows for DB templates, registry
+    required_vars for file templates) are not supplied. Deliberately narrower
+    than render(strict=True): undeclared {{placeholders}} stay lenient."""
+
+    @pytest.fixture(autouse=True)
+    def _flag_on(self, monkeypatch):
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+
+    def _declare(self, db, prompt, *names):
+        from promptops_app.database import PromptVariable
+
+        for i, n in enumerate(names):
+            db.add(PromptVariable(prompt_id=prompt.id, name=n, sort_order=i))
+        db.commit()
+
+    def test_file_tier_registry_required_vars_enforced(self):
+        from promptops_app.prompts.prompt_builder import PromptVariableError
+
+        with pytest.raises(PromptVariableError) as exc:
+            build_prompt("cdd_generation", {})
+        assert set(exc.value.missing) == {
+            "course_name", "target_audience", "expert_domain",
+        }
+
+    def test_flag_off_stays_lenient(self, monkeypatch):
+        monkeypatch.delenv("PROMPT_RESOLVE_BY_COMPONENT", raising=False)
+        _, user, _, _ = build_prompt("cdd_generation", {})
+        assert "{{course_name}}" in user  # legacy leave-in-place behavior
+
+    def test_db_declarations_supersede_registry_and_are_enforced(self, db):
+        from promptops_app.prompts.prompt_builder import PromptVariableError
+
+        from .conftest import make_db_prompt
+
+        row = make_db_prompt(
+            db, "cdd_generation",
+            system="s", user="{{special_var}} and {{undeclared}}",
+        )
+        self._declare(db, row, "special_var")
+
+        # The registry's cdd vars are NOT required for this row — only the
+        # declared one is.
+        with pytest.raises(PromptVariableError) as exc:
+            build_prompt("cdd_generation", {"course_name": "x"}, db=db)
+        assert exc.value.missing == ["special_var"]
+        assert exc.value.template == "cdd_generation"
+
+        # Supplying the declared var renders; the undeclared placeholder is
+        # still left in place (no strict-all regression).
+        _, user, _, _ = build_prompt(
+            "cdd_generation", {"special_var": "OK"}, db=db,
+        )
+        assert user == "OK and {{undeclared}}"
+
+    def test_none_counts_as_supplied(self, db):
+        from .conftest import make_db_prompt
+
+        row = make_db_prompt(db, "cdd_generation", system="s", user="{{v}}")
+        self._declare(db, row, "v")
+        _, user, _, _ = build_prompt("cdd_generation", {"v": None}, db=db)
+        assert user == "{{v}}"  # None → provided-but-empty, left in place
+
+
 class TestBuildContextVariables:
     def test_teacher_student_inference(self):
         v = build_context_variables(teacher_mode=True)
