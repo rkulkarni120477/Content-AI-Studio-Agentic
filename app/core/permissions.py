@@ -108,6 +108,9 @@ _PERMISSIONS: dict[str, list[str]] = {
     "prompts.view":          [_ADMIN, _REVIEWER, _AUTHOR],
     "prompts.create":        [_ADMIN, _REVIEWER],
     "prompts.manage":        [_ADMIN, _REVIEWER],
+    # Writes to pipeline-kind prompt rows (set-default, workflow-state
+    # transitions, unrestricted scope locks) — admin/prompt-engineer only.
+    "prompt.pipeline.edit":  [_ADMIN],
 
     # ── Analytics ─────────────────────────────────────────────────────────────
     "analytics.view_own":    [_ADMIN, _REVIEWER, _AUTHOR],
@@ -164,6 +167,7 @@ _PERMISSIONS: dict[str, list[str]] = {
 # what the table above says.  Belt-and-suspenders guard against accidental
 # permission grants during future table updates.
 _REVIEWER_BLOCKLIST: frozenset[str] = frozenset({
+    "prompt.pipeline.edit",
     "users.create",
     "users.edit",
     "users.toggle",

@@ -20,21 +20,33 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
-from app.core.exceptions import DuplicateResourceError, LLMGenerationError, NotFoundError
+from app.core.exceptions import (
+    DuplicateResourceError,
+    LLMGenerationError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+    WorkflowError,
+)
+from app.core.permissions import rbac_check
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.prompt import (
     PromptAIGenerateRequest,
     PromptAISuggestResponse,
     PromptCreateFromTemplateRequest,
     PromptCreateRequest,
+    PromptDefaultRequest,
     PromptDeployResponse,
     PromptDetailRead,
+    PromptFixingRead,
+    PromptFixingSetRequest,
     PromptListItem,
     PromptRead,
     PromptUpdateRequest,
     PromptVersionCreateRequest,
     PromptVersionListItem,
     PromptVersionRead,
+    PromptWorkflowStateRequest,
 )
 
 _log = logging.getLogger(__name__)
@@ -292,6 +304,134 @@ def suggest_prompt(
     )
 
 
+# ── Scope locks (prompt fixings) — Phase 8 management endpoints ──────────────
+#
+# Declared BEFORE the /{prompt_id} routes: FastAPI matches in declaration
+# order and "/fixings" would otherwise 422 against the int path param.
+
+_SCOPE_ID_FIELD = {"project": "project_id", "cluster": "cluster_id", "course": "course_id"}
+_VALID_SCOPES = ("global", "project", "cluster", "course")
+
+
+def _scope_ids(scope_level: str, project_id, cluster_id, course_id) -> dict:
+    """Validate scope_level + its id and normalize the id tuple.
+
+    Only the id matching the scope level is kept — the repository upserts on
+    the exact (component, scope_level, ids) tuple, so stray ids would create
+    unreachable duplicate rows.
+    """
+    if scope_level not in _VALID_SCOPES:
+        raise ValidationError(f"scope_level must be one of {', '.join(_VALID_SCOPES)}.")
+    given = {"project_id": project_id, "cluster_id": cluster_id, "course_id": course_id}
+    ids = {"project_id": None, "cluster_id": None, "course_id": None}
+    field = _SCOPE_ID_FIELD.get(scope_level)
+    if field:
+        if given[field] is None:
+            raise ValidationError(f"{field} is required for scope_level='{scope_level}'.")
+        ids[field] = given[field]
+    return ids
+
+
+@router.get(
+    "/fixings/resolve",
+    response_model=PromptFixingRead | None,
+    summary="Resolve the effective scope lock for a component",
+    description="Returns the most specific PromptFixing (course → cluster → project → global) or null.",
+)
+def resolve_fixing(
+    component: str = Query(...),
+    project_id: int | None = Query(default=None),
+    cluster_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompts.view")),
+) -> PromptFixingRead | None:
+    from promptops_app.repositories import prompt_repository
+
+    fixing = prompt_repository.resolve_fixed_prompt(
+        db, component,
+        project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+    )
+    return PromptFixingRead.model_validate(fixing) if fixing else None
+
+
+@router.put(
+    "/fixings",
+    response_model=PromptFixingRead,
+    summary="Bind a pipeline prompt to a scope (set a scope lock)",
+    description=(
+        "Reuse-by-reference: admins may bind any pipeline prompt; other roles may "
+        "bind only prompts whose active version is approved, and only to the "
+        "prompt's own component (phase-appropriateness is enforced for everyone)."
+    ),
+)
+def set_fixing(
+    request_body: PromptFixingSetRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompts.view")),
+) -> PromptFixingRead:
+    from promptops_app.repositories import prompt_repository
+
+    target = _get_prompt_or_404(db, request_body.prompt_id)
+    if target.prompt_kind != "pipeline":
+        raise ValidationError("Only pipeline prompts can be bound to a generation scope.")
+    if target.deleted_at is not None:
+        raise NotFoundError("Prompt", request_body.prompt_id)
+    if target.component_type != request_body.component:
+        raise ValidationError(
+            f"Prompt {target.id} is a '{target.component_type}' prompt and cannot "
+            f"be bound to the '{request_body.component}' phase."
+        )
+
+    if not rbac_check(current_user.role, "prompt.pipeline.edit"):
+        active = prompt_repository.get_active_version(db, target.id)
+        if active is None or active.workflow_state not in ("approved", "active"):
+            # Binding a not-yet-approved prompt requires the pipeline-edit tier.
+            raise PermissionDeniedError("prompt.pipeline.edit", current_user.role)
+
+    ids = _scope_ids(request_body.scope_level, request_body.project_id,
+                     request_body.cluster_id, request_body.course_id)
+    fixing = prompt_repository.set_fixed_prompt(
+        db,
+        component=request_body.component,
+        scope_level=request_body.scope_level,
+        prompt_id=target.id,
+        fixed_by=current_user.username,
+        fixed_by_role=current_user.role,
+        **ids,
+    )
+    _log.info("prompt_fixing_set  user=%s  component=%s  scope=%s  prompt_id=%d",
+              current_user.username, request_body.component, request_body.scope_level, target.id)
+    return PromptFixingRead.model_validate(fixing)
+
+
+@router.delete(
+    "/fixings",
+    status_code=204,
+    summary="Remove a scope lock",
+    description="Unbind reverts the scope to component-default resolution. Same roles as binding.",
+)
+def unset_fixing(
+    component: str = Query(...),
+    scope_level: str = Query(...),
+    project_id: int | None = Query(default=None),
+    cluster_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompts.view")),
+) -> None:
+    from promptops_app.repositories import prompt_repository
+
+    ids = _scope_ids(scope_level, project_id, cluster_id, course_id)
+    removed = prompt_repository.unset_fixed_prompt(
+        db, component=component, scope_level=scope_level, **ids,
+    )
+    if not removed:
+        raise NotFoundError("PromptFixing", f"{component}/{scope_level}")
+    _log.info("prompt_fixing_unset  user=%s  component=%s  scope=%s",
+              current_user.username, component, scope_level)
+
+
 @router.get("/{prompt_id}", response_model=PromptDetailRead, summary="Get a prompt with active version")
 def get_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.view"))) -> PromptDetailRead:
     """Return prompt metadata and active version prompt text."""
@@ -401,3 +541,120 @@ def deploy_prompt_version(
     _log.info("prompt_version_deployed  user=%s  prompt_id=%d  version=%s",
               current_user.username, prompt_id, version)
     return PromptDeployResponse(prompt_id=prompt_id, active_version=version)
+
+
+# ── Default flag + approval workflow — Phase 8 management endpoints ───────────
+
+@router.put(
+    "/{prompt_id}/default",
+    response_model=PromptRead,
+    summary="Set or clear the default flag for a component",
+    description=(
+        "Setting demotes the current default for the same (component_type, variant) "
+        "so exactly one default exists per pipeline stage."
+    ),
+)
+def set_default_flag(
+    prompt_id: int,
+    request_body: PromptDefaultRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
+) -> PromptRead:
+    from promptops_app.database import Prompt
+
+    prompt = _get_prompt_or_404(db, prompt_id)
+    if prompt.prompt_kind != "pipeline":
+        raise ValidationError("Only pipeline prompts can be a component default.")
+
+    if request_body.is_default:
+        if not prompt.component_type:
+            raise ValidationError("Prompt has no component_type; set one before making it a default.")
+        # Demote the current default for this (component_type, variant) first —
+        # the partial unique index allows exactly one.
+        db.query(Prompt).filter(
+            Prompt.component_type == prompt.component_type,
+            Prompt.variant == prompt.variant,
+            Prompt.is_default == True,  # noqa: E712
+            Prompt.id != prompt.id,
+        ).update({Prompt.is_default: False}, synchronize_session="fetch")
+        prompt.is_default = True
+    else:
+        prompt.is_default = False
+
+    db.commit()
+    db.refresh(prompt)
+    _log.info("prompt_default_%s  user=%s  prompt_id=%d  component=%s  variant=%s",
+              "set" if request_body.is_default else "cleared",
+              current_user.username, prompt_id, prompt.component_type, prompt.variant)
+    return PromptRead.model_validate(prompt)
+
+
+# Allowed workflow_state transitions (Decision 3: pipeline activation is gated).
+_STATE_TRANSITIONS: dict[str, set[str]] = {
+    "draft":     {"in_review"},
+    "in_review": {"approved", "draft"},
+    "approved":  {"active", "draft"},
+    "active":    set(),
+}
+
+
+@router.post(
+    "/{prompt_id}/versions/{version}/state",
+    response_model=PromptVersionRead,
+    summary="Transition a version's workflow state",
+    description=(
+        "draft → in_review → approved → active (with rejection back to draft). "
+        "Transitioning to 'active' deploys the version: all other versions are "
+        "deactivated and demoted from 'active' to 'approved'."
+    ),
+)
+def transition_workflow_state(
+    prompt_id: int,
+    version: str,
+    request_body: PromptWorkflowStateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
+) -> PromptVersionRead:
+    from datetime import datetime
+
+    from promptops_app.database import PromptVersion
+
+    prompt = _get_prompt_or_404(db, prompt_id)
+    ver = db.query(PromptVersion).filter(
+        PromptVersion.prompt_id == prompt_id,
+        PromptVersion.version == version,
+    ).first()
+    if not ver:
+        raise NotFoundError(f"Prompt version '{version}'", prompt_id)
+
+    target = request_body.state
+    if target not in _STATE_TRANSITIONS:
+        raise ValidationError(
+            f"Unknown workflow state '{target}'. "
+            f"Valid states: {', '.join(_STATE_TRANSITIONS)}."
+        )
+    current = ver.workflow_state or "active"
+    if target not in _STATE_TRANSITIONS[current]:
+        raise WorkflowError(
+            f"Cannot transition version '{version}' from '{current}' to '{target}'."
+        )
+
+    if target == "active":
+        others = db.query(PromptVersion).filter(
+            PromptVersion.prompt_id == prompt_id,
+            PromptVersion.id != ver.id,
+        )
+        others.update({PromptVersion.is_active: False}, synchronize_session="fetch")
+        others.filter(PromptVersion.workflow_state == "active").update(
+            {PromptVersion.workflow_state: "approved"}, synchronize_session="fetch"
+        )
+        ver.is_active = True
+        prompt.active_version = ver.version
+        prompt.updated_at = datetime.utcnow()
+
+    ver.workflow_state = target
+    db.commit()
+    db.refresh(ver)
+    _log.info("prompt_workflow_state  user=%s  prompt_id=%d  version=%s  %s->%s",
+              current_user.username, prompt_id, version, current, target)
+    return PromptVersionRead.model_validate(ver)

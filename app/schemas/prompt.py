@@ -85,6 +85,7 @@ class PromptVersionRead(BaseModel):
     user_prompt_template: Optional[str] = None
     change_reason: Optional[str] = None
     created_at: Optional[datetime] = None
+    workflow_state: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -98,6 +99,7 @@ class PromptVersionListItem(BaseModel):
     created_by: Optional[str] = None
     system_prompt: Optional[str] = None
     user_prompt_template: Optional[str] = None
+    workflow_state: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -145,3 +147,54 @@ class PromptListItem(BaseModel):
 class PromptDeployResponse(BaseModel):
     prompt_id: int
     active_version: str
+
+
+# ---------------------------------------------------------------------------
+# Pipeline management (Phase 8) — default flag, workflow state, scope locks
+# ---------------------------------------------------------------------------
+
+class PromptDefaultRequest(BaseModel):
+    """Body for PUT /api/v1/prompts/{id}/default."""
+
+    is_default: bool = Field(
+        default=True,
+        description="True → make this row the default for its (component_type, "
+                    "variant), demoting any current default. False → clear the flag.",
+    )
+
+
+class PromptWorkflowStateRequest(BaseModel):
+    """Body for POST /api/v1/prompts/{id}/versions/{version}/state."""
+
+    state: str = Field(
+        ...,
+        description="Target workflow state: draft, in_review, approved, or active. "
+                    "Transitioning to 'active' deploys the version.",
+        examples=["in_review"],
+    )
+
+
+class PromptFixingSetRequest(BaseModel):
+    """Body for PUT /api/v1/prompts/fixings — bind a prompt to a scope."""
+
+    component: str = Field(..., description="Pipeline component: style, cdd, blueprint, or generate.")
+    scope_level: str = Field(..., description="global, project, cluster, or course.")
+    project_id: Optional[int] = None
+    cluster_id: Optional[int] = None
+    course_id: Optional[int] = None
+    prompt_id: int = Field(..., description="The pipeline prompt to bind (by reference).")
+
+
+class PromptFixingRead(BaseModel):
+    id: int
+    component: str
+    scope_level: str
+    project_id: Optional[int] = None
+    cluster_id: Optional[int] = None
+    course_id: Optional[int] = None
+    prompt_id: Optional[int] = None
+    fixed_by: Optional[str] = None
+    fixed_by_role: Optional[str] = None
+    fixed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
