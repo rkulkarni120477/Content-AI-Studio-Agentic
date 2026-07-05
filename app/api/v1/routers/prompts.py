@@ -156,6 +156,7 @@ def create_prompt(
         db.add(PromptVersion(
             prompt_id=prompt.id,
             version="v1",
+            version_number=1,
             system_prompt=request_body.system_prompt,
             user_prompt_template=request_body.user_prompt_template,
             change_reason=request_body.change_reason or "Initial commit.",
@@ -214,6 +215,7 @@ def create_from_template(
     db.add(PromptVersion(
         prompt_id=prompt.id,
         version="v1",
+        version_number=1,
         system_prompt=tmpl["system"],
         user_prompt_template=tmpl["user"],
         change_reason="Created from template.",
@@ -270,6 +272,7 @@ def ai_generate_prompt(
     db.add(PromptVersion(
         prompt_id=prompt.id,
         version="v1",
+        version_number=1,
         system_prompt=tmpl["system_prompt"],
         user_prompt_template=tmpl["user_prompt_template"],
         change_reason="AI-generated from description.",
@@ -486,11 +489,31 @@ def create_prompt_version(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.manage")),
 ) -> PromptVersionRead:
-    """Deploy a new active version (deactivates prior versions)."""
+    """Commit a new version.
+
+    Approval gate (Phase 8): callers with ``prompt.pipeline.edit`` (admin)
+    keep the historical instant-deploy — the new version activates and prior
+    versions retire. Anyone else commits a ``draft`` that leaves the deployed
+    version untouched; activation then goes through the workflow-state
+    transition endpoint.
+    """
+    from promptops_app.database import PromptVersion
     from promptops_app.repositories import prompt_repository
 
     prompt = _get_prompt_or_404(db, prompt_id)
-    version = prompt_repository.deploy_new_version(
+    duplicate = db.query(PromptVersion).filter(
+        PromptVersion.prompt_id == prompt_id,
+        PromptVersion.version == request_body.version,
+    ).first()
+    if duplicate:
+        raise DuplicateResourceError("PromptVersion", request_body.version)
+
+    write = (
+        prompt_repository.deploy_new_version
+        if rbac_check(current_user.role, "prompt.pipeline.edit")
+        else prompt_repository.commit_draft_version
+    )
+    version = write(
         db,
         prompt=prompt,
         system_prompt=request_body.system_prompt,
@@ -500,8 +523,8 @@ def create_prompt_version(
         created_by=current_user.username,
     )
 
-    _log.info("prompt_version_committed  user=%s  prompt_id=%d  version=%s",
-              current_user.username, prompt_id, request_body.version)
+    _log.info("prompt_version_committed  user=%s  prompt_id=%d  version=%s  state=%s",
+              current_user.username, prompt_id, request_body.version, version.workflow_state)
     return PromptVersionRead.model_validate(version)
 
 
@@ -514,13 +537,15 @@ def deploy_prompt_version(
     prompt_id: int,
     version: str,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("prompts.manage")),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptDeployResponse:
     """
     Set a specific version as the active (deployed) version.
 
     Replicates the "Deploy" button in the Streamlit Prompt Registry.
-    All other versions are deactivated.
+    All other versions are deactivated. Activation is pipeline-tier — admin
+    only (the approval gate); non-admins route through the workflow-state
+    transitions instead.
     """
     from promptops_app.database import Prompt, PromptVersion
 
@@ -534,7 +559,12 @@ def deploy_prompt_version(
         raise NotFoundError(f"Prompt version '{version}'", prompt_id)
 
     db.query(PromptVersion).filter(PromptVersion.prompt_id == prompt_id).update({PromptVersion.is_active: False})
+    db.query(PromptVersion).filter(
+        PromptVersion.prompt_id == prompt_id,
+        PromptVersion.workflow_state == "active",
+    ).update({PromptVersion.workflow_state: "approved"})
     ver.is_active = True
+    ver.workflow_state = "active"
     prompt.active_version = version
     db.commit()
 

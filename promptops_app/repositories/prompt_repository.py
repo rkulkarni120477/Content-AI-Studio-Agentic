@@ -1,6 +1,9 @@
 """Prompt Repository — Prompt, PromptVersion, and PromptFixing database access."""
 
 from datetime import datetime
+
+from sqlalchemy import func
+
 from promptops_app.database import Prompt, PromptVersion, PromptFixing, UserPromptPreference
 
 
@@ -92,6 +95,17 @@ def get_prompt_version(db, prompt_id: int, version: str):
     )
 
 
+def _next_version_number(db, prompt_id: int) -> int:
+    """Next sequential version_number for a prompt (numbers are DB-queried,
+    never taken from possibly-stale relationship collections)."""
+    current = (
+        db.query(func.max(PromptVersion.version_number))
+        .filter(PromptVersion.prompt_id == prompt_id)
+        .scalar()
+    )
+    return (current or 0) + 1
+
+
 def deploy_new_version(
     db,
     prompt: Prompt,
@@ -101,13 +115,24 @@ def deploy_new_version(
     change_reason: str,
     created_by: str,
 ) -> PromptVersion:
-    """Deactivate all existing versions, insert a new active one, and bump updated_at."""
+    """Deactivate all existing versions, insert a new active one, and bump updated_at.
+
+    Instant-deploy — the approval gate (Phase 8) decides at the API layer who
+    may call this; retired versions are demoted from 'active' to 'approved' so
+    workflow_state stays truthful.
+    """
     db.query(PromptVersion).filter(
         PromptVersion.prompt_id == prompt.id
     ).update({PromptVersion.is_active: False})
+    db.query(PromptVersion).filter(
+        PromptVersion.prompt_id == prompt.id,
+        PromptVersion.workflow_state == "active",
+    ).update({PromptVersion.workflow_state: "approved"})
     new_ver = PromptVersion(
         prompt_id=prompt.id,
         version=version_tag,
+        version_number=_next_version_number(db, prompt.id),
+        workflow_state="active",
         system_prompt=system_prompt,
         user_prompt_template=user_prompt_template,
         change_reason=change_reason,
@@ -116,6 +141,39 @@ def deploy_new_version(
     )
     db.add(new_ver)
     prompt.active_version = version_tag
+    prompt.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(new_ver)
+    return new_ver
+
+
+def commit_draft_version(
+    db,
+    prompt: Prompt,
+    system_prompt: str,
+    user_prompt_template: str,
+    version_tag: str,
+    change_reason: str,
+    created_by: str,
+) -> PromptVersion:
+    """Insert a NEW version at workflow_state='draft', NOT active.
+
+    The approval-gate write path (Phase 8): the currently-deployed version is
+    untouched; activation happens later via the workflow-state transition
+    (draft → in_review → approved → active).
+    """
+    new_ver = PromptVersion(
+        prompt_id=prompt.id,
+        version=version_tag,
+        version_number=_next_version_number(db, prompt.id),
+        workflow_state="draft",
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt_template,
+        change_reason=change_reason,
+        is_active=False,
+        created_by=created_by,
+    )
+    db.add(new_ver)
     prompt.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(new_ver)

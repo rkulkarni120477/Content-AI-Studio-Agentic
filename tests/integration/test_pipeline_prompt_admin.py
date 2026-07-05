@@ -12,7 +12,25 @@ already-approved prompt, which authors may do (role split per the plan's
 
 from __future__ import annotations
 
+import pytest
+
 BASE = "/api/v1/prompts"
+
+
+@pytest.fixture()
+def reviewer_headers(client, db) -> dict:
+    """Authorization headers for a reviewer (Lead) user."""
+    from app.core.security import hash_password
+    from promptops_app.database import User
+
+    db.add(User(username="test_reviewer",
+                password_hash=hash_password("test_password"),
+                role="reviewer", is_active=True))
+    db.commit()
+    resp = client.post("/api/v1/auth/login",
+                       json={"username": "test_reviewer", "password": "test_password"})
+    assert resp.status_code == 200
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
 
 def _create_pipeline_prompt(client, headers, name, component="cdd",
@@ -152,6 +170,77 @@ class TestWorkflowState:
         r = client.post(f"{BASE}/{p['id']}/versions/v1/state",
                         json={"state": "in_review"}, headers=author_headers)
         assert r.status_code == 403
+
+
+class TestApprovalGate:
+    """POST /versions role split: admins instant-deploy, reviewers commit drafts;
+    version activation (deploy) is admin-only."""
+
+    def test_admin_commit_still_instant_deploys(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "gate_admin")
+        r = client.post(f"{BASE}/{p['id']}/versions",
+                        json={"version": "v2", "system_prompt": "S2",
+                              "user_prompt_template": "U2"},
+                        headers=auth_headers)
+        assert r.status_code == 201
+        body = r.json()
+        assert body["is_active"] is True and body["workflow_state"] == "active"
+        detail = client.get(f"{BASE}/{p['id']}", headers=auth_headers).json()
+        assert detail["active_version"] == "v2"
+
+    def test_reviewer_commit_lands_as_inactive_draft(self, client, auth_headers,
+                                                     reviewer_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "gate_reviewer")
+        r = client.post(f"{BASE}/{p['id']}/versions",
+                        json={"version": "v2", "system_prompt": "S2",
+                              "user_prompt_template": "U2"},
+                        headers=reviewer_headers)
+        assert r.status_code == 201
+        body = r.json()
+        assert body["is_active"] is False and body["workflow_state"] == "draft"
+        # The deployed version is untouched.
+        detail = client.get(f"{BASE}/{p['id']}", headers=auth_headers).json()
+        assert detail["active_version"] == "v1"
+        assert detail["user_prompt_template"] == "USR {{x}}"
+
+    def test_duplicate_version_tag_conflicts(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "gate_dup")
+        r = client.post(f"{BASE}/{p['id']}/versions",
+                        json={"version": "v1", "system_prompt": "S",
+                              "user_prompt_template": "U"},
+                        headers=auth_headers)
+        assert r.status_code == 409
+
+    def test_reviewer_cannot_deploy(self, client, auth_headers, reviewer_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "gate_deploy")
+        r = client.post(f"{BASE}/{p['id']}/versions/v1/deploy",
+                        headers=reviewer_headers)
+        assert r.status_code == 403
+
+    def test_reviewer_cannot_transition_state(self, client, auth_headers,
+                                              reviewer_headers, db):
+        p = _create_pipeline_prompt(client, auth_headers, "gate_state")
+        _set_state(db, p["id"], "v1", "in_review")
+        r = client.post(f"{BASE}/{p['id']}/versions/v1/state",
+                        json={"state": "approved"}, headers=reviewer_headers)
+        assert r.status_code == 403
+
+    def test_version_numbers_are_sequential(self, client, auth_headers, db):
+        from promptops_app.database import PromptVersion
+
+        p = _create_pipeline_prompt(client, auth_headers, "gate_numbers")
+        client.post(f"{BASE}/{p['id']}/versions",
+                    json={"version": "v2", "system_prompt": "S2",
+                          "user_prompt_template": "U2"},
+                    headers=auth_headers)
+        numbers = [
+            v.version_number
+            for v in db.query(PromptVersion)
+            .filter(PromptVersion.prompt_id == p["id"])
+            .order_by(PromptVersion.id)
+            .all()
+        ]
+        assert numbers == [1, 2]
 
 
 class TestScopeLocks:

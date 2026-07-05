@@ -1810,13 +1810,13 @@ def seed_data(db):
         p = Prompt(name="lesson_generator", description="Generates detailed eLearning lessons.", owner="admin", active_version="v1", tags="core,lesson")
         db.add(p); db.commit(); db.refresh(p)
         v1 = PromptVersion(
-            prompt_id=p.id, version="v1", is_active=True,
+            prompt_id=p.id, version="v1", version_number=1, is_active=True,
             system_prompt=SEED_PROMPT_V1_SYSTEM,
             user_prompt_template=SEED_PROMPT_V1_USER,
             change_reason="Initial release"
         )
         v2 = PromptVersion(
-            prompt_id=p.id, version="v2", is_active=False,
+            prompt_id=p.id, version="v2", version_number=2, is_active=False,
             system_prompt=SEED_PROMPT_V2_SYSTEM,
             user_prompt_template=SEED_PROMPT_V2_USER,
             change_reason="Enhanced engagement version"
@@ -1885,6 +1885,7 @@ def seed_data(db):
             db.add(PromptVersion(
                 prompt_id=_p_new.id,
                 version="v1",
+                version_number=1,
                 system_prompt=_p_sys,
                 user_prompt_template=_p_usr,
                 change_reason="System-seeded default — converted from hardcoded prompt.",
