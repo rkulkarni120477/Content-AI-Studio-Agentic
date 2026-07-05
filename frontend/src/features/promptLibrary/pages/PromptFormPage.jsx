@@ -198,7 +198,7 @@ export default function PromptFormPage() {
             <select value={parentId} onChange={(e) => setParentId(e.target.value)} disabled={Boolean(initialParentId)}>
               <option value="">— None (standalone prompt) —</option>
               {rootPrompts
-                .filter((rp) => rp.id !== id)
+                .filter((rp) => String(rp.id) !== String(id))
                 .map((rp) => (
                   <option key={rp.id} value={rp.id}>
                     {rp.title}

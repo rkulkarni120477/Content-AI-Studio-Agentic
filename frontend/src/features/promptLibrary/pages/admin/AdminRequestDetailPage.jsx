@@ -15,7 +15,8 @@ export default function AdminRequestDetailPage() {
 
   useEffect(() => {
     fetchRequests().then((list) => {
-      const r = list.find((x) => x.id === id);
+      // ids are integers since the native-table cutover; the route param is a string
+      const r = list.find((x) => String(x.id) === String(id));
       if (!r) {
         navigate(plAdminRequests, { replace: true });
         return;
