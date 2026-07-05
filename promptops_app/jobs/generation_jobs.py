@@ -73,6 +73,33 @@ from promptops_app.services.evaluation_service import get_initial_quality_metada
 _log = logging.getLogger(__name__)
 
 
+def _db_backed_prompt(db, stem, variables, *, project_id=None, course_id=None):
+    """Resolve a Generate-stage template via the registry (Phase 8 wiring).
+
+    Returns ``(system, user, template_name, template_version)`` or ``None``
+    when component-keyed resolution is off or resolution fails — the caller
+    then falls back to the legacy hard-coded constants, which remain the
+    inline fallback tier.
+    """
+    from promptops_app.prompts.prompt_loader import component_resolution_enabled
+
+    if not component_resolution_enabled():
+        return None
+    try:
+        from promptops_app.prompts.prompt_builder import build_prompt
+
+        return build_prompt(
+            stem, variables, db=db,
+            project_id=project_id, course_id=course_id,
+        )
+    except Exception:
+        _log.warning(
+            "DB-backed prompt resolution failed for %s — using legacy constants",
+            stem, exc_info=True,
+        )
+        return None
+
+
 # ── Public: UI-thread helpers ─────────────────────────────────────────────────
 
 def create_job(db, *, user_name: str, request_params: dict) -> str:
@@ -221,9 +248,56 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             "[Source: filename]. At the end of EACH block, include a 'Sources Used' list."
         )
 
-        _comp_type = selected_component.get("type", "lesson")
+        _comp_type  = selected_component.get("type", "lesson")
+        _comp_label = str(selected_component.get("label", ""))
 
-        if eff_cdd_id or eff_bp_id:
+        # ── Phase 8 Generate wiring (flag-gated) ──────────────────────
+        # Lesson components resolve `content_generation`, quiz/assessment
+        # components `quiz_generation`, through the registry (scope lock →
+        # component default → stem row → .md file). Persona prefix, style,
+        # citation instruction and source context stay code-injected exactly
+        # as in the legacy path. Anything unresolved falls through to the
+        # hard-coded constants below.
+        _has_ctx  = bool(eff_cdd_id or eff_bp_id)
+        _is_quiz  = (
+            _comp_type == "assessment"
+            or "assessment" in _comp_label.lower()
+            or "quiz" in _comp_label.lower()
+        )
+        _tpl_name = _tpl_ver = ""
+        _resolved = None
+        if _comp_type == "lesson" or _is_quiz:
+            from promptops_app.prompts.prompt_builder import build_context_variables
+
+            _objective = (
+                f"As defined in the Blueprint for '{topic}'" if _has_ctx
+                else f"Generate content for '{topic}'"
+            )
+            _gen_vars = build_context_variables(
+                learning_objectives=_objective,
+                style_guidelines=_style_inj,
+                output_format=b_type,
+                topic=topic,
+                lesson_topic=topic,
+                lesson_title=topic,
+                lesson_objective=_objective,
+                content_type=b_type,
+                context_injection=ctx_injection if _has_ctx else "",
+                target_audience=target_audience,
+            )
+            _resolved = _db_backed_prompt(
+                db,
+                "quiz_generation" if _is_quiz else "content_generation",
+                _gen_vars,
+                project_id=project_id,
+                course_id=course_id,
+            )
+
+        if _resolved:
+            _r_sys, _r_usr, _tpl_name, _tpl_ver = _resolved
+            system_p = User_prefix + _r_sys + citation_instruction
+            user_p   = _r_usr + context
+        elif eff_cdd_id or eff_bp_id:
             if _comp_type == "lesson":
                 system_p = User_prefix + LESSON_WITH_CONTEXT_SYSTEM + citation_instruction
                 user_p   = LESSON_WITH_CONTEXT_USER.format(
@@ -265,8 +339,8 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             project_id=project_id,
             course_id=course_id,
             entity_type="generation",
-            prompt_template="",
-            prompt_version="",
+            prompt_template=_tpl_name,
+            prompt_version=_tpl_ver,
         ))
 
         if _llm_result.is_error:
@@ -330,8 +404,8 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         g_entry = Generation(
             topic=topic,
-            prompt_name="",
-            prompt_version="",
+            prompt_name=_tpl_name,
+            prompt_version=_tpl_ver,
             block_type=b_type,
             output_text=out,
             created_by=user_name,

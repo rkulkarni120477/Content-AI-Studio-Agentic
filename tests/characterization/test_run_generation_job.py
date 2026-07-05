@@ -160,3 +160,92 @@ class TestRunGenerationJob:
         assert capture_llm[0]["user"].rstrip().endswith(
             "**Additional Instructions:**\nUse UK spelling."
         )
+
+
+class TestGenerateWiring:
+    """Phase 8: with PROMPT_RESOLVE_BY_COMPONENT on, the lesson path resolves
+    `content_generation` and quiz components `quiz_generation` via the
+    registry; persona prefix + citation stay code-injected; the resolved
+    template name/version is recorded on the Generation row."""
+
+    @pytest.fixture(autouse=True)
+    def _flag_on(self, monkeypatch):
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+
+    def test_lesson_resolves_generate_default_row(self, db, job_env, capture_llm):
+        from promptops_app.database import Generation
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        from .conftest import make_db_prompt
+
+        make_db_prompt(
+            db, "console-generate", system="DB GENERATE SYSTEM",
+            user="topic={{topic}} format={{output_format}}",
+            component_type="generate", is_default=True,
+        )
+        job = _make_job(db)
+        run_generation_job(job.id)
+
+        call = capture_llm[0]
+        # Persona prefix and citation instruction still wrap the DB template.
+        assert call["system"].startswith(
+            "Act as 20 yr Domain expert in Clinical Nursing."
+        )
+        assert "DB GENERATE SYSTEM" in call["system"]
+        assert "cite it as [Source: filename]" in call["system"]
+        assert call["user"] == "topic=Infection Control format=Lesson"
+
+        db.expire_all()
+        gen = db.query(Generation).order_by(Generation.id.desc()).first()
+        assert gen.prompt_name == "content_generation"
+        assert gen.prompt_version == "v1"
+
+    def test_quiz_component_resolves_quiz_stem(self, db, job_env, capture_llm):
+        from promptops_app.database import Generation
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        from .conftest import make_db_prompt
+
+        # A quiz default must NOT collide with the generate/lesson default.
+        make_db_prompt(
+            db, "console-generate", system="LESSON SYS", user="lesson body",
+            component_type="generate", is_default=True,
+        )
+        make_db_prompt(
+            db, "console-quiz", system="DB QUIZ SYSTEM",
+            user="quiz on {{topic}}",
+            component_type="quiz", is_default=True,
+        )
+        job = _make_job(
+            db, selected_component={"type": "assessment", "label": "Module Quiz"},
+        )
+        run_generation_job(job.id)
+
+        call = capture_llm[0]
+        assert "DB QUIZ SYSTEM" in call["system"]
+        assert "LESSON SYS" not in call["system"]
+        assert call["user"] == "quiz on Infection Control"
+
+        db.expire_all()
+        gen = db.query(Generation).order_by(Generation.id.desc()).first()
+        assert gen.prompt_name == "quiz_generation"
+
+    def test_flag_off_keeps_legacy_constants(self, db, job_env, capture_llm,
+                                             monkeypatch):
+        from promptops_app.database import Generation
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        from .conftest import make_db_prompt
+
+        monkeypatch.delenv("PROMPT_RESOLVE_BY_COMPONENT", raising=False)
+        make_db_prompt(
+            db, "console-generate", system="DB GENERATE SYSTEM", user="db body",
+            component_type="generate", is_default=True,
+        )
+        job = _make_job(db)
+        run_generation_job(job.id)
+
+        assert "DB GENERATE SYSTEM" not in capture_llm[0]["system"]
+        db.expire_all()
+        gen = db.query(Generation).order_by(Generation.id.desc()).first()
+        assert gen.prompt_name == "" and gen.prompt_version == ""

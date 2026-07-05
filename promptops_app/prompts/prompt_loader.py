@@ -59,6 +59,9 @@ _STEM_COMPONENT: dict[str, str] = {
     "cdd_generation":       "cdd",
     "blueprint_generation": "blueprint",
     "content_generation":   "generate",
+    # Quiz gets its own component key (no seeded default yet) so an assessment
+    # can never resolve the lesson default for "generate".
+    "quiz_generation":      "quiz",
 }
 
 
