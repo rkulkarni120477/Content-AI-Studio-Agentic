@@ -8,7 +8,12 @@ import {
   updatePrompt,
   uploadAttachment,
 } from '../api/prompts';
-import { commitPipelineVersion, createPipelinePrompt, updatePipelineMeta } from '../api/pipeline';
+import {
+  commitPipelineVersion,
+  createPipelinePrompt,
+  setPipelineVariables,
+  updatePipelineMeta,
+} from '../api/pipeline';
 import { fetchTeams } from '../api/teams';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
@@ -49,6 +54,8 @@ export default function PromptFormPage() {
   const [componentType, setComponentType] = useState('');
   const [variant, setVariant] = useState('');
   const [changeNote, setChangeNote] = useState('');
+  // Declared variables (strict enforcement): name -> {declared, label, hint}.
+  const [pipeVarDefs, setPipeVarDefs] = useState({});
 
   const { user } = useAuth();
   const canEdit = canManagePrompts(user);
@@ -83,6 +90,11 @@ export default function PromptFormPage() {
           setSystemPrompt(p.pipeline?.system_prompt || '');
           setComponentType(p.pipeline?.component_type || '');
           setVariant(p.pipeline?.variant || '');
+          const pipeDefs = {};
+          (p.variables || []).forEach((v) => {
+            pipeDefs[v.name] = { declared: true, label: v.label || '', hint: v.hint || '' };
+          });
+          setPipeVarDefs(pipeDefs);
         }
         const defs = {};
         (p.variables || []).forEach((v) => {
@@ -111,6 +123,24 @@ export default function PromptFormPage() {
   }));
 
   const legacyVars = findLegacyVarNames(isPipeline ? `${systemPrompt}\n${content}` : content);
+
+  // Placeholders in the current pipeline text, plus any stale declared names
+  // (declared on the row but no longer in the text — flagged in the editor).
+  const pipeNames = isPipeline ? extractVarNames(`${systemPrompt}\n${content}`) : [];
+  const pipeNamesUnion = [
+    ...pipeNames,
+    ...Object.keys(pipeVarDefs).filter((n) => pipeVarDefs[n].declared && !pipeNames.includes(n)),
+  ];
+
+  function pipeDeclaredList() {
+    return pipeNamesUnion
+      .filter((n) => pipeVarDefs[n]?.declared)
+      .map((n) => ({
+        name: n,
+        label: pipeVarDefs[n].label || '',
+        hint: pipeVarDefs[n].hint || '',
+      }));
+  }
 
   // Version tags follow the numeric ladder ("v3"); the serializer's numeric
   // `version` field is version_number, so max+1 is always fresh.
@@ -157,6 +187,19 @@ export default function PromptFormPage() {
           userPromptTemplate: content,
           changeReason: changeNote.trim() || 'Edited via console.',
         });
+      }
+      // Declared variables — after the version commit so the server validates
+      // names against the newly deployed text (admin instant-deploy).
+      if (canPipeline) {
+        const declared = pipeDeclaredList();
+        const orig = (loadedPrompt?.variables || []).map((v) => ({
+          name: v.name,
+          label: v.label || '',
+          hint: v.hint || '',
+        }));
+        if (JSON.stringify(declared) !== JSON.stringify(orig)) {
+          await setPipelineVariables(id, declared);
+        }
       }
       show(contentChanged ? 'New version committed ✓' : 'Prompt updated!');
       navigate(plPrompt(id));
@@ -453,6 +496,76 @@ export default function PromptFormPage() {
                   : ' as a draft for admin approval.'}
               </p>
             )}
+          </div>
+        )}
+
+        {isPipeline && isEdit && canPipeline && (
+          <div className="field">
+            <label>Declared variables (strict enforcement)</label>
+            <div className="var-editor">
+              {pipeNamesUnion.length === 0 ? (
+                <p className="var-tip" style={{ marginTop: 0 }}>
+                  No {'{{placeholders}}'} in the prompt text — nothing to declare.
+                </p>
+              ) : (
+                pipeNamesUnion.map((name) => {
+                  const d = pipeVarDefs[name] || { declared: false, label: '', hint: '' };
+                  const stale = !pipeNames.includes(name);
+                  return (
+                    <div key={name} className="var-def-row">
+                      <label className="var-code" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        <input
+                          type="checkbox"
+                          checked={d.declared}
+                          onChange={(e) =>
+                            setPipeVarDefs((prev) => ({
+                              ...prev,
+                              [name]: { ...d, declared: e.target.checked },
+                            }))
+                          }
+                        />{' '}
+                        {`{{${name}}}`}
+                      </label>
+                      {stale && (
+                        <span style={{ fontSize: '.72rem', color: 'var(--warning, #b45309)' }}>
+                          ⚠ declared but no longer in the text — uncheck or re-add it
+                        </span>
+                      )}
+                      {d.declared && (
+                        <div className="var-def-inputs">
+                          <input
+                            placeholder="Label"
+                            value={d.label}
+                            onChange={(e) =>
+                              setPipeVarDefs((prev) => ({
+                                ...prev,
+                                [name]: { ...d, label: e.target.value },
+                              }))
+                            }
+                          />
+                          <input
+                            placeholder="Hint (e.g. which router supplies it)"
+                            value={d.hint}
+                            onChange={(e) =>
+                              setPipeVarDefs((prev) => ({
+                                ...prev,
+                                [name]: { ...d, hint: e.target.value },
+                              }))
+                            }
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+              <p className="var-tip">
+                ⚡ Declaring a variable arms strict enforcement: a generation call
+                that fails to supply it errors loudly (PROMPT_MISCONFIGURED)
+                instead of silently falling back to the built-in constants.
+                Undeclared placeholders stay lenient.
+              </p>
+            </div>
           </div>
         )}
 

@@ -212,3 +212,33 @@ class PromptFixingRead(BaseModel):
     fixed_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PromptVariableItem(BaseModel):
+    """One declared template variable ({{name}})."""
+
+    name: str = Field(
+        ...,
+        max_length=100,
+        pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$",
+        description="Template placeholder identifier (rendered as {{name}}).",
+        examples=["course_name"],
+    )
+    label: str = Field(default="", max_length=200)
+    hint: str = Field(default="", max_length=2000)
+
+
+class PromptVariablesSetRequest(BaseModel):
+    """Body for PUT /api/v1/prompts/{id}/variables — replace-all declarations.
+
+    Declaring variables ARMS strict enforcement for the row (when component
+    resolution is enabled): a generation call that fails to supply a declared
+    variable raises instead of silently falling back. Names must therefore
+    appear as {{placeholders}} in the active version's templates.
+    """
+
+    variables: list[PromptVariableItem] = Field(default_factory=list, max_length=100)
+
+
+class PromptVariablesRead(BaseModel):
+    variables: list[PromptVariableItem]

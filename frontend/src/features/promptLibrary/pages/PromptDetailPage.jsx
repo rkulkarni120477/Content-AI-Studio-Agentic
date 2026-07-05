@@ -306,8 +306,15 @@ export default function PromptDetailPage() {
         {vars.length > 0 && (
           <div className="var-input-section">
             <div className="section-hdr" style={{ border: 'none', paddingTop: 0, marginTop: 0 }}>
-              Fill variables
+              {isPipeline ? 'Declared variables' : 'Fill variables'}
             </div>
+            {isPipeline && (
+              <p className="var-tip" style={{ marginTop: 0 }}>
+                ⚡ Strict enforcement is armed for these: a generation call that
+                fails to supply one errors loudly instead of silently falling
+                back. Fill them below to copy a rendered prompt.
+              </p>
+            )}
             <div className="var-inputs-grid">
               {vars.map((v) => (
                 <div key={v.name} className="view-var-field">

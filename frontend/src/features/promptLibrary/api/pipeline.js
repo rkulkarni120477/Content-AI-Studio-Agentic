@@ -86,3 +86,20 @@ export function setPipelineDefault(id, isDefault) {
     body: JSON.stringify({ is_default: isDefault }),
   });
 }
+
+// Replace-all declared variables ({name, label, hint}). Declaring arms strict
+// enforcement for the row: a generation call missing a declared variable fails
+// loudly instead of silently falling back. The server rejects names that are
+// not {{placeholders}} in the active version. Admin-only.
+export function setPipelineVariables(id, variables) {
+  return pipelineFetch(`/${id}/variables`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      variables: variables.map((v) => ({
+        name: v.name,
+        label: v.label || '',
+        hint: v.hint || '',
+      })),
+    }),
+  });
+}

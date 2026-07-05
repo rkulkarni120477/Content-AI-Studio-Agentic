@@ -493,3 +493,108 @@ class TestTagsConvergence:
         r = client.get(BASE, params={"search": "findme"}, headers=auth_headers)
         assert r.status_code == 200
         assert "tags_searchable" in {i["name"] for i in r.json()["items"]}
+
+
+class TestVariableDeclarations:
+    """PUT /{id}/variables — the console's declare/edit surface for strict
+    variable enforcement (declared vars are what build_prompt checks)."""
+
+    VARS_OK = [{"name": "x", "label": "The X", "hint": "supplied by the router"}]
+
+    def _rows(self, db, prompt_id):
+        from promptops_app.database import PromptVariable
+
+        return (
+            db.query(PromptVariable)
+            .filter(PromptVariable.prompt_id == prompt_id)
+            .order_by(PromptVariable.sort_order)
+            .all()
+        )
+
+    def test_admin_declares_and_replaces(self, client, auth_headers, db):
+        p = _create_pipeline_prompt(client, auth_headers, "vars_happy",
+                                    system="SYS {{x}} {{y}}", user="USR {{x}}")
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": self.VARS_OK}, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["variables"] == [
+            {"name": "x", "label": "The X", "hint": "supplied by the router"}
+        ]
+        rows = self._rows(db, p["id"])
+        assert [(v.name, v.label, v.sort_order) for v in rows] == [("x", "The X", 0)]
+        # Replace-all: a second PUT swaps the declaration set entirely.
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": [{"name": "y"}, {"name": "x"}]},
+                       headers=auth_headers)
+        assert r.status_code == 200
+        db.expire_all()
+        assert [(v.name, v.sort_order) for v in self._rows(db, p["id"])] == [
+            ("y", 0), ("x", 1)]
+        # Empty list disarms enforcement again.
+        r = client.put(f"{BASE}/{p['id']}/variables", json={"variables": []},
+                       headers=auth_headers)
+        assert r.status_code == 200 and r.json()["variables"] == []
+        db.expire_all()
+        assert self._rows(db, p["id"]) == []
+
+    def test_declared_names_must_be_active_placeholders(self, client,
+                                                        auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "vars_unknown")
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": [{"name": "nonexistent"}]},
+                       headers=auth_headers)
+        assert r.status_code == 422
+        assert "nonexistent" in r.text
+
+    def test_duplicate_names_rejected(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "vars_dupe")
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": [{"name": "x"}, {"name": "x"}]},
+                       headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_invalid_identifier_rejected(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "vars_badname")
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": [{"name": "not a name"}]},
+                       headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_requires_active_version(self, client, auth_headers):
+        r = client.post(BASE, json={"name": "vars_versionless",
+                                    "description": "d", "component_type": "cdd"},
+                        headers=auth_headers)
+        assert r.status_code == 201
+        r = client.put(f"{BASE}/{r.json()['id']}/variables",
+                       json={"variables": [{"name": "x"}]}, headers=auth_headers)
+        assert r.status_code == 422
+        assert "active version" in r.text
+
+    def test_reviewer_forbidden(self, client, auth_headers, reviewer_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "vars_denied")
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": self.VARS_OK}, headers=reviewer_headers)
+        assert r.status_code == 403
+
+    def test_library_row_rejected(self, client, auth_headers, db):
+        from promptops_app.database import Prompt
+
+        lib = Prompt(name=None, title="lib vars row", prompt_kind="library",
+                     owner="test_admin")
+        db.add(lib)
+        db.commit()
+        r = client.put(f"{BASE}/{lib.id}/variables",
+                       json={"variables": []}, headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_declarations_surface_in_console_detail(self, client, auth_headers):
+        p = _create_pipeline_prompt(client, auth_headers, "vars_console")
+        r = client.put(f"{BASE}/{p['id']}/variables",
+                       json={"variables": self.VARS_OK}, headers=auth_headers)
+        assert r.status_code == 200
+        r = client.get(f"/api/v1/prompt-library/prompts/{p['id']}",
+                       headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["variables"] == [
+            {"name": "x", "label": "The X", "hint": "supplied by the router"}
+        ]

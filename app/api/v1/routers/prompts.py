@@ -43,6 +43,9 @@ from app.schemas.prompt import (
     PromptListItem,
     PromptRead,
     PromptUpdateRequest,
+    PromptVariableItem,
+    PromptVariablesRead,
+    PromptVariablesSetRequest,
     PromptVersionCreateRequest,
     PromptVersionListItem,
     PromptVersionRead,
@@ -638,6 +641,69 @@ def set_default_flag(
               "set" if request_body.is_default else "cleared",
               current_user.username, prompt_id, prompt.component_type, prompt.variant)
     return PromptRead.model_validate(prompt)
+
+
+@router.put(
+    "/{prompt_id}/variables",
+    response_model=PromptVariablesRead,
+    summary="Replace a pipeline prompt's declared variables",
+    description=(
+        "Replace-all semantics. Declared variables are what strict enforcement "
+        "checks at generation time (component resolution only): a call that "
+        "fails to supply one raises PROMPT_MISCONFIGURED instead of silently "
+        "falling back. Every name must appear as a {{placeholder}} in the "
+        "active version's templates — a declaration the template never uses "
+        "would only make generations fail."
+    ),
+)
+def set_declared_variables(
+    prompt_id: int,
+    request_body: PromptVariablesSetRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
+) -> PromptVariablesRead:
+    from promptops_app.database import PromptVariable
+    from promptops_app.prompts.prompt_builder import extract_variables
+    from promptops_app.repositories import prompt_repository
+
+    prompt = _get_prompt_or_404(db, prompt_id)
+    if prompt.prompt_kind != "pipeline":
+        raise ValidationError("Variable declarations apply to pipeline prompts only.")
+
+    names = [v.name for v in request_body.variables]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValidationError(f"Duplicate variable declarations: {', '.join(dupes)}")
+
+    if names:
+        active = prompt_repository.get_active_version(db, prompt.id)
+        if active is None:
+            raise ValidationError(
+                "Prompt has no active version; commit one before declaring variables."
+            )
+        placeholders = set(extract_variables(active.system_prompt or "")) | set(
+            extract_variables(active.user_prompt_template or "")
+        )
+        unknown = sorted(n for n in names if n not in placeholders)
+        if unknown:
+            raise ValidationError(
+                f"Not {{{{placeholders}}}} in the active version ({active.version}): "
+                f"{', '.join(unknown)}. Declaring a variable the template never "
+                "uses would only make generation calls fail."
+            )
+
+    prompt.variables = [
+        PromptVariable(name=v.name, label=v.label or "", hint=v.hint or "", sort_order=i)
+        for i, v in enumerate(request_body.variables)
+    ]
+    db.commit()
+    db.refresh(prompt)
+    _log.info("prompt_variables_set  user=%s  prompt_id=%d  names=%s",
+              current_user.username, prompt_id, ",".join(names))
+    return PromptVariablesRead(variables=[
+        PromptVariableItem(name=v.name, label=v.label or "", hint=v.hint or "")
+        for v in sorted(prompt.variables, key=lambda v: (v.sort_order or 0, v.id))
+    ])
 
 
 # Allowed workflow_state transitions (Decision 3: pipeline activation is gated).
