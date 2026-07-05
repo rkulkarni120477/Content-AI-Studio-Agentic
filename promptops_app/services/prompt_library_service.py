@@ -15,8 +15,9 @@ Model mapping (Phase 0.5 / Phase 1 decisions):
   * ``created_by`` (API field) <-> ``Prompt.owner``
   * version display label = ``'v' || version_number``; library versions are
     instant-publish (``workflow_state='active'``)
-  * ``prompt_tags`` is canonical for library rows; pipeline rows keep the
-    legacy comma-string ``prompts.tags`` (read per kind in ``prompt_to_dict``)
+  * ``prompt_tags`` is canonical for every kind (Phase 8 tags hygiene); the
+    legacy comma-string ``prompts.tags`` stays mirrored on pipeline writes and
+    is the read fallback for databases predating backfill ``000100000003``
   * audit is unified into ``audit_logs``: the PL ``event_type`` (dotted, e.g.
     ``prompt.create``) is stored in ``AuditLog.action``; the short PL "action"
     is derived as the suffix after the last dot
@@ -441,11 +442,14 @@ def _child_summary(p: Prompt) -> dict:
 
 
 def _prompt_tags_list(p: Prompt) -> list[str]:
+    # prompt_tags rows are canonical for every kind (Phase 8 tags hygiene).
+    # Pipeline rows fall back to the legacy comma-string so databases that
+    # predate the backfill migration (000100000003) keep showing their tags.
+    if p.tag_rows:
+        return [t.tag for t in p.tag_rows]
     if p.prompt_kind == "pipeline":
-        # Pipeline rows keep the legacy comma-string column (Phase 1 decision;
-        # converging them into prompt_tags is Phase 8 hygiene).
         return [t.strip() for t in (p.tags or "").split(",") if t.strip()]
-    return [t.tag for t in (p.tag_rows or [])]
+    return []
 
 
 def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> dict:

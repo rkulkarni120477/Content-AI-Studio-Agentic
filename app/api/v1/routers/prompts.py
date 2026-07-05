@@ -107,6 +107,7 @@ def list_prompts(
             if q in (p.name or "").lower()
             or q in (p.description or "").lower()
             or q in (p.tags or "").lower()
+            or any(q in t.tag.lower() for t in (p.tag_rows or []))
         ]
 
     total = len(prompts)
@@ -142,13 +143,13 @@ def create_prompt(
     prompt = Prompt(
         name=request_body.name,
         description=request_body.description or None,
-        tags=request_body.tags or component,
         owner=current_user.username,
         component_type=component or None,
         variant=request_body.variant or None,
         is_default=False,
         active_version="v1" if request_body.system_prompt and request_body.user_prompt_template else None,
     )
+    prompt_repository.set_prompt_tags(db, prompt, request_body.tags or component)
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
@@ -207,8 +208,8 @@ def create_from_template(
         description=f"Auto-created from '{request_body.template_name}' template.",
         owner=current_user.username,
         active_version="v1",
-        tags=tmpl.get("tags", ""),
     )
+    prompt_repository.set_prompt_tags(db, prompt, tmpl.get("tags", ""))
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
@@ -264,8 +265,8 @@ def ai_generate_prompt(
         description=tmpl.get("description", request_body.description),
         owner=current_user.username,
         active_version="v1",
-        tags=tmpl.get("tags", "custom"),
     )
+    prompt_repository.set_prompt_tags(db, prompt, tmpl.get("tags", "custom"))
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
@@ -471,7 +472,9 @@ def update_prompt(
     if request_body.description is not None:
         prompt.description = request_body.description
     if request_body.tags is not None:
-        prompt.tags = request_body.tags
+        from promptops_app.repositories import prompt_repository
+
+        prompt_repository.set_prompt_tags(db, prompt, request_body.tags)
     db.commit()
     db.refresh(prompt)
     return PromptRead.model_validate(prompt)

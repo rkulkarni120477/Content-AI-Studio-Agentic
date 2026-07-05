@@ -111,6 +111,19 @@ class TestSerializerShapes:
         assert v["workflow_state"] == "active"
         assert v["is_active"] is True
 
+    def test_pipeline_tags_prefer_rows_with_legacy_fallback(self, db):
+        # Canonical prompt_tags rows win (Phase 8 tags hygiene)…
+        p = _mk_pipeline_prompt(db, name="tagged_pipeline")
+        p.tags = "legacy_a,legacy_b"
+        db.add(PromptTag(prompt_id=p.id, tag="canonical"))
+        db.flush()
+        assert svc.prompt_to_dict(db, p)["tags"] == ["canonical"]
+        # …and a row that predates the backfill still shows its legacy string.
+        q = _mk_pipeline_prompt(db, name="legacy_pipeline", component_type="quiz")
+        q.tags = "legacy_a, legacy_b"
+        db.flush()
+        assert svc.prompt_to_dict(db, q)["tags"] == ["legacy_a", "legacy_b"]
+
     def test_review_request_team_dict_shapes(self, db):
         p = _mk_library_prompt(db)
         r = PromptReview(prompt_id=p.id, username="bob", rating=4, feedback="ok",

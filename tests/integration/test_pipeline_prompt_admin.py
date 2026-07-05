@@ -390,3 +390,106 @@ class TestVariantAuthoring:
         r = client.put(f"{BASE}/{p['id']}", json={"variant": "teacher"},
                        headers=auth_headers)
         assert r.status_code == 422
+
+
+class TestTagsConvergence:
+    """Phase 8 tags hygiene: prompt_tags rows are canonical, the legacy
+    comma-string stays mirrored, and tag search matches either store."""
+
+    def _tag_rows(self, db, prompt_id):
+        from promptops_app.database import PromptTag
+
+        return sorted(
+            t.tag for t in
+            db.query(PromptTag).filter(PromptTag.prompt_id == prompt_id).all()
+        )
+
+    def test_create_writes_rows_and_mirrors_legacy_string(self, client,
+                                                          auth_headers, db):
+        from promptops_app.database import Prompt
+
+        p = _create_pipeline_prompt(client, auth_headers, "tags_created")
+        # No explicit tags -> the component fallback lands in both stores.
+        assert self._tag_rows(db, p["id"]) == ["cdd"]
+        assert db.get(Prompt, p["id"]).tags == "cdd"
+
+    def test_create_with_explicit_tags_dedupes_and_normalizes(self, client,
+                                                              auth_headers, db):
+        from promptops_app.database import Prompt
+
+        r = client.post(BASE, json={
+            "name": "tags_explicit",
+            "description": "d",
+            "component_type": "cdd",
+            "tags": " alpha , beta ,alpha,",
+            "system_prompt": "SYS",
+            "user_prompt_template": "USR",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        pid = r.json()["id"]
+        assert self._tag_rows(db, pid) == ["alpha", "beta"]
+        assert db.get(Prompt, pid).tags == "alpha,beta"
+
+    def test_update_replaces_both_stores(self, client, auth_headers, db):
+        from promptops_app.database import Prompt
+
+        p = _create_pipeline_prompt(client, auth_headers, "tags_updated")
+        r = client.put(f"{BASE}/{p['id']}", json={"tags": "x,y"},
+                       headers=auth_headers)
+        assert r.status_code == 200
+        db.expire_all()
+        assert self._tag_rows(db, p["id"]) == ["x", "y"]
+        assert db.get(Prompt, p["id"]).tags == "x,y"
+        # Overlapping update — the kept tag must be reused, not delete+insert
+        # (same composite PK in one flush would collide).
+        r = client.put(f"{BASE}/{p['id']}", json={"tags": "y,z"},
+                       headers=auth_headers)
+        assert r.status_code == 200
+        db.expire_all()
+        assert self._tag_rows(db, p["id"]) == ["y", "z"]
+        assert db.get(Prompt, p["id"]).tags == "y,z"
+        # Clearing with an empty string empties both stores.
+        r = client.put(f"{BASE}/{p['id']}", json={"tags": ""},
+                       headers=auth_headers)
+        assert r.status_code == 200
+        db.expire_all()
+        assert self._tag_rows(db, p["id"]) == []
+        assert db.get(Prompt, p["id"]).tags == ""
+
+    def test_list_prompts_tagged_matches_rows_or_legacy_string(self, client,
+                                                               auth_headers, db):
+        from promptops_app.database import Prompt, PromptTag
+        from promptops_app.repositories import prompt_repository
+
+        # Canonical rows only (post-convergence writer output).
+        rows_only = Prompt(name="tagged_rows_only", owner="t", tags="")
+        rows_only.tag_rows = [PromptTag(tag="special")]
+        db.add(rows_only)
+        # Legacy string only (a database that predates the backfill).
+        legacy_only = Prompt(name="tagged_legacy_only", owner="t",
+                             tags="special,old")
+        db.add(legacy_only)
+        db.commit()
+
+        names = {p.name for p in
+                 prompt_repository.list_prompts_tagged(db, "special")}
+        assert {"tagged_rows_only", "tagged_legacy_only"} <= names
+
+    def test_search_param_matches_tag_rows(self, client, auth_headers, db):
+        from promptops_app.database import Prompt
+
+        r = client.post(BASE, json={
+            "name": "tags_searchable",
+            "description": "plain description",
+            "component_type": "cdd",
+            "tags": "findme",
+            "system_prompt": "SYS",
+            "user_prompt_template": "USR",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        # Blank the mirrored legacy string so only the canonical rows can match.
+        db.get(Prompt, r.json()["id"]).tags = ""
+        db.commit()
+        r = client.get(BASE, params={"search": "findme"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert "tags_searchable" in {i["name"] for i in r.json()["items"]}

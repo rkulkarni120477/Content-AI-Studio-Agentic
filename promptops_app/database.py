@@ -1808,6 +1808,7 @@ def seed_data(db):
     # ── Default Prompt & Versions ─────────────────────────────────────────────
     if not db.query(Prompt).first():
         p = Prompt(name="lesson_generator", description="Generates detailed eLearning lessons.", owner="admin", active_version="v1", tags="core,lesson")
+        p.tag_rows = [PromptTag(tag="core"), PromptTag(tag="lesson")]
         db.add(p); db.commit(); db.refresh(p)
         v1 = PromptVersion(
             prompt_id=p.id, version="v1", version_number=1, is_active=True,
@@ -1890,6 +1891,7 @@ def seed_data(db):
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
+            _p_new.tag_rows = [PromptTag(tag=_p_comp)]
             db.add(_p_new); db.commit(); db.refresh(_p_new)
             db.add(PromptVersion(
                 prompt_id=_p_new.id,

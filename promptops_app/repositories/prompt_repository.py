@@ -4,7 +4,47 @@ from datetime import datetime
 
 from sqlalchemy import func, or_
 
-from promptops_app.database import Prompt, PromptVersion, PromptFixing, UserPromptPreference
+from promptops_app.database import (
+    Prompt,
+    PromptFixing,
+    PromptTag,
+    PromptVersion,
+    UserPromptPreference,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tags
+#
+# ``prompt_tags`` rows are canonical for every kind (Phase 8 hygiene). The
+# legacy comma-string ``prompts.tags`` is kept mirrored by set_prompt_tags so
+# the Streamlit surfaces and a rollback of this convergence stay coherent;
+# readers must prefer the rows.
+# ---------------------------------------------------------------------------
+
+def parse_tags(raw: str | None) -> list[str]:
+    """Split a legacy comma-string into normalized tags (order kept, deduped)."""
+    seen: dict[str, None] = {}
+    for part in (raw or "").split(","):
+        tag = part.strip()
+        if tag:
+            seen.setdefault(tag, None)
+    return list(seen)
+
+
+def set_prompt_tags(db, prompt: Prompt, tags: list[str] | str | None) -> None:
+    """Replace *prompt*'s tags in both stores. Caller commits.
+
+    Rows for kept tags are reused rather than recreated — a delete + insert of
+    the same composite ``(prompt_id, tag)`` PK in one flush would collide.
+    """
+    normalized = parse_tags(tags) if isinstance(tags, str) or tags is None else parse_tags(",".join(tags))
+    keep = set(normalized)
+    current = {t.tag for t in prompt.tag_rows}
+    prompt.tag_rows = [t for t in prompt.tag_rows if t.tag in keep] + [
+        PromptTag(tag=t) for t in normalized if t not in current
+    ]
+    prompt.tags = ",".join(normalized)
 
 
 # ---------------------------------------------------------------------------
@@ -73,10 +113,21 @@ def list_prompts_by_component(db, component_type: str) -> list[Prompt]:
 
 
 def list_prompts_tagged(db, tag: str) -> list[Prompt]:
-    """Return prompts whose tags column contains *tag* (case-insensitive)."""
+    """Return prompts carrying *tag* (case-insensitive substring match).
+
+    Matches canonical ``prompt_tags`` rows first, with the legacy comma-string
+    as a fallback so databases that predate the tags backfill migration keep
+    resolving (the Generate pickers call this live).
+    """
+    pattern = f"%{tag}%"
+    tagged = (
+        db.query(PromptTag.prompt_id)
+        .filter(PromptTag.tag.ilike(pattern))
+        .scalar_subquery()
+    )
     return (
         db.query(Prompt)
-        .filter(Prompt.tags.ilike(f"%{tag}%"))
+        .filter(or_(Prompt.id.in_(tagged), Prompt.tags.ilike(pattern)))
         .order_by(Prompt.name.asc())
         .all()
     )
