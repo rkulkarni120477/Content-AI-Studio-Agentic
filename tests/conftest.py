@@ -29,13 +29,16 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # Point at SQLite in-memory for tests — never touch the real PostgreSQL DB.
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-unit-tests-only")
 os.environ.setdefault("APP_ENV", "development")
 
-from app.core.database import Base
+# NOTE: models live on promptops_app.database's Base — app.core.database's
+# Base is an empty DeclarativeBase; create_all on it would create no tables.
+from promptops_app.database import Base
 from app.core.dependencies import get_db
 from app.main import app
 
@@ -49,6 +52,11 @@ _TEST_ENGINE = create_engine(
     # SQLite-specific: allow the same connection to be used across threads
     # (needed because FastAPI runs route handlers in threads).
     connect_args={"check_same_thread": False},
+    # An in-memory SQLite DB exists per-connection; without StaticPool every
+    # new pooled connection would see a fresh, EMPTY database (tables created
+    # on one connection are invisible on the next). StaticPool pins a single
+    # shared connection so all sessions/threads see the same schema + data.
+    poolclass=StaticPool,
 )
 
 _TestSessionLocal = sessionmaker(
@@ -69,9 +77,16 @@ def _create_test_tables() -> None:
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def _setup_test_db():
-    """Create all tables once per test session, then drop them at teardown."""
+    """Create all tables before each test and drop them after.
+
+    Function-scoped (not session-scoped) because fixtures COMMIT rows (users,
+    blocks, ...) and the StaticPool engine shares one in-memory DB across the
+    whole session — without a per-test rebuild, committed rows leak between
+    tests (e.g. UNIQUE username collisions). create_all/drop_all on in-memory
+    SQLite is fast enough that per-test isolation costs almost nothing.
+    """
     _create_test_tables()
     yield
     Base.metadata.drop_all(bind=_TEST_ENGINE)
@@ -125,7 +140,7 @@ def admin_user(db):
 
     user = User(
         username="test_admin",
-        password=hash_password("test_password"),
+        password_hash=hash_password("test_password"),
         role="admin",
         is_active=True,
     )
@@ -143,7 +158,7 @@ def author_user(db):
 
     user = User(
         username="test_author",
-        password=hash_password("test_password"),
+        password_hash=hash_password("test_password"),
         role="author",
         is_active=True,
     )

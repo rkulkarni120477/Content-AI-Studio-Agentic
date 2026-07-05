@@ -15,6 +15,7 @@ from typing import Optional, List, Any
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
     Boolean, Float, ForeignKey, JSON, text,
+    BigInteger, SmallInteger, UniqueConstraint,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
@@ -74,13 +75,13 @@ Settings = _DBSettings
 # Database Engine & Session Factory
 # =============================================================================
 
-engine = create_engine(
-    settings.db_url,
-    pool_pre_ping=True,   # detects dropped connections and reconnects automatically
-    pool_size=10,
-    max_overflow=20,
-    future=True,
-)
+# Pool sizing args only apply to real server databases; SQLite (used by the
+# test suite) rejects them (its SingletonThreadPool takes no size arguments).
+_engine_kwargs: dict = {"pool_pre_ping": True, "future": True}
+if not settings.db_url.startswith("sqlite"):
+    _engine_kwargs.update(pool_size=10, max_overflow=20)
+
+engine = create_engine(settings.db_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -195,9 +196,21 @@ class Prompt(Base):
     description    = Column(Text)
     owner          = Column(String)
     active_version = Column(String)
-    tags           = Column(String)             # comma-separated
+    tags           = Column(String)             # comma-separated (legacy, pipeline rows only)
     component_type = Column(String(50), nullable=True)   # style|cdd|blueprint|generate
     is_default     = Column(Boolean, default=False)      # True = system seed
+    # -- unified prompt model (prompt-consolidation Phase 1/3) --------------
+    prompt_kind    = Column(String(20), nullable=False, default="pipeline",
+                            server_default="pipeline")   # pipeline|library
+    title          = Column(String(300), nullable=True)  # library display title
+    category       = Column(String(100), nullable=True)  # library category (freeform)
+    visibility     = Column(String(20), nullable=False, default="draft",
+                            server_default="draft")      # global|team|draft (library only)
+    variant        = Column(String(50), nullable=True)   # pipeline: student|teacher|lesson|assessment|interactive
+    parent_id      = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                            nullable=True, index=True)   # library follow-up hierarchy
+    last_used_at   = Column(DateTime, nullable=True)
+    deleted_at     = Column(DateTime, nullable=True, index=True)  # soft delete (library flows)
     created_at     = Column(DateTime, default=datetime.utcnow)
     updated_at     = Column(DateTime, default=datetime.utcnow)
     versions = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan")
@@ -210,9 +223,20 @@ class PromptVersion(Base):
     created_by tracks which user committed this version.
     """
     __tablename__ = "prompt_versions"
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "version_number",
+                         name="uq_prompt_versions_prompt_id_version_number"),
+    )
     id                   = Column(Integer, primary_key=True)
     prompt_id            = Column(Integer, ForeignKey("prompts.id"))
     version              = Column(String)
+    # Numeric ordering key (consolidation Phase 3). NULLABLE until Phase 4
+    # teaches the write paths to populate it; then it becomes NOT NULL.
+    version_number       = Column(Integer, nullable=True)
+    # draft|in_review|approved|active — gate enforced for pipeline rows only
+    # (Phase 8); library rows are instant-publish 'active'.
+    workflow_state       = Column(String(20), nullable=False, default="active",
+                                  server_default="active")
     system_prompt        = Column(Text)
     user_prompt_template = Column(Text)
     change_reason        = Column(Text)
@@ -272,6 +296,126 @@ class UserPromptPreference(Base):
     updated_at = Column(DateTime,    default=datetime.utcnow)
 
     prompt = relationship("Prompt", foreign_keys=[prompt_id])
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Prompt-consolidation Phase 1/3 — native replacements for the pl_* tables
+# (see PROMPT_CONSOLIDATION_PLAN.md). Integer PKs, no tenant column. These
+# back the library features (tags, variables, attachments, teams, reviews,
+# requests) once Phase 4 cuts the Prompt Library service over from pl_*.
+# ---------------------------------------------------------------------------
+
+class PromptTag(Base):
+    """Tag on a prompt (library rows). Replaces pl_prompt_tags."""
+    __tablename__ = "prompt_tags"
+
+    prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                       primary_key=True)
+    tag       = Column(String(100), primary_key=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptVariable(Base):
+    """Declared template variable ({{name}}). Replaces pl_prompt_variables.
+
+    Also the future DB-backed home for pipeline template variable
+    declarations (replacing prompt_loader's static _REGISTRY — Phase 8).
+    """
+    __tablename__ = "prompt_variables"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id  = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    name       = Column(String(100), nullable=False)
+    label      = Column(String(200))
+    hint       = Column(Text)
+    sort_order = Column(Integer, default=0, nullable=False, server_default="0")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptAttachment(Base):
+    """File attached to a prompt. Replaces pl_attachments.
+
+    Files live under PROMPT_ATTACHMENTS_DIR (default ./prompt_attachments).
+    """
+    __tablename__ = "prompt_attachments"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id     = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    original_name = Column(String(300))
+    stored_name   = Column(String(500))
+    size_bytes    = Column(BigInteger)
+    uploaded_by   = Column(String(100))
+    uploaded_at   = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class Team(Base):
+    """Prompt-sharing team. Replaces pl_teams (String(20) slug PK → Integer;
+    the slug is preserved in name — verified id == name for all prod rows)."""
+    __tablename__ = "teams"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    name       = Column(String(100), unique=True, nullable=False)
+    created_by = Column(String(100))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptTeamLink(Base):
+    """M:N prompt↔team visibility link. Replaces pl_prompt_teams (and the
+    redundant scalar pl_prompts.team_id, which was unused in prod)."""
+    __tablename__ = "prompt_team_links"
+
+    prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                       primary_key=True)
+    team_id   = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"),
+                       primary_key=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptReview(Base):
+    """User rating/feedback on a prompt. Replaces pl_reviews.
+
+    Named prompt_reviews — a `reviews` table already exists for
+    content-block review.
+    """
+    __tablename__ = "prompt_reviews"
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "username",
+                         name="uq_prompt_reviews_prompt_id_username"),
+    )
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id  = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    username   = Column(String(100), nullable=False)
+    rating     = Column(SmallInteger, nullable=False)
+    feedback   = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptRequest(Base):
+    """User request for a new/changed prompt. Replaces pl_prompt_requests."""
+    __tablename__ = "prompt_requests"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    title        = Column(String(300), nullable=False)
+    description  = Column(Text)
+    type         = Column(String(20), nullable=False, default="new",
+                          server_default="new")     # new|change
+    prompt_id    = Column(Integer, ForeignKey("prompts.id", ondelete="SET NULL"),
+                          nullable=True)
+    requested_by = Column(String(100), nullable=False)
+    status       = Column(String(20), nullable=False, default="open",
+                          server_default="open", index=True)
+    admin_notes  = Column(Text)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -499,6 +643,11 @@ class AuditLog(Base):
     course_id     = Column(Integer,     nullable=True)
     metadata_json = Column(Text,        nullable=True)
     ip_address    = Column(String(45),  nullable=True)   # IPv4 or IPv6
+    # -- prompt-consolidation Phase 1/3 additive columns --------------------
+    actor_role    = Column(String(64),  nullable=True)
+    user_agent    = Column(String(512), nullable=True)
+    changes       = Column(JSON,        nullable=True)   # structured diff (compute_prompt_changes)
+    summary       = Column(Text,        nullable=True)   # human-readable one-liner (audit UI)
     created_at    = Column(DateTime,    default=datetime.utcnow, index=True)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -916,12 +1065,35 @@ class CentralRepository(Base):
 # =============================================================================
 
 def init_db():
-    # Register the Prompt Library models on this Base's metadata so their pl_*
-    # tables are included in create_all below. Imported here (not at module top)
-    # to avoid a circular import, since pl_models imports Base from this module.
+    # Register the Prompt Library models on this Base's metadata so they are
+    # visible to Alembic autogenerate and (when DB_AUTO_DDL is on) create_all.
+    # Imported here (not at module top) to avoid a circular import, since
+    # pl_models imports Base from this module.
     import promptops_app.pl_models  # noqa: F401
 
-    # Create all tables that don't exist yet (safe to run on every startup).
+    # ── Schema DDL is Alembic-owned ────────────────────────────────────────
+    # As of the 000100000001 baseline revision, the schema is managed by
+    # `alembic upgrade head` (the deploy pipeline runs it before boot).
+    # The legacy create_all()/ALTER/CREATE INDEX path below is kept only as
+    # an explicit opt-in escape hatch and is OFF by default: running both
+    # would desync alembic_version from the real schema (a container booting
+    # before `upgrade` creates a new table via create_all, then the CREATE
+    # TABLE migration fails with "already exists").
+    auto_ddl = os.getenv("DB_AUTO_DDL", "false").strip().lower() in ("1", "true", "yes")
+    if auto_ddl:
+        _run_legacy_ddl()
+
+    # Data backfills (idempotent DML, not schema) run unconditionally on
+    # PostgreSQL — they repair legacy rows and are no-ops once applied.
+    # Skipped on SQLite (the test suite) which has no legacy data and does
+    # not support the PostgreSQL syntax used.
+    if engine.dialect.name == "postgresql":
+        _run_data_backfills()
+
+
+def _run_legacy_ddl():
+    """Legacy pre-Alembic schema DDL — only runs when DB_AUTO_DDL is set."""
+    # Create all tables that don't exist yet.
     Base.metadata.create_all(bind=engine)
 
     # Column-level migrations — ADD COLUMN IF NOT EXISTS is idempotent in PostgreSQL 9.6+.
@@ -1120,6 +1292,9 @@ def init_db():
         with engine.begin() as conn:
             conn.execute(text(stmt))
 
+
+def _run_data_backfills():
+    """Idempotent data repairs (DML only — no schema changes)."""
     # Backfill updated_at for documents where it landed NULL
     with engine.begin() as conn:
         conn.execute(text(

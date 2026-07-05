@@ -58,7 +58,7 @@ class TestLogin:
 
         inactive = User(
             username="inactive_user",
-            password=hash_password("test_password"),
+            password_hash=hash_password("test_password"),
             role="author",
             is_active=False,
         )

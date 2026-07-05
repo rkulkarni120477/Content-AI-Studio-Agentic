@@ -20,6 +20,8 @@ def test_block(db):
     # Generation is required as the block's parent.
     gen = Generation(
         topic="Test Lesson",
+        block_type="lesson",                      # NOT NULL on the model
+        output_text="Generated lesson content.",  # NOT NULL on the model
         prompt_name="test_prompt",
         prompt_version="v1",
         created_by="test_admin",

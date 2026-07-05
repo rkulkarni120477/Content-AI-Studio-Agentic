@@ -39,11 +39,17 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import all ORM models so Alembic can detect them for autogenerate.
-# This triggers the entire model registry in database.py.
+# All models live on promptops_app.database's Base (NOT app.core.database's
+# Base, which is an empty DeclarativeBase no model inherits from — pointing
+# target_metadata there would make autogenerate emit DROP TABLE for every
+# table in the database).
 import promptops_app.database  # noqa: F401  — side effect: registers all models
+import promptops_app.pl_models  # noqa: F401 — registers pl_* models (normally a
+# deferred import inside init_db(); without it autogenerate would propose
+# dropping the pl_* tables. Remove together with pl_models.py in Phase 6.)
 
 from app.core.config import settings
-from app.core.database import Base
+from promptops_app.database import Base
 
 # Alembic config object — provides access to alembic.ini values.
 config = context.config
@@ -53,7 +59,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # The metadata object Alembic uses to compare against the live DB schema.
-# Base.metadata contains all tables registered via DeclarativeBase.
+# Base.metadata contains all tables registered on promptops_app's Base.
 target_metadata = Base.metadata
 
 

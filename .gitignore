@@ -31,3 +31,6 @@ CLAUDE.md
 docker.env
 test_copyleaks.py
 .claude/
+
+# DB dumps / rehearsal artifacts (contain prod data — never commit)
+backups/

@@ -74,6 +74,18 @@ jobs:
           CELERY_RESULT_BACKEND: redis://localhost:6379/1
         run: pytest tests/integration/ -v --tb=short
 
+      # Characterization tests capture the CURRENT behavior of prompt
+      # resolution + generation + the Prompt Library API. They are the
+      # safety net for the prompt-consolidation initiative
+      # (PROMPT_CONSOLIDATION_PLAN.md, Phase 0S): a failure here means a
+      # change altered behavior the plan says must be preserved.
+      - name: Run characterization tests (prompt system safety net)
+        env:
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+          DATABASE_URL: sqlite:///:memory:
+          APP_ENV: development
+        run: pytest tests/characterization/ -v --tb=short
+
       - name: Generate coverage report
         env:
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production

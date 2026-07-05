@@ -254,14 +254,19 @@ Nothing that touches the DB or the generation code starts until these are in pla
 difference between "hope it works" and "we can prove it and undo it." Rationale + details in the
 "Safety, reversibility & pre-flight" section above.
 
-- [ ] **Rehearsal environment.** Stand up a disposable Postgres (local container or a staging RDS) seeded from a prod snapshot, so every migration is rehearsed on prod-shaped data before touching prod. (Today `docker-compose.yml` references a local Postgres but doesn't define one; the app talks to RDS via `.env` — there is no throwaway DB.)
-- [ ] **Fix Alembic wiring** (blocker #1): repoint `migrations/env.py` `target_metadata` to `promptops_app.database.Base.metadata`; confirm `alembic revision --autogenerate` produces a sane diff (not "drop everything") against the rehearsal DB.
-- [ ] **Reconcile `create_all` vs Alembic** (blocker #2): make Alembic own the schema — capture current schema as a baseline "initial" revision, then disable/prod-gate `create_all()` + the raw `ALTER`/`CREATE INDEX` blocks in `init_db()`. Verify a clean `alembic upgrade head` on an empty DB reproduces today's schema exactly.
-- [ ] **Characterization tests (the safety net).** Generation and the prompt library have ZERO automated coverage today — a table repoint or resolution change passes CI green. Using the existing (unused) `mock_llm` fixture, add golden-output tests through `build_prompt`/`load_template`, the CDD/Blueprint/Style resolution paths, `run_generation_job`, and the prompt_library router CRUD/version/render endpoints. These capture *today's* behavior so any Phase 4/5/8 regression is caught automatically. Wire them into the CI gate.
-- [ ] **Backup/restore drill.** Execute the RDS snapshot + PITR restore path once end-to-end on the rehearsal DB, so recovery is a known, timed procedure. Add a `pg_dump` step to the migration runbook (not just the recommendation in Phase 2/6).
-- [ ] **Migration round-trip.** For every migration written in Phase 3, run `upgrade → downgrade → upgrade` on the rehearsal DB and confirm the schema and a golden generation both survive intact.
+- [x] **Rehearsal environment.** Done 2026-07-05: `scripts/rehearsal_db.sh` (dump / up / restore / reset / verify / url / down) manages a disposable `postgres:17` container (`cas-rehearsal-db`, port 55432) seeded from a full prod `pg_dump`. Row parity verified: 47 tables, `prompts`=8, `prompt_versions`=7, `pl_*` total=126. `backups/` is git-ignored (holds prod data).
+- [x] **Fix Alembic wiring** (blocker #1): done — `migrations/env.py` now targets `promptops_app.database.Base.metadata` and explicitly imports `pl_models` (else autogenerate would propose dropping the 10 `pl_*` tables prematurely; remove that import in Phase 6). Also added the missing `migrations/script.py.mako` and fixed `alembic.ini`'s post-write hook (`ruff.executable`). Autogenerate against the rehearsal DB produces a sane drift diff — NOT drop-everything (see discovery note below on `tenants`).
+- [x] **Reconcile `create_all` vs Alembic** (blocker #2): done — baseline revision `000100000001` executes a schema-only prod dump (`migrations/versions/baseline_schema.sql`) on an empty DB and **self-stamps** (no-op) when the schema already exists, so the deploy pipeline's `alembic upgrade head` is safe against prod in any order. Verified: `upgrade head` on an empty DB reproduces the prod schema **byte-identically** (normalized pg_dump diff empty); self-stamp on the rehearsal clone left all data intact. `init_db()`'s `create_all` + raw `ALTER`/`CREATE INDEX` are now gated behind `DB_AUTO_DDL` (default OFF); the idempotent DML backfills still run (Postgres only). App boots green against the rehearsal DB with DDL gated.
+- [x] **Characterization tests (the safety net).** Done — 67 tests in `tests/characterization/` covering: `prompt_builder` render/validate semantics; `prompt_loader` 2-tier resolution incl. **the dormant-seed bug captured as a test** (`TestDormantSeedBug` — flip it when Phase 8 fixes resolution); CDD/Blueprint/Style router-level resolution with a recording LLM mock (file tier vs stem-named DB row vs `*_override`, override-produces-no-version); `run_generation_job` (hard-coded persona+constants, `prompt_name=""` written, storyboard scrub, extra-instructions append); Prompt Library API contract (CRUD/version-bump/soft-delete/render/`{{var}}`/teams/RBAC/audit shapes — IDs asserted opaque so the Phase 5 int-ID switch doesn't break them). Wired into CI as a dedicated step. **Note:** the pre-existing suite was entirely un-runnable (Postgres-only pool kwargs in both `create_engine` sites crashed under SQLite; conftest created tables on the wrong (empty) `Base`; in-memory SQLite lacked `StaticPool`; `User(password=)` vs `password_hash`; stale SHA-256 hash assertions; missing NOT NULLs in fixtures) — all fixed; full suite now **147 passed**.
+- [x] **Backup/restore drill.** Logical path executed end-to-end and timed (dump ≈1 s, restore ≈2 s on the 16 MB DB; full drop→recreate→restore cycle via `rehearsal_db.sh reset`). `MIGRATION_RUNBOOK.md` created with the pg_dump step, RDS-snapshot console procedure, and per-phase gates. ⚠️ Remaining: the RDS **console snapshot-restore** has not been executed (no AWS CLI/console access from this box) — schedule it before Phase 6 (tracked in the runbook).
+- [x] **Migration round-trip.** Executed 2026-07-05 for the Phase 3 revision `000100000002` on a fresh prod clone: `upgrade → downgrade → upgrade` clean, zero residuals after downgrade, data intact, full suite green at every step. The same drill applies to every future revision (procedure in `MIGRATION_RUNBOOK.md`).
 
 **Acceptance:** a rehearsal DB exists on prod-shaped data; Alembic autogenerate is sane and `create_all` no longer races it; characterization tests capture current generation + PL behavior and run in CI; the snapshot/restore path has been executed once successfully. Only then does Phase 1 begin.
+
+**Phase 0S discoveries (2026-07-05):**
+- **Orphaned multi-tenancy schema in prod.** The live DB contains a `tenants` table plus `tenant_id` columns (+ `idx_*_tenant_id` indexes) on 9 tables (`users`, `projects`, `prompts`, `documents`, `audit_logs`, `generation_jobs`, `llm_usage_logs`, `styles`, `central_repositories`), and `users.project_id` / `users.is_platform_admin` — none of it present in any model. Remnants of an abandoned experiment; live in prod, invisible to code. Kept as-is in the Alembic baseline (faithful capture); autogenerate will keep flagging it as drift until an explicit cleanup migration removes it (a candidate follow-up, NOT bundled into this initiative). Added to Open questions.
+- **Also drift, captured in baseline, not urgent:** the ~45 raw-SQL indexes from `init_db()` are not declared on the models; `server_default` mismatches (`blocks.position`, `blocks.version_num`, `prompts.is_default`, `workflow_events.comment`); `courses.cluster_id` was added by raw ALTER *without* its FK constraint. Aligning models with the DB (or vice versa) is follow-up hygiene; until then, review autogenerate output and strip these known-drift ops from new revisions.
+- **Plan correction — variable syntax.** The registry/pipeline templates (`.md` files + DB rows rendered by `prompt_builder.render`) use **`{{double}}`-brace** substitution — the SAME syntax family as the Prompt Library's `render_prompt_content` (regexes differ only in identifier rules). The `{single}` + `.format()` syntax exists **only** in the hard-coded constants: `prompt_templates.py` (`PERSONA_PREFIX_TEMPLATE`, `LESSON_WITH_CONTEXT_*`, seeded `default_*` prompt bodies) and each router's inline-fallback `except` blocks. Decision 2's "two syntaxes must never cross" therefore applies to the *legacy-constant/seeded-content* boundary, not builder-vs-library engines; Phase 7b's "kind-aware `{single}`/`{{double}}` frontend utils" matter for pipeline rows whose bodies still carry `{single}` text (e.g. the seeded defaults converted from constants) and for Phase 8's Generate wiring, where the `{single}` constants must be converted to `{{double}}` templates when they become DB rows.
 
 ---
 
@@ -271,7 +276,7 @@ difference between "hope it works" and "we can prove it and undo it." Rationale 
 
 | Column | Type | Notes |
 |---|---|---|
-| `prompt_kind` | `String(20) NOT NULL DEFAULT 'library'` | `'pipeline'` \| `'library'`. Single field driving taxonomy and permission tier. |
+| `prompt_kind` | `String(20) NOT NULL DEFAULT 'pipeline'` | `'pipeline'` \| `'library'`. Single field driving taxonomy and permission tier. Default changed from `'library'` at Phase 3 implementation: between the Phase 3 schema deploy and the Phase 4 cutover the only live writers are pipeline admin paths that don't set the column — a `'library'` default would mislabel rows created in that window. The Phase 4+ service sets the kind explicitly on every create, so the column default only ever matters for legacy writers, which are all pipeline. |
 | `title` | `String(300) NULLABLE` | Library display title. Required at the service layer when `prompt_kind='library'`, not at DB level. |
 | `category` | `String(100) NULLABLE` | Freeform library category — distinct from `component_type` (pipeline-only). |
 | `visibility` | `String(20) NOT NULL DEFAULT 'draft'` | `'global'` \| `'team'` \| `'draft'`. |
@@ -286,13 +291,17 @@ rows populate it.
 
 Add a **partial unique index** `ON prompts(component_type, variant) WHERE is_default = true AND
 prompt_kind = 'pipeline'` — guarantees exactly one default prompt per pipeline stage/variant (today
-only enforced by convention).
+only enforced by convention). **Must be declared `NULLS NOT DISTINCT`** (Phase 1 verification): all
+four current defaults have `variant` NULL, and standard unique-index semantics treat NULLs as
+distinct — without the modifier two defaults with a NULL variant would both insert and the guarantee
+is void. Prod RDS is PostgreSQL 17.9 (verified from the prod-sourced dump header), so the PG 15+
+syntax is available.
 
 ### `prompt_versions` — new columns
 
 | Column | Type | Notes |
 |---|---|---|
-| `version_number` | `Integer NULLABLE` initially, backfilled then `NOT NULL` | Numeric ordering key, replacing free-text `version`-string parsing. `version` (e.g. `"v3"`) stays as the display label for the pipeline admin UI (`app/schemas/prompt.py` expects `version: str`). |
+| `version_number` | `Integer NULLABLE` initially, backfilled; **`NOT NULL` deferred to the Phase 4 migration** | Numeric ordering key, replacing free-text `version`-string parsing. `version` (e.g. `"v3"`) stays as the display label for the pipeline admin UI (`app/schemas/prompt.py` expects `version: str`). NOT NULL cannot land in Phase 3: the live write paths (`deploy_new_version`, seeds) don't populate the column until Phase 4 — enforcing it early would crash pipeline version creation in the deploy gap. The `UniqueConstraint(prompt_id, version_number)` still lands in Phase 3 (Postgres treats NULLs as distinct in unique constraints, so interim NULL rows don't collide). |
 | `workflow_state` | `String(20) NOT NULL DEFAULT 'active'` | `draft` \| `in_review` \| `approved` \| `active`. Enforced only for pipeline rows (Phase 8 gate); library rows stay `active`. The `DEFAULT 'active'` is correct for the Phase 3 backfill and library rows; **new pipeline versions are inserted at `'draft'` explicitly** by the approval-gate service (Phase 8), not left to the column default. |
 
 Add `UniqueConstraint(prompt_id, version_number)` — missing today, a real pre-existing gap. `change_reason`
@@ -317,12 +326,64 @@ is reused as-is for the library "version note".
 | `actor_role` | `String(64) NULLABLE` | |
 | `user_agent` | `String(512) NULLABLE` | |
 | `changes` | `JSON NULLABLE` | Structured diff from the existing `compute_prompt_changes`/`redact_changes` utilities (dict-based, reusable as-is). Existing `metadata_json` left untouched to avoid risk to other audit consumers. |
+| `summary` | `Text NULLABLE` | Human-readable one-liner the PL audit UI displays. Added in Phase 1 verification — `pl_audit_events` carries it and no native column can hold it (`metadata_json` is reserved for existing consumers). |
+
+**Field mapping `pl_audit_events` → `audit_logs`** (Phase 1 verification; `pl_audit_events` has 0
+rows in prod, so this shapes only Phase 4's write path, not a data migration): `event_type`
+(`"prompt.create"`, the specific dotted string) → **`action`** (`String(120)` fits); the PL API's
+short `action` field (`"create"`) is **derived** as the suffix after the last `.` — not stored
+twice; `actor_username` → `user_id` (native is `NOT NULL`; PL writes always have an authenticated
+actor, so no conflict); `entity_type`/`entity_id`/`ip_address`/`created_at` map 1:1;
+`summary`/`changes`/`actor_role`/`user_agent` land in the additive columns above.
 
 `prompt_fixings` and `user_prompt_preferences`: no changes — already Integer-keyed against `prompts.id`.
 
 **Acceptance:** schema design reviewed against every capability in the feature inventory (CRUD,
 versioning, tags, team visibility, variables, attachments, reviews, requests, follow-ups, audit,
 search/filter) — each has a concrete home before any migration is written.
+
+### Phase 1 verification (2026-07-05) — design signed off against models + prod data
+
+Every `pl_*` column was mapped against the real models (`pl_models.py`, `database.py`) and the
+prod-parity rehearsal DB. Spec amendments made above: `NULLS NOT DISTINCT` on the partial unique
+index; `audit_logs.summary` + the audit field mapping; `(created_at, id)` backfill ordering.
+Remaining findings — all confirmed, folded into later phases:
+
+- **Column homes confirmed.** `pl_prompts.description` → existing `prompts.description` (no new
+  column needed); `pl_prompts.created_by` → existing `prompts.owner` (Phase 4 serializes `owner`
+  as the API's `created_by`; Phase 2 writes it); every other `pl_*` column lands per the tables
+  above. Size fits verified (max title 44/300, tag 20/100, var name 19/100, category 22/100).
+- **Library "current content" = the active version's `user_prompt_template`** — native `prompts`
+  deliberately has no content column. Data verified safe today: every one of the 20 `pl_prompts`
+  has exactly 1 version and `content` matches its head snapshot (no PL "silent edits"
+  outstanding). The Phase 2 script must **re-assert this at run time** and, on divergence, write a
+  reconciliation version from the row body (`change_reason='migration: unversioned edit'`) so no
+  text is lost.
+- **Scalar `pl_prompts.team_id` verified unused (0 rows)** and `pl_prompt_teams` empty — dropping
+  the scalar in the target schema loses nothing. All 20 prompts are `visibility='draft'`, none
+  soft-deleted, `parent_id` unused (0 follow-up chains — the "Follow Up Prompts" *category* is how
+  they're grouped today).
+- **Teams: `id == name` for all six rows** (`P1`…`P6`) — the slug→int remap loses nothing since
+  the slug is literally the name.
+- **No table-name conflicts:** all 7 new names (`prompt_tags`, `prompt_variables`,
+  `prompt_attachments`, `teams`, `prompt_team_links`, `prompt_reviews`, `prompt_requests`) are
+  absent from the 47-table prod schema.
+- **`is_default` pre-flight passes today:** exactly one default per `component_type`
+  (style/cdd/blueprint/generate) — re-run before Phase 3 creates the index (data can change).
+- **Two versionless native prompts exist:** id 7 (`titles`, `component_type` NULL) and id 8
+  (`Lesson gen`, generate) have zero `prompt_versions` rows and NULL `active_version`. The
+  `version_number` backfill is unaffected (nothing to backfill); Phase 4's service and the Phase 7
+  console must tolerate pipeline rows with no versions and a NULL `component_type`.
+- **Legacy `prompts.tags` comma-string is live on 6 rows** (pipeline admin metadata). Decision:
+  the new `prompt_tags` table is canonical for **library** rows only; the legacy string column
+  stays untouched for pipeline rows through the cutover (Phase 4 reads tags per kind). Converging
+  pipeline tags into `prompt_tags` is Phase 8 hygiene, not Phase 2/3.
+- **Library version display label:** native `prompt_versions.version` (`String`, e.g. `"v3"`) is
+  NOT NULL-in-practice for the pipeline admin UI; Phase 2 populates it as `'v' || version_number`
+  for migrated library versions, and Phase 4 does the same on new library saves.
+
+**Acceptance met** — each feature-inventory capability has a verified concrete home; migrations
+(Phase 3) and the carry-over script (Phase 2) are unblocked.
 
 ---
 
@@ -339,13 +400,17 @@ search/filter) — each has a concrete home before any migration is written.
 
 ## Phase 3 — Alembic migration
 
-- [ ] Single migration (or small ordered set) implementing all of Phase 1's additive changes: new columns on `prompts`/`prompt_versions`/`audit_logs`, the new tables, the partial unique index, and `UniqueConstraint(prompt_id, version_number)`.
-- [ ] Backfill `version_number` for existing `prompt_versions` (sequential per `prompt_id`, ordered by `created_at`), then set `NOT NULL`.
-- [ ] Backfill `prompt_kind = 'pipeline'` for all existing `prompts` rows (all pipeline templates today).
-- [ ] **Pre-flight before constraints** (see Safety section): confirm the sequential `version_number` backfill leaves no duplicate before adding `UniqueConstraint(prompt_id, version_number)` (the seeded `lesson_generator` has 2 versions — a `DEFAULT 1` backfill would collide); run the `is_default` duplicate check on prod and resolve before creating the partial unique index.
-- [ ] Wrap the migration in a **single transaction** (transactional DDL) so a mid-way failure rolls back cleanly; for the unique index use `CREATE UNIQUE INDEX CONCURRENTLY` or run during a quiet window / with the app quiesced to avoid the `ACCESS EXCLUSIVE` lock stalling behind the connection pool.
-- [ ] Do **not** touch `pl_*` tables here — that's Phase 6.
-- [ ] Apply to the Phase 0S rehearsal DB first; run the `upgrade → downgrade → upgrade` round-trip; confirm existing CDD/Blueprint generation still works unmodified and the characterization tests pass.
+- [x] Single migration implementing all of Phase 1's additive changes: revision `000100000002` (`migrations/versions/20260705_0900_000100000002_prompt_consolidation_additive.py`) — new columns on `prompts`/`prompt_versions`/`audit_logs`, the 7 new tables, the partial unique index (`NULLS NOT DISTINCT`, verified to reject a second NULL-variant default), and `UniqueConstraint(prompt_id, version_number)`. SQLAlchemy models updated in lockstep (`promptops_app/database.py`: new columns + `PromptTag`/`PromptVariable`/`PromptAttachment`/`Team`/`PromptTeamLink`/`PromptReview`/`PromptRequest`). The partial index is deliberately NOT declared on the model (SQLite test DBs can't express it) — strip it from future autogenerate diffs.
+- [x] Backfill `version_number` for existing `prompt_versions` (sequential per `prompt_id`, ordered by **`(created_at, id)`** — Phase 1 verification found prompt 1's two versions share an identical `created_at`, so `created_at` alone is ambiguous; `id` order matches the `v1`/`v2` labels). Verified on rehearsal: `1:v1→1, 1:v2→2, 2:v2→1, 3–6:v1→1`. **`NOT NULL` deferred to the Phase 4 migration** (live write paths don't populate the column until Phase 4 — see the Phase 1 table note).
+- [x] Backfill `prompt_kind = 'pipeline'` for all existing `prompts` rows — done via the column's `server_default='pipeline'` (default flipped from `'library'`, see Phase 1 table note); verified all 8 rows are `'pipeline'`.
+- [x] **Pre-flight before constraints**: `_preflight()` embedded in the migration aborts (transactional rollback) on `is_default` duplicates per component; the `row_number()` backfill is duplicate-free by construction, so the unique constraint cannot collide. Rehearsal run passed pre-flight.
+- [x] Single transaction: Alembic transactional DDL confirmed in the rehearsal run ("Will assume transactional DDL"). Plain `CREATE UNIQUE INDEX` (not CONCURRENTLY — the table has 8 rows; the lock is momentary), still schedule the prod apply in a quiet window per the runbook.
+- [x] No `pl_*` table touched — verified `pl_prompts`=20 intact after upgrade.
+- [x] Applied to the Phase 0S rehearsal DB; `upgrade → downgrade → upgrade` round-trip clean (downgrade left zero residual columns/tables, all data intact); autogenerate drift check shows only the pre-recorded known drift; app boots against the migrated DB; full suite **147 passed** incl. characterization — nothing observable changed.
+
+**Status: rehearsed and green (2026-07-05). NOT yet applied to prod** — prod apply happens via the
+deploy pipeline (or manual `alembic upgrade head`) per `MIGRATION_RUNBOOK.md`: RDS snapshot +
+logical dump first, quiet window.
 
 **Acceptance:** migration applies cleanly; all existing endpoints (pipeline admin, CDD/Blueprint generation, Prompt Library on its old `pl_*` backing) work exactly as before — nothing observable changes yet.
 
@@ -492,6 +557,8 @@ wiring the console UI.
 - [ ] Should `ClusterPrompt` (auto-injected into Style context) eventually converge with `prompt_fragments` (Phase 9), or stay distinct?
 - [ ] Are Cluster/Course AI-assist prompts (Phase 8 backlog) in scope for this initiative or a separate follow-up?
 - [ ] `variant` for Style/CDD: confirm no near-term need before the partial-unique-index `(component_type, variant)` shape is locked (NULL `variant` must behave correctly in that index).
+- [ ] Orphaned `tenants`/`tenant_id` schema (Phase 0S discovery): confirm the multi-tenancy experiment is dead, then schedule a cleanup migration (drop `tenants` + 9 `tenant_id` columns + their indexes + `users.project_id`/`users.is_platform_admin`) as a separate follow-up — NOT part of this initiative.
+- [ ] Execute one RDS console snapshot-restore end-to-end before Phase 6 (the logical pg_dump/restore path is drilled; the console path is documented in `MIGRATION_RUNBOOK.md` but unexecuted — needs AWS console access).
 
 ---
 
@@ -515,3 +582,5 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 | 2026-07-03 | End-to-end break/delete audit | 6 | Full phase-by-phase safety review requested by user. Swept for raw SQL against `prompts`/`pl_*` (none — ORM-only, so `DROP TABLE` in Phase 6 is clean), all `pl_models` importers, and stray `PL_ATTACHMENTS_DIR` references. Found one real gap: `promptops_app/database.py:922` does `import promptops_app.pl_models` inside `init_db()` (to register `pl_*` on `Base.metadata` for `create_all()`) — not covered by the existing Phase 6 checklist, and if missed, deleting `pl_models.py` breaks app startup entirely (`ModuleNotFoundError` in the lifespan hook, not just Prompt Library). Added explicit removal + verification step to Phase 6. No other hidden dependencies found; confirmed nothing else in the plan is scheduled for deletion beyond `pl_*` tables/dir, `pl_models.py`, the obsolete migration script, and the orphaned `PromptsPage.jsx`. No implementation started |
 | 2026-07-05 | Tracker consolidation | — | Retired the duplicate `PROMPT_CONSOLIDATION_PLAN 1 1.md` (an untracked, Windows-downloaded copy) in favour of a single git-tracked source of truth. Confirmed that copy was a strict superset of the old tracked file, carrying two fixes it lacked (Phase 7b: keep `promptsSlice`/`promptsThunks`/`promptsService` — live deps of `InlinePromptControls`/`PromptDetailsModal`/`PromptLibraryPanel`; Phase 6: also remove the `pl_models` import at `database.py:922` or startup crashes). Promoted that content into `PROMPT_CONSOLIDATION_PLAN.md` and deleted the stray `.md` + `:Zone.Identifier` files. Also confirmed all Prompt Library management features are retained (repointed tables, redesigned only where a redundancy/type-mismatch made a straight copy wrong). No implementation started |
 | 2026-07-05 | `pl_*` data check + direction confirm | 2, 6, 7b, 8, Locked decisions, Open questions | Ran a read-only row count on prod RDS: `pl_*` is **NOT empty** — 126 rows incl. 20 curated admin-authored library prompts (Cengage CTE authoring playbook, 2026-06-02), 6 teams, 46 tags, 32 variables, 2 requests (native `prompts`=8 / `prompt_versions`=7, untouched). This **falsifies** the "expected empty, skip carry-over" assumption. Decision (user-delegated): **KEEP + migrate** — the existing two-kind direction is confirmed; the "delete all library data" re-scope was based on a false premise. Corrected: table-base row, current-state `pl_*` note, Phase 2 (data-check marked done, carry-over now mandatory), Phase 6 (drop only after migration verified), Open questions (data question resolved; added obsolete-prompt sign-off). Added the flow-organized console view + approval-gated reference-reuse to Phase 7b/8 and five Locked decisions (data preservation, reuse=reference, roles, scope, console shape). **Execution deferred to a separate session — no implementation started.** |
+| 2026-07-05 | **Phase 0S executed** (first implementation session) | 0S, Open questions | All four 0S blockers cleared. (1) Rehearsal DB: `scripts/rehearsal_db.sh` + `cas-rehearsal-db` container (postgres:17 @55432) restored from a fresh prod dump — parity exact (47 tables / 8 / 7 / 126); prod `pl_*` also dumped to plain SQL (the Phase 2 pre-migration artifact, `backups/`, git-ignored). (2) Alembic: `env.py` repointed to the real `Base` (+ explicit `pl_models` import), missing `script.py.mako` added, ruff hook key fixed; autogenerate now sane. (3) Baseline revision `000100000001`: schema-only prod dump replayed on empty DBs, **self-stamps** on provisioned DBs (deploy-order-safe); empty-DB `upgrade head` reproduces prod schema byte-identically; `init_db()` DDL gated behind `DB_AUTO_DDL` (default off — Alembic owns schema), DML backfills kept (Postgres-only); app boots green against rehearsal. (4) Characterization tests: 67 new tests (builder/loader incl. dormant-seed-bug capture, CDD/BP/Style router resolution, `run_generation_job` hard-coded path, PL API contract) + CI step; had to first resurrect the entire test harness (pool kwargs crash under SQLite ×2 engines, wrong `Base` in conftest, missing `StaticPool`, `password=` kwarg, stale hash tests, fixture NOT NULLs) — suite now **147 passed** (was: could not even collect). (5) Backup drill: logical dump/restore executed + timed (~2 s); `MIGRATION_RUNBOOK.md` written; RDS console snapshot-restore still to be exercised before Phase 6 (Open questions). Discoveries recorded: orphaned `tenants`/`tenant_id` schema in prod (cleanup = separate follow-up); model↔DB drift (raw indexes, server_defaults, missing `courses.cluster_id` FK); plan correction — pipeline registry templates use `{{double}}` (same family as PL), `{single}`+`.format` lives only in hard-coded constants/fallbacks. **Phase 0S acceptance met except the console-side snapshot-restore exercise; Phase 1 (schema design) is unblocked.** |
+| 2026-07-05 | **Phase 1 signed off + Phase 3 rehearsed** (second implementation session) | 1, 3, 0S round-trip | **Phase 1:** every `pl_*` column mapped against the real models + prod-parity data; spec amendments: partial unique index must be `NULLS NOT DISTINCT` (all 4 defaults have NULL `variant`; prod verified PostgreSQL 17.9), `audit_logs.summary` added + full `pl_audit_events`→`audit_logs` field mapping declared (`event_type`→`action`, short action derived), backfill ordering `(created_at, id)` (prompt 1's versions share a timestamp), `prompt_kind` default flipped to `'pipeline'` (deploy-gap safety), `version_number` NOT NULL deferred to Phase 4 (live writers don't set it yet). Verified findings: `description`→existing column, `created_by`→`owner`; scalar `pl_prompts.team_id` unused (0 rows); teams `id==name` for all 6; all 20 pl prompts `draft`, 1 version each, zero silent-edit divergence (Phase 2 script must re-assert at run time); 2 versionless native prompts (ids 7, 8 — service/console must tolerate); legacy `prompts.tags` comma-string live on 6 rows (stays for pipeline kind; `prompt_tags` canonical for library); no table-name conflicts. **Phase 3:** revision `000100000002` (additive: 8+2+4 columns, 7 tables, partial unique index w/ live-fire duplicate-rejection test, unique constraint, backfills, embedded pre-flight) + lockstep model updates (7 new model classes). Rehearsed on fresh prod clone: upgrade/downgrade/upgrade round-trip clean (zero residuals, data intact — also closes the 0S round-trip checkbox), autogenerate drift = known-drift only, app boots, suite **147 passed**. **NOT applied to prod** — that goes through the runbook (snapshot + dump + quiet window). Next: Phase 2 carry-over script (`migrate_pl_to_native_prompts.py`), which now has a live target schema on rehearsal. |

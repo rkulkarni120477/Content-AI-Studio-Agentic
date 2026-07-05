@@ -35,16 +35,22 @@ _log = logging.getLogger(__name__)
 # SQLAlchemy engine
 # ---------------------------------------------------------------------------
 
-engine = create_engine(
-    settings.database_url,
-    # Pool settings appropriate for a FastAPI app with async request handling.
-    # Each uvicorn worker thread gets its own connection from the pool.
-    pool_size=10,           # number of persistent connections
-    max_overflow=20,        # extra connections allowed under load
-    pool_pre_ping=True,     # test connection health before use (handles RDS failovers)
-    pool_recycle=3600,      # recycle connections after 1 hour to avoid stale state
-    echo=False,             # set True temporarily to log all SQL (never in production)
-)
+# Pool settings appropriate for a FastAPI app with async request handling.
+# Each uvicorn worker thread gets its own connection from the pool.
+# SQLite (used by the test suite) rejects pool-sizing args, so they are only
+# applied to real server databases.
+_engine_kwargs: dict = {
+    "pool_pre_ping": True,  # test connection health before use (handles RDS failovers)
+    "echo": False,          # set True temporarily to log all SQL (never in production)
+}
+if not settings.database_url.startswith("sqlite"):
+    _engine_kwargs.update(
+        pool_size=10,        # number of persistent connections
+        max_overflow=20,     # extra connections allowed under load
+        pool_recycle=3600,   # recycle connections after 1 hour to avoid stale state
+    )
+
+engine = create_engine(settings.database_url, **_engine_kwargs)
 
 
 # ---------------------------------------------------------------------------
