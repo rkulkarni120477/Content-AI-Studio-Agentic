@@ -7,6 +7,7 @@ export const plPrompt = (id) => `${PL_BASE}/prompts/${id}`;
 export const plPromptEdit = (id) => `${PL_BASE}/prompts/${id}/edit`;
 export const plPromptNew = `${PL_BASE}/prompts/new`;
 export const plPromptNewChild = (parentId) => `${PL_BASE}/prompts/new?parentId=${parentId}`;
+export const plFlow = `${PL_BASE}/flow`;
 export const plRequests = `${PL_BASE}/requests`;
 export const plRequestNew = `${PL_BASE}/requests/new`;
 export const plAdminRequests = `${PL_BASE}/admin/requests`;

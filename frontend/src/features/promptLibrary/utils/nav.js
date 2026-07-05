@@ -7,6 +7,7 @@ import {
 } from './permissions';
 import {
   plHome,
+  plFlow,
   plRequests,
   plAdminRequests,
   plAdminReviews,
@@ -18,6 +19,9 @@ import {
 /** Intra-feature navigation (rendered inside the Prompt Library tab). */
 export const MAIN_NAV = [
   { to: plHome, label: 'Library', end: true, visible: (u) => canReadLibrary(u) },
+  // Flow view: any reader can see what each phase resolves and bind approved
+  // prompts by reference (the approved-only rule for non-admins is server-enforced).
+  { to: plFlow, label: 'Flow', visible: (u) => canReadLibrary(u) },
   // Regular users see their own requests; managers get the full admin queue below.
   { to: plRequests, label: 'Requests', visible: (u) => canReadLibrary(u) && !canReadAllRequests(u) },
   { to: plAdminRequests, label: 'Requests', visible: (u) => canReadAllRequests(u) },

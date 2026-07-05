@@ -7,6 +7,7 @@ import PromptLibraryLayout from './components/layout/PromptLibraryLayout';
 const PromptListPage = lazy(() => import('./pages/PromptListPage'));
 const PromptDetailPage = lazy(() => import('./pages/PromptDetailPage'));
 const PromptFormPage = lazy(() => import('./pages/PromptFormPage'));
+const PipelineFlowPage = lazy(() => import('./pages/PipelineFlowPage'));
 const RequestsPage = lazy(() => import('./pages/RequestsPage'));
 const RequestNewPage = lazy(() => import('./pages/RequestNewPage'));
 const AdminRequestsPage = lazy(() => import('./pages/admin/AdminRequestsPage'));
@@ -34,6 +35,7 @@ export const promptLibraryRoute = {
       path: 'prompts/:id/edit',
       element: <ProtectedRoute requiredRole={MANAGER}>{w(<PromptFormPage />)}</ProtectedRoute>,
     },
+    { path: 'flow', element: w(<PipelineFlowPage />) },
     { path: 'requests', element: w(<RequestsPage />) },
     { path: 'requests/new', element: w(<RequestNewPage />) },
     {
