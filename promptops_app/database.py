@@ -1868,7 +1868,16 @@ def seed_data(db):
         ),
     ]
 
+    # The constants above are legacy {single}-brace (.format) text — they stay
+    # unchanged as the inline-fallback tier. The SEEDED rows however are what
+    # component-keyed resolution (PROMPT_RESOLVE_BY_COMPONENT) renders with the
+    # {{double}}-brace engine, so fresh databases seed already-converted bodies.
+    # Existing databases are converted by scripts/convert_seeded_prompt_braces.py.
+    from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
     for _p_name, _p_comp, _p_desc, _p_sys, _p_usr in _DEFAULT_COMPONENT_PROMPTS:
+        _p_sys, _ = convert_legacy_braces(_p_sys)
+        _p_usr, _ = convert_legacy_braces(_p_usr)
         if not db.query(Prompt).filter(Prompt.name == _p_name).first():
             _p_new = Prompt(
                 name=_p_name,

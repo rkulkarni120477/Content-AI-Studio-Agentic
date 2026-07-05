@@ -154,6 +154,77 @@ class TestDeclaredVariableEnforcement:
         assert user == "{{v}}"  # None → provided-but-empty, left in place
 
 
+class TestBraceConversion:
+    """{single}→{{double}} conversion for the seeded default rows — the
+    PROMPT_RESOLVE_BY_COMPONENT enablement precondition."""
+
+    def test_converts_single_and_leaves_double(self):
+        from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
+        out, conv = convert_legacy_braces("a {x} b {{y}} c {x}")
+        assert out == "a {{x}} b {{y}} c {{x}}"
+        assert conv == ["x"]
+
+    def test_idempotent(self):
+        from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
+        once, _ = convert_legacy_braces("{course_title} and {{done}}")
+        twice, conv = convert_legacy_braces(once)
+        assert twice == once and conv == []
+
+    def test_non_identifier_braces_untouched(self):
+        from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
+        text = 'JSON: {"key": "value"} set: {1, 2} empty: {} spaced: { x }'
+        out, conv = convert_legacy_braces(text)
+        assert out == text and conv == []
+
+    def test_legacy_rename_applied(self):
+        from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
+        out, conv = convert_legacy_braces("{extra_instructions_block}")
+        assert out == "{{extra_instructions}}"
+        assert conv == ["extra_instructions_block"]
+
+    def test_fresh_seed_bodies_are_double_braced(self, db):
+        # seed_data() now seeds converted bodies: a fresh DB needs no script.
+        from promptops_app.database import Prompt, PromptVersion, seed_data
+        from promptops_app.prompts.brace_conversion import find_single_brace_vars
+
+        seed_data(db)
+        for name in ("default_style_prompt", "default_cdd_prompt",
+                     "default_blueprint_prompt", "default_generate_prompt"):
+            p = db.query(Prompt).filter(Prompt.name == name).one()
+            for v in db.query(PromptVersion).filter_by(prompt_id=p.id).all():
+                body = (v.system_prompt or "") + (v.user_prompt_template or "")
+                assert find_single_brace_vars(body) == [], name
+        # The rename reached the seeded blueprint body.
+        bp = db.query(Prompt).filter_by(name="default_blueprint_prompt").one()
+        ver = db.query(PromptVersion).filter_by(prompt_id=bp.id).one()
+        assert "{{extra_instructions}}" in ver.user_prompt_template
+        assert "extra_instructions_block" not in ver.user_prompt_template
+
+    def test_seeded_default_renders_variables_flag_on(self, db, monkeypatch):
+        # End-to-end: flag on, the seeded CDD default both resolves AND
+        # substitutes the variables cdd.py supplies (the point of converting).
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+        from promptops_app.database import seed_data
+
+        seed_data(db)
+        _, user, name, _ = build_prompt(
+            "cdd_generation",
+            {"course_title": "CTE Nursing", "target_audience": "Grade 9",
+             "expert_domain": "Nursing", "audience_level": "MS",
+             "estimated_duration": "8", "extra_instructions": "none",
+             "course_name": "CTE Nursing", "grade_level": "Grade 9",
+             "style_guidelines": ""},
+            db=db,
+        )
+        assert name == "cdd_generation"
+        assert "CTE Nursing" in user
+        assert "{course_title}" not in user and "{{course_title}}" not in user
+
+
 class TestBuildContextVariables:
     def test_teacher_student_inference(self):
         v = build_context_variables(teacher_mode=True)
