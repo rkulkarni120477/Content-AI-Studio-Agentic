@@ -70,9 +70,11 @@ export default function PromptListRow({
             <Link to={plPromptEdit(p.id)} className="icon-btn" title="Edit">
               ✏️
             </Link>
-            <button type="button" className="icon-btn del" title="Delete" onClick={() => onDelete(p.id)}>
-              🗑
-            </button>
+            {p.prompt_kind !== 'pipeline' && (
+              <button type="button" className="icon-btn del" title="Delete" onClick={() => onDelete(p.id)}>
+                🗑
+              </button>
+            )}
           </>
         )}
       </div>

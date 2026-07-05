@@ -11,12 +11,13 @@ import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { exportPromptsCsv } from '../utils/csvExport';
-import { canManagePrompts } from '../utils/permissions';
+import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 
 export default function PromptListPage() {
   const { user } = useAuth();
   const { show } = useToast();
   const canEdit = canManagePrompts(user);
+  const canPipeline = canManagePipelinePrompts(user);
 
   const [prompts, setPrompts] = useState([]);
   const [meta, setMeta] = useState({ categories: [], tags: [] });
@@ -25,11 +26,16 @@ export default function PromptListPage() {
   const [tag, setTag] = useState('');
   const [sort, setSort] = useState('updated');
   const [view, setView] = useState(() => localStorage.getItem('plib_view') || 'card');
+  // Kind facet (Decision 1): non-admins never get a pipeline tab — the server
+  // strips pipeline rows from their responses regardless; this is UI-side
+  // defense-in-depth.
+  const [kindTab, setKindTab] = useState('library');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   function buildFilterParams() {
     const params = { roots_only: '1' };
+    if (canPipeline && kindTab === 'pipeline') params.kind = 'pipeline';
     if (q) params.q = q;
     if (category) params.category = category;
     if (tag) params.tag = tag;
@@ -49,7 +55,7 @@ export default function PromptListPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, sort]);
+  }, [q, category, tag, sort, kindTab]);
 
   useEffect(() => {
     void fetchMeta().then(setMeta).catch(() => {});
@@ -109,6 +115,24 @@ export default function PromptListPage() {
     <>
       <div className="library-toolbar">
         <div className="toolbar">
+          {canPipeline && (
+            <div className="view-toggle" title="Pipeline prompts drive live generation (admin)">
+              <button
+                type="button"
+                className={kindTab === 'library' ? 'active' : ''}
+                onClick={() => setKindTab('library')}
+              >
+                Library
+              </button>
+              <button
+                type="button"
+                className={kindTab === 'pipeline' ? 'active' : ''}
+                onClick={() => setKindTab('pipeline')}
+              >
+                ⚙ Pipeline
+              </button>
+            </div>
+          )}
           <div className="search-wrap">
             <input
               type="text"

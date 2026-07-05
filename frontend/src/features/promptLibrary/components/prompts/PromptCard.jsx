@@ -69,12 +69,16 @@ export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, on
               <Link to={plPromptEdit(p.id)} className="icon-btn" title="Edit">
                 ✏️
               </Link>
-              <button type="button" className="icon-btn" title="Duplicate" onClick={() => onDuplicate(p.id)}>
-                ⧉
-              </button>
-              <button type="button" className="icon-btn del" title="Delete" onClick={() => onDelete(p.id)}>
-                🗑
-              </button>
+              {p.prompt_kind !== 'pipeline' && (
+                <>
+                  <button type="button" className="icon-btn" title="Duplicate" onClick={() => onDuplicate(p.id)}>
+                    ⧉
+                  </button>
+                  <button type="button" className="icon-btn del" title="Delete" onClick={() => onDelete(p.id)}>
+                    🗑
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>
