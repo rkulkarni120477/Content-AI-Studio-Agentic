@@ -83,6 +83,14 @@ curl -s localhost:8000/api/v1/health  # {"status":"ok","database":"connected"}
 - **Phase 2/6 (pl_* migration + drop):** both dumps in `backups/` MUST exist
   and be copied off-box before `DROP TABLE`. Row-parity query (126 rows)
   must pass after the carry-over, per the plan.
+- **Phase 2 prod apply** (same quiet window as the Phase 3 `alembic upgrade
+  head`, immediately after it): take a **fresh** `pl_*` dump
+  (`scripts/rehearsal_db.sh dump`), then
+  `python scripts/migrate_pl_to_native_prompts.py --database-url <prod url>
+  --dry-run --allow-non-local`, review the row-for-row output, then re-run
+  with `--apply`. The script self-verifies 126-row parity in the same
+  transaction and aborts (rolls back) on any mismatch; it is idempotent, so
+  an interrupted or repeated run is safe.
 - **Phase 6:** after deleting `pl_models.py`, verify startup:
   `python -c "from promptops_app.database import init_db; init_db()"`
   against the rehearsal DB (catches the hidden import at `database.py`
