@@ -1,0 +1,197 @@
+"""
+Phase 4 unit tests — prompt_library_service rewritten onto the native tables.
+
+Per PROMPT_CONSOLIDATION_PLAN.md Phase 4: each rewritten service function must
+produce output identical in SHAPE to the old pl_*-backed implementation
+(values differ only in id type — int vs UUID string), and the two prompt
+kinds must never cross: a library row can never reach the generation
+resolvers, and a caller without pipeline-manager access can never receive a
+pipeline row from the library service.
+
+Uses the shared SQLite ``db`` fixture — these tests exercise real queries, so
+a MagicMock session isn't sufficient.
+"""
+
+from __future__ import annotations
+
+from promptops_app.database import (
+    AuditLog,
+    Prompt,
+    PromptRequest,
+    PromptReview,
+    PromptTag,
+    PromptVariable,
+    Team,
+)
+from promptops_app.services import prompt_library_service as svc
+
+
+def _mk_library_prompt(db, title="Lib Prompt", content="Hello {{name}}", **kw) -> Prompt:
+    p = Prompt(prompt_kind="library", title=title, description="d", category="Cat",
+               visibility=kw.pop("visibility", "global"), owner="alice",
+               created_at=svc.now_utc(), updated_at=svc.now_utc(), **kw)
+    db.add(p)
+    db.flush()
+    svc.set_prompt_content(db, p, content, create_version=True, note="Initial version",
+                           created_by="alice")
+    db.flush()
+    return p
+
+
+def _mk_pipeline_prompt(db, name="cdd_generation", component_type="cdd") -> Prompt:
+    p = Prompt(prompt_kind="pipeline", name=name, component_type=component_type,
+               is_default=True, owner="admin")
+    db.add(p)
+    db.flush()
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Output-shape parity with the pl_*-backed implementation
+# ---------------------------------------------------------------------------
+
+OLD_PROMPT_DICT_KEYS = {
+    "id", "parent_id", "title", "content", "description", "category",
+    "visibility", "teams", "created_by", "created_at", "updated_at",
+    "last_used_at", "tags", "variables",
+}
+OLD_RELATION_KEYS = {
+    "parent", "children", "_child_count", "can_have_children", "versions",
+    "attachments", "_version_count", "_review_stats",
+}
+
+
+class TestSerializerShapes:
+    def test_prompt_to_dict_shape(self, db):
+        p = _mk_library_prompt(db)
+        db.add(PromptTag(prompt_id=p.id, tag="t1"))
+        db.add(PromptVariable(prompt_id=p.id, name="name", label="Name", sort_order=0))
+        db.flush()
+        d = svc.prompt_to_dict(db, p)
+        assert OLD_PROMPT_DICT_KEYS | OLD_RELATION_KEYS <= set(d)
+        assert isinstance(d["id"], int)
+        assert d["content"] == "Hello {{name}}"
+        assert d["created_by"] == "alice"          # owner -> created_by
+        assert d["tags"] == ["t1"]
+        assert d["variables"] == [{"name": "name", "label": "Name", "hint": ""}]
+        assert d["versions"][0]["version"] == 1    # numeric, from version_number
+        assert d["versions"][0]["note"] == "Initial version"  # change_reason -> note
+
+    def test_review_request_team_dict_shapes(self, db):
+        p = _mk_library_prompt(db)
+        r = PromptReview(prompt_id=p.id, username="bob", rating=4, feedback="ok",
+                         created_at=svc.now_utc(), updated_at=svc.now_utc())
+        req = PromptRequest(title="Need X", requested_by="bob", type="new", status="open",
+                            created_at=svc.now_utc(), updated_at=svc.now_utc())
+        team = Team(name="P1", created_by="admin", created_at=svc.now_utc())
+        db.add_all([r, req, team])
+        db.flush()
+        assert set(svc.review_to_dict(r)) == {
+            "id", "prompt_id", "username", "rating", "feedback", "created_at", "updated_at"}
+        assert set(svc.request_to_dict(req)) == {
+            "id", "title", "description", "type", "prompt_id", "requested_by",
+            "status", "admin_notes", "created_at", "updated_at"}
+        assert set(svc.team_to_dict(team)) == {
+            "id", "name", "created_at", "created_by", "user_count", "prompt_count"}
+        assert isinstance(svc.team_to_dict(team)["id"], int)
+
+    def test_audit_event_dict_shape_and_derived_action(self, db):
+        svc.log_event(db, "prompt.create", "create", entity_type="prompt",
+                      entity_id=42, summary="s", actor_username="alice", actor_role="admin")
+        e = db.query(AuditLog).filter(AuditLog.action == "prompt.create").one()
+        d = svc.audit_event_to_dict(e)
+        assert {"id", "event_type", "action", "actor_username", "actor_role",
+                "entity_type", "entity_id", "summary", "changes", "ip_address",
+                "user_agent", "created_at"} == set(d)
+        assert d["event_type"] == "prompt.create"
+        assert d["action"] == "create"             # derived suffix, not stored twice
+        assert d["actor_username"] == "alice"      # user_id -> actor_username
+        assert d["entity_id"] == 42                # digit string surfaces as int
+
+
+class TestContentVersioning:
+    def test_silent_edit_does_not_version(self, db):
+        p = _mk_library_prompt(db)
+        svc.set_prompt_content(db, p, "edited", create_version=False)
+        db.flush()
+        assert svc.get_prompt_content(p) == "edited"
+        assert len(p.versions) == 1                # version list must not grow
+
+    def test_create_version_bumps_and_activates(self, db):
+        p = _mk_library_prompt(db)
+        v2 = svc.set_prompt_content(db, p, "v2 body", create_version=True, note="second")
+        db.flush()
+        assert v2.version_number == 2 and v2.version == "v2"
+        assert v2.is_active and v2.workflow_state == "active"
+        assert p.active_version == "v2"
+        assert [v.is_active for v in sorted(p.versions, key=lambda v: v.version_number)] == [False, True]
+        assert svc.get_prompt_content(p) == "v2 body"
+
+    def test_system_prompt_stays_null_for_library_versions(self, db):
+        p = _mk_library_prompt(db)
+        svc.set_prompt_content(db, p, "more", create_version=True)
+        db.flush()
+        assert all(v.system_prompt is None for v in p.versions)
+
+
+class TestRenderEngine:
+    def test_double_brace_semantics_unchanged(self):
+        out = svc.render_prompt_content("Hi {{a}} and {{b}}", {"a": "X"})
+        assert out == "Hi X and {{b}}"             # unsupplied stays literal
+        assert svc.extract_var_names("{{a}} {{b}} {{a}}") == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Kind separation (Decision 1) — the Phase 4 acceptance tests
+# ---------------------------------------------------------------------------
+
+class TestKindSeparation:
+    def test_library_queries_never_return_pipeline_rows(self, db):
+        _mk_library_prompt(db)
+        _mk_pipeline_prompt(db)
+        db.flush()
+        for q in (svc.base_prompt_query(db),
+                  svc.visible_prompts_query(db, "admin", None),
+                  svc.visible_prompts_query(db, "author", None)):
+            assert all(p.prompt_kind == "library" for p in q.all())
+
+    def test_browse_kind_stripped_for_non_admins(self, db):
+        _mk_library_prompt(db)
+        _mk_pipeline_prompt(db)
+        db.flush()
+        # Authors and reviewers get library-only regardless of requested kind.
+        for role in ("author", "reviewer"):
+            for kind in ("pipeline", "all", "library", None):
+                rows = svc.browse_prompts_query(db, role, None, kind=kind).all()
+                assert all(p.prompt_kind == "library" for p in rows), (role, kind)
+        # Admins can browse pipeline rows explicitly; the default stays library.
+        assert all(p.prompt_kind == "library"
+                   for p in svc.browse_prompts_query(db, "admin", None).all())
+        pipeline_rows = svc.browse_prompts_query(db, "admin", None, kind="pipeline").all()
+        assert pipeline_rows and all(p.prompt_kind == "pipeline" for p in pipeline_rows)
+
+    def test_can_access_prompt_gates_pipeline_rows(self, db):
+        pipe = _mk_pipeline_prompt(db)
+        assert svc.can_access_prompt(pipe, "admin", None)
+        assert not svc.can_access_prompt(pipe, "reviewer", None)
+        assert not svc.can_access_prompt(pipe, "author", None)
+
+    def test_generation_resolvers_never_see_library_rows(self, db):
+        """A library prompt can never be injected into a generation call:
+        the loader resolves by Prompt.name (NULL for library rows) and
+        get_default_prompt by component_type+is_default (None/False)."""
+        from promptops_app.prompts.prompt_loader import _from_db
+        from promptops_app.repositories.prompt_repository import get_default_prompt
+
+        # A library prompt masquerading with a pipeline stem as its TITLE —
+        # name stays NULL, so neither resolver may pick it up.
+        _mk_library_prompt(db, title="cdd_generation", content="{{sneaky}}")
+        db.flush()
+        assert _from_db(db, "cdd_generation", "latest") is None
+        assert get_default_prompt(db, "cdd") is None
+
+        # And the real pipeline row IS resolved once present.
+        _mk_pipeline_prompt(db, name="cdd_generation", component_type="cdd")
+        db.flush()
+        resolved = get_default_prompt(db, "cdd")
+        assert resolved is not None and resolved.prompt_kind == "pipeline"

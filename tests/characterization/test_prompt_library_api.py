@@ -168,7 +168,10 @@ class TestDeleteAndDuplicate:
 
 
 class TestTeams:
-    def test_team_create_shape_and_slug_id(self, client, auth_headers):
+    def test_team_create_shape(self, client, auth_headers):
+        # Phase 4/5 cutover: team ids are autoincrement integers; a
+        # caller-supplied slug id is ignored and the slug lives in `name`
+        # (the Phase 2 migration remapped prod's P1–P6 the same way).
         resp = client.post(
             "/api/v1/prompt-library/teams",
             json={"id": "P1", "name": "Pathway 1"},
@@ -176,17 +179,19 @@ class TestTeams:
         )
         assert resp.status_code == 201, resp.text
         body = resp.json()
-        # Caller-supplied slug id — the Phase 1 migration remaps these to
-        # integer ids while preserving the name.
-        assert body["id"] == "P1"
+        assert body["id"] is not None and body["id"] != "P1"
         assert body["name"] == "Pathway 1"
         assert body["_user_count"] == 0 and body["_prompt_count"] == 0
+        # Round-trip: the returned id is what the list shows.
+        teams = client.get("/api/v1/prompt-library/teams", headers=auth_headers).json()
+        assert any(t["id"] == body["id"] for t in teams)
 
     def test_duplicate_team_conflict(self, client, auth_headers):
+        # Uniqueness (and the 409) moved from the old slug id to the name.
         client.post("/api/v1/prompt-library/teams",
-                    json={"id": "P1", "name": "Pathway 1"}, headers=auth_headers)
+                    json={"name": "Pathway 1"}, headers=auth_headers)
         resp = client.post("/api/v1/prompt-library/teams",
-                           json={"id": "P1", "name": "Other"}, headers=auth_headers)
+                           json={"name": "pathway 1"}, headers=auth_headers)
         assert resp.status_code == 409
 
 
@@ -211,6 +216,97 @@ class TestRBAC:
             "/api/v1/prompt-library/prompts", headers=author_headers
         ).json()
         assert all(p["title"] != "Admin Draft Only" for p in items)
+
+
+class TestReviews:
+    def test_review_round_trip(self, client, auth_headers, author_headers):
+        created = _create(client, auth_headers, visibility="global").json()
+        resp = client.post(
+            f"/api/v1/prompt-library/prompts/{created['id']}/reviews",
+            json={"rating": 4, "feedback": "solid"},
+            headers=author_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["rating"] == 4 and body["username"] == "test_author"
+        # managers see reviews; the author role gets an empty list back
+        assert client.get(
+            f"/api/v1/prompt-library/prompts/{created['id']}/reviews",
+            headers=author_headers,
+        ).json() == []
+        reviews = client.get(
+            f"/api/v1/prompt-library/prompts/{created['id']}/reviews",
+            headers=auth_headers,
+        ).json()
+        assert [r["rating"] for r in reviews] == [4]
+        # resubmission upserts (unique per prompt+user), never duplicates
+        client.post(
+            f"/api/v1/prompt-library/prompts/{created['id']}/reviews",
+            json={"rating": 2}, headers=author_headers,
+        )
+        reviews = client.get(
+            f"/api/v1/prompt-library/prompts/{created['id']}/reviews",
+            headers=auth_headers,
+        ).json()
+        assert [r["rating"] for r in reviews] == [2]
+
+
+class TestRequests:
+    def test_request_round_trip(self, client, auth_headers, author_headers):
+        resp = client.post(
+            "/api/v1/prompt-library/requests",
+            json={"title": "Need a rubric prompt", "type": "new"},
+            headers=author_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        rid = resp.json()["id"]
+        assert resp.json()["status"] == "open"
+        # authors list only their own requests
+        mine = client.get("/api/v1/prompt-library/requests", headers=author_headers).json()
+        assert [r["id"] for r in mine] == [rid]
+        # manager updates status + notes
+        upd = client.put(
+            f"/api/v1/prompt-library/requests/{rid}",
+            json={"status": "done", "admin_notes": "added"},
+            headers=auth_headers,
+        )
+        assert upd.status_code == 200
+        assert upd.json()["status"] == "done"
+
+
+class TestAttachments:
+    def test_attachment_upload_download_delete(self, client, auth_headers, tmp_path, monkeypatch):
+        import app.api.v1.routers.prompt_library as plr
+        monkeypatch.setattr(plr, "_ATTACH_DIR", str(tmp_path))
+        created = _create(client, auth_headers).json()
+        resp = client.post(
+            f"/api/v1/prompt-library/prompts/{created['id']}/attachments",
+            files={"file": ("notes.txt", b"attachment body", "text/plain")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        att = resp.json()
+        assert att["original_name"] == "notes.txt" and att["size"] == 15
+        dl = client.get(
+            f"/api/v1/prompt-library/prompts/{created['id']}/attachments/{att['id']}/download",
+            headers=auth_headers,
+        )
+        assert dl.status_code == 200 and dl.content == b"attachment body"
+        assert client.delete(
+            f"/api/v1/prompt-library/prompts/{created['id']}/attachments/{att['id']}",
+            headers=auth_headers,
+        ).json() == {"deleted": att["id"]}
+
+    def test_disallowed_extension_rejected(self, client, auth_headers, tmp_path, monkeypatch):
+        import app.api.v1.routers.prompt_library as plr
+        monkeypatch.setattr(plr, "_ATTACH_DIR", str(tmp_path))
+        created = _create(client, auth_headers).json()
+        resp = client.post(
+            f"/api/v1/prompt-library/prompts/{created['id']}/attachments",
+            files={"file": ("evil.exe", b"x", "application/octet-stream")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
 
 
 class TestAudit:

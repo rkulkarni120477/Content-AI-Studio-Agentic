@@ -214,6 +214,19 @@ class Prompt(Base):
     created_at     = Column(DateTime, default=datetime.utcnow)
     updated_at     = Column(DateTime, default=datetime.utcnow)
     versions = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan")
+    # -- library-feature relationships (consolidation Phase 4) ---------------
+    # `tags` is taken by the legacy comma-string column, hence `tag_rows`.
+    parent = relationship("Prompt", remote_side="Prompt.id", foreign_keys=[parent_id],
+                          back_populates="children", lazy="select")
+    children = relationship("Prompt", back_populates="parent", foreign_keys=[parent_id],
+                            lazy="selectin")
+    tag_rows = relationship("PromptTag", cascade="all, delete-orphan", lazy="selectin")
+    variables = relationship("PromptVariable", cascade="all, delete-orphan",
+                             order_by="PromptVariable.sort_order", lazy="selectin")
+    attachments = relationship("PromptAttachment", cascade="all, delete-orphan",
+                               lazy="selectin")
+    team_links = relationship("PromptTeamLink", cascade="all, delete-orphan",
+                              lazy="selectin")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 class PromptVersion(Base):

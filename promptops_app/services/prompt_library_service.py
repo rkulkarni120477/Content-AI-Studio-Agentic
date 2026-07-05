@@ -1,11 +1,36 @@
 """
-Prompt Library service layer — ported (tenant-free) from the standalone
-``prompt-library`` backend's ``services/`` + ``serializers.py``.
+Prompt Library service layer — backed by the NATIVE prompt tables.
 
-All functions take an explicit SQLAlchemy ``Session`` (``db``) — there is no Flask
-session, no request context, and no tenant scoping. "Manager" access (see-all,
-create/edit/delete) maps to the host roles ``admin`` and ``reviewer``; ``author``
-is a regular library reader who can submit requests and reviews.
+Phase 4 of PROMPT_CONSOLIDATION_PLAN.md: every query targets the native models
+(``Prompt`` filtered to ``prompt_kind='library'``, ``PromptVersion``,
+``PromptTag``, ``PromptVariable``, ``PromptAttachment``, ``Team``,
+``PromptTeamLink``, ``PromptReview``, ``PromptRequest``, ``AuditLog``) instead
+of the retired ``pl_*`` models. Public function signatures are unchanged from
+the pl_*-backed version so the router cutover stays mechanical.
+
+Model mapping (Phase 0.5 / Phase 1 decisions):
+  * a library prompt's *current content* is the ACTIVE ``PromptVersion``'s
+    ``user_prompt_template`` (``system_prompt`` stays NULL for library rows;
+    native ``prompts`` deliberately has no content column)
+  * ``created_by`` (API field) <-> ``Prompt.owner``
+  * version display label = ``'v' || version_number``; library versions are
+    instant-publish (``workflow_state='active'``)
+  * ``prompt_tags`` is canonical for library rows; pipeline rows keep the
+    legacy comma-string ``prompts.tags`` (read per kind in ``prompt_to_dict``)
+  * audit is unified into ``audit_logs``: the PL ``event_type`` (dotted, e.g.
+    ``prompt.create``) is stored in ``AuditLog.action``; the short PL "action"
+    is derived as the suffix after the last dot
+
+Kind separation (Decision 1): all library queries filter
+``prompt_kind='library'``. Pipeline rows are browseable only through
+``browse_prompts_query`` and only for callers passing
+``can_manage_pipeline_prompts`` — a non-qualified caller is silently stripped
+to library-only, never 403'd (no existence leak). Writes through this service
+never touch pipeline rows.
+
+All functions take an explicit SQLAlchemy ``Session`` (``db``). "Manager"
+access (see-all, create/edit/delete) maps to the host roles ``admin`` and
+``reviewer``; ``author`` is a regular library reader.
 """
 
 from __future__ import annotations
@@ -14,39 +39,53 @@ import csv
 import io
 import json
 import re
-import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
-from promptops_app.pl_models import (
-    PLAttachment,
-    PLAuditEvent,
-    PLPrompt,
-    PLPromptRequest,
-    PLPromptTag,
-    PLPromptTeam,
-    PLPromptVariable,
-    PLPromptVersion,
-    PLReview,
-    PLTeam,
+from promptops_app.database import (
+    AuditLog,
+    Prompt,
+    PromptAttachment,
+    PromptRequest,
+    PromptReview,
+    PromptTag,
+    PromptTeamLink,
+    PromptVariable,
+    PromptVersion,
+    Team,
 )
 
 # Roles that can see everything and manage prompts (PromptLibrary "manager").
 MANAGER_ROLES = ("admin", "reviewer")
+
+# Roles allowed to SEE pipeline rows in the console (browse only — writes to
+# pipeline rows stay on /api/v1/prompts until the Phase 8 approval gate).
+# Formalized as the `prompt.pipeline.edit` permission in Phase 8.
+PIPELINE_MANAGER_ROLES = ("admin",)
+
+# Dotted action families the Prompt Library writes to the unified audit_logs
+# table. The PL audit UI shows only these (native CAS writers use snake_case
+# verbs like 'workflow_transition', so the families don't collide).
+PL_AUDIT_ACTION_PREFIXES = ("prompt.", "request.", "attachment.", "team.")
 
 
 def is_manager(role: str | None) -> bool:
     return (role or "") in MANAGER_ROLES
 
 
+def can_manage_pipeline_prompts(role: str | None) -> bool:
+    return (role or "") in PIPELINE_MANAGER_ROLES
+
+
 # ---------------------------------------------------------------------------
-# Time formatting (matches standalone prompt_library.utils.time.fmt_dt)
+# Time formatting
 # ---------------------------------------------------------------------------
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    """Naive UTC — matches the native tables' ``datetime.utcnow`` convention."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def fmt_dt(dt) -> str | None:
@@ -58,7 +97,8 @@ def fmt_dt(dt) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Variable rendering
+# Variable rendering ({{double}} — library rows ONLY; pipeline rows render
+# through prompt_builder, never through this engine — Decision 2)
 # ---------------------------------------------------------------------------
 
 _VAR_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -85,71 +125,157 @@ def extract_var_names(content: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Content <-> active version (the library "current content" accessor)
+# ---------------------------------------------------------------------------
+
+def active_version(p: Prompt) -> PromptVersion | None:
+    """The version whose snapshot is the prompt's current content."""
+    versions = p.versions or []
+    live = [v for v in versions if v.is_active]
+    pool = live or versions
+    if not pool:
+        return None
+    return max(pool, key=lambda v: (v.version_number or 0, v.id or 0))
+
+
+def get_prompt_content(p: Prompt) -> str:
+    v = active_version(p)
+    return (v.user_prompt_template if v else "") or ""
+
+
+def set_prompt_content(db: Session, p: Prompt, content: str, *,
+                       create_version: bool = False, note: str = "",
+                       created_by: str | None = None) -> PromptVersion:
+    """Write the prompt's current content.
+
+    create_version=True  -> append a new instant-publish version (library
+                            semantics: bump version_number, activate it).
+    create_version=False -> "silent edit": overwrite the active version's
+                            snapshot in place (mirrors the old pl_prompts
+                            .content overwrite; the version list must not grow).
+    """
+    # Query the DB (not the possibly-stale relationship collection) so
+    # back-to-back calls in one session can't reuse a version_number.
+    db.flush()
+    versions = (db.query(PromptVersion)
+                .filter(PromptVersion.prompt_id == p.id).all())
+    live = [v for v in versions if v.is_active]
+    pool = live or versions
+    current = max(pool, key=lambda v: (v.version_number or 0, v.id or 0)) if pool else None
+    if create_version or current is None:
+        n = max((v.version_number or 0 for v in versions), default=0) + 1
+        for v in versions:
+            v.is_active = False
+        current = PromptVersion(
+            prompt_id=p.id,
+            version=f"v{n}",
+            version_number=n,
+            workflow_state="active",   # library rows are instant-publish
+            system_prompt=None,
+            user_prompt_template=content,
+            change_reason=note or ("Initial version" if n == 1 else ""),
+            is_active=True,
+            created_by=created_by,
+            created_at=now_utc(),
+        )
+        db.add(current)
+        p.active_version = f"v{n}"
+    else:
+        current.user_prompt_template = content
+    db.flush()
+    db.expire(p, ["versions"])   # cached collection may predate this write
+    return current
+
+
+# ---------------------------------------------------------------------------
 # Team many-to-many helpers
 # ---------------------------------------------------------------------------
 
-def parse_teams_from_data(data: dict) -> list[str] | None:
+def parse_teams_from_data(data: dict) -> list[int] | None:
     """Return team ids from an API payload; None if teams/team not present."""
     if "teams" in data:
         raw = data["teams"]
         if raw is None:
             return []
-        return [str(t).strip() for t in raw if str(t).strip()]
+        return [int(str(t).strip()) for t in raw if str(t).strip()]
     if "team" in data:
-        t = (data.get("team") or "").strip()
-        return [t] if t else []
+        t = str(data.get("team") or "").strip()
+        return [int(t)] if t else []
     return None
 
 
-def get_prompt_team_ids(prompt: PLPrompt) -> list[str]:
-    if prompt.prompt_teams:
-        return sorted(pt.team_id for pt in prompt.prompt_teams)
-    if prompt.team_id:
-        return [prompt.team_id]
-    return []
+def get_prompt_team_ids(prompt: Prompt) -> list[int]:
+    return sorted(link.team_id for link in (prompt.team_links or []))
 
 
-def set_prompt_teams(db: Session, prompt: PLPrompt, team_ids: list[str]) -> None:
-    """Replace prompt team links; keeps legacy team_id in sync (first team)."""
-    existing = {pt.team_id: pt for pt in (prompt.prompt_teams or [])}
+def set_prompt_teams(db: Session, prompt: Prompt, team_ids: list[int]) -> None:
+    """Replace prompt team links (the redundant scalar team_id is gone)."""
+    existing = {link.team_id: link for link in (prompt.team_links or [])}
     want = set(team_ids)
     for tid in want - set(existing):
-        db.add(PLPromptTeam(prompt_id=prompt.id, team_id=tid))
+        db.add(PromptTeamLink(prompt_id=prompt.id, team_id=tid))
     for tid, row in list(existing.items()):
         if tid not in want:
             db.delete(row)
-    prompt.team_id = team_ids[0] if team_ids else None
 
 
 # ---------------------------------------------------------------------------
-# Query building (visibility + filters + sort)
+# Query building (kind + visibility + filters + sort)
 # ---------------------------------------------------------------------------
 
 def base_prompt_query(db: Session) -> Query:
-    return db.query(PLPrompt).filter(PLPrompt.deleted_at.is_(None))
+    """Library rows only — every read AND write path in the library flow
+    starts here, so pipeline rows are unreachable through it (Decision 1)."""
+    return (
+        db.query(Prompt)
+        .filter(Prompt.prompt_kind == "library", Prompt.deleted_at.is_(None))
+    )
+
+
+def browse_prompts_query(db: Session, role: str | None, user_team,
+                         kind: str | None = None) -> Query:
+    """Console browse across kinds. ``kind`` in {library, pipeline, all};
+    callers without pipeline-manager access are silently stripped to
+    library-only regardless of the requested kind (server-side, no 403)."""
+    kind = (kind or "library").strip().lower()
+    if kind not in ("library", "pipeline", "all") or not can_manage_pipeline_prompts(role):
+        kind = "library"
+    q = db.query(Prompt).filter(Prompt.deleted_at.is_(None))
+    if kind != "all":
+        q = q.filter(Prompt.prompt_kind == kind)
+    return apply_visibility_filter(q, role or "author", user_team)
 
 
 def apply_sort(q: Query, sort: str) -> Query:
     if sort == "title":
-        return q.order_by(PLPrompt.title)
+        return q.order_by(Prompt.title)
     if sort == "created":
-        return q.order_by(PLPrompt.created_at.desc())
+        return q.order_by(Prompt.created_at.desc())
     if sort == "category":
-        return q.order_by(PLPrompt.category, PLPrompt.title)
-    return q.order_by(PLPrompt.updated_at.desc())
+        return q.order_by(Prompt.category, Prompt.title)
+    return q.order_by(Prompt.updated_at.desc())
 
 
-def apply_visibility_filter(q: Query, role: str | None, user_team: str | None) -> Query:
+def apply_visibility_filter(q: Query, role: str | None, user_team) -> Query:
     if is_manager(role):
         return q
     if not user_team:
-        return q.filter(PLPrompt.visibility == "global")
+        return q.filter(Prompt.visibility == "global")
     return q.filter(
         or_(
-            PLPrompt.visibility == "global",
-            (PLPrompt.visibility == "team")
-            & PLPrompt.prompt_teams.any(PLPromptTeam.team_id == user_team),
+            Prompt.visibility == "global",
+            (Prompt.visibility == "team")
+            & Prompt.team_links.any(PromptTeamLink.team_id == user_team),
         )
+    )
+
+
+def _active_content_matches(like: str):
+    """Filter: the active version's snapshot matches ``like`` (replaces the
+    old LIKE over pl_prompts.content — content lives on the version now)."""
+    return Prompt.versions.any(
+        PromptVersion.is_active.is_(True)
+        & func.lower(PromptVersion.user_prompt_template).like(like)
     )
 
 
@@ -159,61 +285,64 @@ def apply_list_filters(q: Query, args: dict) -> Query:
         like = f"%{search.lower()}%"
         q = q.filter(
             or_(
-                func.lower(PLPrompt.title).like(like),
-                func.lower(PLPrompt.description).like(like),
-                func.lower(PLPrompt.content).like(like),
+                func.lower(Prompt.title).like(like),
+                func.lower(Prompt.description).like(like),
+                _active_content_matches(like),
             )
         )
 
     category = (args.get("category") or "").strip()
     if category:
-        q = q.filter(func.lower(PLPrompt.category) == category.lower())
+        q = q.filter(func.lower(Prompt.category) == category.lower())
 
     tag = (args.get("tag") or "").strip()
     if tag:
-        q = q.join(PLPromptTag).filter(func.lower(PLPromptTag.tag) == tag.lower())
+        q = q.join(PromptTag).filter(func.lower(PromptTag.tag) == tag.lower())
 
     vis_f = (args.get("visibility") or "").strip()
     if vis_f:
-        q = q.filter(PLPrompt.visibility == vis_f)
+        q = q.filter(Prompt.visibility == vis_f)
 
     roots_only = str(args.get("roots_only") or "1").strip().lower()
     if roots_only in ("1", "true", "yes"):
-        q = q.filter(PLPrompt.parent_id.is_(None))
+        q = q.filter(Prompt.parent_id.is_(None))
 
-    parent_id = (args.get("parent_id") or "").strip()
+    parent_id = str(args.get("parent_id") or "").strip()
     if parent_id:
-        q = q.filter(PLPrompt.parent_id == parent_id)
+        try:
+            q = q.filter(Prompt.parent_id == int(parent_id))
+        except ValueError:
+            q = q.filter(False)
 
     return apply_sort(q, args.get("sort", "updated"))
 
 
-def visible_prompts_query(db: Session, role: str | None, user_team: str | None) -> Query:
+def visible_prompts_query(db: Session, role: str | None, user_team) -> Query:
     return apply_visibility_filter(base_prompt_query(db), role or "author", user_team)
 
 
-def list_distinct_categories(db: Session, role: str | None, user_team: str | None) -> list[str]:
+def list_distinct_categories(db: Session, role: str | None, user_team) -> list[str]:
     q = visible_prompts_query(db, role, user_team)
     rows = (
-        q.with_entities(PLPrompt.category)
-        .filter(PLPrompt.category.isnot(None), PLPrompt.category != "")
+        q.with_entities(Prompt.category)
+        .filter(Prompt.category.isnot(None), Prompt.category != "")
         .distinct()
-        .order_by(PLPrompt.category)
+        .order_by(Prompt.category)
         .all()
     )
     return [row[0] for row in rows if row[0]]
 
 
-def list_distinct_tags(db: Session, role: str | None, user_team: str | None, *, category: str | None = None) -> list[str]:
+def list_distinct_tags(db: Session, role: str | None, user_team, *, category: str | None = None) -> list[str]:
     q = visible_prompts_query(db, role, user_team)
     if category:
-        q = q.filter(func.lower(PLPrompt.category) == category.strip().lower())
+        q = q.filter(func.lower(Prompt.category) == category.strip().lower())
     rows = (
-        q.join(PLPromptTag, PLPromptTag.prompt_id == PLPrompt.id)
-        .with_entities(PLPromptTag.tag)
-        .filter(PLPromptTag.tag.isnot(None), PLPromptTag.tag != "")
+        q.join(PromptTag, PromptTag.prompt_id == Prompt.id)
+        .with_entities(PromptTag.tag)
+        .filter(PromptTag.tag.isnot(None), PromptTag.tag != "")
         .distinct()
-        .order_by(PLPromptTag.tag)
+        .order_by(PromptTag.tag)
         .all()
     )
     return [row[0] for row in rows if row[0]]
@@ -227,16 +356,17 @@ class HierarchyError(ValueError):
     """Invalid parent_id for a prompt."""
 
 
-def child_count(db: Session, prompt_id: str) -> int:
-    return base_prompt_query(db).filter(PLPrompt.parent_id == prompt_id).count()
+def child_count(db: Session, prompt_id: int) -> int:
+    return base_prompt_query(db).filter(Prompt.parent_id == prompt_id).count()
 
 
-def resolve_parent_id(db: Session, parent_id: str | None, prompt_id: str | None = None) -> str | None:
-    if not parent_id:
+def resolve_parent_id(db: Session, parent_id, prompt_id: int | None = None) -> int | None:
+    if parent_id is None or str(parent_id).strip() == "":
         return None
-    parent_id = parent_id.strip()
-    if not parent_id:
-        return None
+    try:
+        parent_id = int(str(parent_id).strip())
+    except ValueError:
+        raise HierarchyError("Parent prompt not found")
     if prompt_id and parent_id == prompt_id:
         raise HierarchyError("A prompt cannot be its own parent")
 
@@ -254,11 +384,11 @@ def resolve_parent_id(db: Session, parent_id: str | None, prompt_id: str | None 
     return parent_id
 
 
-def list_children(db: Session, parent_id: str) -> list[PLPrompt]:
+def list_children(db: Session, parent_id: int) -> list[Prompt]:
     return (
         base_prompt_query(db)
-        .filter(PLPrompt.parent_id == parent_id)
-        .order_by(PLPrompt.updated_at.desc())
+        .filter(Prompt.parent_id == parent_id)
+        .order_by(Prompt.updated_at.desc())
         .all()
     )
 
@@ -267,7 +397,11 @@ def list_children(db: Session, parent_id: str) -> list[PLPrompt]:
 # Access control
 # ---------------------------------------------------------------------------
 
-def can_access_prompt(prompt: PLPrompt, role: str | None, user_team: str | None) -> bool:
+def can_access_prompt(prompt: Prompt, role: str | None, user_team) -> bool:
+    if prompt.prompt_kind != "library":
+        # Pipeline rows are visible only to pipeline managers (Decision 1);
+        # everyone else gets the same 404 as a nonexistent id — no leak.
+        return can_manage_pipeline_prompts(role)
     if is_manager(role):
         return True
     vis = prompt.visibility or "draft"
@@ -291,13 +425,13 @@ def can_access_prompt(prompt: PLPrompt, role: str | None, user_team: str | None)
 # Serializers
 # ---------------------------------------------------------------------------
 
-def _parent_summary(p: PLPrompt | None) -> dict | None:
+def _parent_summary(p: Prompt | None) -> dict | None:
     if not p:
         return None
     return {"id": p.id, "title": p.title}
 
 
-def _child_summary(p: PLPrompt) -> dict:
+def _child_summary(p: Prompt) -> dict:
     return {
         "id": p.id,
         "title": p.title,
@@ -306,25 +440,34 @@ def _child_summary(p: PLPrompt) -> dict:
     }
 
 
-def prompt_to_dict(db: Session, p: PLPrompt, include_relations: bool = True) -> dict:
+def _prompt_tags_list(p: Prompt) -> list[str]:
+    if p.prompt_kind == "pipeline":
+        # Pipeline rows keep the legacy comma-string column (Phase 1 decision;
+        # converging them into prompt_tags is Phase 8 hygiene).
+        return [t.strip() for t in (p.tags or "").split(",") if t.strip()]
+    return [t.tag for t in (p.tag_rows or [])]
+
+
+def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> dict:
     d = {
         "id": p.id,
         "parent_id": p.parent_id,
-        "title": p.title,
-        "content": p.content,
+        "title": p.title if p.title is not None else (p.name or ""),
+        "content": get_prompt_content(p),
         "description": p.description or "",
         "category": p.category or "",
         "visibility": p.visibility,
         "teams": get_prompt_team_ids(p),
-        "created_by": p.created_by or "",
+        "created_by": p.owner or "",
         "created_at": fmt_dt(p.created_at),
         "updated_at": fmt_dt(p.updated_at),
         "last_used_at": fmt_dt(p.last_used_at),
-        "tags": [t.tag for t in (p.tags or [])],
+        "tags": _prompt_tags_list(p),
         "variables": [
             {"name": v.name, "label": v.label or "", "hint": v.hint or ""}
-            for v in sorted(p.variables or [], key=lambda x: x.sort_order)
+            for v in sorted(p.variables or [], key=lambda x: x.sort_order or 0)
         ],
+        "prompt_kind": p.prompt_kind,
     }
     if include_relations:
         parent = p.parent if p.parent_id else None
@@ -336,12 +479,12 @@ def prompt_to_dict(db: Session, p: PLPrompt, include_relations: bool = True) -> 
         d["versions"] = [
             {
                 "version": v.version_number,
-                "content": v.content,
-                "note": v.note or "",
+                "content": v.user_prompt_template or "",
+                "note": v.change_reason or "",
                 "created_by": v.created_by or "",
                 "created_at": fmt_dt(v.created_at),
             }
-            for v in sorted(p.versions or [], key=lambda x: x.version_number)
+            for v in sorted(p.versions or [], key=lambda x: x.version_number or 0)
         ]
         d["attachments"] = [
             {
@@ -363,9 +506,9 @@ def review_stats_batch(db: Session, prompt_ids: list) -> dict:
     if not prompt_ids:
         return {}
     rows = (
-        db.query(PLReview.prompt_id, func.count(PLReview.id), func.avg(PLReview.rating))
-        .filter(PLReview.prompt_id.in_(prompt_ids))
-        .group_by(PLReview.prompt_id)
+        db.query(PromptReview.prompt_id, func.count(PromptReview.id), func.avg(PromptReview.rating))
+        .filter(PromptReview.prompt_id.in_(prompt_ids))
+        .group_by(PromptReview.prompt_id)
         .all()
     )
     return {r[0]: {"count": r[1], "avg": round(float(r[2] or 0), 1)} for r in rows}
@@ -375,15 +518,15 @@ def child_count_batch(db: Session, parent_ids: list) -> dict:
     if not parent_ids:
         return {}
     rows = (
-        db.query(PLPrompt.parent_id, func.count(PLPrompt.id))
-        .filter(PLPrompt.parent_id.in_(parent_ids), PLPrompt.deleted_at.is_(None))
-        .group_by(PLPrompt.parent_id)
+        db.query(Prompt.parent_id, func.count(Prompt.id))
+        .filter(Prompt.parent_id.in_(parent_ids), Prompt.deleted_at.is_(None))
+        .group_by(Prompt.parent_id)
         .all()
     )
     return {r[0]: r[1] for r in rows}
 
 
-def enrich(db: Session, prompt: PLPrompt, stats: dict, child_counts: dict | None = None) -> dict:
+def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None = None) -> dict:
     d = prompt_to_dict(db, prompt)
     s = stats.get(prompt.id, {"count": 0, "avg": 0})
     d["_review_stats"] = s
@@ -393,7 +536,7 @@ def enrich(db: Session, prompt: PLPrompt, stats: dict, child_counts: dict | None
     return d
 
 
-def review_to_dict(r: PLReview) -> dict:
+def review_to_dict(r: PromptReview) -> dict:
     return {
         "id": r.id,
         "prompt_id": r.prompt_id,
@@ -405,7 +548,7 @@ def review_to_dict(r: PLReview) -> dict:
     }
 
 
-def request_to_dict(req: PLPromptRequest) -> dict:
+def request_to_dict(req: PromptRequest) -> dict:
     return {
         "id": req.id,
         "title": req.title,
@@ -420,7 +563,7 @@ def request_to_dict(req: PLPromptRequest) -> dict:
     }
 
 
-def team_to_dict(t: PLTeam, user_count: int = 0, prompt_count: int = 0) -> dict:
+def team_to_dict(t: Team, user_count: int = 0, prompt_count: int = 0) -> dict:
     return {
         "id": t.id,
         "name": t.name,
@@ -435,15 +578,15 @@ def team_to_dict(t: PLTeam, user_count: int = 0, prompt_count: int = 0) -> dict:
 # Change snapshot / diff (for audit "changes")
 # ---------------------------------------------------------------------------
 
-def build_prompt_snapshot(db: Session, p: PLPrompt) -> dict:
+def build_prompt_snapshot(db: Session, p: Prompt) -> dict:
     return {
         "title": p.title,
-        "content": p.content,
+        "content": get_prompt_content(p),
         "description": p.description or "",
         "category": p.category or "",
         "visibility": p.visibility,
         "teams": get_prompt_team_ids(p),
-        "tags": sorted(t.tag for t in (p.tags or [])),
+        "tags": sorted(_prompt_tags_list(p)),
     }
 
 
@@ -458,7 +601,7 @@ def compute_prompt_changes(before: dict, after: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Audit logging (simplified, tenant-free)
+# Audit logging (unified audit_logs table — Decision 4)
 # ---------------------------------------------------------------------------
 
 SENSITIVE_KEYS = frozenset({"password", "password_hash", "token", "secret"})
@@ -482,7 +625,7 @@ def log_event(
     action: str,
     *,
     entity_type: str | None = None,
-    entity_id: str | None = None,
+    entity_id=None,
     summary: str = "",
     changes: dict | None = None,
     actor_username: str | None = None,
@@ -490,41 +633,65 @@ def log_event(
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> None:
+    """Write a PL audit event to the unified ``audit_logs`` table.
+
+    ``event_type`` (the dotted string, e.g. ``prompt.create``) lands in
+    ``AuditLog.action``; the short ``action`` argument is accepted for
+    signature compatibility but derived from the suffix on read.
+    """
     try:
-        event = PLAuditEvent(
-            id=str(uuid.uuid4()),
-            event_type=event_type,
-            action=action,
-            actor_username=actor_username,
-            actor_role=actor_role,
+        db.add(AuditLog(
+            user_id=actor_username or "system",
+            action=event_type,
             entity_type=entity_type,
-            entity_id=entity_id,
+            entity_id=str(entity_id) if entity_id is not None else None,
             summary=summary,
             changes=redact_changes(changes),
-            ip_address=ip_address,
+            actor_role=actor_role,
+            ip_address=(ip_address or "")[:45] or None,
             user_agent=(user_agent or "")[:512] or None,
-        )
-        db.add(event)
+            created_at=now_utc(),
+        ))
         db.flush()
     except Exception:  # audit must never break the main request
         pass
 
 
-def audit_event_to_dict(e: PLAuditEvent) -> dict:
+def _short_action(action: str | None) -> str:
+    return (action or "").rsplit(".", 1)[-1]
+
+
+def _opaque_entity_id(value: str | None):
+    """entity_id is stored as String; PL entity ids are integers after the
+    cutover — return them as ints so they compare equal to serialized ids."""
+    if value is None:
+        return None
+    return int(value) if value.isdigit() else value
+
+
+def audit_event_to_dict(e: AuditLog) -> dict:
     return {
         "id": e.id,
-        "event_type": e.event_type,
-        "action": e.action,
-        "actor_username": e.actor_username,
+        "event_type": e.action,
+        "action": _short_action(e.action),
+        "actor_username": e.user_id,
         "actor_role": e.actor_role,
         "entity_type": e.entity_type,
-        "entity_id": e.entity_id,
-        "summary": e.summary,
+        "entity_id": _opaque_entity_id(e.entity_id),
+        "summary": e.summary or "",
         "changes": e.changes,
         "ip_address": e.ip_address,
         "user_agent": e.user_agent,
         "created_at": fmt_dt(e.created_at),
     }
+
+
+def pl_audit_scope(q: Query) -> Query:
+    """Restrict a query over AuditLog to the PL action families, so the PL
+    audit UI doesn't surface unrelated CAS audit rows from the shared table."""
+    return q.filter(or_(*[
+        AuditLog.action.like(f"{prefix}%") for prefix in PL_AUDIT_ACTION_PREFIXES
+    ]))
 
 
 def events_to_csv(events: list) -> str:
@@ -537,13 +704,13 @@ def events_to_csv(events: list) -> str:
     for e in events:
         writer.writerow([
             fmt_dt(e.created_at),
-            e.event_type,
             e.action,
-            e.actor_username or "",
+            _short_action(e.action),
+            e.user_id or "",
             e.actor_role or "",
             e.entity_type or "",
             e.entity_id or "",
-            e.summary,
+            e.summary or "",
             e.ip_address or "",
             e.user_agent or "",
             json.dumps(e.changes) if e.changes else "",
