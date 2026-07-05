@@ -25,12 +25,17 @@ def count_prompts(db) -> int:
 # ---------------------------------------------------------------------------
 
 def get_default_prompt(db, component_type: str) -> Prompt | None:
-    """Return the single is_default=True asset for *component_type*, or None."""
+    """Return the single is_default=True asset for *component_type*, or None.
+
+    Pipeline rows only — library rows can never resolve for generation, even
+    if one were mislabeled with a component_type/is_default.
+    """
     return (
         db.query(Prompt)
         .filter(
             Prompt.component_type == component_type,
             Prompt.is_default == True,  # noqa: E712
+            Prompt.prompt_kind == "pipeline",
         )
         .first()
     )

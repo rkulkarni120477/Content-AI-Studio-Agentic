@@ -107,6 +107,9 @@ def build_prompt(
     version: str = "latest",
     db=None,
     strict: bool = False,
+    project_id=None,
+    cluster_id=None,
+    course_id=None,
 ) -> tuple[str, str, str, str]:
     """Load a named template, optionally validate variables, and render both parts.
 
@@ -127,6 +130,9 @@ def build_prompt(
         When ``True``, raise ``ValueError`` for any missing variable.
         Default ``False`` — leave placeholders as-is so callers can supply
         partial variable sets.
+    project_id / cluster_id / course_id:
+        Optional generation context, forwarded to the loader for scope-fixed
+        resolution when component-keyed resolution is enabled.
 
     Returns
     -------
@@ -136,7 +142,10 @@ def build_prompt(
     """
     from promptops_app.prompts.prompt_loader import load_template  # deferred to break circular
 
-    tmpl = load_template(template_name, version=version, db=db)
+    tmpl = load_template(
+        template_name, version=version, db=db,
+        project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+    )
 
     system = render(tmpl.system_template, variables, strict=strict)
     user   = render(tmpl.user_template,   variables, strict=strict)

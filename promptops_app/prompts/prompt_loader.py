@@ -4,6 +4,9 @@ Load order (highest priority first)
 -------------------------------------
 1. **Database** — when a ``db`` session is provided and a matching
    ``Prompt`` / ``PromptVersion`` row exists (admin-updatable at runtime).
+   With ``PROMPT_RESOLVE_BY_COMPONENT`` enabled, the DB tier resolves the
+   pipeline row by scope fixing → component default → legacy stem ``name``;
+   otherwise by stem ``name`` only.
 2. **File**     — ``promptops_app/prompts/templates/<name>.md``.
 3. ``FileNotFoundError`` if neither source is available.
 
@@ -27,10 +30,43 @@ Variable syntax in template files
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+# ── Component-keyed resolution (Phase 8 name-key fix) ─────────────────────────
+#
+# Historically the DB tier looked up rows by exact ``Prompt.name`` == the stem
+# below, so the seeded ``default_*`` rows (keyed by component_type + is_default)
+# never satisfied a live lookup. With PROMPT_RESOLVE_BY_COMPONENT enabled, the
+# DB tier resolves pipeline prompts the way the management console keys them:
+#
+#   1. scope fixing        — resolve_fixed_prompt(component, course→cluster→project→global)
+#   2. component default   — the is_default=True row for the component_type
+#   3. legacy stem name    — Prompt.name == stem (secondary key, kept for
+#                            admin-created stem-named rows)
+#
+# The flag defaults OFF: the seeded default rows' bodies still carry legacy
+# ``{single}``-brace text that the ``{{double}}`` renderer would pass through
+# verbatim — verify/convert the default rows' bodies in an environment before
+# enabling it there. A bad default row degrades to the file/inline fallback
+# tiers only via the flag; turn it off to restore stem-name behavior exactly.
+
+_STEM_COMPONENT: dict[str, str] = {
+    "style_understanding":  "style",
+    "cdd_generation":       "cdd",
+    "blueprint_generation": "blueprint",
+    "content_generation":   "generate",
+}
+
+
+def component_resolution_enabled() -> bool:
+    """True when the PROMPT_RESOLVE_BY_COMPONENT feature flag is on."""
+    return os.getenv("PROMPT_RESOLVE_BY_COMPONENT", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -115,6 +151,9 @@ def load_template(
     *,
     version: str = "latest",
     db=None,
+    project_id=None,
+    cluster_id=None,
+    course_id=None,
 ) -> PromptTemplate:
     """Load a prompt template by name.
 
@@ -128,9 +167,16 @@ def load_template(
     db:
         SQLAlchemy session.  When supplied, DB rows take precedence over files
         so admin edits made through the Prompts UI are picked up at runtime.
+    project_id / cluster_id / course_id:
+        Optional generation context, honored only when component-keyed
+        resolution is enabled: the most specific ``PromptFixing`` for the
+        stem's component wins over the component default.
     """
     if db is not None:
-        tmpl = _from_db(db, name, version)
+        tmpl = _from_db(
+            db, name, version,
+            project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+        )
         if tmpl is not None:
             return tmpl
 
@@ -174,12 +220,56 @@ def _from_file(name: str) -> PromptTemplate:
     )
 
 
-def _from_db(db, name: str, version: str) -> PromptTemplate | None:
+def _resolve_pipeline_row(db, stem: str, *, project_id, cluster_id, course_id):
+    """Component-keyed row resolution: scope fixing → component default → None.
+
+    Only ever returns ``prompt_kind='pipeline'`` rows — a library row can never
+    be injected into a generation call (Decision 1).
+    """
+    component = _STEM_COMPONENT.get(stem)
+    if component is None:
+        return None
+
+    from promptops_app.database import Prompt
+    from promptops_app.repositories.prompt_repository import (
+        get_default_prompt,
+        resolve_fixed_prompt,
+    )
+
+    fixing = resolve_fixed_prompt(
+        db, component,
+        project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+    )
+    if fixing is not None and fixing.prompt_id:
+        row = (
+            db.query(Prompt)
+            .filter(Prompt.id == fixing.prompt_id,
+                    Prompt.prompt_kind == "pipeline")
+            .first()
+        )
+        if row is not None:
+            return row
+
+    return get_default_prompt(db, component)
+
+
+def _from_db(
+    db, name: str, version: str,
+    *, project_id=None, cluster_id=None, course_id=None,
+) -> PromptTemplate | None:
     """Try to load from the Prompt / PromptVersion ORM tables.  Returns None on any miss."""
     try:
         from promptops_app.database import Prompt, PromptVersion
 
-        prompt = db.query(Prompt).filter(Prompt.name == name).first()
+        prompt = None
+        if component_resolution_enabled():
+            prompt = _resolve_pipeline_row(
+                db, name,
+                project_id=project_id, cluster_id=cluster_id, course_id=course_id,
+            )
+        if prompt is None:
+            # Legacy secondary key: exact stem-named row.
+            prompt = db.query(Prompt).filter(Prompt.name == name).first()
         if not prompt:
             return None
 
