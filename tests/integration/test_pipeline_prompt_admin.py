@@ -475,6 +475,24 @@ class TestTagsConvergence:
                  prompt_repository.list_prompts_tagged(db, "special")}
         assert {"tagged_rows_only", "tagged_legacy_only"} <= names
 
+    def test_overlong_tag_rejected_not_500(self, client, auth_headers):
+        # prompt_tags.tag is String(100); PostgreSQL would raise on insert
+        # (SQLite doesn't enforce length), so the schema must 422 first.
+        long_tag = "x" * 101
+        r = client.post(BASE, json={
+            "name": "tags_too_long",
+            "description": "d",
+            "component_type": "cdd",
+            "tags": f"ok,{long_tag}",
+            "system_prompt": "SYS",
+            "user_prompt_template": "USR",
+        }, headers=auth_headers)
+        assert r.status_code == 422
+        p = _create_pipeline_prompt(client, auth_headers, "tags_too_long_upd")
+        r = client.put(f"{BASE}/{p['id']}", json={"tags": long_tag},
+                       headers=auth_headers)
+        assert r.status_code == 422
+
     def test_search_param_matches_tag_rows(self, client, auth_headers, db):
         from promptops_app.database import Prompt
 

@@ -5,7 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _validate_tag_lengths(raw: str | None) -> str | None:
+    """Each comma-separated tag must fit the prompt_tags.tag column (100)."""
+    if raw:
+        too_long = [t.strip() for t in raw.split(",") if len(t.strip()) > 100]
+        if too_long:
+            raise ValueError(
+                f"Each tag must be 100 characters or fewer; got {len(too_long)} longer one(s)."
+            )
+    return raw
 
 
 class PromptCreateRequest(BaseModel):
@@ -20,6 +31,11 @@ class PromptCreateRequest(BaseModel):
     )
     description: str = Field(default="", max_length=2000)
     tags: str = Field(default="", max_length=500, description="Comma-separated tags.")
+
+    @field_validator("tags")
+    @classmethod
+    def _tag_lengths(cls, v: str) -> str:
+        return _validate_tag_lengths(v)
     component_type: Optional[str] = Field(
         default=None,
         description="Pipeline component: style, cdd, blueprint, generate, or quiz.",
@@ -69,6 +85,11 @@ class PromptAISuggestResponse(BaseModel):
 class PromptUpdateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     tags: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("tags")
+    @classmethod
+    def _tag_lengths(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_tag_lengths(v)
     # Re-keying fields — change what generation resolves, so the endpoint
     # accepts them only from prompt.pipeline.edit holders (403 otherwise).
     # Omit/None = untouched; empty string = clear to NULL.

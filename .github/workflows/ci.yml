@@ -60,14 +60,14 @@ jobs:
         env:
           # Unit tests use SQLite in-memory — no real DB needed here.
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
           APP_ENV: development
         run: pytest tests/unit/ -v --tb=short
 
       - name: Run integration tests
         env:
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
           APP_ENV: development
           REDIS_URL: redis://localhost:6379/0
           CELERY_BROKER_URL: redis://localhost:6379/0
@@ -82,14 +82,14 @@ jobs:
       - name: Run characterization tests (prompt system safety net)
         env:
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
           APP_ENV: development
         run: pytest tests/characterization/ -v --tb=short
 
       - name: Generate coverage report
         env:
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
           APP_ENV: development
         run: pytest tests/ --cov=app --cov-report=xml --cov-fail-under=60
 
