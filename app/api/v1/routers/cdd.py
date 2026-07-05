@@ -239,7 +239,12 @@ def generate_cdd(
         }
 
         try:
-            system_prompt, user_prompt, _, _ = build_prompt("cdd_generation", variables, db=db)
+            system_prompt, user_prompt, _, _ = build_prompt(
+                "cdd_generation", variables, db=db,
+                project_id=course.project_id if course else None,
+                cluster_id=course.cluster_id if course else None,
+                course_id=request_body.course_id,
+            )
         except Exception:
             # Fall back to inline constants if the prompt library fails.
             from promptops_app.prompt_templates import (

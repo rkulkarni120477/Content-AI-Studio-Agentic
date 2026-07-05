@@ -168,6 +168,87 @@ class TestBlueprintResolution:
         assert call["user"] == "module=Module 1: Introduction teacher=Yes"
 
 
+class TestComponentKeyedRouterResolution:
+    """Phase 8 scope wiring — with PROMPT_RESOLVE_BY_COMPONENT on, the CDD and
+    Blueprint routers pass their course context so scope locks and component
+    defaults reach live generation calls."""
+
+    @pytest.fixture(autouse=True)
+    def _flag_on(self, monkeypatch):
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+
+    def test_seeded_default_row_reaches_live_cdd_generation(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        # The flip of test_seeded_default_row_is_ignored: flag on, the seeded
+        # default IS what the LLM receives.
+        from promptops_app.database import seed_data
+        from promptops_app.repositories.prompt_repository import (
+            get_active_version, get_default_prompt,
+        )
+
+        seed_data(db)
+        seeded_system = get_active_version(
+            db, get_default_prompt(db, "cdd").id
+        ).system_prompt
+
+        resp = client.post(
+            "/api/v1/cdd/generate",
+            json=_cdd_payload(course, project),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        assert capture_llm[0]["system"] == seeded_system
+
+    def test_course_scope_lock_reaches_live_cdd_generation(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        from promptops_app.repositories.prompt_repository import set_fixed_prompt
+
+        make_db_prompt(db, "default-cdd", system="DEFAULT SYS", user="default",
+                       component_type="cdd", is_default=True)
+        fixed = make_db_prompt(db, "course-cdd", system="FIXED SYS",
+                               user="fixed for {{course_name}}",
+                               component_type="cdd")
+        set_fixed_prompt(
+            db, component="cdd", scope_level="course", course_id=course.id,
+            prompt_id=fixed.id, fixed_by="test_admin", fixed_by_role="admin",
+        )
+
+        resp = client.post(
+            "/api/v1/cdd/generate",
+            json=_cdd_payload(course, project),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        assert capture_llm[0]["system"] == "FIXED SYS"
+        assert capture_llm[0]["user"] == "fixed for Foundations of Clinical Nursing"
+
+    def test_course_scope_lock_reaches_live_blueprint_generation(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        from promptops_app.repositories.prompt_repository import set_fixed_prompt
+
+        fixed = make_db_prompt(db, "course-bp", system="FIXED BP SYS",
+                               user="module={{selected_module}}",
+                               component_type="blueprint")
+        set_fixed_prompt(
+            db, component="blueprint", scope_level="course", course_id=course.id,
+            prompt_id=fixed.id, fixed_by="test_admin", fixed_by_role="admin",
+        )
+
+        resp = client.post(
+            "/api/v1/blueprints/generate",
+            json={"course_id": course.id, "project_id": project.id,
+                  "selected_module": "Module 1: Introduction",
+                  "model_choice": "GPT-5.4"},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (200, 201), resp.text
+        assert capture_llm[0]["system"] == "FIXED BP SYS"
+        assert capture_llm[0]["user"] == "module=Module 1: Introduction"
+
+
 class TestStyleResolution:
     def test_system_prompt_resolves_from_file_by_default(self, db):
         from promptops_app.services.style_service import _load_system_prompt

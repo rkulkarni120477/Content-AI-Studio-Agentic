@@ -178,7 +178,12 @@ def generate_blueprint(
             "style_guidelines":   style_context,
         }
         try:
-            system_prompt, user_prompt, _, _ = build_prompt("blueprint_generation", variables, db=db)
+            system_prompt, user_prompt, _, _ = build_prompt(
+                "blueprint_generation", variables, db=db,
+                project_id=course.project_id if course else request_body.project_id,
+                cluster_id=course.cluster_id if course else None,
+                course_id=request_body.course_id,
+            )
         except Exception:
             mode = "teacher" if request_body.teacher_mode else "student"
             system_prompt, user_prompt_tmpl, _ = get_blueprint_prompts(mode)
