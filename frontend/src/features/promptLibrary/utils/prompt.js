@@ -38,6 +38,26 @@ export function extractVarNames(content) {
   return [...found];
 }
 
+// Legacy Python-.format()-style {single}-brace placeholders. Every prompt the
+// backend renders — library AND pipeline — uses {{double}}; {single} survives
+// only in backend fallback constants that were never meant to be pasted into
+// the console. Detecting them lets the form warn instead of silently treating
+// the body as variable-less. Identifier-shaped tokens only, so JSON examples
+// ({"key": ...}) never match.
+export function findLegacyVarNames(content) {
+  const found = new Set();
+  const re = /\{(\w+)\}/g;
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    // Part of a {{double}} placeholder? Checked via neighbors instead of a
+    // lookbehind so the regex parses on older Safari.
+    const before = content[m.index - 1];
+    const after = content[m.index + m[0].length];
+    if (before !== '{' && after !== '}') found.add(m[1]);
+  }
+  return [...found];
+}
+
 export function toLabel(name) {
   return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }

@@ -13,7 +13,7 @@ import { useToast } from '../context/ToastContext';
 import { canManagePrompts } from '../utils/permissions';
 import { useAuth } from '../context/AuthContext';
 import TeamMultiSelect from '../components/TeamMultiSelect';
-import { extractVarNames, toLabel } from '../utils/prompt';
+import { extractVarNames, findLegacyVarNames, toLabel } from '../utils/prompt';
 import { plHome, plPrompt, plPromptEdit } from '../paths';
 
 export default function PromptFormPage() {
@@ -94,6 +94,8 @@ export default function PromptFormPage() {
     label: d.label || toLabel(name),
     hint: d.hint || '',
   }));
+
+  const legacyVars = findLegacyVarNames(content);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -229,6 +231,14 @@ export default function PromptFormPage() {
         <div className="field">
           <label>Content *</label>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={10} required />
+          {legacyVars.length > 0 && (
+            <p className="var-tip" style={{ color: 'var(--warning, #b45309)' }}>
+              ⚠ Legacy single-brace placeholder{legacyVars.length > 1 ? 's' : ''} detected:{' '}
+              {legacyVars.map((v) => `{${v}}`).join(', ')}. Prompts use double braces — write{' '}
+              {legacyVars.map((v) => `{{${v}}}`).join(', ')} or the variable
+              {legacyVars.length > 1 ? 's' : ''} won&apos;t be detected or filled.
+            </p>
+          )}
         </div>
         <div className="field">
           <label>Description</label>
