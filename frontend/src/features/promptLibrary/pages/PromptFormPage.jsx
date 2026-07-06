@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
+  checkDuplicate,
   createPrompt,
   deleteAttachment,
   fetchPrompt,
@@ -210,12 +211,24 @@ export default function PromptFormPage() {
     }
   }
 
+  // Advisory dedup (doc §10): on create, warn when a live same-kind prompt
+  // already carries this exact content — the user decides; never blocks.
+  async function confirmNoDuplicate() {
+    if (isEdit) return true;
+    const dup = await checkDuplicate(content.trim(), isPipeline ? 'pipeline' : 'library');
+    if (!dup) return true;
+    return window.confirm(
+      `"${dup.title}" already has identical content${dup.category ? ` (category: ${dup.category})` : ''}. Create a duplicate anyway?`,
+    );
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
     if (!title.trim() || !content.trim()) {
       show(isPipeline ? 'Registry name and user prompt template are required.' : 'Title and content are required.');
       return;
     }
+    if (!(await confirmNoDuplicate())) return;
     if (isPipeline) {
       if (!systemPrompt.trim()) {
         show('System prompt is required for pipeline prompts.');

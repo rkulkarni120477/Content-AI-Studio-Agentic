@@ -57,6 +57,23 @@ export async function createPrompt(body) {
   return data;
 }
 
+// Advisory dedup probe (never blocks): returns {id,title,kind,category} of a
+// live same-kind prompt with identical normalized content, or null. A failed
+// probe must not stop a save — callers treat errors as "no duplicate".
+export async function checkDuplicate(content, kind = 'library', excludeId = null) {
+  try {
+    const res = await apiFetch('/api/prompts/duplicate-check', {
+      method: 'POST',
+      body: JSON.stringify({ content, kind, exclude_id: excludeId }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.duplicate_of || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function updatePrompt(id, body) {
   const res = await apiFetch(`/api/prompts/${id}`, { method: 'PUT', body: JSON.stringify(body) });
   const data = await res.json();

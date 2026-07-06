@@ -324,3 +324,33 @@ class TestAudit:
             "id", "event_type", "action", "actor_username", "actor_role",
             "entity_type", "entity_id", "summary", "changes", "created_at",
         } <= set(events[0].keys())
+
+
+class TestDuplicateCheckEndpoint:
+    """POST /prompts/duplicate-check — Phase 11 advisory dedup probe."""
+
+    def test_probe_finds_normalized_match(self, client, auth_headers):
+        created = _create(client, auth_headers).json()
+        r = client.post(
+            "/api/v1/prompt-library/prompts/duplicate-check",
+            json={"content": "  draft a KICKOFF for {{course_name}}   aimed at {{audience}}. "},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+        dup = r.json()["duplicate_of"]
+        assert dup and dup["id"] == created["id"] and dup["kind"] == "library"
+
+        r = client.post(
+            "/api/v1/prompt-library/prompts/duplicate-check",
+            json={"content": "entirely different body"},
+            headers=auth_headers,
+        )
+        assert r.json()["duplicate_of"] is None
+
+    def test_probe_requires_manage_permission(self, client, author_headers):
+        r = client.post(
+            "/api/v1/prompt-library/prompts/duplicate-check",
+            json={"content": "x"},
+            headers=author_headers,
+        )
+        assert r.status_code == 403

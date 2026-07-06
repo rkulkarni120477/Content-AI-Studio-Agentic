@@ -148,6 +148,39 @@ def get_prompt_content(p: Prompt) -> str:
     return (v.user_prompt_template if v else "") or ""
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_prompt_content(text: str) -> str:
+    """Whitespace-collapsed, lowercased body — the doc-§10 dedup key."""
+    return _WS_RE.sub(" ", (text or "").strip()).lower()
+
+
+def find_duplicate_prompt(db: Session, content: str, *, kind: str = "library",
+                          exclude_id: int | None = None) -> Prompt | None:
+    """First live prompt of *kind* whose ACTIVE version matches *content*
+    after normalization, or None. Advisory only (create warns, never blocks)
+    — dedup for defaults is structural; this catches manual paste-copies.
+    In-Python scan: the comparison needs whitespace collapse, and the
+    candidate set (live rows of one kind) stays small.
+    """
+    norm = normalize_prompt_content(content)
+    if not norm:
+        return None
+    rows = (
+        db.query(Prompt, PromptVersion.user_prompt_template)
+        .join(PromptVersion, (PromptVersion.prompt_id == Prompt.id)
+              & PromptVersion.is_active.is_(True))
+        .filter(Prompt.deleted_at.is_(None), Prompt.prompt_kind == kind)
+    )
+    if exclude_id is not None:
+        rows = rows.filter(Prompt.id != exclude_id)
+    for p, body in rows.all():
+        if normalize_prompt_content(body) == norm:
+            return p
+    return None
+
+
 def set_prompt_content(db: Session, p: Prompt, content: str, *,
                        create_version: bool = False, note: str = "",
                        created_by: str | None = None) -> PromptVersion:

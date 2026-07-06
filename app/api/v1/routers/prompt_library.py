@@ -215,6 +215,35 @@ def render_prompt(pid: int, payload: dict = Body(default=None), db: Session = De
     return {"id": p.id, "title": p.title, "content": rendered, "variables": variables}
 
 
+@router.post("/prompts/duplicate-check")
+def duplicate_check(payload: dict = Body(...), db: Session = Depends(get_db),
+                    user=Depends(require_permission("prompt_library.manage"))):
+    """Advisory dedup probe (doc §10): does a live prompt already carry this
+    exact content (whitespace/case-normalized)? The create form warns on a
+    hit — it never blocks; structural dedup for defaults is unaffected."""
+    data = payload or {}
+    kind = (data.get("kind") or "library").strip().lower()
+    if kind not in ("library", "pipeline") or (
+        kind == "pipeline" and not svc.can_manage_pipeline_prompts(user.role)
+    ):
+        kind = "library"
+    exclude_id = data.get("exclude_id")
+    try:
+        exclude_id = int(exclude_id) if exclude_id is not None else None
+    except (TypeError, ValueError):
+        exclude_id = None
+    dup = svc.find_duplicate_prompt(db, data.get("content") or "", kind=kind,
+                                    exclude_id=exclude_id)
+    if dup is None:
+        return {"duplicate_of": None}
+    return {"duplicate_of": {
+        "id": dup.id,
+        "title": dup.title or dup.name,
+        "kind": dup.prompt_kind,
+        "category": dup.category,
+    }}
+
+
 @router.post("/prompts", status_code=201)
 def create_prompt(request: Request, payload: dict = Body(...), db: Session = Depends(get_db),
                   user=Depends(require_permission("prompt_library.manage"))):

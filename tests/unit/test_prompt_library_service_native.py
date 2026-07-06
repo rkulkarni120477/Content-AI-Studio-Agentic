@@ -344,3 +344,31 @@ class TestScopeFilter:
             q = svc.browse_prompts_query(db, role, None, kind="pipeline")
             rows = svc.apply_list_filters(q, {"course_id": str(course.id)}).all()
             assert rows == []
+
+
+class TestDuplicateDetection:
+    """Phase 11 (doc §10) — advisory normalized-content dedup probe."""
+
+    def test_normalization_matches_across_whitespace_and_case(self, db):
+        p = _mk_library_prompt(db, title="Original", content="Hello   {{name}}\nWelcome!")
+        db.flush()
+        dup = svc.find_duplicate_prompt(db, "hello {{name}} welcome!")
+        assert dup is not None and dup.id == p.id
+
+    def test_no_match_across_kinds_or_for_different_content(self, db):
+        _mk_library_prompt(db, title="Lib", content="SHARED BODY")
+        db.flush()
+        assert svc.find_duplicate_prompt(db, "SHARED BODY", kind="pipeline") is None
+        assert svc.find_duplicate_prompt(db, "something else") is None
+        assert svc.find_duplicate_prompt(db, "   ") is None
+
+    def test_exclude_id_skips_the_row_being_edited(self, db):
+        p = _mk_library_prompt(db, title="Self", content="EDIT ME")
+        db.flush()
+        assert svc.find_duplicate_prompt(db, "edit me", exclude_id=p.id) is None
+
+    def test_soft_deleted_rows_never_match(self, db):
+        p = _mk_library_prompt(db, title="Gone", content="GHOST BODY")
+        p.deleted_at = svc.now_utc()
+        db.flush()
+        assert svc.find_duplicate_prompt(db, "ghost body") is None
