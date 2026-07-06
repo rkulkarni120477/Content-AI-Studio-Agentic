@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  componentCategoryLabel,
   extractVarNames,
   fillPromptContent,
   findLegacyVarNames,
@@ -127,9 +128,22 @@ describe('pipelineStageLabel', () => {
     expect(pipelineStageLabel(undefined)).toBe('');
   });
 
-  it('maps known components to display labels', () => {
+  it('maps components to the requirements-doc category names', () => {
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'style' } })).toBe('Style');
     expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'cdd' } })).toBe('CDD');
-    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'generate' } })).toBe('Generate');
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'generate' } })).toBe(
+      'Lesson Generation',
+    );
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'quiz' } })).toBe('Assessment');
+  });
+
+  it('maps (generate, interactive) to Component and treats lesson as the NULL variant', () => {
+    expect(
+      pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'generate', variant: 'interactive' } }),
+    ).toBe('Component');
+    expect(
+      pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'generate', variant: 'lesson' } }),
+    ).toBe('Lesson Generation');
   });
 
   it('appends the variant when present', () => {
@@ -144,5 +158,15 @@ describe('pipelineStageLabel', () => {
     expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'course_scaffold' } })).toBe(
       'Course Scaffold',
     );
+  });
+});
+
+describe('componentCategoryLabel', () => {
+  it('is the canonical key→category mapping used by every surface', () => {
+    expect(componentCategoryLabel('quiz')).toBe('Assessment');
+    expect(componentCategoryLabel('generate', 'interactive')).toBe('Component');
+    expect(componentCategoryLabel('blueprint', 'student')).toBe('Blueprint / student');
+    expect(componentCategoryLabel(null, 'legacy')).toBe('Pipeline / legacy');
+    expect(componentCategoryLabel('')).toBe('Pipeline');
   });
 });

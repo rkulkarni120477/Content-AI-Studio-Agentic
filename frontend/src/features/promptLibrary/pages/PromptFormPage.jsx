@@ -386,11 +386,11 @@ export default function PromptFormPage() {
                   disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
                 >
                   <option value="">— none —</option>
-                  <option value="style">style</option>
-                  <option value="cdd">cdd</option>
-                  <option value="blueprint">blueprint</option>
-                  <option value="generate">generate</option>
-                  <option value="quiz">quiz</option>
+                  <option value="style">Style (style)</option>
+                  <option value="cdd">CDD (cdd)</option>
+                  <option value="blueprint">Blueprint (blueprint)</option>
+                  <option value="generate">Lesson Generation (generate)</option>
+                  <option value="quiz">Assessment (quiz)</option>
                 </select>
               </div>
               <div className="field">
@@ -399,7 +399,7 @@ export default function PromptFormPage() {
                   value={variant}
                   onChange={(e) => setVariant(e.target.value)}
                   list="variantList"
-                  placeholder="e.g. teacher, student, interactive"
+                  placeholder="e.g. teacher, student, interactive (generate+interactive = Component)"
                   disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
                 />
                 <datalist id="variantList">

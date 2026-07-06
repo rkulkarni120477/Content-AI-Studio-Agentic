@@ -65,19 +65,31 @@ export function toLabel(name) {
 // Pipeline rows have no freeform category — their classification is the
 // load-bearing (component_type, variant) resolution key. Where the UI shows a
 // category for library rows, show the stage instead of an empty cell.
+//
+// Display names follow the CAS-sync requirements doc's six categories
+// (Style, CDD, Blueprint, Assessment, Component, Lesson Generation). The
+// resolution keys themselves never change: quiz → "Assessment",
+// generate → "Lesson Generation", (generate, interactive) → "Component".
 const STAGE_LABELS = {
   style: 'Style',
   cdd: 'CDD',
   blueprint: 'Blueprint',
-  generate: 'Generate',
-  quiz: 'Quiz',
+  generate: 'Lesson Generation',
+  quiz: 'Assessment',
 };
+
+export function componentCategoryLabel(componentType, variant) {
+  if (!componentType) return variant ? `Pipeline / ${variant}` : 'Pipeline';
+  if (componentType === 'generate') {
+    if (variant === 'interactive') return 'Component';
+    if (!variant || variant === 'lesson') return 'Lesson Generation';
+  }
+  const base = STAGE_LABELS[componentType] || toLabel(componentType);
+  return variant ? `${base} / ${variant}` : base;
+}
 
 export function pipelineStageLabel(p) {
   if (p?.prompt_kind !== 'pipeline') return '';
   const pipe = p.pipeline || {};
-  const base = pipe.component_type
-    ? STAGE_LABELS[pipe.component_type] || toLabel(pipe.component_type)
-    : 'Pipeline';
-  return pipe.variant ? `${base} / ${pipe.variant}` : base;
+  return componentCategoryLabel(pipe.component_type, pipe.variant);
 }

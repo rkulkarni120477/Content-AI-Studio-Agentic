@@ -13,7 +13,7 @@ import { setPipelineDefault, setPipelineVersionState } from '../api/pipeline';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
-import { fillPromptContent, starsDisplay } from '../utils/prompt';
+import { componentCategoryLabel, fillPromptContent, starsDisplay } from '../utils/prompt';
 import { plHome, plPrompt, plPromptEdit, plPromptNewChild, plRequestNew } from '../paths';
 
 // Mirrors the backend's _STATE_TRANSITIONS (illegal moves 409 server-side).
@@ -235,8 +235,8 @@ export default function PromptDetailPage() {
           {isPipeline && pipe ? (
             <p className="view-meta">
               <span className="badge badge-team" style={{ marginRight: 6 }}>
-                Pipeline · {pipe.component_type || 'no component'}
-                {pipe.variant ? ` / ${pipe.variant}` : ''}
+                Pipeline · {componentCategoryLabel(pipe.component_type, pipe.variant)}
+                {pipe.component_type ? ` (${pipe.component_type}${pipe.variant ? `/${pipe.variant}` : ''})` : ''}
               </span>
               {pipe.is_default && (
                 <span className="badge badge-global" style={{ marginRight: 6 }}>
@@ -285,7 +285,7 @@ export default function PromptDetailPage() {
           )}
           {isPipeline && canPipeline && pipe?.component_type && (
             <button type="button" className="btn btn-ghost" onClick={() => void handleToggleDefault()}>
-              {pipe.is_default ? 'Clear default' : `Make default for ${pipe.component_type}${pipe.variant ? ` / ${pipe.variant}` : ''}`}
+              {pipe.is_default ? 'Clear default' : `Make default for ${componentCategoryLabel(pipe.component_type, pipe.variant)}`}
             </button>
           )}
         </div>

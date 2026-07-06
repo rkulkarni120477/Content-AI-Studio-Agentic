@@ -41,14 +41,14 @@ const PHASES = [
   },
   {
     key: 'generate',
-    label: 'Generate — lesson',
-    desc: 'Lesson authoring (variant=interactive covers interactive components).',
+    label: 'Lesson Generation',
+    desc: 'Lesson authoring (key: generate; variant=interactive serves the Component category).',
     refWords: ['storyboard', 'development'],
   },
   {
     key: 'quiz',
-    label: 'Generate — quiz',
-    desc: 'Quiz / assessment authoring.',
+    label: 'Assessment',
+    desc: 'Quiz / assessment authoring (key: quiz).',
     refWords: ['assessment', 'quiz', 'tagging'],
   },
 ];
