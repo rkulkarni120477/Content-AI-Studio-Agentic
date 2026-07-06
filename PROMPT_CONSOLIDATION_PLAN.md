@@ -559,36 +559,51 @@ wiring the console UI.
 
 ### Build items (gaps)
 
-- [ ] **Course-grouped library view (doc §2, §8 — the headline UX).** Collapsible Course → prompts
-  hierarchy showing every prompt a course *resolves to* (scope locks via `prompt_fixings` +
-  component defaults as the shared fallback rows). Same prompt appears under every mapped course
-  while remaining one master row — exactly the doc's §6.2 display requirement. Likely shape: a
-  "By course" grouping mode on the list page or an expansion of the Flow view (which already knows
-  per-course effective resolution); decide with the pending "Flow as default landing view" UX call.
-- [ ] **Course/cluster/project filters in the PL list (doc §8).** Filter prompts by scope
-  membership — derivable from `prompt_fixings` (+ defaults = "all courses"). Needs a backend query
-  param (`kind`-style) on the browse endpoint; UI dropdowns beside the existing category/tag filters.
-- [ ] **Category taxonomy reconciliation (doc §3).** Doc names: Style, CDD, Blueprint, Assessment,
-  Component, Lesson Generation. Ours: `component_type` style/cdd/blueprint/generate (+`variant`
-  lesson/assessment/interactive, quiz). Decide the display-label mapping (e.g. `generate/assessment`
-  ↔ "Assessment") and apply it consistently (STAGE_LABELS in `frontend/.../utils/prompt.js`, Flow
-  view, CAS dropdown grouping). Display-layer only — the resolution keys do NOT change.
-- [ ] **Scope metadata surfaced as searchable facets (doc §4).** Doc wants course/cluster/project/
-  version/status as *tags*. Storing them as freeform tags would drift (same reason pipeline rows
-  have no freeform category); instead surface the relational facts (fixings, active version,
-  workflow_state) as read-only chips/facets in list + detail + search. Manual freeform tags remain
-  available for anything else.
-- [ ] **Duplicate detection at creation (doc §10).** Warn (not block) on create/import when
-  normalized content matches an existing prompt of the same kind/component — the doc's dedup is
-  already structural for defaults, this covers manual paste duplicates.
-- [ ] **`tag_type` on tags (doc §7.3) — decide, likely NO.** Freeform tags stay untyped; typed
-  facts are relational (previous item). Record as deviation if declined.
-- [ ] **Category mandatory (doc §10) — decide.** Enforce category on library create (422 when
-  blank) or record as deviation. Pipeline rows: `component_type` already enforced where it matters
-  (defaults, fixings, dropdown filtering).
-- [ ] **Archived-prompt exclusion audit (doc §9).** Verify soft-deleted (`deleted_at`) and
-  non-active-workflow-state prompts never reach CAS selection dropdowns or resolution; add a test
-  pinning it.
+- [x] **Course-grouped library view (doc §2, §8 — the headline UX).** Done 2026-07-06 (`39875e5`).
+  `GET /api/v1/prompts/by-course` computes every course's effective prompt set in one pass
+  (fixings + defaults loaded whole; per-course resolution replicates `resolve_fixed_prompt`
+  semantics — own-ID scope match, variant-incompatible fixings fall through; slots = the six doc
+  categories + dynamic slots for authored variant defaults). New **Courses** tab
+  (`/prompt-library/courses`, all readers — same audience as Flow) renders collapsible course
+  groups with source badges (🔒 scope locks / Default / File template / Built-in builder); a shared
+  default displays under every course while remaining one master row (doc §6.2). Detail links
+  admin-only. 5 integration tests; live-smoked on rehearsal (16 courses, defaults resolve,
+  quiz=file, interactive=builtin).
+- [x] **Course/cluster/project filters in the PL list (doc §8).** Done 2026-07-06 (`0ec8666`).
+  `course_id`/`cluster_id`/`project_id` params on `apply_list_filters`: matches pipeline rows
+  locked anywhere relevant to the scope (upward covering chain for a course, downward subtree for
+  cluster/project, global always) plus inherited defaults; most specific id wins; unknown ids →
+  empty; scope implies pipeline-kind so the non-admin library-only boundary holds (leak test).
+  UI: Project → Course cascading selects on the admin Pipeline tab. 6 unit tests.
+- [x] **Category taxonomy reconciliation (doc §3).** Done 2026-07-06 (`18fe1ce`). Canonical mapping
+  `componentCategoryLabel()`: style→Style, cdd→CDD, blueprint→Blueprint, generate→**Lesson
+  Generation**, quiz→**Assessment**, (generate, interactive)→**Component**. Wired through
+  list/card/CSV, Flow phase labels, the form's component select (values stay keys), detail header
+  (raw key kept alongside). Display-layer only — resolution keys unchanged.
+- [x] **Scope metadata surfaced as searchable facets (doc §4).** Done 2026-07-06 (`f8418cc`).
+  `GET /api/v1/prompts/fixings` (list; prompt_id/component filters; scope_name resolved
+  server-side). Pipeline detail page renders read-only "Used by" chips — '★ All courses (component
+  default)', '🔒 Course: X' — instead of the doc's freeform tags (drift risk). Version/status
+  facets already existed as badges.
+- [x] **Duplicate detection at creation (doc §10).** Done 2026-07-06 (`aebb30c`).
+  `find_duplicate_prompt` (whitespace/case-normalized active-version match, same kind, soft-deleted
+  excluded) + `POST /prompt-library/prompts/duplicate-check` (manage-gated). Create form probes and
+  asks via confirm — warns, never blocks; probe failure never stops a save.
+- [x] **`tag_type` on tags (doc §7.3) — decided NO** (2026-07-06). Freeform tags stay untyped;
+  typed facts are relational and now surfaced as facets. Recorded as deviation below.
+- [x] **Category mandatory (doc §10) — decided ENFORCE** (2026-07-06, `f197857`). Library create
+  400s on blank category (the silent `'General'` fallback removed); update rejects an explicit
+  blank, omission stays a valid partial update; form field required. Pipeline rows unaffected
+  (component keys are their classification).
+- [x] **Archived-prompt exclusion audit (doc §9).** Done 2026-07-06 (`74a8e17`). Audit found no
+  `deleted_at` guards on selection/resolution surfaces; added dormant forward guards (no write
+  path soft-deletes a pipeline row today, so zero reachable behavior change; flag-off identical):
+  `get_default_prompt`, `list_prompts_by_component`, `list_prompts_tagged`, `list_all_prompts`,
+  the fixing-target load (falls through to the component default), the legacy stem lookup, and
+  by-course lookups. 7 pinning tests (`test_archived_exclusion.py`). Note: version-tier nuance —
+  `_from_db('latest')` falls back to the newest version only when a row has NO active version
+  (legacy safety net for pre-gate rows); the approval gate always keeps an active version on
+  deployed rows, so draft versions cannot hijack selection.
 
 ### Documented deviations (confirm with stakeholders, then close)
 
@@ -611,6 +626,12 @@ don't churn twice.
 scope locks); filter the library by course/cluster/project; category labels match CAS tab names
 one-to-one; duplicate-content creation warns; archived prompts provably absent from CAS selection;
 each deviation has an explicit stakeholder sign-off note.
+
+**Status (2026-07-06):** all 8 build/decision items implemented and committed
+(`18fe1ce`→`74a8e17`); backend suite 270, frontend 46, build green. Remaining in this phase: the
+three deviation sign-offs above (stakeholder), and the user-facing acceptance pass over the new
+Courses tab + scope filters (rides the 7b walkthrough — the :8001 walkthrough API needs a restart
+to pick up the new endpoints).
 
 ---
 
@@ -653,6 +674,7 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 
 | Date | Session focus | Phases touched | Outcome |
 |---|---|---|---|
+| 2026-07-06 | **Phase 11 executed — all 8 build/decision items** (seventh implementation session, cont.) | 11 | Six commits (`18fe1ce`, `39875e5`, `0ec8666`, `f8418cc`, `aebb30c`, `f197857`, `74a8e17`). (1) **Taxonomy**: `componentCategoryLabel()` maps keys→doc categories (generate→Lesson Generation, quiz→Assessment, generate+interactive→Component); wired through list/card/CSV/Flow/form/detail; keys unchanged. (2) **Course-grouped view**: `GET /prompts/by-course` (one-pass resolution replicating `resolve_fixed_prompt`; six doc-category slots + dynamic variant-default slots) + **Courses** tab with collapsible groups & source badges; live-smoked on rehearsal (16 courses). (3) **Scope filters**: `course_id`/`cluster_id`/`project_id` on browse (upward chain + downward subtree + defaults; non-admin no-leak pinned) + Project→Course selects on the Pipeline tab. (4) **Facets**: `GET /prompts/fixings` w/ scope names; detail-page read-only "Used by" chips (deliberately NOT freeform tags). (5) **Dup warning**: normalized-content probe + confirm on create (warns, never blocks). (6) **tag_type: declined** (typed facts are relational — deviation recorded). (7) **Category mandatory: enforced** (400 on blank create/explicit-blank update; 'General' fallback removed). (8) **Archived exclusion**: dormant `deleted_at` guards on every selection surface + resolution tier (zero reachable behavior change, flag-off identical) + 7 pinning tests. Suites: backend **270 passed** (+27 this stretch), frontend **46 passed**, build green. Remaining Phase 11: 3 deviation sign-offs (tenant, per-course copies, ID format) + acceptance pass over the new surfaces (needs :8001 restart to serve the new endpoints). |
 | 2026-07-06 | **Walkthrough support + requirements-doc alignment** (seventh implementation session) | 7b (walkthrough fix), 11 (new) | (1) Walkthrough feedback fix (commit `29ddf0a`): Pipeline-tab Category column was empty by design (pipeline rows carry no freeform `category` — their key is `component_type`+`variant`); added `pipelineStageLabel()` deriving the display label from the real key and wired it into the list row, card footer, and CSV export — no schema change, label can never drift from what generation resolves. 4 new vitest cases (43 total green), build green. (2) Assessed the implementation against `Technical Requirements- Prompt Library and Content AI Studio Sync.docx`: data-model core (master record + dedup, mapping table, versioning, bidirectional sync, category-controlled CAS dropdowns) already delivered — often stronger than spec (`prompt_fixings` full scope hierarchy, enforced phase-appropriateness, append-only versions); gaps are presentation/metadata: course-grouped view, scope filters, taxonomy naming (Assessment/Component/Lesson Generation vs generate+variants), scope facets, duplicate-content warning, plus three deviations to confirm (no tenant column, no per-course prompt copies, integer IDs). Added **Phase 11 — Requirements-doc alignment** capturing all of it (8 build/decision items, 3 deviation sign-offs, ordering note: taxonomy decision before the grouped view; all additive, after 7b sign-off). |
 | 2026-07-02 | Plan authored | — | Initial version (original merge direction) |
 | 2026-07-03 | Design finalized | 0, 0.5, 1–10 | Reversed direction to native-tables-as-base; ran four code audits; built the unified prompt model + Library-as-console design + fair table-base analysis; locked three decisions; scheduled the name-key fix and editor consolidation; consolidated the whole document into a clean SSOT. No implementation started |
