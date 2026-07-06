@@ -2,8 +2,18 @@ import { forwardRef } from 'react';
 import { cn } from '@utils/helpers';
 import styles from './Select.module.scss';
 
+function renderOption(opt) {
+  const value = typeof opt === 'object' ? opt.value : opt;
+  const label = typeof opt === 'object' ? opt.label : opt;
+  return (
+    <option key={value} value={value} disabled={opt.disabled}>
+      {label}
+    </option>
+  );
+}
+
 const Select = forwardRef(function Select(
-  { label, id, error, hint, required, options = [], placeholder, wrapperClassName, className, ...rest },
+  { label, id, error, hint, required, options = [], groups, placeholder, wrapperClassName, className, ...rest },
   ref,
 ) {
   const selectId = id || label?.toLowerCase().replace(/\s+/g, '-');
@@ -26,15 +36,13 @@ const Select = forwardRef(function Select(
           {...rest}
         >
           {placeholder && <option value="">{placeholder}</option>}
-          {options.map((opt) => {
-            const value = typeof opt === 'object' ? opt.value : opt;
-            const label = typeof opt === 'object' ? opt.label : opt;
-            return (
-              <option key={value} value={value} disabled={opt.disabled}>
-                {label}
-              </option>
-            );
-          })}
+          {groups
+            ? groups.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.options.map(renderOption)}
+              </optgroup>
+            ))
+            : options.map(renderOption)}
         </select>
         <span className={styles.field__chevron} aria-hidden="true">▾</span>
       </div>

@@ -585,7 +585,7 @@ export default function GeneratePage() {
                 disabled={launchDisabled}
                 onClick={onLaunch}
               >
-                {isGenerating ? 'Launching…' : '🚀 Launch Pipeline'}
+                {isGenerating ? 'Generating…' : '🚀 Generate'}
               </Button>
             </div>
 
@@ -598,7 +598,7 @@ export default function GeneratePage() {
           components.length > 0 ? (
             <div className={styles.readyState}>
               ✅ <strong>Blueprint loaded</strong> — {components.length} component(s) ready.
-              Select a component and click <strong>🚀 Launch Pipeline</strong>.
+              Select a component and click <strong>🚀 Generate</strong>.
             </div>
           ) : (
             <div className={styles.configureEmpty}>

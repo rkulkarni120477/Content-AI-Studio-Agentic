@@ -85,6 +85,7 @@ export const blueprintService = {
   },
 
   exportBlueprint: (id, format) => api.download(BLUEPRINT.EXPORT(id), { params: { format } }),
+  exportModuleLessons: (id, format) => api.download(BLUEPRINT.EXPORT_LESSONS(id), { params: { format } }),
   getComponents: async (id) => {
     const res = await api.get(BLUEPRINT.PARSE_COMPONENTS(id));
     return res.components || res || [];
