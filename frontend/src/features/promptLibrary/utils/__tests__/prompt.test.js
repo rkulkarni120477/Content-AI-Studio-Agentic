@@ -3,6 +3,7 @@ import {
   extractVarNames,
   fillPromptContent,
   findLegacyVarNames,
+  pipelineStageLabel,
   starsDisplay,
   toLabel,
   visibilityLabel,
@@ -117,5 +118,31 @@ describe('visibilityLabel', () => {
       className: 'badge-draft',
       text: 'weird',
     });
+  });
+});
+
+describe('pipelineStageLabel', () => {
+  it('returns empty for library rows and null-ish input', () => {
+    expect(pipelineStageLabel({ prompt_kind: 'library', category: 'Healthcare' })).toBe('');
+    expect(pipelineStageLabel(undefined)).toBe('');
+  });
+
+  it('maps known components to display labels', () => {
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'cdd' } })).toBe('CDD');
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'generate' } })).toBe('Generate');
+  });
+
+  it('appends the variant when present', () => {
+    expect(
+      pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'blueprint', variant: 'teacher' } }),
+    ).toBe('Blueprint / teacher');
+  });
+
+  it('falls back to Pipeline for component-less rows and title-cases unknown components', () => {
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: {} })).toBe('Pipeline');
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline' })).toBe('Pipeline');
+    expect(pipelineStageLabel({ prompt_kind: 'pipeline', pipeline: { component_type: 'course_scaffold' } })).toBe(
+      'Course Scaffold',
+    );
   });
 });

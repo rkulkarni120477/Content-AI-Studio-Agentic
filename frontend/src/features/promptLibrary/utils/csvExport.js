@@ -1,3 +1,5 @@
+import { pipelineStageLabel } from './prompt';
+
 function escapeCsvField(value) {
   const s = String(value ?? '');
   if (/[",\r\n]/.test(s)) {
@@ -24,7 +26,7 @@ export function promptsToCsv(prompts) {
     p.title,
     promptBody(p),
     p.description,
-    p.category,
+    p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category,
     p.visibility,
     (p.teams || []).join('; '),
     (p.tags || []).join('; '),

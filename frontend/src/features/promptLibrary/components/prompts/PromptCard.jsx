@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { starsDisplay } from '../../utils/prompt';
+import { pipelineStageLabel, starsDisplay } from '../../utils/prompt';
 import { plPrompt, plPromptEdit } from '../../paths';
 import VisibilityBadge from './VisibilityBadge';
 
@@ -8,6 +8,7 @@ export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, on
   const vars = p.variables || [];
   const verCount = (p.versions || []).length || 1;
   const rs = p._review_stats || { count: 0, avg: 0 };
+  const category = p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category;
 
   function handleCopy() {
     if (vars.length) {
@@ -35,7 +36,7 @@ export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, on
         </div>
       )}
       <div className="card-footer">
-        {p.category && <span className="card-meta">📁 {p.category}</span>}
+        {category && <span className="card-meta">📁 {category}</span>}
         {vars.length > 0 && (
           <span className="var-chip">
             ⚙ {vars.length} var{vars.length > 1 ? 's' : ''}

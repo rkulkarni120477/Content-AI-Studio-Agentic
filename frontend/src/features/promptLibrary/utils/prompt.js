@@ -61,3 +61,23 @@ export function findLegacyVarNames(content) {
 export function toLabel(name) {
   return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+// Pipeline rows have no freeform category — their classification is the
+// load-bearing (component_type, variant) resolution key. Where the UI shows a
+// category for library rows, show the stage instead of an empty cell.
+const STAGE_LABELS = {
+  style: 'Style',
+  cdd: 'CDD',
+  blueprint: 'Blueprint',
+  generate: 'Generate',
+  quiz: 'Quiz',
+};
+
+export function pipelineStageLabel(p) {
+  if (p?.prompt_kind !== 'pipeline') return '';
+  const pipe = p.pipeline || {};
+  const base = pipe.component_type
+    ? STAGE_LABELS[pipe.component_type] || toLabel(pipe.component_type)
+    : 'Pipeline';
+  return pipe.variant ? `${base} / ${pipe.variant}` : base;
+}

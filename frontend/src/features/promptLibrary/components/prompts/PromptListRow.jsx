@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { plPrompt, plPromptEdit } from '../../paths';
+import { pipelineStageLabel } from '../../utils/prompt';
 import VisibilityBadge from './VisibilityBadge';
 
 export default function PromptListRow({
@@ -33,7 +34,7 @@ export default function PromptListRow({
         </Link>
         {p.description && <div className="list-desc">{p.description}</div>}
       </div>
-      <div className="list-cat">{p.category || ''}</div>
+      <div className="list-cat">{p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category || ''}</div>
       <div className="list-tags">
         {(p.tags || []).slice(0, 3).map((t) => (
           <span
