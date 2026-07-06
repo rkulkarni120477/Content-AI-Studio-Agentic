@@ -552,13 +552,15 @@ def prompts_by_course(
         fix_map.setdefault((f.component, f.scope_level, sid), f)
     bound_ids = {f.prompt_id for f in fixings}
     bound_by_id = (
-        {p.id: p for p in db.query(Prompt).filter(Prompt.id.in_(bound_ids)).all()}
+        {p.id: p for p in db.query(Prompt)
+         .filter(Prompt.id.in_(bound_ids), Prompt.deleted_at.is_(None)).all()}
         if bound_ids else {}
     )
     default_map = {
         (p.component_type, p.variant): p
         for p in db.query(Prompt)
-        .filter(Prompt.is_default.is_(True), Prompt.prompt_kind == "pipeline")
+        .filter(Prompt.is_default.is_(True), Prompt.prompt_kind == "pipeline",
+                Prompt.deleted_at.is_(None))
         .all()
     }
 

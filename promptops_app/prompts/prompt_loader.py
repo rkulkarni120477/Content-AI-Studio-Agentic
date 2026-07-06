@@ -295,7 +295,10 @@ def _resolve_pipeline_row(
         row = (
             db.query(Prompt)
             .filter(Prompt.id == fixing.prompt_id,
-                    Prompt.prompt_kind == "pipeline")
+                    Prompt.prompt_kind == "pipeline",
+                    # A soft-deleted bound row never resolves (doc §9);
+                    # falling through lands on the component default.
+                    Prompt.deleted_at.is_(None))
             .first()
         )
         if row is not None:
@@ -326,8 +329,10 @@ def _from_db(
             if require_variant:
                 # The stem-named row is not variant-keyed — never eligible here.
                 return None
-            # Legacy secondary key: exact stem-named row.
-            prompt = db.query(Prompt).filter(Prompt.name == name).first()
+            # Legacy secondary key: exact stem-named row (never soft-deleted —
+            # dormant guard, no write path soft-deletes pipeline rows today).
+            prompt = db.query(Prompt).filter(Prompt.name == name,
+                                             Prompt.deleted_at.is_(None)).first()
         if not prompt:
             return None
 

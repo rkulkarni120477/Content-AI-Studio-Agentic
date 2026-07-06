@@ -52,7 +52,9 @@ def set_prompt_tags(db, prompt: Prompt, tags: list[str] | str | None) -> None:
 # ---------------------------------------------------------------------------
 
 def list_all_prompts(db):
-    return db.query(Prompt).order_by(Prompt.name.asc()).all()
+    # Soft-deleted rows are archived — never listed (doc §9).
+    return (db.query(Prompt).filter(Prompt.deleted_at.is_(None))
+            .order_by(Prompt.name.asc()).all())
 
 
 def get_prompt_by_name(db, name: str):
@@ -94,6 +96,9 @@ def get_default_prompt(
         Prompt.component_type == component_type,
         Prompt.is_default == True,  # noqa: E712
         Prompt.prompt_kind == "pipeline",
+        # Archived/soft-deleted rows never resolve (doc §9). No write path
+        # soft-deletes pipeline rows today — this is the forward guard.
+        Prompt.deleted_at.is_(None),
     )
     if variant is not None:
         row = base.filter(Prompt.variant == variant).first()
@@ -103,10 +108,15 @@ def get_default_prompt(
 
 
 def list_prompts_by_component(db, component_type: str) -> list[Prompt]:
-    """Return all prompts whose component_type matches, default first then alpha."""
+    """Return all live prompts whose component_type matches, default first then alpha.
+
+    Soft-deleted rows are excluded — this feeds CAS selection dropdowns
+    (doc §9: archived prompts never appear in selection).
+    """
     return (
         db.query(Prompt)
-        .filter(Prompt.component_type == component_type)
+        .filter(Prompt.component_type == component_type,
+                Prompt.deleted_at.is_(None))
         .order_by(Prompt.is_default.desc(), Prompt.name.asc())
         .all()
     )
@@ -127,7 +137,8 @@ def list_prompts_tagged(db, tag: str) -> list[Prompt]:
     )
     return (
         db.query(Prompt)
-        .filter(or_(Prompt.id.in_(tagged), Prompt.tags.ilike(pattern)))
+        .filter(or_(Prompt.id.in_(tagged), Prompt.tags.ilike(pattern)),
+                Prompt.deleted_at.is_(None))
         .order_by(Prompt.name.asc())
         .all()
     )
