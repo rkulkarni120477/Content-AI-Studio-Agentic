@@ -173,6 +173,13 @@ def generate_blueprint(
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # Persist the override with the artifact (PL↔CAS sync review, plan
+        # Phase 11) — inline-authored prompt text must stay recoverable.
+        prompt_provenance = {
+            "prompt_source": "override",
+            "system_prompt_override": request_body.system_prompt_override,
+            "user_prompt_override": request_body.user_prompt_override,
+        }
     else:
         variables = {
             "cdd_context":        cdd_context or "No CDD linked.",
@@ -183,7 +190,7 @@ def generate_blueprint(
             "style_guidelines":   style_context,
         }
         try:
-            system_prompt, user_prompt, _, _ = build_prompt(
+            system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
                 "blueprint_generation", variables, db=db,
                 project_id=course.project_id if course else request_body.project_id,
                 cluster_id=course.cluster_id if course else None,
@@ -209,6 +216,13 @@ def generate_blueprint(
                 selected_module=request_body.selected_module,
                 extra_instructions_block=extra_block,
             )
+            prompt_provenance = {"prompt_source": "builtin_fallback"}
+        else:
+            prompt_provenance = {
+                "prompt_source": "registry",
+                "prompt_name": _tpl_name,
+                "prompt_version": _tpl_version,
+            }
 
     # Call LLM.
     llm_result = generate_with_metadata(
@@ -266,6 +280,9 @@ def generate_blueprint(
         "module_number": module_number,
         "extra_instructions": request_body.extra_instructions or "",
         "mode": "teacher" if request_body.teacher_mode else "student",
+        # Prompt provenance — registry template (name+version), the full
+        # inline-override text, or builtin_fallback (see the build above).
+        **prompt_provenance,
     }
 
     version_record = BlueprintVersion(

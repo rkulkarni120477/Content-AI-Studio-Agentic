@@ -218,6 +218,14 @@ def generate_cdd(
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # Persist the override with the artifact (PL↔CAS sync review, plan
+        # Phase 11): a prompt authored inline in CAS must stay recoverable —
+        # before this it drove the LLM call and was discarded.
+        prompt_provenance = {
+            "prompt_source": "override",
+            "system_prompt_override": request_body.system_prompt_override,
+            "user_prompt_override": request_body.user_prompt_override,
+        }
     else:
         course = get_course_by_id(db, request_body.course_id)
         style_context = ""
@@ -244,12 +252,17 @@ def generate_cdd(
         }
 
         try:
-            system_prompt, user_prompt, _, _ = build_prompt(
+            system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
                 "cdd_generation", variables, db=db,
                 project_id=course.project_id if course else None,
                 cluster_id=course.cluster_id if course else None,
                 course_id=request_body.course_id,
             )
+            prompt_provenance = {
+                "prompt_source": "registry",
+                "prompt_name": _tpl_name,
+                "prompt_version": _tpl_version,
+            }
         except PromptVariableError as exc:
             # A declared-variable violation is a template misconfiguration —
             # surface it to the admin; never silently swap in the constant
@@ -272,6 +285,7 @@ def generate_cdd(
                 estimated_duration=str(request_body.estimated_duration_hours),
                 extra_instructions_block=extra_block,
             )
+            prompt_provenance = {"prompt_source": "builtin_fallback"}
 
     # ── Step 2: Call the LLM ───────────────────────────────────────────────────
     usage_context = UsageLogContext(
@@ -331,6 +345,10 @@ def generate_cdd(
         "expert_domain":            request_body.expert_domain,
         "estimated_duration_hours": request_body.estimated_duration_hours,
         "extra_instructions":       request_body.extra_instructions,
+        # Prompt provenance: which registry template (name+version) produced
+        # this version, or the full override text when the user edited the
+        # prompt inline — the artifact is reproducible either way.
+        **prompt_provenance,
     }
 
     version_record = CDDVersion(

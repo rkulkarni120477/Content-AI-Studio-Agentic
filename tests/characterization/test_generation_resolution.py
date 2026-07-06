@@ -352,3 +352,83 @@ class TestStyleResolution:
         )
         system, _, _ = style_service._load_system_prompt(db=db)
         assert system == style_service._STYLE_UNDERSTANDING_SYSTEM
+
+
+class TestPromptProvenancePersisted:
+    """PL↔CAS sync review (plan Phase 11): the prompt that produced a CDD or
+    Blueprint version is persisted in its generation_params — the registry
+    template's name+version, the full inline-override text, or the builtin
+    fallback marker. Before this, an override drove the LLM call and was
+    discarded (unrecoverable)."""
+
+    @staticmethod
+    def _params(db, model, fk_field, fk_value):
+        import json as _json
+
+        row = db.query(model).filter(getattr(model, fk_field) == fk_value).first()
+        assert row is not None
+        return _json.loads(row.generation_params)
+
+    def test_cdd_override_text_is_persisted(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        from promptops_app.database import CDDVersion
+
+        resp = client.post(
+            "/api/v1/cdd/generate",
+            json=_cdd_payload(
+                course, project,
+                system_prompt_override="OVERRIDE SYS",
+                user_prompt_override="OVERRIDE USER for {topic}",
+            ),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        assert capture_llm[0]["system"] == "OVERRIDE SYS"
+        params = self._params(db, CDDVersion, "cdd_id", resp.json()["cdd_id"])
+        assert params["prompt_source"] == "override"
+        assert params["system_prompt_override"] == "OVERRIDE SYS"
+        assert params["user_prompt_override"] == "OVERRIDE USER for {topic}"
+
+    def test_cdd_registry_resolution_records_template_name_and_version(
+        self, client, auth_headers, db, course, project, capture_llm, monkeypatch
+    ):
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+        from promptops_app.database import CDDVersion
+
+        make_db_prompt(db, "prov-cdd", system="PROV SYS", user="prov user",
+                       component_type="cdd", is_default=True)
+        resp = client.post(
+            "/api/v1/cdd/generate",
+            json=_cdd_payload(course, project),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        params = self._params(db, CDDVersion, "cdd_id", resp.json()["cdd_id"])
+        assert params["prompt_source"] == "registry"
+        # Same convention as Generation.prompt_name (Phase 8 Generate wiring):
+        # the logical template (stem) name + the resolved row's version tag.
+        assert params["prompt_name"] == "cdd_generation"
+        assert params["prompt_version"] == "v1"
+        assert "system_prompt_override" not in params
+
+    def test_blueprint_override_text_is_persisted(
+        self, client, auth_headers, db, course, project, capture_llm
+    ):
+        from promptops_app.database import BlueprintVersion
+
+        resp = client.post(
+            "/api/v1/blueprints/generate",
+            json={"course_id": course.id, "project_id": project.id,
+                  "selected_module": "Module 1: Introduction",
+                  "model_choice": "GPT-5.4",
+                  "system_prompt_override": "BP OVERRIDE SYS",
+                  "user_prompt_override": "BP OVERRIDE USER"},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (200, 201), resp.text
+        params = self._params(db, BlueprintVersion, "blueprint_id",
+                              resp.json()["blueprint_id"])
+        assert params["prompt_source"] == "override"
+        assert params["system_prompt_override"] == "BP OVERRIDE SYS"
+        assert params["user_prompt_override"] == "BP OVERRIDE USER"
