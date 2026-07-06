@@ -738,6 +738,43 @@ class TestByCourseView:
         assert r.status_code == 200
 
 
+    def test_variant_bound_lock_never_displays_for_the_lesson_slot(
+            self, client, auth_headers, db):
+        # The display must mirror _acceptable_variants: live generation skips
+        # a NULL-variant (lesson) request over an interactive-bound fixing,
+        # so the by-course view must too — showing it would claim a lock that
+        # generation ignores.
+        proj, clus, (course,) = self._hierarchy(db)
+        p_def = _create_pipeline_prompt(client, auth_headers, "bc_lesson_def",
+                                        component="generate")
+        client.put(f"{BASE}/{p_def['id']}/default", json={"is_default": True},
+                   headers=auth_headers)
+        r = client.post(f"{BASE}", json={
+            "name": "bc_interactive", "description": "x",
+            "component_type": "generate", "variant": "interactive",
+            "system_prompt": "S", "user_prompt_template": "U",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        p_int = r.json()
+        r = client.put(f"{BASE}/fixings",
+                       json={"component": "generate", "scope_level": "course",
+                             "course_id": course.id, "prompt_id": p_int["id"]},
+                       headers=auth_headers)
+        assert r.status_code == 200, r.text
+
+        groups = {g["course_id"]: g
+                  for g in client.get(f"{BASE}/by-course",
+                                      headers=auth_headers).json()["courses"]}
+        g = groups[course.id]
+        lesson = self._slot(g, "generate")
+        assert lesson["source"] == "default"
+        assert lesson["prompt"]["id"] == p_def["id"]
+        # The interactive slot is where that lock genuinely applies.
+        interactive = self._slot(g, "generate", "interactive")
+        assert interactive["source"] == "course_lock"
+        assert interactive["prompt"]["id"] == p_int["id"]
+
+
 class TestFixingsList:
     """GET /fixings — Phase 11 'used by' facets (list with scope names)."""
 

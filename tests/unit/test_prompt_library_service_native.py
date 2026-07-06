@@ -288,12 +288,12 @@ class TestScopeFilter:
 
     def test_course_filter_matches_covering_chain_plus_defaults(self, db):
         proj, clus, course, other = self._hierarchy(db)
-        p_def = self._pipe(db, "sf_default", is_default=True)
+        self._pipe(db, "sf_default", is_default=True)   # inherited default
         p_course = self._pipe(db, "sf_course_lock")
         p_other = self._pipe(db, "sf_other_lock")
         p_cluster = self._pipe(db, "sf_cluster_lock")
-        p_plain = self._pipe(db, "sf_unbound")
-        _mk_library_prompt(db, title="sf lib")
+        self._pipe(db, "sf_unbound")                    # noise: must be excluded
+        _mk_library_prompt(db, title="sf lib")          # noise: wrong kind
         self._fix(db, "cdd", p_course.id, "course", course_id=course.id)
         self._fix(db, "cdd", p_other.id, "course", course_id=other.id)
         self._fix(db, "style", p_cluster.id, "cluster", cluster_id=clus.id)

@@ -44,8 +44,8 @@ from app.schemas.prompt import (
     PromptFixingSetRequest,
     PromptListItem,
     PromptRead,
-    PromptUpdateRequest,
     PromptsByCourseResponse,
+    PromptUpdateRequest,
     PromptVariableItem,
     PromptVariablesRead,
     PromptVariablesSetRequest,
@@ -572,7 +572,17 @@ def prompts_by_course(
     )
 
     def resolve_slot(course: Course, component: str, variant: str | None):
-        acceptable = (variant,) if variant is not None else None
+        # Mirror the loader's _acceptable_variants exactly, so the display
+        # never shows a lock that live generation would skip: a NULL-variant
+        # request accepts only NULL-variant rows; the interactive slot is
+        # exact-only (require_variant); other variant slots fall back to the
+        # NULL-variant row, never sideways.
+        if variant is None:
+            acceptable = (None,)
+        elif (component, variant) == ("generate", "interactive"):
+            acceptable = ("interactive",)
+        else:
+            acceptable = (variant, None)
         for scope, sid in (("course", course.id), ("cluster", course.cluster_id),
                            ("project", course.project_id), ("global", None)):
             if scope != "global" and sid is None:
@@ -583,9 +593,7 @@ def prompts_by_course(
             p = bound_by_id.get(f.prompt_id)
             if p is None:
                 continue
-            if acceptable is not None and (
-                p.prompt_kind != "pipeline" or p.variant not in acceptable
-            ):
+            if p.prompt_kind != "pipeline" or p.variant not in acceptable:
                 continue
             return f"{scope}_lock", scope, p
         p = default_map.get((component, variant))

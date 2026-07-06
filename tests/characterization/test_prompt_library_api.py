@@ -380,3 +380,31 @@ class TestCategoryMandatory:
             headers=auth_headers,
         )
         assert r.status_code == 200, r.text
+
+    def test_probe_pipeline_kind_admin_and_reviewer_coercion(self, client, auth_headers, db):
+        # Admin probing kind=pipeline matches pipeline rows' active content.
+        from promptops_app.database import Prompt, PromptVersion
+
+        pipe = Prompt(prompt_kind="pipeline", name="dup_pipe", owner="admin",
+                      component_type="cdd")
+        db.add(pipe)
+        db.flush()
+        db.add(PromptVersion(prompt_id=pipe.id, version="v1", version_number=1,
+                             system_prompt="S", user_prompt_template="PIPE BODY",
+                             is_active=True, created_by="admin"))
+        db.commit()
+        r = client.post(
+            "/api/v1/prompt-library/prompts/duplicate-check",
+            json={"content": "pipe  body", "kind": "pipeline"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+        dup = r.json()["duplicate_of"]
+        assert dup and dup["id"] == pipe.id and dup["kind"] == "pipeline"
+        # Unknown kinds coerce to library — never a 500, never a pipeline probe.
+        r = client.post(
+            "/api/v1/prompt-library/prompts/duplicate-check",
+            json={"content": "pipe body", "kind": "weird"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200 and r.json()["duplicate_of"] is None
