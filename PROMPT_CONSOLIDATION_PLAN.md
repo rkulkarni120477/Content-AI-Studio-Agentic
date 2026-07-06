@@ -605,6 +605,33 @@ wiring the console UI.
   (legacy safety net for pre-gate rows); the approval gate always keeps an active version on
   deployed rows, so draft versions cannot hijack selection.
 
+### Review verdict on the doc's technical prescriptions (per the stakeholder instruction)
+
+> Instruction that accompanied the doc (relayed 2026-07-06): review it, do NOT follow its
+> technical requirements verbatim — change backend logic / the DB model where the *intent*
+> genuinely warrants it. Verdicts:
+
+- **§7.1 prompt master table** — REJECTED as written; intent already exceeded by
+  `prompts` + append-only `prompt_versions` (the doc has no versioning table at all).
+- **§7.2 course_prompt_mapping** — REJECTED as written; `prompt_fixings` is the mapping table
+  with a richer scope hierarchy and none of the doc's denormalized name columns (its own §10
+  asks for normalization).
+- **§7.3 tags w/ tag_type** — REJECTED; typed facts are relational and surfaced as facets (11.4).
+- **§6.1 semantic Prompt IDs (`PROMPT_STYLE_001`)** — REJECTED; integer PKs are the
+  auto-generated unique ID (cosmetic).
+- **§10 content-hash dedup at storage** — SOFTENED to the advisory create-time warning (11.5);
+  structural dedup for defaults already guarantees the doc's 40%-shared-defaults case.
+- **§5.2 CAS-authored prompts captured** — ACCEPTED as a real backend gap and fixed (11.9,
+  `2c18df2`): CDD/Blueprint `generation_params` now persists prompt provenance — the full
+  inline-override text verbatim (was: used once and discarded), or the registry template
+  name+version (same convention as `Generation.prompt_name`), or `builtin_fallback`. Additive
+  JSON keys, no schema change, LLM input unchanged. Deliberately NOT auto-registering author
+  overrides as prompt rows — that would bypass the Phase 8 approval gate; a "promote override
+  to prompt" console affordance is the sanctioned follow-up if wanted. **Deferred:** Style
+  override capture needs a `StyleVersion` params column — schema addition, rides a future
+  migration window.
+- **§7.1 tenant_id** — deviation below stands (orphaned tenant experiment).
+
 ### Documented deviations (confirm with stakeholders, then close)
 
 - [ ] **Tenant isolation (doc §7.1 `tenant_id`, §10):** no tenant column by design — prod's
@@ -613,7 +640,9 @@ wiring the console UI.
   or this becomes a real schema phase.
 - [ ] **CAS→PL per-course prompt copies (doc §5.2):** course creation deliberately does NOT spawn
   `default_*_prompt` rows per course — the doc's own §6 forbids duplicate storage; resolution +
-  fixings satisfy the intent. The course-grouped view (build item 1) delivers the §5.2 *display*.
+  fixings satisfy the intent. The course-grouped view (build item 1) delivers the §5.2 *display*,
+  and 11.9 closes the capture half (inline overrides persisted with the artifact). Remaining to
+  confirm: that opt-in "promote override to prompt" (vs. the doc's automatic save) is acceptable.
 - [ ] **Prompt ID format (doc §6.1 `PROMPT_STYLE_001`):** integer PKs are the auto-generated unique
   ID; no semantic ID scheme. Cosmetic — confirm acceptable.
 
@@ -628,10 +657,12 @@ one-to-one; duplicate-content creation warns; archived prompts provably absent f
 each deviation has an explicit stakeholder sign-off note.
 
 **Status (2026-07-06):** all 8 build/decision items implemented and committed
-(`18fe1ce`→`74a8e17`); backend suite 270, frontend 46, build green. Remaining in this phase: the
-three deviation sign-offs above (stakeholder), and the user-facing acceptance pass over the new
-Courses tab + scope filters (rides the 7b walkthrough — the :8001 walkthrough API needs a restart
-to pick up the new endpoints).
+(`18fe1ce`→`74a8e17`), plus 11.9 provenance capture from the doc-review instruction (`2c18df2`);
+backend suite 273, frontend 46, build green. Remaining in this phase: the three deviation
+sign-offs above (stakeholder), the opt-in-promotion confirmation (§5.2 note), the deferred
+StyleVersion params column, and the user-facing acceptance pass over the new Courses tab + scope
+filters (rides the 7b walkthrough — the :8001 walkthrough API needs a restart to pick up the new
+endpoints).
 
 ---
 
