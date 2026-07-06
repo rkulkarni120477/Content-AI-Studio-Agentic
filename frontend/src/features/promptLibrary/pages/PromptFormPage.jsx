@@ -241,13 +241,17 @@ export default function PromptFormPage() {
       show('Select at least one team for team-based visibility.');
       return;
     }
+    if (!category.trim()) {
+      show('Category is required.');
+      return;
+    }
     setSaving(true);
     try {
       const body = {
         title: title.trim(),
         content: content.trim(),
         description: description.trim(),
-        category: category.trim() || 'General',
+        category: category.trim(),
         tags: tags
           .split(',')
           .map((t) => t.trim())
@@ -458,8 +462,8 @@ export default function PromptFormPage() {
         {!isPipeline && (
         <div className="inline-fields">
           <div className="field">
-            <label>Category</label>
-            <input value={category} onChange={(e) => setCategory(e.target.value)} list="catList" />
+            <label>Category *</label>
+            <input value={category} onChange={(e) => setCategory(e.target.value)} list="catList" required />
             <datalist id="catList" />
           </div>
           <div className="field">

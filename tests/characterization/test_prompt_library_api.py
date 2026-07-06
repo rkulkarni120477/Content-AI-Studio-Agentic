@@ -354,3 +354,29 @@ class TestDuplicateCheckEndpoint:
             headers=author_headers,
         )
         assert r.status_code == 403
+
+
+class TestCategoryMandatory:
+    """Phase 11 (doc §10) — category required on library create/update."""
+
+    def test_create_without_category_400s(self, client, auth_headers):
+        for cat in (None, "", "   "):
+            r = _create(client, auth_headers, category=cat)
+            assert r.status_code == 400, r.text
+            assert "category" in r.json()["detail"]
+
+    def test_update_to_blank_category_400s(self, client, auth_headers):
+        created = _create(client, auth_headers).json()
+        r = client.put(
+            f"/api/v1/prompt-library/prompts/{created['id']}",
+            json={"category": "  "},
+            headers=auth_headers,
+        )
+        assert r.status_code == 400
+        # Omitting category entirely stays fine (partial update).
+        r = client.put(
+            f"/api/v1/prompt-library/prompts/{created['id']}",
+            json={"description": "still fine"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text

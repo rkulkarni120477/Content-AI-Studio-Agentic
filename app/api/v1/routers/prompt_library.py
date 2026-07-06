@@ -250,6 +250,9 @@ def create_prompt(request: Request, payload: dict = Body(...), db: Session = Dep
     data = payload or {}
     if not data.get("title") or not data.get("content"):
         raise HTTPException(status_code=400, detail="title and content required")
+    # Category is mandatory (requirements doc §10) — no more silent "General".
+    if not (data.get("category") or "").strip():
+        raise HTTPException(status_code=400, detail="category required")
     vis = data.get("visibility", "draft")
     team_ids = svc.parse_teams_from_data(data) or []
     if vis == "team" and not team_ids:
@@ -267,7 +270,7 @@ def create_prompt(request: Request, payload: dict = Body(...), db: Session = Dep
         parent_id=parent_id,
         title=data["title"].strip(),
         description=(data.get("description") or "").strip(),
-        category=(data.get("category") or "General").strip(),
+        category=data["category"].strip(),
         visibility=vis,
         owner=actor,
         created_at=now,
@@ -313,6 +316,10 @@ def update_prompt(pid: int, request: Request, payload: dict = Body(...), db: Ses
         except svc.HierarchyError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+    # Category stays mandatory on update too (doc §10) — an explicit blank is
+    # rejected rather than silently clearing the classification.
+    if "category" in data and not (data.get("category") or "").strip():
+        raise HTTPException(status_code=400, detail="category required")
     for field in ("title", "description", "category"):
         if field in data:
             setattr(p, field, (data[field] or "").strip())
