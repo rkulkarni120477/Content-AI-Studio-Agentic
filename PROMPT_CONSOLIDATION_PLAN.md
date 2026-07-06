@@ -535,12 +535,82 @@ wiring the console UI.
   6. Phase 7b — console pipeline build-out →
   7. Decommission Streamlit `pages/prompts.py` (only after 7b parity sign-off) →
   8. Phase 9 — shared fragments (last; purely additive).
+  - Phase 11 (requirements-doc alignment) is additive UI/service work outside this gate chain — any
+    time after 7b sign-off; it never touches resolution or schema.
 - [ ] Rollback plans:
   - **Any schema phase:** the pre-phase RDS snapshot + PITR is the guaranteed restore path (no in-repo DB backup automation exists — take the snapshot manually).
   - **Phases 1-3:** additive only — old code ignores the new columns/tables; Alembic `downgrade` removes them.
   - **Phases 4-5:** `pl_*` + old service/router still intact — `git revert` the cutover commit(s), zero data lost.
   - **Phase 6 onward:** the one-way door — no automated rollback; recovery is the pre-Phase-6 dump / RDS snapshot. Do not run Phase 6 until 7a is signed off.
   - **Phase 8 name-key fix:** feature-flagged and guarded behind the DB→file→inline fallback, so a bad default-row resolution degrades to the shipped `.md`/constants rather than failing generation; keep Streamlit live as the manual escape hatch until 7b is signed off.
+
+---
+
+## Phase 11 — Requirements-doc alignment (PL ↔ CAS sync spec)
+
+> Source: `Technical Requirements- Prompt Library and Content AI Studio Sync.docx` (repo root).
+> Alignment assessment run 2026-07-06: the doc's data-model core (§6 master record + dedup, §7
+> master/mapping/tags tables, §5 bidirectional sync, §8 versioning) is **already delivered** by the
+> unified model — one `prompts` master table + append-only `prompt_versions`, `prompt_fixings` as
+> the course↔prompt many-to-many (richer than spec: course→cluster→project→global), `prompt_tags`,
+> component-filtered CAS dropdowns with phase-appropriateness enforcement, and edit-once-propagates
+> sync (the 7b acceptance proof). What remains is presentation-layer and metadata work, plus
+> documented deviations to confirm with the doc's stakeholders.
+
+### Build items (gaps)
+
+- [ ] **Course-grouped library view (doc §2, §8 — the headline UX).** Collapsible Course → prompts
+  hierarchy showing every prompt a course *resolves to* (scope locks via `prompt_fixings` +
+  component defaults as the shared fallback rows). Same prompt appears under every mapped course
+  while remaining one master row — exactly the doc's §6.2 display requirement. Likely shape: a
+  "By course" grouping mode on the list page or an expansion of the Flow view (which already knows
+  per-course effective resolution); decide with the pending "Flow as default landing view" UX call.
+- [ ] **Course/cluster/project filters in the PL list (doc §8).** Filter prompts by scope
+  membership — derivable from `prompt_fixings` (+ defaults = "all courses"). Needs a backend query
+  param (`kind`-style) on the browse endpoint; UI dropdowns beside the existing category/tag filters.
+- [ ] **Category taxonomy reconciliation (doc §3).** Doc names: Style, CDD, Blueprint, Assessment,
+  Component, Lesson Generation. Ours: `component_type` style/cdd/blueprint/generate (+`variant`
+  lesson/assessment/interactive, quiz). Decide the display-label mapping (e.g. `generate/assessment`
+  ↔ "Assessment") and apply it consistently (STAGE_LABELS in `frontend/.../utils/prompt.js`, Flow
+  view, CAS dropdown grouping). Display-layer only — the resolution keys do NOT change.
+- [ ] **Scope metadata surfaced as searchable facets (doc §4).** Doc wants course/cluster/project/
+  version/status as *tags*. Storing them as freeform tags would drift (same reason pipeline rows
+  have no freeform category); instead surface the relational facts (fixings, active version,
+  workflow_state) as read-only chips/facets in list + detail + search. Manual freeform tags remain
+  available for anything else.
+- [ ] **Duplicate detection at creation (doc §10).** Warn (not block) on create/import when
+  normalized content matches an existing prompt of the same kind/component — the doc's dedup is
+  already structural for defaults, this covers manual paste duplicates.
+- [ ] **`tag_type` on tags (doc §7.3) — decide, likely NO.** Freeform tags stay untyped; typed
+  facts are relational (previous item). Record as deviation if declined.
+- [ ] **Category mandatory (doc §10) — decide.** Enforce category on library create (422 when
+  blank) or record as deviation. Pipeline rows: `component_type` already enforced where it matters
+  (defaults, fixings, dropdown filtering).
+- [ ] **Archived-prompt exclusion audit (doc §9).** Verify soft-deleted (`deleted_at`) and
+  non-active-workflow-state prompts never reach CAS selection dropdowns or resolution; add a test
+  pinning it.
+
+### Documented deviations (confirm with stakeholders, then close)
+
+- [ ] **Tenant isolation (doc §7.1 `tenant_id`, §10):** no tenant column by design — prod's
+  `tenants`/`tenant_id` schema is orphaned (Phase 0S discovery; cleanup is a separate follow-up).
+  Team/global/draft visibility is the isolation primitive. Confirm multi-tenancy is genuinely dead
+  or this becomes a real schema phase.
+- [ ] **CAS→PL per-course prompt copies (doc §5.2):** course creation deliberately does NOT spawn
+  `default_*_prompt` rows per course — the doc's own §6 forbids duplicate storage; resolution +
+  fixings satisfy the intent. The course-grouped view (build item 1) delivers the §5.2 *display*.
+- [ ] **Prompt ID format (doc §6.1 `PROMPT_STYLE_001`):** integer PKs are the auto-generated unique
+  ID; no semantic ID scheme. Cosmetic — confirm acceptable.
+
+**Ordering/gates:** all build items are additive UI/service work — safe any time after the 7b
+walkthrough signs off; none touch the resolution path or schema (except an optional index for the
+scope filter). Do the taxonomy-reconciliation decision *before* the course-grouped view so labels
+don't churn twice.
+
+**Acceptance:** a user can expand a course and see its effective prompt set (shared defaults + its
+scope locks); filter the library by course/cluster/project; category labels match CAS tab names
+one-to-one; duplicate-content creation warns; archived prompts provably absent from CAS selection;
+each deviation has an explicit stakeholder sign-off note.
 
 ---
 
@@ -583,6 +653,7 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 
 | Date | Session focus | Phases touched | Outcome |
 |---|---|---|---|
+| 2026-07-06 | **Walkthrough support + requirements-doc alignment** (seventh implementation session) | 7b (walkthrough fix), 11 (new) | (1) Walkthrough feedback fix (commit `29ddf0a`): Pipeline-tab Category column was empty by design (pipeline rows carry no freeform `category` — their key is `component_type`+`variant`); added `pipelineStageLabel()` deriving the display label from the real key and wired it into the list row, card footer, and CSV export — no schema change, label can never drift from what generation resolves. 4 new vitest cases (43 total green), build green. (2) Assessed the implementation against `Technical Requirements- Prompt Library and Content AI Studio Sync.docx`: data-model core (master record + dedup, mapping table, versioning, bidirectional sync, category-controlled CAS dropdowns) already delivered — often stronger than spec (`prompt_fixings` full scope hierarchy, enforced phase-appropriateness, append-only versions); gaps are presentation/metadata: course-grouped view, scope filters, taxonomy naming (Assessment/Component/Lesson Generation vs generate+variants), scope facets, duplicate-content warning, plus three deviations to confirm (no tenant column, no per-course prompt copies, integer IDs). Added **Phase 11 — Requirements-doc alignment** capturing all of it (8 build/decision items, 3 deviation sign-offs, ordering note: taxonomy decision before the grouped view; all additive, after 7b sign-off). |
 | 2026-07-02 | Plan authored | — | Initial version (original merge direction) |
 | 2026-07-03 | Design finalized | 0, 0.5, 1–10 | Reversed direction to native-tables-as-base; ran four code audits; built the unified prompt model + Library-as-console design + fair table-base analysis; locked three decisions; scheduled the name-key fix and editor consolidation; consolidated the whole document into a clean SSOT. No implementation started |
 | 2026-07-03 | Database-safety pass | Safety section, 0S, 3, 10 | Audited deploy/backup/migration/test posture; found 2 blockers (Alembic mis-wired, create_all races Alembic) + 3 gaps (no rehearsal DB, zero generation/PL test coverage, no DB backup automation) + constraint data-landmines; added Safety/reversibility section, Phase 0S prerequisite, pre-flight checks in Phase 3, RDS-snapshot rollback in Phase 10. No implementation started |
