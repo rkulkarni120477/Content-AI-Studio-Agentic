@@ -443,6 +443,52 @@ def unset_fixing(
               current_user.username, component, scope_level)
 
 
+@router.get(
+    "/fixings",
+    response_model=list[PromptFixingRead],
+    summary="List scope locks",
+    description=(
+        "All scope locks, optionally filtered by prompt and/or component. "
+        "Powers the detail page's 'used by' facets. scope_name carries the "
+        "bound course/cluster/project name (null for global locks)."
+    ),
+)
+def list_fixings(
+    prompt_id: int | None = Query(default=None),
+    component: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompts.view")),
+) -> list[PromptFixingRead]:
+    from promptops_app.database import Cluster, Course, Project, PromptFixing
+
+    q = db.query(PromptFixing)
+    if prompt_id is not None:
+        q = q.filter(PromptFixing.prompt_id == prompt_id)
+    if component:
+        q = q.filter(PromptFixing.component == component)
+    rows = q.order_by(PromptFixing.component.asc(), PromptFixing.id.asc()).all()
+
+    def _names(model, ids):
+        if not ids:
+            return {}
+        return dict(db.query(model.id, model.name).filter(model.id.in_(ids)).all())
+
+    course_names = _names(Course, {r.course_id for r in rows if r.course_id})
+    cluster_names = _names(Cluster, {r.cluster_id for r in rows if r.cluster_id})
+    project_names = _names(Project, {r.project_id for r in rows if r.project_id})
+    out = []
+    for r in rows:
+        item = PromptFixingRead.model_validate(r)
+        if r.scope_level == "course":
+            item.scope_name = course_names.get(r.course_id)
+        elif r.scope_level == "cluster":
+            item.scope_name = cluster_names.get(r.cluster_id)
+        elif r.scope_level == "project":
+            item.scope_name = project_names.get(r.project_id)
+        out.append(item)
+    return out
+
+
 # ── Course-grouped view (Phase 11) ───────────────────────────────────────────
 #
 # One batch call for the "prompts by course" library view: every course with

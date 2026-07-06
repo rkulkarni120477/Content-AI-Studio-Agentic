@@ -10,6 +10,7 @@ import {
   uploadAttachment,
 } from '../api/prompts';
 import { setPipelineDefault, setPipelineVersionState } from '../api/pipeline';
+import { listPromptFixings } from '../api/flow';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
@@ -55,6 +56,7 @@ export default function PromptDetailPage() {
   const canViewReviewDetails = canManage;
 
   const [prompt, setPrompt] = useState(null);
+  const [fixings, setFixings] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [varValues, setVarValues] = useState({});
   const [rating, setRating] = useState(0);
@@ -72,6 +74,11 @@ export default function PromptDetailPage() {
         }
         setPrompt(p);
         setReviews(revs);
+        if (p.prompt_kind === 'pipeline') {
+          void listPromptFixings(p.id).then(setFixings).catch(() => setFixings([]));
+        } else {
+          setFixings([]);
+        }
         const vars = p.variables || [];
         const init = {};
         vars.forEach((v) => {
@@ -233,21 +240,49 @@ export default function PromptDetailPage() {
             </p>
           )}
           {isPipeline && pipe ? (
-            <p className="view-meta">
-              <span className="badge badge-team" style={{ marginRight: 6 }}>
-                Pipeline · {componentCategoryLabel(pipe.component_type, pipe.variant)}
-                {pipe.component_type ? ` (${pipe.component_type}${pipe.variant ? `/${pipe.variant}` : ''})` : ''}
-              </span>
-              {pipe.is_default && (
-                <span className="badge badge-global" style={{ marginRight: 6 }}>
-                  Default
+            <>
+              <p className="view-meta">
+                <span className="badge badge-team" style={{ marginRight: 6 }}>
+                  Pipeline · {componentCategoryLabel(pipe.component_type, pipe.variant)}
+                  {pipe.component_type ? ` (${pipe.component_type}${pipe.variant ? `/${pipe.variant}` : ''})` : ''}
                 </span>
-              )}
-              <StateBadge state={pipe.workflow_state} />
-              {' '}· Registry name: <code>{pipe.name}</code>
-              {' '}· Active: {pipe.active_version || '—'}
-              {' '}· Updated: {prompt.updated_at ? new Date(prompt.updated_at).toLocaleDateString() : '—'}
-            </p>
+                {pipe.is_default && (
+                  <span className="badge badge-global" style={{ marginRight: 6 }}>
+                    Default
+                  </span>
+                )}
+                <StateBadge state={pipe.workflow_state} />
+                {' '}· Registry name: <code>{pipe.name}</code>
+                {' '}· Active: {pipe.active_version || '—'}
+                {' '}· Updated: {prompt.updated_at ? new Date(prompt.updated_at).toLocaleDateString() : '—'}
+              </p>
+              {/* Scope facets (Phase 11, doc §4): where this prompt is in use —
+                  relational facts rendered read-only, never freeform tags. */}
+              <p className="view-meta" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ color: 'var(--muted)' }}>Used by:</span>
+                {pipe.is_default && (
+                  <span className="badge badge-team" title="Resolves for every scope without a lock for this component">
+                    ★ All courses (component default)
+                  </span>
+                )}
+                {fixings.map((f) => (
+                  <span
+                    key={f.id}
+                    className="badge badge-global"
+                    title={`Locked by ${f.fixed_by || '—'} for component "${f.component}"`}
+                  >
+                    🔒 {f.scope_level === 'global'
+                      ? 'Global'
+                      : `${f.scope_level[0].toUpperCase()}${f.scope_level.slice(1)}: ${f.scope_name || `#${f[`${f.scope_level}_id`]}`}`}
+                  </span>
+                ))}
+                {!pipe.is_default && fixings.length === 0 && (
+                  <span style={{ color: 'var(--muted)' }}>
+                    nowhere yet — not a default and no scope locks (bind one in the Flow view)
+                  </span>
+                )}
+              </p>
+            </>
           ) : (
             <p className="view-meta">
               Category: {prompt.category || '—'} ·{' '}

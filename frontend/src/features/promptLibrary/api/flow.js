@@ -50,6 +50,12 @@ export async function listComponentPrompts(component) {
   return data.items || [];
 }
 
+// All scope locks referencing a prompt — the detail page's "used by" facets.
+// scope_name carries the bound course/cluster/project name (null for global).
+export async function listPromptFixings(promptId) {
+  return hostFetch(`/api/v1/prompts/fixings?prompt_id=${encodeURIComponent(promptId)}`);
+}
+
 export async function resolveFixing({ component, projectId, clusterId, courseId }) {
   const qs = new URLSearchParams({ component });
   if (projectId) qs.set('project_id', projectId);

@@ -736,3 +736,53 @@ class TestByCourseView:
         # Same read gate as /fixings/resolve — authors may see the flow map.
         r = client.get(f"{BASE}/by-course", headers=author_headers)
         assert r.status_code == 200
+
+
+class TestFixingsList:
+    """GET /fixings — Phase 11 'used by' facets (list with scope names)."""
+
+    def test_lists_by_prompt_with_scope_names(self, client, auth_headers, db):
+        from promptops_app.database import Cluster, Course, Project
+
+        proj = Project(name="FL Proj", created_by="test_admin")
+        db.add(proj)
+        db.commit()
+        clus = Cluster(name="FL Clus", project_id=proj.id, created_by="test_admin")
+        db.add(clus)
+        db.commit()
+        course = Course(name="FL Course", project_id=proj.id, cluster_id=clus.id,
+                        created_by="test_admin")
+        db.add(course)
+        db.commit()
+
+        p = _create_pipeline_prompt(client, auth_headers, "fl_prompt")
+        other = _create_pipeline_prompt(client, auth_headers, "fl_other")
+        for body in (
+            {"component": "cdd", "scope_level": "course", "course_id": course.id,
+             "prompt_id": p["id"]},
+            {"component": "cdd", "scope_level": "global", "prompt_id": other["id"]},
+        ):
+            r = client.put(f"{BASE}/fixings", json=body, headers=auth_headers)
+            assert r.status_code == 200, r.text
+
+        r = client.get(f"{BASE}/fixings", params={"prompt_id": p["id"]},
+                       headers=auth_headers)
+        assert r.status_code == 200, r.text
+        rows = r.json()
+        assert len(rows) == 1
+        assert rows[0]["scope_level"] == "course"
+        assert rows[0]["scope_name"] == "FL Course"
+
+        # Global lock carries no scope name; unfiltered list shows both.
+        rows = client.get(f"{BASE}/fixings", headers=auth_headers).json()
+        by_prompt = {x["prompt_id"]: x for x in rows}
+        assert by_prompt[other["id"]]["scope_name"] is None
+        assert by_prompt[other["id"]]["scope_level"] == "global"
+
+        # Unbound prompt → empty list, and component filter applies.
+        p2 = _create_pipeline_prompt(client, auth_headers, "fl_unbound",
+                                     component="blueprint")
+        assert client.get(f"{BASE}/fixings", params={"prompt_id": p2["id"]},
+                          headers=auth_headers).json() == []
+        assert client.get(f"{BASE}/fixings", params={"component": "blueprint"},
+                          headers=auth_headers).json() == []

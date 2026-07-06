@@ -264,6 +264,10 @@ class PromptFixingRead(BaseModel):
     fixed_by: Optional[str] = None
     fixed_by_role: Optional[str] = None
     fixed_at: Optional[datetime] = None
+    # Human-readable name of the scoped entity (course/cluster/project name;
+    # None for global locks). Populated by list endpoints only — ORM
+    # validation leaves it None.
+    scope_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
