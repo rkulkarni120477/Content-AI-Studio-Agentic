@@ -242,3 +242,105 @@ class TestKindSeparation:
         db.flush()
         resolved = get_default_prompt(db, "cdd")
         assert resolved is not None and resolved.prompt_kind == "pipeline"
+
+
+class TestScopeFilter:
+    """Phase 11 (doc §8) — course/cluster/project scope filters on browse."""
+
+    def _hierarchy(self, db):
+        from promptops_app.database import Cluster, Course, Project
+
+        proj = Project(name="SF Proj", created_by="admin")
+        db.add(proj)
+        db.flush()
+        clus = Cluster(name="SF Clus", project_id=proj.id, created_by="admin")
+        db.add(clus)
+        db.flush()
+        course = Course(name="SF Course", project_id=proj.id,
+                        cluster_id=clus.id, created_by="admin")
+        other = Course(name="SF Other", project_id=proj.id,
+                       cluster_id=clus.id, created_by="admin")
+        db.add_all([course, other])
+        db.flush()
+        return proj, clus, course, other
+
+    def _fix(self, db, component, prompt_id, scope_level, **ids):
+        from promptops_app.database import PromptFixing
+
+        db.add(PromptFixing(component=component, scope_level=scope_level,
+                            prompt_id=prompt_id, fixed_by="admin",
+                            fixed_by_role="admin",
+                            project_id=ids.get("project_id"),
+                            cluster_id=ids.get("cluster_id"),
+                            course_id=ids.get("course_id")))
+        db.flush()
+
+    def _pipe(self, db, name, **kw):
+        p = Prompt(prompt_kind="pipeline", name=name, owner="admin",
+                   component_type=kw.pop("component_type", "cdd"), **kw)
+        db.add(p)
+        db.flush()
+        return p
+
+    def _browse(self, db, args):
+        q = svc.browse_prompts_query(db, "admin", None, kind="pipeline")
+        return {p.name for p in svc.apply_list_filters(q, args).all()}
+
+    def test_course_filter_matches_covering_chain_plus_defaults(self, db):
+        proj, clus, course, other = self._hierarchy(db)
+        p_def = self._pipe(db, "sf_default", is_default=True)
+        p_course = self._pipe(db, "sf_course_lock")
+        p_other = self._pipe(db, "sf_other_lock")
+        p_cluster = self._pipe(db, "sf_cluster_lock")
+        p_plain = self._pipe(db, "sf_unbound")
+        _mk_library_prompt(db, title="sf lib")
+        self._fix(db, "cdd", p_course.id, "course", course_id=course.id)
+        self._fix(db, "cdd", p_other.id, "course", course_id=other.id)
+        self._fix(db, "style", p_cluster.id, "cluster", cluster_id=clus.id)
+
+        got = self._browse(db, {"course_id": str(course.id)})
+        assert got == {"sf_default", "sf_course_lock", "sf_cluster_lock"}
+
+    def test_project_filter_includes_subtree_locks(self, db):
+        proj, clus, course, other = self._hierarchy(db)
+        p_course = self._pipe(db, "sf_leaf_lock")
+        p_proj = self._pipe(db, "sf_proj_lock")
+        self._fix(db, "cdd", p_course.id, "course", course_id=course.id)
+        self._fix(db, "style", p_proj.id, "project", project_id=proj.id)
+
+        got = self._browse(db, {"project_id": str(proj.id)})
+        assert got == {"sf_leaf_lock", "sf_proj_lock"}
+
+    def test_cluster_filter_spans_both_directions(self, db):
+        proj, clus, course, other = self._hierarchy(db)
+        p_course = self._pipe(db, "sf_c_lock")
+        p_proj = self._pipe(db, "sf_p_lock")
+        self._fix(db, "cdd", p_course.id, "course", course_id=course.id)
+        self._fix(db, "style", p_proj.id, "project", project_id=proj.id)
+
+        got = self._browse(db, {"cluster_id": str(clus.id)})
+        assert got == {"sf_c_lock", "sf_p_lock"}
+
+    def test_global_lock_reaches_every_scope(self, db):
+        proj, clus, course, other = self._hierarchy(db)
+        p_glob = self._pipe(db, "sf_glob")
+        self._fix(db, "cdd", p_glob.id, "global")
+        for args in ({"course_id": str(course.id)},
+                     {"cluster_id": str(clus.id)},
+                     {"project_id": str(proj.id)}):
+            assert "sf_glob" in self._browse(db, args)
+
+    def test_unknown_or_malformed_scope_returns_empty(self, db):
+        self._pipe(db, "sf_default2", is_default=True)
+        assert self._browse(db, {"course_id": "999999"}) == set()
+        assert self._browse(db, {"project_id": "not-a-number"}) == set()
+
+    def test_scope_filter_never_leaks_to_non_admins(self, db):
+        proj, clus, course, other = self._hierarchy(db)
+        p = self._pipe(db, "sf_hidden", is_default=True)
+        self._fix(db, "cdd", p.id, "course", course_id=course.id)
+        _mk_library_prompt(db, title="sf lib vis")
+        for role in ("author", "reviewer"):
+            q = svc.browse_prompts_query(db, role, None, kind="pipeline")
+            rows = svc.apply_list_filters(q, {"course_id": str(course.id)}).all()
+            assert rows == []

@@ -42,13 +42,17 @@ import json
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Query, Session
 
 from promptops_app.database import (
     AuditLog,
+    Cluster,
+    Course,
+    Project,
     Prompt,
     PromptAttachment,
+    PromptFixing,
     PromptRequest,
     PromptReview,
     PromptTag,
@@ -315,7 +319,75 @@ def apply_list_filters(q: Query, args: dict) -> Query:
         except ValueError:
             q = q.filter(False)
 
+    scope = {}
+    for field in ("course_id", "cluster_id", "project_id"):
+        raw = str(args.get(field) or "").strip()
+        if raw:
+            try:
+                scope[field] = int(raw)
+            except ValueError:
+                return q.filter(False)
+    if scope:
+        q = _apply_scope_filter(q, scope)
+
     return apply_sort(q, args.get("sort", "updated"))
+
+
+def _apply_scope_filter(q: Query, scope: dict) -> Query:
+    """Filter to the prompts a course/cluster/project *uses* (Phase 11, doc §8).
+
+    Matches pipeline rows locked anywhere relevant to the scope — its upward
+    covering chain (a course inherits cluster/project/global locks) AND its
+    downward subtree (a project "uses" the locks set on its clusters and
+    courses) — plus the component defaults every scope inherits. The most
+    specific id wins when several are given. Library rows carry no scope, so
+    any scope filter implies pipeline-kind — for callers whose browse query
+    is already library-only (non-admins) this simply matches nothing,
+    preserving the no-existence-leak boundary.
+    """
+    sess = q.session
+    conds = [PromptFixing.scope_level == "global"]
+    if "course_id" in scope:
+        course = sess.get(Course, scope["course_id"])
+        if course is None:
+            return q.filter(False)
+        conds.append((PromptFixing.scope_level == "course")
+                     & (PromptFixing.course_id == course.id))
+        if course.cluster_id is not None:
+            conds.append((PromptFixing.scope_level == "cluster")
+                         & (PromptFixing.cluster_id == course.cluster_id))
+        conds.append((PromptFixing.scope_level == "project")
+                     & (PromptFixing.project_id == course.project_id))
+    elif "cluster_id" in scope:
+        cluster = sess.get(Cluster, scope["cluster_id"])
+        if cluster is None:
+            return q.filter(False)
+        conds.append((PromptFixing.scope_level == "cluster")
+                     & (PromptFixing.cluster_id == cluster.id))
+        conds.append((PromptFixing.scope_level == "project")
+                     & (PromptFixing.project_id == cluster.project_id))
+        conds.append((PromptFixing.scope_level == "course")
+                     & PromptFixing.course_id.in_(
+                         select(Course.id).where(Course.cluster_id == cluster.id)))
+    else:
+        pid = scope["project_id"]
+        if sess.get(Project, pid) is None:
+            return q.filter(False)
+        conds.append((PromptFixing.scope_level == "project")
+                     & (PromptFixing.project_id == pid))
+        conds.append((PromptFixing.scope_level == "cluster")
+                     & PromptFixing.cluster_id.in_(
+                         select(Cluster.id).where(Cluster.project_id == pid)))
+        conds.append((PromptFixing.scope_level == "course")
+                     & PromptFixing.course_id.in_(
+                         select(Course.id).where(Course.project_id == pid)))
+    fixed_ids = select(PromptFixing.prompt_id).where(
+        PromptFixing.prompt_id.isnot(None), or_(*conds)
+    )
+    return q.filter(
+        Prompt.prompt_kind == "pipeline",
+        or_(Prompt.id.in_(fixed_ids), Prompt.is_default.is_(True)),
+    )
 
 
 def visible_prompts_query(db: Session, role: str | None, user_team) -> Query:

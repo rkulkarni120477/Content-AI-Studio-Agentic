@@ -6,6 +6,7 @@ import {
   fetchPrompts,
   markPromptUsed,
 } from '../api/prompts';
+import { listProjects, listProjectCourses } from '../api/flow';
 import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
@@ -32,10 +33,21 @@ export default function PromptListPage() {
   const [kindTab, setKindTab] = useState('library');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  // Scope filter (Phase 11, doc §8) — pipeline tab only: narrow to the
+  // prompts a project/course actually uses (locks + inherited defaults).
+  const [scopeProjects, setScopeProjects] = useState([]);
+  const [scopeCourses, setScopeCourses] = useState([]);
+  const [scopeProject, setScopeProject] = useState('');
+  const [scopeCourse, setScopeCourse] = useState('');
 
   function buildFilterParams() {
     const params = { roots_only: '1' };
-    if (canPipeline && kindTab === 'pipeline') params.kind = 'pipeline';
+    if (canPipeline && kindTab === 'pipeline') {
+      params.kind = 'pipeline';
+      // Most specific scope wins server-side; send only one.
+      if (scopeCourse) params.course_id = scopeCourse;
+      else if (scopeProject) params.project_id = scopeProject;
+    }
     if (q) params.q = q;
     if (category) params.category = category;
     if (tag) params.tag = tag;
@@ -55,11 +67,25 @@ export default function PromptListPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, sort, kindTab]);
+  }, [q, category, tag, sort, kindTab, scopeProject, scopeCourse]);
 
   useEffect(() => {
     void fetchMeta().then(setMeta).catch(() => {});
   }, []);
+
+  // Load the project list once the pipeline tab is first opened.
+  useEffect(() => {
+    if (kindTab !== 'pipeline' || !canPipeline || scopeProjects.length) return;
+    void listProjects().then(setScopeProjects).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kindTab]);
+
+  useEffect(() => {
+    setScopeCourse('');
+    setScopeCourses([]);
+    if (!scopeProject) return;
+    void listProjectCourses(scopeProject).then(setScopeCourses).catch(() => {});
+  }, [scopeProject]);
 
   useEffect(() => {
     void load();
@@ -154,6 +180,35 @@ export default function PromptListPage() {
               </option>
             ))}
           </select>
+          {canPipeline && kindTab === 'pipeline' && (
+            <>
+              <select
+                value={scopeProject}
+                onChange={(e) => setScopeProject(e.target.value)}
+                title="Show the prompts this project uses (locks + inherited defaults)"
+              >
+                <option value="">All Projects</option>
+                {scopeProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={scopeCourse}
+                onChange={(e) => setScopeCourse(e.target.value)}
+                disabled={!scopeProject}
+                title="Narrow to one course's effective prompt set"
+              >
+                <option value="">All Courses</option>
+                {scopeCourses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
           <select value={tag} onChange={(e) => setTag(e.target.value)}>
             <option value="">All Tags</option>
             {meta.tags.map((t) => (
