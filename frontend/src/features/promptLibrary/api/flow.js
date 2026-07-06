@@ -34,6 +34,16 @@ export async function listProjectCourses(projectId) {
   return data.items || data || [];
 }
 
+// ── Course-grouped view (Phase 11) ─────────────────────────────────────────────
+// One batch call: every course with the prompt each pipeline slot resolves to
+// (scope locks → component defaults → file fallback), server-computed with the
+// same semantics as /fixings/resolve.
+export async function fetchPromptsByCourse(projectId) {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  const data = await hostFetch(`/api/v1/prompts/by-course${qs}`);
+  return data.courses || [];
+}
+
 // ── Pipeline registry (fixings + per-component prompt pool) ───────────────────
 export async function listComponentPrompts(component) {
   const data = await hostFetch(`/api/v1/prompts?component=${encodeURIComponent(component)}&page_size=100`);

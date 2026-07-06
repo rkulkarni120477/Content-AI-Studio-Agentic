@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAIN_NAV, visibleHeaderActions } from '../nav';
-import { plAdminAudit, plAdminRequests, plAdminReviews, plFlow, plRequests } from '../../paths';
+import { plAdminAudit, plAdminRequests, plAdminReviews, plCourses, plFlow, plRequests } from '../../paths';
 
 const admin = { role: 'admin' };
 const reviewer = { role: 'reviewer' };
@@ -36,6 +36,13 @@ describe('MAIN_NAV visibility', () => {
       expect(visibleNav(user)).toContain(plFlow);
     }
     expect(visibleNav(null)).not.toContain(plFlow);
+  });
+
+  it('the Courses view shares the Flow audience — every reader, no anonymous', () => {
+    for (const user of [admin, reviewer, author]) {
+      expect(visibleNav(user)).toContain(plCourses);
+    }
+    expect(visibleNav(null)).not.toContain(plCourses);
   });
 });
 

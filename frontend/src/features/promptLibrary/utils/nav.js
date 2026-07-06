@@ -8,6 +8,7 @@ import {
 import {
   plHome,
   plFlow,
+  plCourses,
   plRequests,
   plAdminRequests,
   plAdminReviews,
@@ -22,6 +23,9 @@ export const MAIN_NAV = [
   // Flow view: any reader can see what each phase resolves and bind approved
   // prompts by reference (the approved-only rule for non-admins is server-enforced).
   { to: plFlow, label: 'Flow', visible: (u) => canReadLibrary(u) },
+  // Course-grouped view (requirements-doc §2): same read audience as Flow —
+  // it shows the same resolution facts, grouped Course → prompts.
+  { to: plCourses, label: 'Courses', visible: (u) => canReadLibrary(u) },
   // Regular users see their own requests; managers get the full admin queue below.
   { to: plRequests, label: 'Requests', visible: (u) => canReadLibrary(u) && !canReadAllRequests(u) },
   { to: plAdminRequests, label: 'Requests', visible: (u) => canReadAllRequests(u) },

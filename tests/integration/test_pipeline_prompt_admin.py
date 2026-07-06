@@ -616,3 +616,123 @@ class TestVariableDeclarations:
         assert r.json()["variables"] == [
             {"name": "x", "label": "The X", "hint": "supplied by the router"}
         ]
+
+
+class TestByCourseView:
+    """GET /by-course — Phase 11 course-grouped effective prompt sets."""
+
+    SLOT_KEYS = {("style", None), ("cdd", None), ("blueprint", None),
+                 ("generate", None), ("quiz", None), ("generate", "interactive")}
+
+    def _hierarchy(self, db, project="P1", cluster="C1", courses=("K1",)):
+        from promptops_app.database import Cluster, Course, Project
+
+        proj = Project(name=project, created_by="test_admin")
+        db.add(proj)
+        db.commit()
+        clus = Cluster(name=cluster, project_id=proj.id, created_by="test_admin")
+        db.add(clus)
+        db.commit()
+        made = []
+        for name in courses:
+            c = Course(name=name, project_id=proj.id, cluster_id=clus.id,
+                       created_by="test_admin")
+            db.add(c)
+            db.commit()
+            made.append(c)
+        return proj, clus, made
+
+    @staticmethod
+    def _slot(group, component, variant=None):
+        return next(s for s in group["prompts"]
+                    if s["component"] == component and s["variant"] == variant)
+
+    def test_grouping_and_default_resolution(self, client, auth_headers, db):
+        proj, clus, (course,) = self._hierarchy(db)
+        p = _create_pipeline_prompt(client, auth_headers, "bc_default")
+        r = client.put(f"{BASE}/{p['id']}/default", json={"is_default": True},
+                       headers=auth_headers)
+        assert r.status_code == 200, r.text
+
+        r = client.get(f"{BASE}/by-course", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        groups = {g["course_id"]: g for g in r.json()["courses"]}
+        g = groups[course.id]
+        assert g["course_name"] == "K1"
+        assert g["cluster_name"] == "C1"
+        assert g["project_name"] == "P1"
+        got_slots = {(s["component"], s["variant"]) for s in g["prompts"]}
+        assert self.SLOT_KEYS <= got_slots
+
+        cdd = self._slot(g, "cdd")
+        assert cdd["source"] == "default"
+        assert cdd["prompt"]["id"] == p["id"]
+        # No style default/lock exists in the clean test DB → file tier.
+        assert self._slot(g, "style")["source"] == "file"
+        # Interactive has no file fallback — bespoke builder keeps control.
+        assert self._slot(g, "generate", "interactive")["source"] == "builtin"
+
+    def test_scope_lock_beats_default_and_stays_course_local(
+            self, client, auth_headers, db):
+        proj, clus, (locked, plain) = self._hierarchy(db, courses=("K1", "K2"))
+        p_def = _create_pipeline_prompt(client, auth_headers, "bc_def2")
+        client.put(f"{BASE}/{p_def['id']}/default", json={"is_default": True},
+                   headers=auth_headers)
+        p_lock = _create_pipeline_prompt(client, auth_headers, "bc_lock")
+        r = client.put(f"{BASE}/fixings",
+                       json={"component": "cdd", "scope_level": "course",
+                             "course_id": locked.id, "prompt_id": p_lock["id"]},
+                       headers=auth_headers)
+        assert r.status_code == 200, r.text
+
+        groups = {g["course_id"]: g
+                  for g in client.get(f"{BASE}/by-course",
+                                      headers=auth_headers).json()["courses"]}
+        s_locked = self._slot(groups[locked.id], "cdd")
+        assert (s_locked["source"], s_locked["scope_level"]) == ("course_lock", "course")
+        assert s_locked["prompt"]["id"] == p_lock["id"]
+        s_plain = self._slot(groups[plain.id], "cdd")
+        assert s_plain["source"] == "default"
+        assert s_plain["prompt"]["id"] == p_def["id"]
+
+    def test_project_lock_inherited_by_courses(self, client, auth_headers, db):
+        proj, clus, (course,) = self._hierarchy(db)
+        p = _create_pipeline_prompt(client, auth_headers, "bc_proj")
+        client.put(f"{BASE}/fixings",
+                   json={"component": "cdd", "scope_level": "project",
+                         "project_id": proj.id, "prompt_id": p["id"]},
+                   headers=auth_headers)
+        groups = {g["course_id"]: g
+                  for g in client.get(f"{BASE}/by-course",
+                                      headers=auth_headers).json()["courses"]}
+        s = self._slot(groups[course.id], "cdd")
+        assert (s["source"], s["scope_level"]) == ("project_lock", "project")
+
+    def test_interactive_slot_never_hijacked_by_lesson_lock(
+            self, client, auth_headers, db):
+        proj, clus, (course,) = self._hierarchy(db)
+        p_lesson = _create_pipeline_prompt(client, auth_headers, "bc_lesson",
+                                           component="generate")
+        client.put(f"{BASE}/fixings",
+                   json={"component": "generate", "scope_level": "course",
+                         "course_id": course.id, "prompt_id": p_lesson["id"]},
+                   headers=auth_headers)
+        groups = {g["course_id"]: g
+                  for g in client.get(f"{BASE}/by-course",
+                                      headers=auth_headers).json()["courses"]}
+        g = groups[course.id]
+        assert self._slot(g, "generate")["source"] == "course_lock"
+        # The NULL-variant lock must not satisfy the exact-variant slot.
+        assert self._slot(g, "generate", "interactive")["source"] == "builtin"
+
+    def test_project_filter_and_author_access(self, client, auth_headers,
+                                              author_headers, db):
+        proj_a, _, (course_a,) = self._hierarchy(db, project="PA")
+        proj_b, _, (course_b,) = self._hierarchy(db, project="PB")
+        r = client.get(f"{BASE}/by-course", params={"project_id": proj_a.id},
+                       headers=auth_headers)
+        ids = {g["course_id"] for g in r.json()["courses"]}
+        assert ids == {course_a.id}
+        # Same read gate as /fixings/resolve — authors may see the flow map.
+        r = client.get(f"{BASE}/by-course", headers=author_headers)
+        assert r.status_code == 200

@@ -31,6 +31,8 @@ from app.core.exceptions import (
 from app.core.permissions import rbac_check
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.prompt import (
+    CoursePromptGroup,
+    CoursePromptSlot,
     PromptAIGenerateRequest,
     PromptAISuggestResponse,
     PromptCreateFromTemplateRequest,
@@ -43,6 +45,7 @@ from app.schemas.prompt import (
     PromptListItem,
     PromptRead,
     PromptUpdateRequest,
+    PromptsByCourseResponse,
     PromptVariableItem,
     PromptVariablesRead,
     PromptVariablesSetRequest,
@@ -438,6 +441,133 @@ def unset_fixing(
         raise NotFoundError("PromptFixing", f"{component}/{scope_level}")
     _log.info("prompt_fixing_unset  user=%s  component=%s  scope=%s",
               current_user.username, component, scope_level)
+
+
+# ── Course-grouped view (Phase 11) ───────────────────────────────────────────
+#
+# One batch call for the "prompts by course" library view: every course with
+# the prompt each pipeline slot resolves to, mirroring the live resolution
+# order (scope lock course→cluster→project→global → component default →
+# shipped file) without N×components /fixings/resolve calls. Declared before
+# the /{prompt_id} routes for the same match-order reason as /fixings.
+
+# The requirements-doc categories as (component, variant) slots. The
+# (generate, interactive) slot is exact-variant-only at generation time
+# (require_variant) — it never falls back to the NULL-variant lesson default.
+_COURSE_VIEW_SLOTS: tuple[tuple[str, str | None], ...] = (
+    ("style", None),
+    ("cdd", None),
+    ("blueprint", None),
+    ("generate", None),
+    ("quiz", None),
+    ("generate", "interactive"),
+)
+
+# Slots whose fallback tier is a shipped file template. The interactive slot
+# has none — unresolved means the bespoke component builder stays in control.
+_FILE_BACKED_SLOTS = frozenset(_COURSE_VIEW_SLOTS) - {("generate", "interactive")}
+
+
+@router.get(
+    "/by-course",
+    response_model=PromptsByCourseResponse,
+    summary="Course-grouped effective prompt sets",
+    description=(
+        "Every course with the prompt each pipeline component resolves to "
+        "(scope locks → component defaults → file fallback). Read-only; "
+        "powers the Prompt Library's course-grouped view."
+    ),
+)
+def prompts_by_course(
+    project_id: int | None = Query(default=None, description="Limit to one project."),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompts.view")),
+) -> PromptsByCourseResponse:
+    from promptops_app.database import Cluster, Course, Project, Prompt, PromptFixing
+
+    course_q = (
+        db.query(Course, Cluster.name, Project.name)
+        .join(Project, Course.project_id == Project.id)
+        .outerjoin(Cluster, Course.cluster_id == Cluster.id)
+        .order_by(Project.name.asc(), Course.name.asc())
+    )
+    if project_id is not None:
+        course_q = course_q.filter(Course.project_id == project_id)
+    course_rows = course_q.all()
+
+    # Whole tables up front — fixings and defaults are tiny; resolution runs
+    # in Python with the exact semantics of resolve_fixed_prompt (own-ID scope
+    # match, variant-incompatible fixings fall through to broader scopes).
+    fixings = db.query(PromptFixing).filter(PromptFixing.prompt_id.isnot(None)).all()
+    fix_map: dict[tuple[str, str, int | None], PromptFixing] = {}
+    for f in fixings:
+        sid = {"course": f.course_id, "cluster": f.cluster_id,
+               "project": f.project_id, "global": None}.get(f.scope_level)
+        fix_map.setdefault((f.component, f.scope_level, sid), f)
+    bound_ids = {f.prompt_id for f in fixings}
+    bound_by_id = (
+        {p.id: p for p in db.query(Prompt).filter(Prompt.id.in_(bound_ids)).all()}
+        if bound_ids else {}
+    )
+    default_map = {
+        (p.component_type, p.variant): p
+        for p in db.query(Prompt)
+        .filter(Prompt.is_default.is_(True), Prompt.prompt_kind == "pipeline")
+        .all()
+    }
+
+    # Fixed slots plus a dynamic slot for any authored variant default the
+    # static list doesn't cover (e.g. a future (blueprint, teacher) row).
+    slots = list(_COURSE_VIEW_SLOTS) + sorted(
+        (k for k in default_map if k not in set(_COURSE_VIEW_SLOTS)),
+        key=lambda k: (k[0], k[1] or ""),
+    )
+
+    def resolve_slot(course: Course, component: str, variant: str | None):
+        acceptable = (variant,) if variant is not None else None
+        for scope, sid in (("course", course.id), ("cluster", course.cluster_id),
+                           ("project", course.project_id), ("global", None)):
+            if scope != "global" and sid is None:
+                continue
+            f = fix_map.get((component, scope, sid))
+            if f is None:
+                continue
+            p = bound_by_id.get(f.prompt_id)
+            if p is None:
+                continue
+            if acceptable is not None and (
+                p.prompt_kind != "pipeline" or p.variant not in acceptable
+            ):
+                continue
+            return f"{scope}_lock", scope, p
+        p = default_map.get((component, variant))
+        if p is not None:
+            return "default", None, p
+        source = "file" if (component, variant) in _FILE_BACKED_SLOTS else "builtin"
+        return source, None, None
+
+    groups = []
+    for course, cluster_name, project_name in course_rows:
+        slot_items = []
+        for component, variant in slots:
+            source, scope, p = resolve_slot(course, component, variant)
+            slot_items.append(CoursePromptSlot(
+                component=component,
+                variant=variant,
+                source=source,
+                scope_level=scope,
+                prompt=PromptListItem.model_validate(p) if p is not None else None,
+            ))
+        groups.append(CoursePromptGroup(
+            course_id=course.id,
+            course_name=course.name,
+            cluster_id=course.cluster_id,
+            cluster_name=cluster_name,
+            project_id=course.project_id,
+            project_name=project_name,
+            prompts=slot_items,
+        ))
+    return PromptsByCourseResponse(courses=groups)
 
 
 @router.get("/{prompt_id}", response_model=PromptDetailRead, summary="Get a prompt with active version")

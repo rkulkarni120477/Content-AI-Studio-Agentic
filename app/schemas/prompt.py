@@ -185,6 +185,39 @@ class PromptDeployResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Course-grouped view (Phase 11) — per-course effective prompt sets
+# ---------------------------------------------------------------------------
+
+class CoursePromptSlot(BaseModel):
+    """One resolution slot for a course: which prompt a component resolves to.
+
+    ``source`` mirrors the real resolution order (scope lock → component
+    default → shipped file / bespoke builder):
+    course_lock | cluster_lock | project_lock | global_lock | default | file | builtin
+    """
+
+    component: str
+    variant: Optional[str] = None
+    source: str
+    scope_level: Optional[str] = None
+    prompt: Optional[PromptListItem] = None
+
+
+class CoursePromptGroup(BaseModel):
+    course_id: int
+    course_name: str
+    cluster_id: Optional[int] = None
+    cluster_name: Optional[str] = None
+    project_id: int
+    project_name: Optional[str] = None
+    prompts: list[CoursePromptSlot]
+
+
+class PromptsByCourseResponse(BaseModel):
+    courses: list[CoursePromptGroup]
+
+
+# ---------------------------------------------------------------------------
 # Pipeline management (Phase 8) — default flag, workflow state, scope locks
 # ---------------------------------------------------------------------------
 

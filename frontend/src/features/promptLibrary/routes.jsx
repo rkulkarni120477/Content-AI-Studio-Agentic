@@ -8,6 +8,7 @@ const PromptListPage = lazy(() => import('./pages/PromptListPage'));
 const PromptDetailPage = lazy(() => import('./pages/PromptDetailPage'));
 const PromptFormPage = lazy(() => import('./pages/PromptFormPage'));
 const PipelineFlowPage = lazy(() => import('./pages/PipelineFlowPage'));
+const CoursePromptsPage = lazy(() => import('./pages/CoursePromptsPage'));
 const RequestsPage = lazy(() => import('./pages/RequestsPage'));
 const RequestNewPage = lazy(() => import('./pages/RequestNewPage'));
 const AdminRequestsPage = lazy(() => import('./pages/admin/AdminRequestsPage'));
@@ -36,6 +37,7 @@ export const promptLibraryRoute = {
       element: <ProtectedRoute requiredRole={MANAGER}>{w(<PromptFormPage />)}</ProtectedRoute>,
     },
     { path: 'flow', element: w(<PipelineFlowPage />) },
+    { path: 'courses', element: w(<CoursePromptsPage />) },
     { path: 'requests', element: w(<RequestsPage />) },
     { path: 'requests/new', element: w(<RequestNewPage />) },
     {
