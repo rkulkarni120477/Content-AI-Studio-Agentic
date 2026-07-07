@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { fetchPrompt } from '../../api/prompts';
 import { fetchRequests, updateRequest } from '../../api/requests';
 import { useToast } from '../../context/ToastContext';
+import { APPLY_PROPOSAL_KEY, parseRequestDescription } from '../../utils/requestProposal';
 import { plAdminRequests, plPrompt, plPromptEdit, plPromptNew } from '../../paths';
 
 export default function AdminRequestDetailPage() {
@@ -59,6 +60,54 @@ export default function AdminRequestDetailPage() {
     return <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 48 }}>Loading…</p>;
   }
 
+  const { rationale, proposedSystem, proposedUser } = parseRequestDescription(request.description);
+  const hasProposedEdit = proposedSystem !== null || proposedUser !== null;
+  const promptLoaded = linkedPrompt && linkedPrompt !== 'missing';
+  // Current text for side-by-side context: PL detail keeps the user template in
+  // `content` and the system prompt on the pipeline sub-object.
+  const currentSystem = promptLoaded ? (linkedPrompt.pipeline?.system_prompt || '') : null;
+  const currentUser = promptLoaded ? (linkedPrompt.content || '') : null;
+
+  function openEditorWithProposal() {
+    sessionStorage.setItem(APPLY_PROPOSAL_KEY, JSON.stringify({
+      promptId: linkedPrompt.id,
+      system: proposedSystem,
+      user: proposedUser,
+      note: `Applied from request #${request.id} by ${request.requested_by}: ${request.title}`,
+    }));
+    navigate(plPromptEdit(linkedPrompt.id));
+  }
+
+  function proposalBlock(label, proposed, current) {
+    if (proposed === null) return null;
+    const unchanged = current !== null && proposed.trim() === current.trim();
+    return (
+      <div className="field" key={label}>
+        <label>
+          Proposed {label}
+          {current !== null && (
+            <span className={`badge ${unchanged ? 'badge-draft' : 'badge-team'}`} style={{ marginLeft: 8 }}>
+              {unchanged ? 'matches the current version' : 'differs from the current version'}
+            </span>
+          )}
+        </label>
+        <pre
+          style={{
+            fontSize: '.8rem',
+            lineHeight: 1.5,
+            whiteSpace: 'pre-wrap',
+            background: 'var(--tag-bg)',
+            padding: '10px 12px',
+            borderRadius: 6,
+            margin: 0,
+          }}
+        >
+          {proposed}
+        </pre>
+      </div>
+    );
+  }
+
   return (
     <>
       <Link to={plAdminRequests} className="back-link">
@@ -75,7 +124,12 @@ export default function AdminRequestDetailPage() {
           </p>
         </div>
         <div className="page-actions">
-          {request.prompt_id && linkedPrompt && linkedPrompt !== 'missing' && (
+          {promptLoaded && hasProposedEdit && (
+            <button type="button" className="btn btn-primary" onClick={openEditorWithProposal}>
+              ✅ Apply this proposal in the editor
+            </button>
+          )}
+          {promptLoaded && !hasProposedEdit && (
             <Link to={plPromptEdit(linkedPrompt.id)} className="btn btn-primary">
               ✏️ Edit the prompt
             </Link>
@@ -97,11 +151,17 @@ export default function AdminRequestDetailPage() {
 
       <form className="page-card" onSubmit={(e) => void handleSave(e)}>
         <div className="field">
-          <label>Description</label>
+          <label>{hasProposedEdit ? 'What should change, and why' : 'Description'}</label>
           <p style={{ fontSize: '.9rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-            {request.description || '—'}
+            {rationale || '—'}
           </p>
         </div>
+        {hasProposedEdit && (
+          <>
+            {proposalBlock('system prompt', proposedSystem, currentSystem)}
+            {proposalBlock('user prompt template', proposedUser, currentUser)}
+          </>
+        )}
         {request.prompt_id && (
           <div className="field">
             <label>Linked prompt</label>

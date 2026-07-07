@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { listAllPrompts } from '../api/flow';
+import { getHostPromptDetail, listAllPrompts } from '../api/flow';
 import { createRequest } from '../api/requests';
 import { useToast } from '../context/ToastContext';
 import { componentCategoryLabel } from '../utils/prompt';
+import { buildRequestDescription } from '../utils/requestProposal';
 import { plRequests } from '../paths';
 
 export default function RequestNewPage() {
@@ -27,6 +28,12 @@ export default function RequestNewPage() {
   const [type, setType] = useState(linkedPromptId ? 'update' : 'new');
   const [promptId, setPromptId] = useState(linkedPromptId);
   const [prompts, setPrompts] = useState(null); // null = not loaded yet
+
+  // Current content of the chosen prompt, and the requester's editable copy.
+  // detail: null = nothing to load, 'loading', 'unavailable', or {system, user}.
+  const [detail, setDetail] = useState(null);
+  const [proposedSystem, setProposedSystem] = useState('');
+  const [proposedUser, setProposedUser] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -42,6 +49,40 @@ export default function RequestNewPage() {
       .catch(() => setPrompts([]));
   }, [type, prompts]);
 
+  // Load the chosen prompt's active text so the requester can edit it in
+  // place. Some carried-over library rows have no system/user split — for
+  // those the form falls back to a plain written request.
+  useEffect(() => {
+    if (type !== 'update' || !promptId) {
+      setDetail(null);
+      return;
+    }
+    let active = true;
+    setDetail('loading');
+    getHostPromptDetail(promptId)
+      .then((d) => {
+        if (!active) return;
+        const system = d?.system_prompt || '';
+        const user = d?.user_prompt_template || '';
+        if (!system && !user) {
+          setDetail('unavailable');
+          return;
+        }
+        setDetail({ system, user });
+        setProposedSystem(system);
+        setProposedUser(user);
+      })
+      .catch(() => {
+        if (active) setDetail('unavailable');
+      });
+    return () => {
+      active = false;
+    };
+  }, [type, promptId]);
+
+  const systemChanged = detail && typeof detail === 'object' && proposedSystem.trim() !== detail.system.trim();
+  const userChanged = detail && typeof detail === 'object' && proposedUser.trim() !== detail.user.trim();
+
   async function handleSubmit(e) {
     e.preventDefault();
     if (!title.trim()) {
@@ -52,11 +93,19 @@ export default function RequestNewPage() {
       show('Choose the prompt this request is about.');
       return;
     }
+    if (type === 'update' && !description.trim() && !systemChanged && !userChanged) {
+      show('Describe the change you want, or edit the prompt text below to propose it.');
+      return;
+    }
     setSaving(true);
     try {
       await createRequest({
         title: title.trim(),
-        description: description.trim(),
+        description: buildRequestDescription({
+          rationale: description,
+          proposedSystem: systemChanged ? proposedSystem : null,
+          proposedUser: userChanged ? proposedUser : null,
+        }),
         type,
         prompt_id: type === 'update' ? promptId : null,
       });
@@ -105,9 +154,6 @@ export default function RequestNewPage() {
                 ))}
               </select>
             )}
-            <p className="var-tip" style={{ marginTop: 6 }}>
-              Tells the admin exactly which prompt you want changed.
-            </p>
           </div>
         )}
         <div className="field">
@@ -115,9 +161,52 @@ export default function RequestNewPage() {
           <input value={title} onChange={(e) => setTitle(e.target.value)} required />
         </div>
         <div className="field">
-          <label>Description</label>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} />
+          <label>{type === 'update' ? 'What should change, and why?' : 'Description'}</label>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} />
         </div>
+
+        {type === 'update' && detail === 'loading' && (
+          <p style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Loading the current prompt text…</p>
+        )}
+        {type === 'update' && detail === 'unavailable' && promptId && (
+          <p style={{ fontSize: '.85rem', color: 'var(--muted)' }}>
+            This prompt&apos;s text can&apos;t be loaded here — describe the change you want above.
+          </p>
+        )}
+        {type === 'update' && detail && typeof detail === 'object' && (
+          <>
+            <p className="var-tip">
+              ✏️ Below is the prompt&apos;s current text. Edit it to propose the exact change —
+              or leave it untouched and just describe the change above. Only the parts you
+              edit are sent with the request.
+            </p>
+            <div className="field">
+              <label>
+                System prompt
+                {systemChanged && <span className="badge badge-team" style={{ marginLeft: 8 }}>edited</span>}
+              </label>
+              <textarea
+                value={proposedSystem}
+                onChange={(e) => setProposedSystem(e.target.value)}
+                rows={8}
+                style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '.82rem' }}
+              />
+            </div>
+            <div className="field">
+              <label>
+                User prompt template
+                {userChanged && <span className="badge badge-team" style={{ marginLeft: 8 }}>edited</span>}
+              </label>
+              <textarea
+                value={proposedUser}
+                onChange={(e) => setProposedUser(e.target.value)}
+                rows={8}
+                style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '.82rem' }}
+              />
+            </div>
+          </>
+        )}
+
         <div className="modal-footer">
           <Link to={plRequests} className="btn btn-ghost">
             Cancel

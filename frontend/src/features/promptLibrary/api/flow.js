@@ -50,6 +50,14 @@ export async function listComponentPrompts(component) {
   return data.items || [];
 }
 
+// Active-version text for one prompt (system prompt + user template) — used by
+// the request form so a requester can propose an edit against the current
+// content. Host endpoint: prompts.view, so authors can read pipeline prompts
+// the PL detail endpoint hides from them.
+export async function getHostPromptDetail(promptId) {
+  return hostFetch(`/api/v1/prompts/${encodeURIComponent(promptId)}`);
+}
+
 // Every live prompt, all components — the request form's "Prompt to update"
 // picker. The prompt-library list endpoint hides pipeline rows from
 // non-managers (they browse via the Courses tab instead), but a requester may

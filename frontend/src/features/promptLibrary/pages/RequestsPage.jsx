@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { fetchRequests } from '../api/requests';
+import { parseRequestDescription } from '../utils/requestProposal';
 import { plRequestNew } from '../paths';
 
 function statusClass(status) {
@@ -46,13 +47,21 @@ export default function RequestsPage() {
                 </tr>
               </thead>
               <tbody>
-                {requests.map((r) => (
+                {requests.map((r) => {
+                  const { rationale, proposedSystem, proposedUser } = parseRequestDescription(r.description);
+                  const withProposal = proposedSystem !== null || proposedUser !== null;
+                  return (
                   <tr key={r.id}>
                     <td>
                       <strong>{r.title}</strong>
-                      {r.description && (
+                      {withProposal && (
+                        <span className="badge badge-team" style={{ marginLeft: 8 }}>
+                          ✏️ includes a proposed edit
+                        </span>
+                      )}
+                      {rationale && (
                         <div style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 4 }}>
-                          {r.description}
+                          {rationale}
                         </div>
                       )}
                       {r.admin_notes && (
@@ -77,7 +86,8 @@ export default function RequestsPage() {
                       {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

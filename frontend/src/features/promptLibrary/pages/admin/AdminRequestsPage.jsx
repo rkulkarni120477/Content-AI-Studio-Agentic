@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch } from '../../api/client';
+import { hasProposal } from '../../utils/requestProposal';
 import { plAdminRequest, plPrompt } from '../../paths';
 
 function statusClass(status) {
@@ -82,6 +83,15 @@ export default function AdminRequestsPage() {
                           >
                             🔗 prompt #{r.prompt_id}
                           </Link>
+                        )}
+                        {hasProposal(r.description) && (
+                          <span
+                            className="badge badge-team"
+                            style={{ marginLeft: 8 }}
+                            title="The requester wrote the exact prompt text they want — open the request to review and apply it"
+                          >
+                            ✏️ proposal
+                          </span>
                         )}
                         {r.admin_notes && (
                           <div style={{ fontSize: '.73rem', color: 'var(--muted)' }}>{r.admin_notes}</div>

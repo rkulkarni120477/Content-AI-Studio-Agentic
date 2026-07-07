@@ -19,6 +19,7 @@ import { canManagePipelinePrompts } from '../utils/permissions';
 import { useAuth } from '../context/AuthContext';
 import TeamMultiSelect from '../components/TeamMultiSelect';
 import { extractVarNames, findLegacyVarNames, toLabel } from '../utils/prompt';
+import { APPLY_PROPOSAL_KEY } from '../utils/requestProposal';
 import { plCourses, plHome, plPrompt } from '../paths';
 
 export default function PromptFormPage() {
@@ -89,6 +90,21 @@ export default function PromptFormPage() {
           setSystemPrompt(p.pipeline?.system_prompt || '');
           setComponentType(p.pipeline?.component_type || '');
           setVariant(p.pipeline?.variant || '');
+          // A request's proposed edit, handed off by the admin request page
+          // ("Apply this proposal in the editor"). Consumed once, then cleared.
+          try {
+            const raw = sessionStorage.getItem(APPLY_PROPOSAL_KEY);
+            const proposal = raw ? JSON.parse(raw) : null;
+            if (proposal && String(proposal.promptId) === String(p.id)) {
+              sessionStorage.removeItem(APPLY_PROPOSAL_KEY);
+              if (proposal.system != null) setSystemPrompt(proposal.system);
+              if (proposal.user != null) setContent(proposal.user);
+              if (proposal.note) setChangeNote(proposal.note);
+              show('Proposal loaded — review the text, then save to apply it.');
+            }
+          } catch {
+            sessionStorage.removeItem(APPLY_PROPOSAL_KEY);
+          }
           const pipeDefs = {};
           (p.variables || []).forEach((v) => {
             pipeDefs[v.name] = { declared: true, label: v.label || '', hint: v.hint || '' };
