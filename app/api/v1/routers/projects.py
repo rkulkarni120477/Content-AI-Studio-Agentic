@@ -62,7 +62,7 @@ def list_projects(
     if current_user.role == "admin":
         projects = project_repository.list_active_projects(db)
     else:
-        projects = _get_user_projects(db, current_user.username)
+        projects = _get_user_projects(db, current_user.username, current_user.role)
 
     total = len(projects)
     start = (page - 1) * page_size
