@@ -6,6 +6,7 @@ import {
   fetchPrompt,
   fetchReviews,
   markPromptUsed,
+  promotePrompt,
   submitReview,
   uploadAttachment,
 } from '../api/prompts';
@@ -14,7 +15,7 @@ import { listPromptFixings } from '../api/flow';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
-import { componentCategoryLabel, fillPromptContent, starsDisplay } from '../utils/prompt';
+import { CAS_SLOT_OPTIONS, componentCategoryLabel, fillPromptContent, starsDisplay } from '../utils/prompt';
 import { plHome, plPrompt, plPromptEdit, plPromptNewChild, plRequestNew } from '../paths';
 
 // Mirrors the backend's _STATE_TRANSITIONS (illegal moves 409 server-side).
@@ -62,6 +63,8 @@ export default function PromptDetailPage() {
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [loading, setLoading] = useState(true);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [promoteSlot, setPromoteSlot] = useState('');
 
   useEffect(() => {
     if (!id) return;
@@ -196,6 +199,27 @@ export default function PromptDetailPage() {
     }
   }
 
+  async function handlePromote() {
+    const slot = CAS_SLOT_OPTIONS.find((s) => s.label === promoteSlot);
+    if (!slot) return;
+    const ok = window.confirm(
+      `Promote "${prompt.title}" to an admin-managed ${slot.label} pipeline prompt?\n\n` +
+        'It keeps its id and version history, but leaves the library edit surface. ' +
+        'Generation will NOT use it until you make it a component default or lock it to a scope.',
+    );
+    if (!ok) return;
+    try {
+      await promotePrompt(prompt.id, { component_type: slot.component, variant: slot.variant });
+      setPromoteOpen(false);
+      setPromoteSlot('');
+      await refetch();
+      void listPromptFixings(prompt.id).then(setFixings).catch(() => setFixings([]));
+      show('Promoted to pipeline ✓ — make it a default or lock a scope to put it in use.');
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Promote failed');
+    }
+  }
+
   async function handleToggleDefault() {
     try {
       await setPipelineDefault(prompt.id, !prompt.pipeline?.is_default);
@@ -323,8 +347,54 @@ export default function PromptDetailPage() {
               {pipe.is_default ? 'Clear default' : `Make default for ${componentCategoryLabel(pipe.component_type, pipe.variant)}`}
             </button>
           )}
+          {!isPipeline && canPipeline && !prompt.parent_id && (prompt.children || []).length === 0 && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              title="Convert this library prompt into an admin-managed CAS pipeline prompt"
+              onClick={() => setPromoteOpen((v) => !v)}
+            >
+              ⚙ Promote to pipeline…
+            </button>
+          )}
         </div>
       </div>
+
+      {promoteOpen && !isPipeline && (
+        <div className="page-card" style={{ marginBottom: 16 }}>
+          <div className="section-hdr" style={{ marginTop: 0, paddingTop: 0, border: 'none' }}>
+            Promote to pipeline
+          </div>
+          <p className="view-meta">
+            The prompt keeps its id and version history but becomes an
+            admin-managed pipeline prompt classified under the chosen CAS
+            category. Promotion is inert: generation only uses it once it is
+            made a component default or locked to a scope in the Flow view.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={promoteSlot} onChange={(e) => setPromoteSlot(e.target.value)}>
+              <option value="">CAS category…</option>
+              {CAS_SLOT_OPTIONS.map((s) => (
+                <option key={s.label} value={s.label}>
+                  {s.label} ({s.component}
+                  {s.variant ? `/${s.variant}` : ''})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!promoteSlot}
+              onClick={() => void handlePromote()}
+            >
+              Promote
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => setPromoteOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="page-card">
         {prompt.description && <p className="view-desc">{prompt.description}</p>}

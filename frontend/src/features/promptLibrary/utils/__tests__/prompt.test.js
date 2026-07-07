@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CAS_CATEGORIES,
+  CAS_SLOT_OPTIONS,
   componentCategoryLabel,
   extractVarNames,
   fillPromptContent,
@@ -168,5 +170,25 @@ describe('componentCategoryLabel', () => {
     expect(componentCategoryLabel('blueprint', 'student')).toBe('Blueprint / student');
     expect(componentCategoryLabel(null, 'legacy')).toBe('Pipeline / legacy');
     expect(componentCategoryLabel('')).toBe('Pipeline');
+  });
+});
+
+describe('CAS category constants (Phase 12 unified list + promote)', () => {
+  it('CAS_CATEGORIES lists exactly the six doc categories, matching the slot labels', () => {
+    expect(CAS_CATEGORIES).toEqual([
+      'Style',
+      'CDD',
+      'Blueprint',
+      'Lesson Generation',
+      'Assessment',
+      'Component',
+    ]);
+    expect(CAS_SLOT_OPTIONS.map((s) => s.label).sort()).toEqual([...CAS_CATEGORIES].sort());
+  });
+
+  it('every slot round-trips through componentCategoryLabel', () => {
+    for (const s of CAS_SLOT_OPTIONS) {
+      expect(componentCategoryLabel(s.component, s.variant)).toBe(s.label);
+    }
   });
 });

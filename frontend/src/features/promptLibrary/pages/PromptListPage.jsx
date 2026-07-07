@@ -13,6 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { exportPromptsCsv } from '../utils/csvExport';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
+import { CAS_CATEGORIES } from '../utils/prompt';
 
 export default function PromptListPage() {
   const { user } = useAuth();
@@ -27,10 +28,6 @@ export default function PromptListPage() {
   const [tag, setTag] = useState('');
   const [sort, setSort] = useState('updated');
   const [view, setView] = useState(() => localStorage.getItem('plib_view') || 'card');
-  // Kind facet (Decision 1): non-admins never get a pipeline tab — the server
-  // strips pipeline rows from their responses regardless; this is UI-side
-  // defense-in-depth.
-  const [kindTab, setKindTab] = useState('library');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   // Scope filter (Phase 11, doc §8) — pipeline tab only: narrow to the
@@ -42,14 +39,20 @@ export default function PromptListPage() {
 
   function buildFilterParams() {
     const params = { roots_only: '1' };
-    if (canPipeline && kindTab === 'pipeline') {
-      params.kind = 'pipeline';
+    // Unified list (Phase 12): one list across kinds for pipeline managers.
+    // Non-admins never send kind — the server strips pipeline rows from
+    // their responses regardless; this is UI-side defense-in-depth.
+    if (canPipeline) {
+      params.kind = 'all';
       // Most specific scope wins server-side; send only one.
       if (scopeCourse) params.course_id = scopeCourse;
       else if (scopeProject) params.project_id = scopeProject;
     }
     if (q) params.q = q;
-    if (category) params.category = category;
+    // CAS workflow categories travel as cas_category (resolved server-side to
+    // component_type/variant); freeform library categories keep the old param.
+    if (category.startsWith('cas:')) params.cas_category = category.slice(4);
+    else if (category) params.category = category;
     if (tag) params.tag = tag;
     if (sort) params.sort = sort;
     return params;
@@ -67,18 +70,18 @@ export default function PromptListPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, sort, kindTab, scopeProject, scopeCourse]);
+  }, [q, category, tag, sort, scopeProject, scopeCourse]);
 
   useEffect(() => {
     void fetchMeta().then(setMeta).catch(() => {});
   }, []);
 
-  // Load the project list once the pipeline tab is first opened.
+  // Scope selects are pipeline-manager-only; load their project list once.
   useEffect(() => {
-    if (kindTab !== 'pipeline' || !canPipeline || scopeProjects.length) return;
+    if (!canPipeline || scopeProjects.length) return;
     void listProjects().then(setScopeProjects).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kindTab]);
+  }, [canPipeline]);
 
   useEffect(() => {
     setScopeCourse('');
@@ -141,24 +144,6 @@ export default function PromptListPage() {
     <>
       <div className="library-toolbar">
         <div className="toolbar">
-          {canPipeline && (
-            <div className="view-toggle" title="Pipeline prompts drive live generation (admin)">
-              <button
-                type="button"
-                className={kindTab === 'library' ? 'active' : ''}
-                onClick={() => setKindTab('library')}
-              >
-                Library
-              </button>
-              <button
-                type="button"
-                className={kindTab === 'pipeline' ? 'active' : ''}
-                onClick={() => setKindTab('pipeline')}
-              >
-                ⚙ Pipeline
-              </button>
-            </div>
-          )}
           <div className="search-wrap">
             <input
               type="text"
@@ -174,13 +159,35 @@ export default function PromptListPage() {
           </div>
           <select value={category} onChange={(e) => setCategory(e.target.value)}>
             <option value="">All Categories</option>
-            {meta.categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+            {canPipeline ? (
+              <>
+                {/* CAS categories are structural (component/variant-backed),
+                    so they never appear in meta.categories — pipeline
+                    managers get them as a distinct group. */}
+                <optgroup label="CAS Workflow">
+                  {CAS_CATEGORIES.map((c) => (
+                    <option key={`cas:${c}`} value={`cas:${c}`}>
+                      ⚙ {c}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Library">
+                  {meta.categories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </optgroup>
+              </>
+            ) : (
+              meta.categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))
+            )}
           </select>
-          {canPipeline && kindTab === 'pipeline' && (
+          {canPipeline && (
             <>
               <select
                 value={scopeProject}

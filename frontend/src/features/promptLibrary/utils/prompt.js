@@ -93,3 +93,26 @@ export function pipelineStageLabel(p) {
   const pipe = p.pipeline || {};
   return componentCategoryLabel(pipe.component_type, pipe.variant);
 }
+
+// The doc's six CAS workflow categories. CAS_CATEGORIES feeds the unified
+// list's category filter (sent as the cas_category param); CAS_SLOT_OPTIONS
+// feeds the promote-to-pipeline dialog, carrying the (component, variant)
+// resolution keys the backend maps each label back to — labels themselves
+// never drive generation.
+export const CAS_CATEGORIES = [
+  'Style',
+  'CDD',
+  'Blueprint',
+  'Lesson Generation',
+  'Assessment',
+  'Component',
+];
+
+export const CAS_SLOT_OPTIONS = [
+  { label: 'Style', component: 'style', variant: null },
+  { label: 'CDD', component: 'cdd', variant: null },
+  { label: 'Blueprint', component: 'blueprint', variant: null },
+  { label: 'Lesson Generation', component: 'generate', variant: null },
+  { label: 'Assessment', component: 'quiz', variant: null },
+  { label: 'Component', component: 'generate', variant: 'interactive' },
+];

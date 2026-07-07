@@ -74,6 +74,19 @@ export async function checkDuplicate(content, kind = 'library', excludeId = null
   }
 }
 
+// Promote a library prompt to an admin-managed pipeline prompt (Phase 12).
+// The kind flips in place (same id, same version history) and stays inert
+// for generation until the prompt is made a default or scope-locked.
+export async function promotePrompt(id, body) {
+  const res = await apiFetch(`/api/prompts/${id}/promote`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || data.detail || 'Promote failed');
+  return data;
+}
+
 export async function updatePrompt(id, body) {
   const res = await apiFetch(`/api/prompts/${id}`, { method: 'PUT', body: JSON.stringify(body) });
   const data = await res.json();
