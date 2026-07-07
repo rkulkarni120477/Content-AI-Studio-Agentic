@@ -29,6 +29,8 @@ from promptops_app.prompt_templates import (
     CDD_USER_PROMPT_TEMPLATE,
     BLUEPRINT_SYSTEM_PROMPT,
     BLUEPRINT_USER_PROMPT_TEMPLATE,
+    TEACHER_BLUEPRINT_SYSTEM_PROMPT,
+    TEACHER_BLUEPRINT_USER_PROMPT_TEMPLATE,
     LESSON_WITH_CONTEXT_SYSTEM,
     LESSON_WITH_CONTEXT_USER,
 )
@@ -1824,7 +1826,33 @@ def seed_data(db):
         )
         db.add(v1); db.add(v2); db.commit()
 
-    # ── Default component prompt assets (idempotent — skip if name already exists) ─
+    # ── Default component prompt assets ──────────────────────────────────────
+    seed_default_component_prompts(db)
+    db.commit()
+
+
+def seed_default_component_prompts(db) -> list[str]:
+    """Seed the one ``is_default`` prompt row per taxonomy line (idempotent).
+
+    Skips any name that already exists, so it is safe on every call — fresh
+    databases get the full set, existing databases only the rows they lack
+    (``scripts/seed_taxonomy_defaults.py`` applies it to a running DB).
+    Flushes but does NOT commit — the caller owns the transaction (that is
+    what lets the seeding script offer a real --dry-run). Returns the names
+    created.
+
+    The legacy constants are {single}-brace (.format) text and stay unchanged
+    as the inline-fallback tier; the SEEDED rows are what component-keyed
+    resolution (PROMPT_RESOLVE_BY_COMPONENT) renders with the {{double}}-brace
+    engine, so bodies are converted at seed time. quiz_generation.md is already
+    {{double}} and is seeded verbatim.
+
+    Deliberately NOT seeded (Phase 8 decision): (generate, interactive) — the
+    bespoke builder routes ~10 label-specific prompts and one generic row would
+    degrade them all; Cluster/Course lines — no endpoint resolves them yet.
+    """
+    from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
     _STYLE_DEFAULT_SYSTEM = (
         "You are an expert instructional style consultant. "
         "Analyse the provided style guidelines and documents, then apply the defined "
@@ -1838,47 +1866,61 @@ def seed_data(db):
         "and formatting conventions defined above."
     )
 
+    # The quiz default is the shipped file template (the tier serving quiz
+    # today) — seeding it changes nothing except giving the console a slot.
+    from promptops_app.prompts.prompt_loader import _TEMPLATE_DIR, _split
+    _quiz_sys, _quiz_usr = _split(
+        (_TEMPLATE_DIR / "quiz_generation.md").read_text(encoding="utf-8")
+    )
+
+    # (name, component_type, variant, description, system, user, needs_conversion)
     _DEFAULT_COMPONENT_PROMPTS = [
         (
-            "default_style_prompt",
-            "style",
+            "default_style_prompt", "style", None,
             "Default Style Prompt — applied when generating style-guided content.",
-            _STYLE_DEFAULT_SYSTEM,
-            _STYLE_DEFAULT_USER,
+            _STYLE_DEFAULT_SYSTEM, _STYLE_DEFAULT_USER, True,
         ),
         (
-            "default_cdd_prompt",
-            "cdd",
+            "default_cdd_prompt", "cdd", None,
             "Default CDD Prompt — generates Course Design Documents.",
-            CDD_SYSTEM_PROMPT,
-            CDD_USER_PROMPT_TEMPLATE,
+            CDD_SYSTEM_PROMPT, CDD_USER_PROMPT_TEMPLATE, True,
         ),
         (
-            "default_blueprint_prompt",
-            "blueprint",
+            "default_blueprint_prompt", "blueprint", None,
             "Default Blueprint Prompt — generates Module Blueprints from a CDD.",
-            BLUEPRINT_SYSTEM_PROMPT,
-            BLUEPRINT_USER_PROMPT_TEMPLATE,
+            BLUEPRINT_SYSTEM_PROMPT, BLUEPRINT_USER_PROMPT_TEMPLATE, True,
         ),
         (
-            "default_generate_prompt",
-            "generate",
+            "default_generate_prompt", "generate", None,
             "Default Generate Prompt — generates lesson and course component content.",
-            LESSON_WITH_CONTEXT_SYSTEM,
-            LESSON_WITH_CONTEXT_USER,
+            LESSON_WITH_CONTEXT_SYSTEM, LESSON_WITH_CONTEXT_USER, True,
+        ),
+        # Variant defaults (Phase 8 taxonomy seeds, signed off 2026-07-07):
+        # exact (component, variant) rows win over the NULL-variant fallback,
+        # so each blueprint mode becomes independently versionable while the
+        # seeded text keeps live output identical to the legacy constants.
+        (
+            "default_blueprint_teacher_prompt", "blueprint", "teacher",
+            "Default Teacher Blueprint Prompt — teacher-facing module blueprints.",
+            TEACHER_BLUEPRINT_SYSTEM_PROMPT, TEACHER_BLUEPRINT_USER_PROMPT_TEMPLATE, True,
+        ),
+        (
+            "default_blueprint_student_prompt", "blueprint", "student",
+            "Default Student Blueprint Prompt — student-facing module blueprints.",
+            BLUEPRINT_SYSTEM_PROMPT, BLUEPRINT_USER_PROMPT_TEMPLATE, True,
+        ),
+        (
+            "default_quiz_prompt", "quiz", None,
+            "Default Quiz Prompt — generates quiz and assessment content.",
+            _quiz_sys, _quiz_usr, False,
         ),
     ]
 
-    # The constants above are legacy {single}-brace (.format) text — they stay
-    # unchanged as the inline-fallback tier. The SEEDED rows however are what
-    # component-keyed resolution (PROMPT_RESOLVE_BY_COMPONENT) renders with the
-    # {{double}}-brace engine, so fresh databases seed already-converted bodies.
-    # Existing databases are converted by scripts/convert_seeded_prompt_braces.py.
-    from promptops_app.prompts.brace_conversion import convert_legacy_braces
-
-    for _p_name, _p_comp, _p_desc, _p_sys, _p_usr in _DEFAULT_COMPONENT_PROMPTS:
-        _p_sys, _ = convert_legacy_braces(_p_sys)
-        _p_usr, _ = convert_legacy_braces(_p_usr)
+    created: list[str] = []
+    for _p_name, _p_comp, _p_variant, _p_desc, _p_sys, _p_usr, _p_conv in _DEFAULT_COMPONENT_PROMPTS:
+        if _p_conv:
+            _p_sys, _ = convert_legacy_braces(_p_sys)
+            _p_usr, _ = convert_legacy_braces(_p_usr)
         if not db.query(Prompt).filter(Prompt.name == _p_name).first():
             _p_new = Prompt(
                 name=_p_name,
@@ -1887,12 +1929,13 @@ def seed_data(db):
                 active_version="v1",
                 tags=_p_comp,
                 component_type=_p_comp,
+                variant=_p_variant,
                 is_default=True,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
             _p_new.tag_rows = [PromptTag(tag=_p_comp)]
-            db.add(_p_new); db.commit(); db.refresh(_p_new)
+            db.add(_p_new); db.flush()
             db.add(PromptVersion(
                 prompt_id=_p_new.id,
                 version="v1",
@@ -1903,7 +1946,10 @@ def seed_data(db):
                 is_active=True,
                 created_by="system",
             ))
-            db.commit()
+            db.flush()
+            created.append(_p_name)
+    return created
+
 
 def init_db_with_seed():
     init_db()

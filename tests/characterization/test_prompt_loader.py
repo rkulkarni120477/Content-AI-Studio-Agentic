@@ -402,3 +402,79 @@ class TestVariantAwareResolution:
             assert load_template(
                 "blueprint_generation", db=db, course_id=course.id, variant=v,
             ).user_template == "locked-user"
+
+
+class TestTaxonomySeeds:
+    """Phase 8 taxonomy seeds (signed off 2026-07-07): blueprint teacher/student
+    and quiz default rows ride seed_data(). The seeded text equals what the
+    legacy tiers serve, so live output is unchanged — each line just becomes
+    independently versionable through the console."""
+
+    @pytest.fixture(autouse=True)
+    def _flag_on(self, monkeypatch):
+        monkeypatch.setenv("PROMPT_RESOLVE_BY_COMPONENT", "1")
+
+    EXPECTED_LINES = {
+        ("style", None), ("cdd", None), ("blueprint", None), ("generate", None),
+        ("blueprint", "teacher"), ("blueprint", "student"), ("quiz", None),
+    }
+
+    def test_seed_creates_all_default_lines_idempotently(self, db):
+        from promptops_app.database import (
+            Prompt, seed_data, seed_default_component_prompts,
+        )
+
+        seed_data(db)
+        lines = {
+            (p.component_type, p.variant)
+            for p in db.query(Prompt).filter(Prompt.is_default == True).all()  # noqa: E712
+        }
+        assert lines == self.EXPECTED_LINES
+        # Re-running creates nothing — per-name skip keeps it idempotent.
+        assert seed_default_component_prompts(db) == []
+
+    def test_blueprint_variants_resolve_their_seeded_rows(self, db):
+        from promptops_app.database import seed_data
+
+        seed_data(db)
+        teacher = load_template("blueprint_generation", db=db, variant="teacher")
+        student = load_template("blueprint_generation", db=db, variant="student")
+        assert teacher.source == "db" and student.source == "db"
+        # Mode-specific text, not the shared NULL-variant default.
+        assert "TEACHER-FACING" in teacher.system_template
+        assert "TEACHER-FACING" not in student.system_template
+        assert teacher.system_template != student.system_template
+
+    def test_seeded_variant_bodies_are_double_braced(self, db):
+        from promptops_app.database import Prompt, PromptVersion, seed_data
+        from promptops_app.prompts.brace_conversion import find_single_brace_vars
+
+        seed_data(db)
+        for name in ("default_blueprint_teacher_prompt",
+                     "default_blueprint_student_prompt",
+                     "default_quiz_prompt"):
+            p = db.query(Prompt).filter(Prompt.name == name).one()
+            v = db.query(PromptVersion).filter_by(prompt_id=p.id).one()
+            body = (v.system_prompt or "") + (v.user_prompt_template or "")
+            assert find_single_brace_vars(body) == [], name
+        # The rename reached the seeded teacher body too.
+        tp = db.query(Prompt).filter_by(name="default_blueprint_teacher_prompt").one()
+        tv = db.query(PromptVersion).filter_by(prompt_id=tp.id).one()
+        assert "{{extra_instructions}}" in tv.user_prompt_template
+
+    def test_quiz_seed_matches_file_tier(self, db):
+        from promptops_app.database import seed_data
+
+        file_tmpl = load_template("quiz_generation")  # no db → file tier
+        seed_data(db)
+        db_tmpl = load_template("quiz_generation", db=db)
+        assert db_tmpl.source == "db"
+        assert db_tmpl.system_template.strip() == file_tmpl.system_template.strip()
+        assert db_tmpl.user_template.strip() == file_tmpl.user_template.strip()
+
+    def test_quiz_seed_ignored_with_flag_off(self, db, monkeypatch):
+        from promptops_app.database import seed_data
+
+        monkeypatch.delenv("PROMPT_RESOLVE_BY_COMPONENT", raising=False)
+        seed_data(db)
+        assert load_template("quiz_generation", db=db).source == "file"
