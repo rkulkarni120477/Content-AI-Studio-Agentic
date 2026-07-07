@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { fetchPrompts } from '../api/prompts';
 import { createRequest } from '../api/requests';
 import { useToast } from '../context/ToastContext';
 import { componentCategoryLabel } from '../utils/prompt';
@@ -7,7 +8,7 @@ import { plRequests } from '../paths';
 
 export default function RequestNewPage() {
   const [searchParams] = useSearchParams();
-  const promptId = searchParams.get('promptId') || '';
+  const linkedPromptId = searchParams.get('promptId') || '';
   // Deep-link prefill from the CAS generation tabs (Phase 12d): which
   // pipeline category the request is about, and the project/course the
   // requester was working in.
@@ -23,13 +24,32 @@ export default function RequestNewPage() {
       ? `Requested from the ${componentLabel || component} tab.${context ? `\nContext: ${context}` : ''}\n\n`
       : '',
   );
-  const [type, setType] = useState(promptId ? 'update' : 'new');
+  const [type, setType] = useState(linkedPromptId ? 'update' : 'new');
+  const [promptId, setPromptId] = useState(linkedPromptId);
+  const [prompts, setPrompts] = useState(null); // null = not loaded yet
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (type !== 'update' || prompts !== null) return;
+    fetchPrompts({})
+      .then((list) =>
+        setPrompts(
+          (Array.isArray(list) ? list : [])
+            .slice()
+            .sort((a, b) => (a.title || '').localeCompare(b.title || '')),
+        ),
+      )
+      .catch(() => setPrompts([]));
+  }, [type, prompts]);
 
   async function handleSubmit(e) {
     e.preventDefault();
     if (!title.trim()) {
       show('Please enter a title.');
+      return;
+    }
+    if (type === 'update' && !promptId) {
+      show('Choose the prompt this request is about.');
       return;
     }
     setSaving(true);
@@ -38,7 +58,7 @@ export default function RequestNewPage() {
         title: title.trim(),
         description: description.trim(),
         type,
-        prompt_id: promptId || null,
+        prompt_id: type === 'update' ? promptId : null,
       });
       show('Request submitted! 📬');
       navigate(plRequests);
@@ -55,15 +75,10 @@ export default function RequestNewPage() {
         ← Back to requests
       </Link>
       <div className="page-header">
-        <h1>{promptId ? 'Request prompt update' : 'Submit a request'}</h1>
+        <h1>{linkedPromptId ? 'Request prompt update' : 'Submit a request'}</h1>
       </div>
 
       <form className="page-card" onSubmit={(e) => void handleSubmit(e)}>
-        {promptId && (
-          <p style={{ fontSize: '.85rem', color: 'var(--muted)', marginBottom: 14 }}>
-            Linked to prompt ID: <code>{promptId}</code>
-          </p>
-        )}
         <div className="field">
           <label>Type</label>
           <select value={type} onChange={(e) => setType(e.target.value)}>
@@ -71,6 +86,26 @@ export default function RequestNewPage() {
             <option value="update">Update existing</option>
           </select>
         </div>
+        {type === 'update' && (
+          <div className="field">
+            <label>Prompt to update *</label>
+            {prompts === null ? (
+              <p style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Loading prompts…</p>
+            ) : (
+              <select value={promptId} onChange={(e) => setPromptId(e.target.value)}>
+                <option value="">— Choose a prompt —</option>
+                {prompts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title}
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="var-tip" style={{ marginTop: 6 }}>
+              Tells the admin exactly which prompt you want changed.
+            </p>
+          </div>
+        )}
         <div className="field">
           <label>Title *</label>
           <input value={title} onChange={(e) => setTitle(e.target.value)} required />
