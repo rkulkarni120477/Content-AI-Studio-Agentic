@@ -107,11 +107,38 @@ class TestReadAndRender:
         # Unsupplied variables stay as literal {{placeholders}}.
         assert "{{audience}}" in rendered
 
-    def test_meta_lists_categories_and_tags(self, client, auth_headers):
+    def test_meta_lists_categories_and_tags(self, client, auth_headers, db):
+        # Phase 12b: categories stay library-derived (they feed the create
+        # form), but the tag list is pipeline-scoped for pipeline managers —
+        # the console list only surfaces CAS pipeline prompts now.
+        from promptops_app.database import Prompt, PromptTag
+
         _create(client, auth_headers)
+        pipe = Prompt(prompt_kind="pipeline", name="meta_pipe", owner="admin",
+                      component_type="cdd")
+        db.add(pipe)
+        db.flush()
+        db.add(PromptTag(prompt_id=pipe.id, tag="cdd"))
+        db.commit()
         body = client.get("/api/v1/prompt-library/meta", headers=auth_headers).json()
         assert "Course Development" in body["categories"]
+        assert "cdd" in body["tags"]
+        assert "kickoff" not in body["tags"]  # library tags left the admin console
+
+    def test_meta_tags_stay_library_scoped_for_non_admins(self, client, auth_headers,
+                                                          author_headers, db):
+        from promptops_app.database import Prompt, PromptTag
+
+        _create(client, auth_headers, visibility="global")
+        pipe = Prompt(prompt_kind="pipeline", name="meta_pipe2", owner="admin",
+                      component_type="style")
+        db.add(pipe)
+        db.flush()
+        db.add(PromptTag(prompt_id=pipe.id, tag="style"))
+        db.commit()
+        body = client.get("/api/v1/prompt-library/meta", headers=author_headers).json()
         assert "kickoff" in body["tags"]
+        assert "style" not in body["tags"]
 
 
 class TestUpdateVersioning:

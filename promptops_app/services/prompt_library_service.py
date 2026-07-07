@@ -511,8 +511,16 @@ def list_distinct_categories(db: Session, role: str | None, user_team) -> list[s
     return [row[0] for row in rows if row[0]]
 
 
-def list_distinct_tags(db: Session, role: str | None, user_team, *, category: str | None = None) -> list[str]:
-    q = visible_prompts_query(db, role, user_team)
+def list_distinct_tags(db: Session, role: str | None, user_team, *, category: str | None = None,
+                       kind: str = "library") -> list[str]:
+    # kind="pipeline" backs the console's tag filter now that only CAS
+    # pipeline prompts are surfaced (Phase 12b) — pipeline managers only;
+    # anyone else silently falls back to the library scope (no leak).
+    if kind == "pipeline" and can_manage_pipeline_prompts(role):
+        q = db.query(Prompt).filter(Prompt.deleted_at.is_(None),
+                                    Prompt.prompt_kind == "pipeline")
+    else:
+        q = visible_prompts_query(db, role, user_team)
     if category:
         q = q.filter(func.lower(Prompt.category) == category.strip().lower())
     rows = (

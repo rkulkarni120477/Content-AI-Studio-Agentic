@@ -1,5 +1,5 @@
 import {
-  canManagePrompts,
+  canManagePipelinePrompts,
   canReadAllRequests,
   canReadAllReviews,
   canReadAudit,
@@ -19,7 +19,9 @@ import {
 
 /** Intra-feature navigation (rendered inside the Prompt Library tab). */
 export const MAIN_NAV = [
-  { to: plHome, label: 'Library', end: true, visible: (u) => canReadLibrary(u) },
+  // The Library list surfaces only CAS pipeline prompts (Phase 12b) —
+  // pipeline managers only. Readers browse the same facts via Flow/Courses.
+  { to: plHome, label: 'Library', end: true, visible: (u) => canManagePipelinePrompts(u) },
   // Flow view: any reader can see what each phase resolves and bind approved
   // prompts by reference (the approved-only rule for non-admins is server-enforced).
   { to: plFlow, label: 'Flow', visible: (u) => canReadLibrary(u) },
@@ -38,7 +40,9 @@ export const HEADER_ACTIONS = [
     to: plPromptNew,
     label: '＋ New Prompt',
     className: 'btn btn-primary btn-header-action',
-    visible: (u) => canManagePrompts(u),
+    // Freeform library authoring is retired from display (Phase 12b); the
+    // form survives as the pipeline managers' draft → promote path.
+    visible: (u) => canManagePipelinePrompts(u),
   },
 ];
 

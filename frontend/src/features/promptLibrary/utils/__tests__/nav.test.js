@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAIN_NAV, visibleHeaderActions } from '../nav';
-import { plAdminAudit, plAdminRequests, plAdminReviews, plCourses, plFlow, plRequests } from '../../paths';
+import { plAdminAudit, plAdminRequests, plAdminReviews, plCourses, plFlow, plHome, plRequests } from '../../paths';
 
 const admin = { role: 'admin' };
 const reviewer = { role: 'reviewer' };
@@ -11,13 +11,20 @@ function visibleNav(user) {
 }
 
 describe('MAIN_NAV visibility', () => {
-  it('authors see Library, Flow, and their own Requests — no admin surfaces', () => {
+  it('authors see Flow and their own Requests — no Library list, no admin surfaces', () => {
     const nav = visibleNav(author);
     expect(nav).toContain(plFlow);
     expect(nav).toContain(plRequests);
+    expect(nav).not.toContain(plHome);
     expect(nav).not.toContain(plAdminRequests);
     expect(nav).not.toContain(plAdminReviews);
     expect(nav).not.toContain(plAdminAudit);
+  });
+
+  it('the Library list is pipeline-manager-only (Phase 12b: only CAS prompts surface)', () => {
+    expect(visibleNav(admin)).toContain(plHome);
+    expect(visibleNav(reviewer)).not.toContain(plHome);
+    expect(visibleNav(author)).not.toContain(plHome);
   });
 
   it('managers get the admin request queue instead of the personal one', () => {
@@ -47,9 +54,9 @@ describe('MAIN_NAV visibility', () => {
 });
 
 describe('visibleHeaderActions', () => {
-  it('offers New Prompt to managers outside prompt pages', () => {
+  it('offers New Prompt to pipeline managers only (the draft → promote path)', () => {
     expect(visibleHeaderActions(admin, '/prompt-library')).toHaveLength(1);
-    expect(visibleHeaderActions(reviewer, '/prompt-library/requests')).toHaveLength(1);
+    expect(visibleHeaderActions(reviewer, '/prompt-library/requests')).toHaveLength(0);
   });
 
   it('hides New Prompt for authors', () => {

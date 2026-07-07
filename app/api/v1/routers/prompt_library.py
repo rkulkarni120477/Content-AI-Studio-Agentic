@@ -156,9 +156,13 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
 
 @router.get("/meta")
 def meta(db: Session = Depends(get_db), user=Depends(require_permission("prompt_library.view"))):
+    # The console list surfaces only CAS pipeline prompts (Phase 12b), so its
+    # tag filter needs pipeline tags for pipeline managers. Categories stay
+    # library-derived — they feed the (now promote-path-only) create form.
+    tag_kind = "pipeline" if svc.can_manage_pipeline_prompts(user.role) else "library"
     return {
         "categories": svc.list_distinct_categories(db, user.role, None),
-        "tags": svc.list_distinct_tags(db, user.role, None),
+        "tags": svc.list_distinct_tags(db, user.role, None, kind=tag_kind),
     }
 
 

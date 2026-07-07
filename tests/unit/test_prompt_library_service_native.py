@@ -423,6 +423,28 @@ class TestCasCategoryFilter:
             assert self._browse(db, "CDD", role=role) == set()
 
 
+class TestPipelineTagListing:
+    """Phase 12b — the console tag filter runs over pipeline rows (admins)."""
+
+    def test_kind_pipeline_lists_pipeline_tags_for_admins_only(self, db):
+        from promptops_app.database import PromptTag
+
+        p = Prompt(prompt_kind="pipeline", name="tg_pipe", owner="admin",
+                   component_type="cdd")
+        db.add(p)
+        db.flush()
+        db.add(PromptTag(prompt_id=p.id, tag="cdd"))
+        lib = _mk_library_prompt(db, title="tg lib")
+        db.add(PromptTag(prompt_id=lib.id, tag="kickoff"))
+        db.flush()
+        assert svc.list_distinct_tags(db, "admin", None, kind="pipeline") == ["cdd"]
+        # The library default is unchanged.
+        assert svc.list_distinct_tags(db, "admin", None) == ["kickoff"]
+        # Non-admins asking for pipeline silently fall back to their library
+        # scope — same no-leak shape as browse.
+        assert svc.list_distinct_tags(db, "author", None, kind="pipeline") == ["kickoff"]
+
+
 class TestPromotionHelpers:
     """Phase 12 — registry-name helpers behind promote-to-pipeline."""
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import {
   deletePrompt,
   duplicatePrompt,
@@ -7,6 +8,7 @@ import {
   markPromptUsed,
 } from '../api/prompts';
 import { listProjects, listProjectCourses } from '../api/flow';
+import { plCourses } from '../paths';
 import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
@@ -38,27 +40,23 @@ export default function PromptListPage() {
   const [scopeCourse, setScopeCourse] = useState('');
 
   function buildFilterParams() {
-    const params = { roots_only: '1' };
-    // Unified list (Phase 12): one list across kinds for pipeline managers.
-    // Non-admins never send kind — the server strips pipeline rows from
-    // their responses regardless; this is UI-side defense-in-depth.
-    if (canPipeline) {
-      params.kind = 'all';
-      // Most specific scope wins server-side; send only one.
-      if (scopeCourse) params.course_id = scopeCourse;
-      else if (scopeProject) params.project_id = scopeProject;
-    }
+    // Only CAS pipeline prompts are surfaced (Phase 12b) — the freeform
+    // library rows stay in the DB but leave the console display entirely.
+    const params = { roots_only: '1', kind: 'pipeline' };
+    // Most specific scope wins server-side; send only one.
+    if (scopeCourse) params.course_id = scopeCourse;
+    else if (scopeProject) params.project_id = scopeProject;
     if (q) params.q = q;
-    // CAS workflow categories travel as cas_category (resolved server-side to
-    // component_type/variant); freeform library categories keep the old param.
+    // Categories are the doc's six CAS names, resolved server-side to the
+    // (component_type, variant) resolution keys.
     if (category.startsWith('cas:')) params.cas_category = category.slice(4);
-    else if (category) params.category = category;
     if (tag) params.tag = tag;
     if (sort) params.sort = sort;
     return params;
   }
 
   const load = useCallback(async () => {
+    if (!canPipeline) return;
     setLoading(true);
     try {
       const list = await fetchPrompts(buildFilterParams());
@@ -140,6 +138,12 @@ export default function PromptListPage() {
     }
   }
 
+  if (!canPipeline) {
+    // Readers browse CAS prompts through the Courses/Flow views; the
+    // freeform library list is retired from display (Phase 12b).
+    return <Navigate to={plCourses} replace />;
+  }
+
   return (
     <>
       <div className="library-toolbar">
@@ -159,33 +163,13 @@ export default function PromptListPage() {
           </div>
           <select value={category} onChange={(e) => setCategory(e.target.value)}>
             <option value="">All Categories</option>
-            {canPipeline ? (
-              <>
-                {/* CAS categories are structural (component/variant-backed),
-                    so they never appear in meta.categories — pipeline
-                    managers get them as a distinct group. */}
-                <optgroup label="CAS Workflow">
-                  {CAS_CATEGORIES.map((c) => (
-                    <option key={`cas:${c}`} value={`cas:${c}`}>
-                      ⚙ {c}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="Library">
-                  {meta.categories.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </optgroup>
-              </>
-            ) : (
-              meta.categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))
-            )}
+            {/* The doc's six CAS categories — structural (component/variant-
+                backed), never freeform strings. */}
+            {CAS_CATEGORIES.map((c) => (
+              <option key={`cas:${c}`} value={`cas:${c}`}>
+                {c}
+              </option>
+            ))}
           </select>
           {canPipeline && (
             <>
@@ -228,7 +212,6 @@ export default function PromptListPage() {
             <option value="updated">Recently Updated</option>
             <option value="created">Recently Created</option>
             <option value="title">A → Z</option>
-            <option value="category">Category</option>
           </select>
           <div className="view-toggle">
             <button type="button" className={view === 'card' ? 'active' : ''} onClick={() => setViewMode('card')}>
