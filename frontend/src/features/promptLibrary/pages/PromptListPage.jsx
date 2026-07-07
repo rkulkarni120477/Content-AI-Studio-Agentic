@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
   deletePrompt,
@@ -8,7 +8,7 @@ import {
   markPromptUsed,
   restorePrompt,
 } from '../api/prompts';
-import { listProjects, listProjectCourses } from '../api/flow';
+import { fetchPromptsByCourse } from '../api/flow';
 import { plCourses } from '../paths';
 import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
@@ -35,20 +35,22 @@ export default function PromptListPage() {
   const [view, setView] = useState(() => localStorage.getItem('plib_view') || 'card');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
-  // Scope filter (Phase 11, doc §8) — pipeline tab only: narrow to the
-  // prompts a project/course actually uses (locks + inherited defaults).
-  const [scopeProjects, setScopeProjects] = useState([]);
-  const [scopeCourses, setScopeCourses] = useState([]);
-  const [scopeProject, setScopeProject] = useState('');
+  // Scope filter (Phase 11, doc §8; cluster-basis) — pipeline tab only:
+  // narrow to the prompts a cluster/course actually uses (locks + inherited
+  // defaults). Both selects derive from the one by-course batch call.
+  const [scopeGroups, setScopeGroups] = useState([]);
+  const [scopeCluster, setScopeCluster] = useState('');
   const [scopeCourse, setScopeCourse] = useState('');
 
   function buildFilterParams() {
     // Only CAS pipeline prompts are surfaced (Phase 12b) — the freeform
     // library rows stay in the DB but leave the console display entirely.
     const params = { roots_only: '1', kind: 'pipeline' };
-    // Most specific scope wins server-side; send only one.
+    // Most specific scope wins server-side; send only one. "(No cluster)"
+    // is a display bucket, not a lockable scope — it narrows only once a
+    // course is picked.
     if (scopeCourse) params.course_id = scopeCourse;
-    else if (scopeProject) params.project_id = scopeProject;
+    else if (scopeCluster && scopeCluster !== 'none') params.cluster_id = scopeCluster;
     if (q) params.q = q;
     // Categories are the doc's six CAS names, resolved server-side to the
     // (component_type, variant) resolution keys.
@@ -75,25 +77,44 @@ export default function PromptListPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, wfState, showArchived, sort, scopeProject, scopeCourse]);
+  }, [q, category, tag, wfState, showArchived, sort, scopeCluster, scopeCourse]);
 
   useEffect(() => {
     void fetchMeta().then(setMeta).catch(() => {});
   }, []);
 
-  // Scope selects are pipeline-manager-only; load their project list once.
+  // Scope selects are pipeline-manager-only; load the course-grouped view
+  // once and derive the cluster and course option lists from it.
   useEffect(() => {
-    if (!canPipeline || scopeProjects.length) return;
-    void listProjects().then(setScopeProjects).catch(() => {});
+    if (!canPipeline || scopeGroups.length) return;
+    void fetchPromptsByCourse().then(setScopeGroups).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPipeline]);
 
+  const scopeClusters = useMemo(() => {
+    const seen = new Map();
+    let unclustered = false;
+    for (const g of scopeGroups) {
+      if (g.cluster_id == null) unclustered = true;
+      else if (!seen.has(g.cluster_id)) seen.set(g.cluster_id, g.cluster_name || `Cluster ${g.cluster_id}`);
+    }
+    const items = [...seen.entries()];
+    if (unclustered) items.push(['none', '(No cluster)']);
+    return items;
+  }, [scopeGroups]);
+
+  const scopeCourses = useMemo(() => {
+    if (!scopeCluster) return [];
+    return scopeGroups
+      .filter((g) => (scopeCluster === 'none'
+        ? g.cluster_id == null
+        : String(g.cluster_id) === String(scopeCluster)))
+      .map((g) => [g.course_id, g.course_name]);
+  }, [scopeGroups, scopeCluster]);
+
   useEffect(() => {
     setScopeCourse('');
-    setScopeCourses([]);
-    if (!scopeProject) return;
-    void listProjectCourses(scopeProject).then(setScopeCourses).catch(() => {});
-  }, [scopeProject]);
+  }, [scopeCluster]);
 
   useEffect(() => {
     void load();
@@ -191,27 +212,27 @@ export default function PromptListPage() {
           {canPipeline && (
             <>
               <select
-                value={scopeProject}
-                onChange={(e) => setScopeProject(e.target.value)}
-                title="Show the prompts this project uses (locks + inherited defaults)"
+                value={scopeCluster}
+                onChange={(e) => setScopeCluster(e.target.value)}
+                title="Show the prompts this cluster uses (locks + inherited defaults)"
               >
-                <option value="">All Projects</option>
-                {scopeProjects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
+                <option value="">All Clusters</option>
+                {scopeClusters.map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
                   </option>
                 ))}
               </select>
               <select
                 value={scopeCourse}
                 onChange={(e) => setScopeCourse(e.target.value)}
-                disabled={!scopeProject}
+                disabled={!scopeCluster}
                 title="Narrow to one course's effective prompt set"
               >
                 <option value="">All Courses</option>
-                {scopeCourses.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
+                {scopeCourses.map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
                   </option>
                 ))}
               </select>

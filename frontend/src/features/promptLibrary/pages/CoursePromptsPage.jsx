@@ -175,7 +175,7 @@ export default function CoursePromptsPage() {
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState({}); // course_id -> bool
-  const [selProject, setSelProject] = useState('');
+  const [selCluster, setSelCluster] = useState('');
   const [pools, setPools] = useState({}); // component -> PromptListItem[]
   const [busy, setBusy] = useState({}); // slot key -> bool
   const poolRequests = useRef({}); // component -> true once requested
@@ -260,16 +260,24 @@ export default function CoursePromptsPage() {
     }
   }
 
-  const projects = useMemo(() => {
+  // Cluster-basis filter: courses group under their cluster; courses without
+  // one land in a "(No cluster)" bucket so none disappear from the picker.
+  const clusters = useMemo(() => {
     const seen = new Map();
+    let unclustered = false;
     for (const g of groups) {
-      if (!seen.has(g.project_id)) seen.set(g.project_id, g.project_name || `Project ${g.project_id}`);
+      if (g.cluster_id == null) unclustered = true;
+      else if (!seen.has(g.cluster_id)) seen.set(g.cluster_id, g.cluster_name || `Cluster ${g.cluster_id}`);
     }
-    return [...seen.entries()];
+    const items = [...seen.entries()];
+    if (unclustered) items.push(['none', '(No cluster)']);
+    return items;
   }, [groups]);
 
-  const visible = selProject
-    ? groups.filter((g) => String(g.project_id) === String(selProject))
+  const visible = selCluster
+    ? groups.filter((g) => (selCluster === 'none'
+        ? g.cluster_id == null
+        : String(g.cluster_id) === String(selCluster)))
     : groups;
 
   return (
@@ -285,10 +293,10 @@ export default function CoursePromptsPage() {
           only prompts whose active version is approved.
         </p>
         <div className="field" style={{ maxWidth: 320 }}>
-          <label>Project</label>
-          <select value={selProject} onChange={(e) => setSelProject(e.target.value)}>
-            <option value="">All projects</option>
-            {projects.map(([id, name]) => (
+          <label>Cluster</label>
+          <select value={selCluster} onChange={(e) => setSelCluster(e.target.value)}>
+            <option value="">All clusters</option>
+            {clusters.map(([id, name]) => (
               <option key={id} value={id}>
                 {name}
               </option>
@@ -327,8 +335,8 @@ export default function CoursePromptsPage() {
               <span style={{ fontWeight: 700 }}>{open ? '−' : '+'}</span>
               <span style={{ fontWeight: 700 }}>{g.course_name}</span>
               <span style={{ fontSize: '.8rem', color: 'var(--muted)' }}>
+                {g.cluster_name ? `${g.cluster_name} · ` : ''}
                 {g.project_name}
-                {g.cluster_name ? ` · ${g.cluster_name}` : ''}
               </span>
             </button>
             {open && (
