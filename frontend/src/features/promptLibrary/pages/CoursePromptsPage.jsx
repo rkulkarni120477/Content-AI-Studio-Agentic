@@ -278,12 +278,12 @@ export default function CoursePromptsPage() {
       <div className="page-card" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0, fontSize: '1.05rem' }}>Prompts by course</h2>
         <p style={{ margin: '6px 0 10px', fontSize: '.85rem', color: 'var(--muted)' }}>
-          Every course with the prompt each category resolves to. A shared default shows
-          under every course that uses it — it is still a single prompt; editing it once
-          updates all of them. Course-specific overrides are the 🔒 scope locks: use
-          “Change…” on a slot to bind one by reference (locks resolve
-          most-specific-first: course → cluster → project → global). Non-admins may bind
-          only prompts whose active version is approved.
+          Each course is listed with the prompt every category currently uses. A shared
+          default can appear under many courses, but it is one prompt — edit it once and
+          every course that uses it gets the update. To give a course its own prompt,
+          use “Change…” on a row to lock a different prompt to that course, its cluster,
+          its project, or globally — locks show a 🔒 badge, and the most specific one
+          wins. Non-admins can only lock prompts whose active version is approved.
         </p>
         <div className="field" style={{ maxWidth: 320 }}>
           <label>Cluster</label>
