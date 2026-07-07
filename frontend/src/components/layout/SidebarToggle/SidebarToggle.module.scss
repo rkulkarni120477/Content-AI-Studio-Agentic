@@ -1,5 +1,4 @@
 .toggle {
-  align-self: flex-end;
   width: 28px;
   height: 28px;
   display: inline-flex;
@@ -25,8 +24,4 @@
     outline: 2px solid #a5b4fc;
     outline-offset: 2px;
   }
-}
-
-.toggle--collapsed {
-  align-self: center;
 }

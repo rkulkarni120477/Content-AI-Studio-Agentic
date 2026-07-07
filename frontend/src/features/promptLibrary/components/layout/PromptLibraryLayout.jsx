@@ -49,8 +49,10 @@ export default function PromptLibraryLayout() {
         className={cn(styles.sidebar, collapsed && styles['sidebar--collapsed'])}
         aria-label="Prompts navigation"
       >
-        <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
-        <AppBrand compact={collapsed} />
+        <div className={cn(styles.header, collapsed && styles['header--collapsed'])}>
+          <AppBrand compact={collapsed} />
+          <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
+        </div>
 
         {collapsed ? (
           <div

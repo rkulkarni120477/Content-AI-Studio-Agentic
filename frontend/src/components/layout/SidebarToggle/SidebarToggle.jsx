@@ -1,4 +1,3 @@
-import { cn } from '@utils/helpers';
 import styles from './SidebarToggle.module.scss';
 
 /** Collapse/expand chevron shared by every Studio sidebar. */
@@ -7,7 +6,7 @@ export default function SidebarToggle({ collapsed, onToggle }) {
   return (
     <button
       type="button"
-      className={cn(styles.toggle, collapsed && styles['toggle--collapsed'])}
+      className={styles.toggle}
       onClick={onToggle}
       aria-label={label}
       aria-expanded={!collapsed}

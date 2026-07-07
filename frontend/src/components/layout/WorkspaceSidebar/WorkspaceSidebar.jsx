@@ -97,8 +97,10 @@ export default function WorkspaceSidebar() {
       className={cn(styles.sidebar, collapsed && styles['sidebar--collapsed'])}
       aria-label="Workspace navigation"
     >
-      <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
-      <AppBrand compact={collapsed} />
+      <div className={cn(styles.header, collapsed && styles['header--collapsed'])}>
+        <AppBrand compact={collapsed} />
+        <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
+      </div>
 
       {collapsed ? (
         <div

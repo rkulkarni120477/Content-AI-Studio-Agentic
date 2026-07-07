@@ -21,6 +21,20 @@
   padding: $space-3 $space-2;
 }
 
+// Brand row: logo left, collapse chevron right; stacked + centered on the rail.
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-2;
+  flex-shrink: 0;
+}
+
+.header--collapsed {
+  flex-direction: column;
+  justify-content: center;
+}
+
 .userDot {
   width: 34px;
   height: 34px;
