@@ -254,11 +254,24 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         _active_style = get_active_style(db, project_id=project_id, course_id=course_id)
         _style_inj    = build_style_context(db, _active_style) if _active_style else ""
 
-        User_prefix = PERSONA_PREFIX_TEMPLATE.format(
-            expert_exp=expert_exp,
-            expert_domain=expert_domain,
-            aud_cat=aud_cat,
-            target_audience=target_audience,
+        # Phase 9 fragment tier (flag-gated): an authored persona_tone
+        # fragment overrides the constant; absent/flag-off keeps the legacy
+        # .format text byte-identical.
+        from promptops_app.prompts.fragment_composer import render_fragment
+        User_prefix = render_fragment(
+            db, "persona_tone",
+            {
+                "expert_exp": expert_exp,
+                "expert_domain": expert_domain,
+                "aud_cat": aud_cat,
+                "target_audience": target_audience,
+            },
+            fallback_rendered=PERSONA_PREFIX_TEMPLATE.format(
+                expert_exp=expert_exp,
+                expert_domain=expert_domain,
+                aud_cat=aud_cat,
+                target_audience=target_audience,
+            ),
         )
         if _style_inj:
             User_prefix += (

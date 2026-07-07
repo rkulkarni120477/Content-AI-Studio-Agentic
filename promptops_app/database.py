@@ -20,6 +20,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
 from promptops_app.prompt_templates import (
+    DEFAULT_STYLE_GUIDE,
+    PERSONA_PREFIX_TEMPLATE,
     SEED_PROMPT_V1_SYSTEM,
     SEED_PROMPT_V1_USER,
     SEED_PROMPT_V2_SYSTEM,
@@ -364,6 +366,54 @@ class PromptAttachment(Base):
     size_bytes    = Column(BigInteger)
     uploaded_by   = Column(String(100))
     uploaded_at   = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptFragment(Base):
+    """Shared prompt fragment (consolidation Phase 9).
+
+    fragment_key : stable code-facing key — the seeded set is
+                   persona_tone | style_guide; the reserved keys guardrails |
+                   context_header | output_contract_json |
+                   output_contract_markdown | regenerate_wrapper are authored
+                   through the admin API when the content is ready.
+    Fragments are {{double}}-brace text rendered by prompt_builder.render;
+    the legacy .format constants remain the code fallback tier when no row
+    (or no active version) exists.
+    """
+    __tablename__ = "prompt_fragments"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    fragment_key   = Column(String(50), unique=True, nullable=False)
+    description    = Column(Text)
+    active_version = Column(String(50))
+    created_by     = Column(String(100))
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    updated_at     = Column(DateTime, default=datetime.utcnow)
+    versions = relationship("PromptFragmentVersion", cascade="all, delete-orphan",
+                            back_populates="fragment", lazy="selectin")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptFragmentVersion(Base):
+    """Append-only version snapshot of a PromptFragment."""
+    __tablename__ = "prompt_fragment_versions"
+    __table_args__ = (
+        UniqueConstraint("fragment_id", "version_number",
+                         name="uq_prompt_fragment_versions_fragment_id_version_number"),
+    )
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    fragment_id    = Column(Integer, ForeignKey("prompt_fragments.id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    version        = Column(String(50), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    content        = Column(Text, nullable=False)
+    change_reason  = Column(Text)
+    is_active      = Column(Boolean, default=False)
+    created_by     = Column(String(100))
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    fragment = relationship("PromptFragment", back_populates="versions")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -1822,7 +1872,67 @@ def seed_data(db):
 
     # ── Default component prompt assets ──────────────────────────────────────
     seed_default_component_prompts(db)
+    # ── Shared prompt fragments (Phase 9) ─────────────────────────────────────
+    seed_prompt_fragments(db)
     db.commit()
+
+
+def seed_prompt_fragments(db) -> list[str]:
+    """Seed the fragment rows migrated from legacy constants (idempotent).
+
+    persona_tone carries PERSONA_PREFIX_TEMPLATE ({single}->{{double}}
+    converted — the fragment tier renders with the {{double}} engine) and
+    style_guide carries DEFAULT_STYLE_GUIDE verbatim (no placeholders).
+    The constants themselves stay in prompt_templates.py as the code
+    fallback tier. Skips keys that already exist; flushes, caller commits.
+    Returns the keys created.
+    """
+    from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
+    _persona, _ = convert_legacy_braces(PERSONA_PREFIX_TEMPLATE)
+    _FRAGMENT_SEEDS = [
+        (
+            "persona_tone",
+            "Persona prefix injected ahead of generation user prompts "
+            "(migrated from PERSONA_PREFIX_TEMPLATE).",
+            _persona,
+        ),
+        (
+            "style_guide",
+            "Fallback instructional style guide "
+            "(migrated from DEFAULT_STYLE_GUIDE).",
+            DEFAULT_STYLE_GUIDE.strip() + "\n",
+        ),
+    ]
+
+    created: list[str] = []
+    for _f_key, _f_desc, _f_content in _FRAGMENT_SEEDS:
+        if db.query(PromptFragment).filter(
+            PromptFragment.fragment_key == _f_key
+        ).first():
+            continue
+        fragment = PromptFragment(
+            fragment_key=_f_key,
+            description=_f_desc,
+            active_version="v1",
+            created_by="system",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(fragment); db.flush()
+        db.add(PromptFragmentVersion(
+            fragment_id=fragment.id,
+            version="v1",
+            version_number=1,
+            content=_f_content,
+            change_reason="System-seeded — migrated from hardcoded constant.",
+            is_active=True,
+            created_by="system",
+            created_at=datetime.utcnow(),
+        ))
+        db.flush()
+        created.append(_f_key)
+    return created
 
 
 def seed_default_component_prompts(db) -> list[str]:

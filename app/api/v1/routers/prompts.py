@@ -42,6 +42,8 @@ from app.schemas.prompt import (
     PromptDetailRead,
     PromptFixingRead,
     PromptFixingSetRequest,
+    PromptFragmentRead,
+    PromptFragmentSetRequest,
     PromptFromGenerationRequest,
     PromptListItem,
     PromptRead,
@@ -710,6 +712,91 @@ def prompts_by_course(
             prompts=slot_items,
         ))
     return PromptsByCourseResponse(courses=groups)
+
+
+# ── Shared prompt fragments — Phase 9 ────────────────────────────────────────
+# Declared before the /{prompt_id} routes for the same match-order reason as
+# /fixings ("/fragments" would otherwise 422 against the int path param).
+
+def _fragment_read(fragment, content: str | None) -> PromptFragmentRead:
+    return PromptFragmentRead(
+        fragment_key=fragment.fragment_key,
+        description=fragment.description,
+        active_version=fragment.active_version,
+        content=content,
+        updated_at=fragment.updated_at,
+    )
+
+
+@router.get(
+    "/fragments",
+    response_model=list[PromptFragmentRead],
+    summary="List shared prompt fragments",
+    description=(
+        "The reusable fragment blocks (persona_tone, style_guide, guardrails, "
+        "…) with their active text. Fragments override the hardcoded constants "
+        "when component-keyed resolution is enabled."
+    ),
+)
+def list_prompt_fragments(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
+) -> list[PromptFragmentRead]:
+    from promptops_app.repositories import fragment_repository
+
+    result = []
+    for fragment in fragment_repository.list_fragments(db):
+        content = fragment_repository.get_active_fragment_text(
+            db, fragment.fragment_key
+        )
+        result.append(_fragment_read(fragment, content))
+    return result
+
+
+@router.put(
+    "/fragments/{fragment_key}",
+    response_model=PromptFragmentRead,
+    summary="Author or bump a shared prompt fragment",
+    description=(
+        "Appends the next version of the fragment and activates it (append-only, "
+        "like registry prompt versions). The key must be one of the known "
+        "fragment slots. Text is {{double}}-brace."
+    ),
+)
+def set_prompt_fragment(
+    fragment_key: str,
+    request_body: PromptFragmentSetRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
+) -> PromptFragmentRead:
+    from promptops_app.prompts.brace_conversion import find_single_brace_vars
+    from promptops_app.repositories import fragment_repository
+
+    if fragment_key not in fragment_repository.KNOWN_FRAGMENT_KEYS:
+        raise ValidationError(
+            f"Unknown fragment key '{fragment_key}'. "
+            f"Known keys: {', '.join(fragment_repository.KNOWN_FRAGMENT_KEYS)}"
+        )
+    stray = find_single_brace_vars(request_body.content)
+    if stray:
+        raise ValidationError(
+            "Fragment text uses legacy {single} placeholders "
+            f"({', '.join(sorted(set(stray)))}) — use {{{{double}}}} braces."
+        )
+    version = fragment_repository.set_fragment_text(
+        db,
+        fragment_key,
+        request_body.content,
+        created_by=current_user.username,
+        change_reason=request_body.change_reason,
+        description=request_body.description,
+    )
+    _log.info(
+        "prompt_fragment_set  user=%s  key=%s  version=%s",
+        current_user.username, fragment_key, version.version,
+    )
+    fragment = fragment_repository.get_fragment(db, fragment_key)
+    return _fragment_read(fragment, version.content)
 
 
 @router.get("/{prompt_id}", response_model=PromptDetailRead, summary="Get a prompt with active version")

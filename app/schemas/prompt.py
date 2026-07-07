@@ -300,6 +300,26 @@ class PromptFixingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PromptFragmentRead(BaseModel):
+    """A shared prompt fragment with its active text (Phase 9)."""
+
+    fragment_key: str
+    description: Optional[str] = None
+    active_version: Optional[str] = None
+    content: Optional[str] = None  # active version's text; None if never authored
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PromptFragmentSetRequest(BaseModel):
+    """Author/bump a fragment: appends the next version and activates it."""
+
+    content: str = Field(..., min_length=1, max_length=20000)
+    change_reason: str = Field(default="", max_length=2000)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
 class PromptVariableItem(BaseModel):
     """One declared template variable ({{name}})."""
 
