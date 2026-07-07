@@ -32,12 +32,18 @@ export default function RequestNewPage() {
   // Current content of the chosen prompt, and the requester's editable copy.
   // detail: null = nothing to load, 'loading', 'unavailable', or {system, user}.
   const [detail, setDetail] = useState(null);
+  // Name/category of the deep-linked prompt, shown as a fixed fact instead of
+  // a picker — the requester already chose it by clicking "Request a Change"
+  // next to it.
+  const [detailMeta, setDetailMeta] = useState(null);
   const [proposedSystem, setProposedSystem] = useState('');
   const [proposedUser, setProposedUser] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (type !== 'update' || prompts !== null) return;
+    // The picker is only for requests started cold from "My requests" —
+    // deep-linked requests arrive knowing their prompt.
+    if (type !== 'update' || linkedPromptId || prompts !== null) return;
     listAllPrompts()
       .then((list) =>
         setPrompts(
@@ -47,7 +53,7 @@ export default function RequestNewPage() {
         ),
       )
       .catch(() => setPrompts([]));
-  }, [type, prompts]);
+  }, [type, prompts, linkedPromptId]);
 
   // Load the chosen prompt's active text so the requester can edit it in
   // place. Some carried-over library rows have no system/user split — for
@@ -62,6 +68,11 @@ export default function RequestNewPage() {
     getHostPromptDetail(promptId)
       .then((d) => {
         if (!active) return;
+        setDetailMeta({
+          name: d?.name || `prompt #${promptId}`,
+          component: d?.component_type || '',
+          variant: d?.variant || '',
+        });
         const system = d?.system_prompt || '';
         const user = d?.user_prompt_template || '';
         if (!system && !user) {
@@ -135,7 +146,20 @@ export default function RequestNewPage() {
             <option value="update">Update existing</option>
           </select>
         </div>
-        {type === 'update' && (
+        {type === 'update' && linkedPromptId && (
+          <div className="field">
+            <label>Prompt to update</label>
+            <p style={{ fontSize: '.9rem', margin: 0 }}>
+              <strong>{detailMeta?.name || `prompt #${linkedPromptId}`}</strong>
+              {detailMeta?.component && (
+                <span style={{ color: 'var(--muted)' }}>
+                  {' '}— {componentCategoryLabel(detailMeta.component, detailMeta.variant || null)}
+                </span>
+              )}
+            </p>
+          </div>
+        )}
+        {type === 'update' && !linkedPromptId && (
           <div className="field">
             <label>Prompt to update *</label>
             {prompts === null ? (
@@ -154,6 +178,10 @@ export default function RequestNewPage() {
                 ))}
               </select>
             )}
+            <p className="var-tip" style={{ marginTop: 6 }}>
+              Easier route: open the tab or page where you use the prompt and click
+              “📬 Request a Change” there — it fills this form in for you.
+            </p>
           </div>
         )}
         <div className="field">
