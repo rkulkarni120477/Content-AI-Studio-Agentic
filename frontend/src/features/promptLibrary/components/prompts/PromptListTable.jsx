@@ -44,7 +44,7 @@ export default function PromptListTable({ prompts, isAdmin, onCopy, onDelete, on
         <div>Title / Description</div>
         <div>Category</div>
         <div>Tags</div>
-        <div>Visibility</div>
+        <div>Status</div>
         <div className="list-actions-col">Actions</div>
       </div>
 
