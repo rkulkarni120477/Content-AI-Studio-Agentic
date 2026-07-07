@@ -8,7 +8,9 @@
 // content keeps the feature's scoped `.pl-root` styles.
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import AppBrand from '@components/common/AppBrand/AppBrand';
+import SidebarToggle from '@components/layout/SidebarToggle/SidebarToggle';
 import { useAuth as useHostAuth } from '@hooks/useAuth';
+import { useSidebarCollapsed } from '@hooks/useSidebarCollapsed';
 import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import { cn } from '@utils/helpers';
 import { useAuth } from '../../context/AuthContext';
@@ -29,6 +31,7 @@ export default function PromptLibraryLayout() {
   const { logout } = useHostAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const navItems = MAIN_NAV.filter((item) => item.visible(user));
   const headerActions = visibleHeaderActions(user, location.pathname);
   const role = user?.role;
@@ -42,33 +45,58 @@ export default function PromptLibraryLayout() {
 
   return (
     <div className={styles.layout}>
-      <aside className={styles.sidebar} aria-label="Prompts navigation">
-        <AppBrand />
+      <aside
+        className={cn(styles.sidebar, collapsed && styles['sidebar--collapsed'])}
+        aria-label="Prompts navigation"
+      >
+        <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
+        <AppBrand compact={collapsed} />
 
-        <div className={styles.userPill}>
-          <div className={styles.userPill__label}>Signed in as</div>
-          <div className={styles.userPill__name}>{user?.username}</div>
-          <span className={styles.userPill__role} style={{ background: roleColor }}>
-            {roleLabel}
-          </span>
-        </div>
+        {collapsed ? (
+          <div
+            className={styles.userDot}
+            style={{ background: roleColor }}
+            title={`${user?.username} — ${roleLabel}`}
+          >
+            {(user?.username || '?').charAt(0).toUpperCase()}
+          </div>
+        ) : (
+          <div className={styles.userPill}>
+            <div className={styles.userPill__label}>Signed in as</div>
+            <div className={styles.userPill__name}>{user?.username}</div>
+            <span className={styles.userPill__role} style={{ background: roleColor }}>
+              {roleLabel}
+            </span>
+          </div>
+        )}
 
-        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.DASHBOARD)}>
-          ← Projects
+        <button
+          type="button"
+          className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+          onClick={() => navigate(ROUTES.DASHBOARD)}
+          title={collapsed ? 'Back to Projects' : undefined}
+        >
+          {collapsed ? '🏠' : '← Projects'}
         </button>
 
         <div className={styles.divider} />
 
-        <div className={styles.sectionLabel}>📚 Prompts</div>
+        {!collapsed && <div className={styles.sectionLabel}>📚 Prompts</div>}
         <nav className={styles.nav}>
           {navItems.map((item) => (
             <NavLink
               key={`${item.to}-${item.label}`}
               to={item.to}
               end={item.end}
-              className={({ isActive }) => cn(styles.navLink, isActive && styles.navLinkActive)}
+              className={({ isActive }) => cn(
+                styles.navLink,
+                collapsed && styles.navLinkCollapsed,
+                isActive && styles.navLinkActive,
+              )}
+              title={collapsed ? item.label : undefined}
             >
-              {item.label}
+              <span aria-hidden="true">{item.icon}</span>
+              {!collapsed && ` ${item.label}`}
             </NavLink>
           ))}
         </nav>
@@ -77,16 +105,26 @@ export default function PromptLibraryLayout() {
           <>
             <div className={styles.divider} />
             {headerActions.map((action) => (
-              <Link key={action.to} to={action.to} className={styles.actionBtn}>
-                {action.label}
+              <Link
+                key={action.to}
+                to={action.to}
+                className={styles.actionBtn}
+                title={collapsed ? action.label : undefined}
+              >
+                {collapsed ? action.icon : `${action.icon} ${action.label}`}
               </Link>
             ))}
           </>
         )}
 
         <div className={styles.footer}>
-          <button type="button" className={styles.navBtn} onClick={handleSignOut}>
-            🚪 Sign Out
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={handleSignOut}
+            title={collapsed ? 'Sign Out' : undefined}
+          >
+            {collapsed ? '🚪' : '🚪 Sign Out'}
           </button>
         </div>
       </aside>

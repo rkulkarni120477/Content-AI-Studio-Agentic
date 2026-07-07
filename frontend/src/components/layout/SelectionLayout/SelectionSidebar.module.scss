@@ -12,7 +12,28 @@
   padding: $space-4;
   gap: $space-3;
   overflow-y: auto;
+  transition: width $transition-base;
   @include custom-scrollbar(6px);
+}
+
+.sidebar--collapsed {
+  width: $sidebar-collapsed;
+  padding: $space-3 $space-2;
+}
+
+.userDot {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: $color-white;
+  font-size: 0.85rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  cursor: default;
 }
 
 .navBtn {
@@ -94,8 +115,19 @@
   strong { color: $color-white; font-weight: 700; }
 }
 
+.iconOnly {
+  padding: $space-2;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .navRow, .navRow3 {
   display: flex;
+  gap: $space-2;
+}
+
+.navCol {
+  @include flex-col;
   gap: $space-2;
 }
 

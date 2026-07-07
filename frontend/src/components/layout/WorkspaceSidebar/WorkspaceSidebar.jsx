@@ -14,6 +14,9 @@ import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import TargetModelPanel from './TargetModelPanel';
 import GettingStartedGuide from '@components/layout/GettingStartedGuide/GettingStartedGuide';
 import AppBrand from '@components/common/AppBrand/AppBrand';
+import SidebarToggle from '@components/layout/SidebarToggle/SidebarToggle';
+import { useSidebarCollapsed } from '@hooks/useSidebarCollapsed';
+import { cn } from '@utils/helpers';
 import { flushDeferredToasts } from '@utils/deferredToast';
 import styles from './WorkspaceSidebar.module.scss';
 
@@ -43,6 +46,7 @@ export default function WorkspaceSidebar() {
   const course = useAppSelector(selectSelectedCourse);
   const activeCdd = useAppSelector(selectActiveCdd);
   const activeStyle = useAppSelector(selectActiveStyle);
+  const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const cid = courseId || course?.id;
 
   useEffect(() => {
@@ -89,65 +93,117 @@ export default function WorkspaceSidebar() {
     : '—';
 
   return (
-    <aside className={styles.sidebar} aria-label="Workspace navigation">
-      <AppBrand />
+    <aside
+      className={cn(styles.sidebar, collapsed && styles['sidebar--collapsed'])}
+      aria-label="Workspace navigation"
+    >
+      <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
+      <AppBrand compact={collapsed} />
 
-      <div className={styles.userPill}>
-        <div className={styles.userPill__label}>Signed in as</div>
-        <div className={styles.userPill__name}>{user?.username}</div>
-        <span className={styles.userPill__role} style={{ background: roleColor }}>
-          {ROLE_LABELS[role] ?? role}
-        </span>
-      </div>
+      {collapsed ? (
+        <div
+          className={styles.userDot}
+          style={{ background: roleColor }}
+          title={`${user?.username} — ${ROLE_LABELS[role] ?? role}`}
+        >
+          {(user?.username || '?').charAt(0).toUpperCase()}
+        </div>
+      ) : (
+        <div className={styles.userPill}>
+          <div className={styles.userPill__label}>Signed in as</div>
+          <div className={styles.userPill__name}>{user?.username}</div>
+          <span className={styles.userPill__role} style={{ background: roleColor }}>
+            {ROLE_LABELS[role] ?? role}
+          </span>
+        </div>
+      )}
 
-      <div className={styles.contextPill}>
-        <div className={styles.contextPill__label}>Workspace</div>
-        <div>📁 <strong>{proj?.name ?? '—'}</strong></div>
-        <div>🗂️ <strong>{cluster?.name ?? '—'}</strong></div>
-        <div>📖 <strong>{course?.name ?? '—'}</strong></div>
-      </div>
+      {!collapsed && (
+        <div className={styles.contextPill}>
+          <div className={styles.contextPill__label}>Workspace</div>
+          <div>📁 <strong>{proj?.name ?? '—'}</strong></div>
+          <div>🗂️ <strong>{cluster?.name ?? '—'}</strong></div>
+          <div>📖 <strong>{course?.name ?? '—'}</strong></div>
+        </div>
+      )}
 
-      <div className={styles.backRow}>
-        <button type="button" className={styles.backBtn} onClick={goProjects}>← Projects</button>
-        <button type="button" className={styles.backBtn} onClick={goClusters}>← Clusters</button>
-        <button type="button" className={styles.backBtn} onClick={goCourses}>← Courses</button>
+      <div className={collapsed ? styles.backCol : styles.backRow}>
+        <button
+          type="button"
+          className={styles.backBtn}
+          onClick={goProjects}
+          title={collapsed ? 'Back to Projects' : undefined}
+        >
+          {collapsed ? '🏠' : '← Projects'}
+        </button>
+        <button
+          type="button"
+          className={styles.backBtn}
+          onClick={goClusters}
+          title={collapsed ? 'Back to Clusters' : undefined}
+        >
+          {collapsed ? '🗂️' : '← Clusters'}
+        </button>
+        <button
+          type="button"
+          className={styles.backBtn}
+          onClick={goCourses}
+          title={collapsed ? 'Back to Courses' : undefined}
+        >
+          {collapsed ? '📖' : '← Courses'}
+        </button>
       </div>
 
       <div className={styles.divider} />
 
-      <div className={styles.statePill}>
-        <div className={styles.statePill__label}>Global State</div>
-        <div className={styles.statePill__row}>
-          <span className={styles.statePill__dot} style={{ background: activeStyle ? '#10b981' : '#9ca3af' }} />
-          🎨 Style: <strong>{styleLabel}</strong>
+      {!collapsed && (
+        <div className={styles.statePill}>
+          <div className={styles.statePill__label}>Global State</div>
+          <div className={styles.statePill__row}>
+            <span className={styles.statePill__dot} style={{ background: activeStyle ? '#10b981' : '#9ca3af' }} />
+            🎨 Style: <strong>{styleLabel}</strong>
+          </div>
+          <div className={styles.statePill__row}>
+            <span className={styles.statePill__dot} style={{ background: activeCdd ? '#10b981' : '#9ca3af' }} />
+            📘 CDD: <strong>{cddLabel}</strong>
+          </div>
         </div>
-        <div className={styles.statePill__row}>
-          <span className={styles.statePill__dot} style={{ background: activeCdd ? '#10b981' : '#9ca3af' }} />
-          📘 CDD: <strong>{cddLabel}</strong>
-        </div>
-      </div>
+      )}
 
-      <GettingStartedGuide />
+      {!collapsed && <GettingStartedGuide />}
 
-      <TargetModelPanel />
+      {!collapsed && <TargetModelPanel />}
 
-      <div className={styles.divider} />
+      {!collapsed && <div className={styles.divider} />}
 
-      <div className={styles.navLabel}>Navigation</div>
+      {!collapsed && <div className={styles.navLabel}>Navigation</div>}
       <nav className={styles.nav}>
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.segment}
             to={`/workspace/${cid}/${item.segment}`}
-            className={({ isActive }) => `${styles.nav__item} ${isActive ? styles['nav__item--active'] : ''}`}
+            className={({ isActive }) => cn(
+              styles.nav__item,
+              collapsed && styles['nav__item--collapsed'],
+              isActive && styles['nav__item--active'],
+            )}
+            title={collapsed ? item.label : undefined}
           >
-            <span>{item.icon}</span> {item.label}
+            <span>{item.icon}</span>
+            {!collapsed && ` ${item.label}`}
           </NavLink>
         ))}
       </nav>
 
       <div className={styles.footer}>
-        <button type="button" className={styles.signOut} onClick={handleSignOut}>🚪 Sign Out</button>
+        <button
+          type="button"
+          className={styles.signOut}
+          onClick={handleSignOut}
+          title={collapsed ? 'Sign Out' : undefined}
+        >
+          {collapsed ? '🚪' : '🚪 Sign Out'}
+        </button>
       </div>
     </aside>
   );

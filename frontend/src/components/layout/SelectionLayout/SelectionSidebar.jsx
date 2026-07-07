@@ -8,6 +8,9 @@ import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import AppBrand from '@components/common/AppBrand/AppBrand';
+import SidebarToggle from '@components/layout/SidebarToggle/SidebarToggle';
+import { useSidebarCollapsed } from '@hooks/useSidebarCollapsed';
+import { cn } from '@utils/helpers';
 import {
   CLUSTER_PROMPT_API_MESSAGE,
   isClusterPromptApiAvailable,
@@ -50,9 +53,16 @@ export default function SelectionSidebar({
     if (onBackClusters) onBackClusters();
     else navigate(-1);
   }
+  const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewCluster, setShowNewCluster] = useState(false);
   const [showNewCourse, setShowNewCourse] = useState(false);
+
+  // Collapsed-rail ➕: expand the sidebar and open the create form in one click.
+  function expandWith(openForm) {
+    toggleCollapsed();
+    openForm(true);
+  }
   const [form, setForm] = useState({ name: '', client: '', description: '' });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
@@ -113,16 +123,30 @@ export default function SelectionSidebar({
   const roleLabel = ROLE_LABELS[role] ?? role;
 
   return (
-    <aside className={styles.sidebar} aria-label="Selection navigation">
-      <AppBrand />
+    <aside
+      className={cn(styles.sidebar, collapsed && styles['sidebar--collapsed'])}
+      aria-label="Selection navigation"
+    >
+      <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
+      <AppBrand compact={collapsed} />
 
-      <div className={styles.userPill}>
-        <div className={styles.userPill__label}>Signed in as</div>
-        <div className={styles.userPill__name}>{user?.username}</div>
-        <span className={styles.userPill__role} style={{ background: roleColor }}>{roleLabel}</span>
-      </div>
+      {collapsed ? (
+        <div
+          className={styles.userDot}
+          style={{ background: roleColor }}
+          title={`${user?.username} — ${roleLabel}`}
+        >
+          {(user?.username || '?').charAt(0).toUpperCase()}
+        </div>
+      ) : (
+        <div className={styles.userPill}>
+          <div className={styles.userPill__label}>Signed in as</div>
+          <div className={styles.userPill__name}>{user?.username}</div>
+          <span className={styles.userPill__role} style={{ background: roleColor }}>{roleLabel}</span>
+        </div>
+      )}
 
-      {(variant === 'cluster' || variant === 'course') && projectName && (
+      {!collapsed && (variant === 'cluster' || variant === 'course') && projectName && (
         <div className={styles.contextPill}>
           <div className={styles.contextPill__label}>Workspace</div>
           <div>📁 <strong>{projectName}</strong></div>
@@ -134,22 +158,52 @@ export default function SelectionSidebar({
 
       {variant === 'cluster' && (
         <div className={styles.navRow}>
-          <button type="button" className={styles.navBtn} onClick={goDashboard}>
-            ← Projects
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={goDashboard}
+            title={collapsed ? 'Back to Projects' : undefined}
+          >
+            {collapsed ? '🏠' : '← Projects'}
           </button>
         </div>
       )}
 
       {variant === 'course' && (
-        <div className={styles.navRow3}>
-          <button type="button" className={styles.navBtn} onClick={goDashboard}>← Projects</button>
-          <button type="button" className={styles.navBtn} onClick={goClusters}>← Clusters</button>
+        <div className={collapsed ? styles.navCol : styles.navRow3}>
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={goDashboard}
+            title={collapsed ? 'Back to Projects' : undefined}
+          >
+            {collapsed ? '🏠' : '← Projects'}
+          </button>
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={goClusters}
+            title={collapsed ? 'Back to Clusters' : undefined}
+          >
+            {collapsed ? '🗂️' : '← Clusters'}
+          </button>
         </div>
       )}
 
       <div className={styles.divider} />
 
-      {isAdmin && variant === 'project' && (
+      {isAdmin && variant === 'project' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="New Project"
+          onClick={() => expandWith(setShowNewProject)}
+        >
+          ➕
+        </button>
+      )}
+
+      {isAdmin && variant === 'project' && !collapsed && (
         <div className={styles.expander}>
           <button
             type="button"
@@ -180,12 +234,28 @@ export default function SelectionSidebar({
       )}
 
       {variant === 'project' && (
-        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.PROMPT_LIBRARY)}>
-          📚 Prompts
+        <button
+          type="button"
+          className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+          onClick={() => navigate(ROUTES.PROMPT_LIBRARY)}
+          title={collapsed ? 'Prompts' : undefined}
+        >
+          {collapsed ? '📚' : '📚 Prompts'}
         </button>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && (
+      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="New Cluster"
+          onClick={() => expandWith(setShowNewCluster)}
+        >
+          ➕
+        </button>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && !collapsed && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCluster((v) => !v)}>
             ➕ New Cluster {showNewCluster ? '▾' : '▸'}
@@ -215,7 +285,18 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'course' && (
+      {(hasPermission('course.create') || isAdmin) && variant === 'course' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="New Course"
+          onClick={() => expandWith(setShowNewCourse)}
+        >
+          ➕
+        </button>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCourse((v) => !v)}>
             ➕ New Course {showNewCourse ? '▾' : '▸'}
@@ -234,8 +315,13 @@ export default function SelectionSidebar({
       )}
 
       <div className={styles.footer}>
-        <button type="button" className={styles.navBtn} onClick={handleSignOut}>
-          🚪 Sign Out
+        <button
+          type="button"
+          className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+          onClick={handleSignOut}
+          title={collapsed ? 'Sign Out' : undefined}
+        >
+          {collapsed ? '🚪' : '🚪 Sign Out'}
         </button>
       </div>
     </aside>
