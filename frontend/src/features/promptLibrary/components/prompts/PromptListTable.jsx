@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { fetchChildPrompts } from '../../api/prompts';
 import PromptListRow from './PromptListRow';
 
-export default function PromptListTable({ prompts, isAdmin, onCopy, onDelete, onTagClick }) {
+export default function PromptListTable({ prompts, isAdmin, onCopy, onDelete, onRestore, onTagClick }) {
   const [expanded, setExpanded] = useState({});
   const [childrenByParent, setChildrenByParent] = useState({});
   const [loadingChildren, setLoadingChildren] = useState({});
@@ -61,6 +61,7 @@ export default function PromptListTable({ prompts, isAdmin, onCopy, onDelete, on
               isAdmin={isAdmin}
               onCopy={(id) => onCopy(id, p.content)}
               onDelete={onDelete}
+              onRestore={onRestore}
               onTagClick={onTagClick}
               expandControl={
                 childCount > 0 ? (

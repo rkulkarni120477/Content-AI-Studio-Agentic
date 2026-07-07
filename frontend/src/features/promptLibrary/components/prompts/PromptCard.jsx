@@ -3,7 +3,7 @@ import { pipelineStageLabel, starsDisplay } from '../../utils/prompt';
 import { plPrompt, plPromptEdit } from '../../paths';
 import VisibilityBadge from './VisibilityBadge';
 
-export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, onDelete, onTagClick }) {
+export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, onDelete, onRestore, onTagClick }) {
   const navigate = useNavigate();
   const vars = p.variables || [];
   const verCount = (p.versions || []).length || 1;
@@ -22,6 +22,11 @@ export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, on
     <div className="card">
       <div className="card-header">
         <div className="card-title">{p.title}</div>
+        {p.archived && (
+          <span className="badge badge-draft" title="Soft-deleted — never reaches generation or CAS selection">
+            🗄 Archived
+          </span>
+        )}
         <VisibilityBadge prompt={p} />
       </div>
       {p.description && <div className="card-desc">{p.description}</div>}
@@ -65,7 +70,12 @@ export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, on
           <Link to={plPrompt(p.id)} className="icon-btn" title="View">
             👁
           </Link>
-          {isAdmin && (
+          {isAdmin && p.archived && (
+            <button type="button" className="icon-btn" title="Restore from archive" onClick={() => onRestore?.(p.id)}>
+              ♻
+            </button>
+          )}
+          {isAdmin && !p.archived && (
             <>
               <Link to={plPromptEdit(p.id)} className="icon-btn" title="Edit">
                 ✏️

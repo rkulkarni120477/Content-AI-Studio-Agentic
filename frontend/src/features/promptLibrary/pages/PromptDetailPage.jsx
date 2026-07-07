@@ -7,6 +7,7 @@ import {
   fetchReviews,
   markPromptUsed,
   promotePrompt,
+  restorePrompt,
   submitReview,
   uploadAttachment,
 } from '../api/prompts';
@@ -257,6 +258,15 @@ export default function PromptDetailPage() {
                 Follow-up
               </span>
             )}
+            {prompt.archived && (
+              <span
+                className="badge badge-draft"
+                style={{ marginLeft: 8, verticalAlign: 'middle' }}
+                title="Soft-deleted — never reaches generation or CAS selection until restored"
+              >
+                🗄 Archived
+              </span>
+            )}
           </h1>
           {prompt.parent && (
             <p className="view-meta" style={{ marginBottom: 4 }}>
@@ -345,6 +355,20 @@ export default function PromptDetailPage() {
           {isPipeline && canPipeline && pipe?.component_type && (
             <button type="button" className="btn btn-ghost" onClick={() => void handleToggleDefault()}>
               {pipe.is_default ? 'Clear default' : `Make default for ${componentCategoryLabel(pipe.component_type, pipe.variant)}`}
+            </button>
+          )}
+          {prompt.archived && (isPipeline ? canPipeline : canManage) && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                void restorePrompt(prompt.id)
+                  .then(() => refetch())
+                  .then(() => show('Prompt restored ♻ — back on every surface.'))
+                  .catch((err) => show(err instanceof Error ? err.message : 'Restore failed'));
+              }}
+            >
+              ♻ Restore from archive
             </button>
           )}
           {!isPipeline && canPipeline && !prompt.parent_id && (prompt.children || []).length === 0 && (

@@ -106,6 +106,14 @@ export async function duplicatePrompt(id) {
   return data;
 }
 
+// Un-archive a soft-deleted prompt (doc §9 "unless explicitly enabled").
+export async function restorePrompt(id) {
+  const res = await apiFetch(`/api/prompts/${id}/restore`, { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || data.detail || 'Restore failed');
+  return data;
+}
+
 export async function markPromptUsed(id) {
   await apiFetch(`/api/prompts/${id}/use`, { method: 'POST' });
 }

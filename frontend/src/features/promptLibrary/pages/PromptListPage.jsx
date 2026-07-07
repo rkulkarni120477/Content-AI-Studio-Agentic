@@ -6,6 +6,7 @@ import {
   fetchMeta,
   fetchPrompts,
   markPromptUsed,
+  restorePrompt,
 } from '../api/prompts';
 import { listProjects, listProjectCourses } from '../api/flow';
 import { plCourses } from '../paths';
@@ -28,6 +29,8 @@ export default function PromptListPage() {
   const [q, setQ] = useState('');
   const [category, setCategory] = useState('');
   const [tag, setTag] = useState('');
+  const [wfState, setWfState] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
   const [sort, setSort] = useState('updated');
   const [view, setView] = useState(() => localStorage.getItem('plib_view') || 'card');
   const [loading, setLoading] = useState(true);
@@ -51,6 +54,10 @@ export default function PromptListPage() {
     // (component_type, variant) resolution keys.
     if (category.startsWith('cas:')) params.cas_category = category.slice(4);
     if (tag) params.tag = tag;
+    // Workflow status = the active version's state (doc §8).
+    if (wfState) params.state = wfState;
+    // Archived rows only on explicit opt-in (doc §9), admin-gated server-side.
+    if (showArchived) params.include_archived = '1';
     if (sort) params.sort = sort;
     return params;
   }
@@ -68,7 +75,7 @@ export default function PromptListPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, sort, scopeProject, scopeCourse]);
+  }, [q, category, tag, wfState, showArchived, sort, scopeProject, scopeCourse]);
 
   useEffect(() => {
     void fetchMeta().then(setMeta).catch(() => {});
@@ -113,6 +120,16 @@ export default function PromptListPage() {
     if (!window.confirm('Delete this prompt?')) return;
     await deletePrompt(id);
     show('Prompt deleted.');
+    void load();
+  }
+
+  async function handleRestore(id) {
+    try {
+      await restorePrompt(id);
+      show('Prompt restored ♻ — back on every surface.');
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Restore failed');
+    }
     void load();
   }
 
@@ -208,6 +225,28 @@ export default function PromptListPage() {
               </option>
             ))}
           </select>
+          <select
+            value={wfState}
+            onChange={(e) => setWfState(e.target.value)}
+            title="Filter by the active version's workflow status"
+          >
+            <option value="">Any Status</option>
+            <option value="draft">Draft</option>
+            <option value="in_review">In review</option>
+            <option value="approved">Approved</option>
+            <option value="active">Active (deployed)</option>
+          </select>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '.8rem', cursor: 'pointer' }}
+            title="Archived prompts never reach generation or CAS selection; show them here to inspect or restore"
+          >
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            🗄 Archived
+          </label>
           <select value={sort} onChange={(e) => setSort(e.target.value)}>
             <option value="updated">Recently Updated</option>
             <option value="created">Recently Created</option>
@@ -250,6 +289,7 @@ export default function PromptListPage() {
             isAdmin={canEdit}
             onCopy={handleCopy}
             onDelete={handleDelete}
+            onRestore={handleRestore}
             onTagClick={filterByTag}
           />
         ) : (
@@ -262,6 +302,7 @@ export default function PromptListPage() {
                 onCopy={(id) => void handleCopy(id, p.content)}
                 onDuplicate={handleDuplicate}
                 onDelete={handleDelete}
+                onRestore={handleRestore}
                 onTagClick={filterByTag}
               />
             ))}

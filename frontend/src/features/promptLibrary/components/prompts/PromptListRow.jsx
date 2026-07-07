@@ -10,6 +10,7 @@ export default function PromptListRow({
   expandControl,
   onCopy,
   onDelete,
+  onRestore,
   onTagClick,
 }) {
   const vars = p.variables || [];
@@ -32,6 +33,11 @@ export default function PromptListRow({
         <Link to={plPrompt(p.id)} className="list-title">
           {p.title}
         </Link>
+        {p.archived && (
+          <span className="badge badge-draft" title="Soft-deleted — never reaches generation or CAS selection">
+            🗄 Archived
+          </span>
+        )}
         {p.description && <div className="list-desc">{p.description}</div>}
       </div>
       <div className="list-cat">{p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category || ''}</div>
@@ -66,7 +72,12 @@ export default function PromptListRow({
         <Link to={plPrompt(p.id)} className="icon-btn" title="View">
           👁
         </Link>
-        {isAdmin && (
+        {isAdmin && p.archived && (
+          <button type="button" className="icon-btn" title="Restore from archive" onClick={() => onRestore?.(p.id)}>
+            ♻
+          </button>
+        )}
+        {isAdmin && !p.archived && (
           <>
             <Link to={plPromptEdit(p.id)} className="icon-btn" title="Edit">
               ✏️
