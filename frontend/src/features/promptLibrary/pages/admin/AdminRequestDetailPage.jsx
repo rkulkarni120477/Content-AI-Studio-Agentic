@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { commitPipelineVersion } from '../../api/pipeline';
 import { fetchPrompt } from '../../api/prompts';
 import { fetchRequests, updateRequest } from '../../api/requests';
+import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { APPLY_PROPOSAL_KEY, parseRequestDescription } from '../../utils/requestProposal';
 import { plAdminRequests, plPrompt, plPromptEdit, plPromptNew } from '../../paths';
@@ -59,10 +61,18 @@ function CompareBlock({ label, current, proposed }) {
   );
 }
 
+// Version tags follow the numeric ladder ("v3"); the serializer's numeric
+// `version` field is version_number, so max+1 is always fresh.
+function nextVersionTag(p) {
+  const nums = (p?.versions || []).map((v) => v.version || 0);
+  return `v${(nums.length ? Math.max(...nums) : 0) + 1}`;
+}
+
 export default function AdminRequestDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { show } = useToast();
+  const { user } = useAuth();
   const [request, setRequest] = useState(null);
   const [linkedPrompt, setLinkedPrompt] = useState(null); // prompt | 'missing' | null
   const [adminNotes, setAdminNotes] = useState('');
@@ -88,14 +98,14 @@ export default function AdminRequestDetailPage() {
       .catch(() => setLinkedPrompt('missing'));
   }, [request?.prompt_id]);
 
-  async function applyStatus(nextStatus, successMessage) {
+  async function applyStatus(nextStatus, successMessage, { notes } = {}) {
     if (nextStatus === 'rejected' && !adminNotes.trim()) {
       show('Add an admin note explaining the rejection — the requester will see it.');
       return;
     }
     setSaving(true);
     try {
-      await updateRequest(id, { status: nextStatus, admin_notes: adminNotes.trim() });
+      await updateRequest(id, { status: nextStatus, admin_notes: (notes ?? adminNotes).trim() });
       show(successMessage);
       navigate(plAdminRequests);
     } catch (err) {
@@ -134,6 +144,8 @@ export default function AdminRequestDetailPage() {
     && (proposedUser === null || proposedUser.trim() === currentUser.trim());
   const isResolved = request.status === 'done' || request.status === 'rejected';
 
+  const canOneClickApply = promptLoaded && linkedPrompt.prompt_kind === 'pipeline' && !fullyApplied;
+
   function openEditorWithProposal() {
     sessionStorage.setItem(APPLY_PROPOSAL_KEY, JSON.stringify({
       promptId: linkedPrompt.id,
@@ -142,6 +154,44 @@ export default function AdminRequestDetailPage() {
       note: `Applied from request #${request.id} by ${request.requested_by}: ${request.title}`,
     }));
     navigate(plPromptEdit(linkedPrompt.id));
+  }
+
+  // Approve = commit the proposed text as the next version (admins deploy
+  // instantly; reviewers land a draft for the workflow) and close the request.
+  async function approveAndApply() {
+    const tag = nextVersionTag(linkedPrompt);
+    const deployed = user?.role === 'admin';
+    setSaving(true);
+    try {
+      await commitPipelineVersion(linkedPrompt.id, {
+        version: tag,
+        systemPrompt: proposedSystem ?? currentSystem,
+        userPromptTemplate: proposedUser ?? currentUser,
+        changeReason: `Approved from request #${request.id} by ${request.requested_by}: ${request.title}`,
+      });
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Applying the proposal failed');
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    await applyStatus(
+      'done',
+      deployed
+        ? `Applied and deployed as ${tag} — request marked done.`
+        : `Saved as draft ${tag} (deploys after workflow approval) — request marked done.`,
+      { notes: adminNotes.trim() || (deployed ? `Applied and deployed as ${tag}.` : `Saved as draft ${tag}; it deploys after workflow approval.`) },
+    );
+  }
+
+  function markDone() {
+    if (hasProposedEdit && promptLoaded && !fullyApplied) {
+      const ok = window.confirm(
+        'The proposed edit has NOT been applied — the prompt still runs its current text. Mark the request done anyway?',
+      );
+      if (!ok) return;
+    }
+    void applyStatus('done', 'Request marked done — the requester will see it on My requests.');
   }
 
   return (
@@ -215,14 +265,29 @@ export default function AdminRequestDetailPage() {
       {/* ── The proposed change, next to what it changes ────────────── */}
       {hasProposedEdit && (
         <div className="page-card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
             <h2 style={{ fontSize: '1rem', margin: 0 }}>Proposed edit</h2>
             {promptLoaded && !fullyApplied && (
-              <button type="button" className="btn btn-primary" onClick={openEditorWithProposal} style={{ marginLeft: 'auto' }}>
-                ✏️ Review &amp; apply in the editor
-              </button>
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-ghost" disabled={saving} onClick={openEditorWithProposal}>
+                  ✏️ Tweak in the editor first
+                </button>
+                {canOneClickApply && (
+                  <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void approveAndApply()}>
+                    ✅ Approve &amp; apply as {nextVersionTag(linkedPrompt)}
+                  </button>
+                )}
+              </span>
             )}
           </div>
+          {canOneClickApply && (
+            <p className="var-tip" style={{ marginBottom: 14 }}>
+              Approve &amp; apply commits the proposed text as {nextVersionTag(linkedPrompt)}
+              {user?.role === 'admin'
+                ? ' and deploys it immediately, then marks this request done.'
+                : ' as a draft (it deploys after workflow approval), then marks this request done.'}
+            </p>
+          )}
           {fullyApplied && (
             <p className="var-tip" style={{ marginBottom: 14 }}>
               ✅ The prompt&apos;s current version already matches this proposal
@@ -284,7 +349,7 @@ export default function AdminRequestDetailPage() {
                   type="button"
                   className="btn btn-primary"
                   disabled={saving}
-                  onClick={() => void applyStatus('done', 'Request marked done — the requester will see it on My requests.')}
+                  onClick={markDone}
                 >
                   ✓ Mark done
                 </button>
