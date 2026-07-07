@@ -15,6 +15,7 @@ import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { exportPromptsCsv } from '../utils/csvExport';
+import { clusterOptions } from '../utils/clusters';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 import { CAS_CATEGORIES } from '../utils/prompt';
 
@@ -91,17 +92,9 @@ export default function PromptListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPipeline]);
 
-  const scopeClusters = useMemo(() => {
-    const seen = new Map();
-    let unclustered = false;
-    for (const g of scopeGroups) {
-      if (g.cluster_id == null) unclustered = true;
-      else if (!seen.has(g.cluster_id)) seen.set(g.cluster_id, g.cluster_name || `Cluster ${g.cluster_id}`);
-    }
-    const items = [...seen.entries()];
-    if (unclustered) items.push(['none', '(No cluster)']);
-    return items;
-  }, [scopeGroups]);
+  // Ambiguous cluster names (unique per project only) arrive disambiguated
+  // with their project name — see utils/clusters.js.
+  const scopeClusters = useMemo(() => clusterOptions(scopeGroups), [scopeGroups]);
 
   const scopeCourses = useMemo(() => {
     if (!scopeCluster) return [];

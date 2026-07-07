@@ -23,6 +23,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts } from '../utils/permissions';
+import { clusterOptions } from '../utils/clusters';
 import { componentCategoryLabel } from '../utils/prompt';
 import { plPrompt } from '../paths';
 
@@ -262,17 +263,9 @@ export default function CoursePromptsPage() {
 
   // Cluster-basis filter: courses group under their cluster; courses without
   // one land in a "(No cluster)" bucket so none disappear from the picker.
-  const clusters = useMemo(() => {
-    const seen = new Map();
-    let unclustered = false;
-    for (const g of groups) {
-      if (g.cluster_id == null) unclustered = true;
-      else if (!seen.has(g.cluster_id)) seen.set(g.cluster_id, g.cluster_name || `Cluster ${g.cluster_id}`);
-    }
-    const items = [...seen.entries()];
-    if (unclustered) items.push(['none', '(No cluster)']);
-    return items;
-  }, [groups]);
+  // Cluster names are unique only within a project (every project gets an
+  // auto-migrated "General"), so ambiguous names get their project appended.
+  const clusters = useMemo(() => clusterOptions(groups), [groups]);
 
   const visible = selCluster
     ? groups.filter((g) => (selCluster === 'none'
