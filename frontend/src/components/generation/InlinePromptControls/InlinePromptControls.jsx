@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
 import { commitPromptThunk } from '@features/prompts/promptsThunks';
@@ -88,6 +89,7 @@ export default function InlinePromptControls({
 
   const compLabel = COMPONENT_LABELS[component] || component;
   const defaults = DEFAULTS[component] || { system: '', user: '' };
+  const navigate = useNavigate();
 
   const filteredPrompts = useMemo(
     () => (prompts || []).filter(
@@ -446,6 +448,22 @@ export default function InlinePromptControls({
               }}
             >
               ⬇️ Download
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Ask the prompt admins for a new prompt or a change to this one"
+              onClick={() => {
+                // Deep-link into the Prompt Library request form with the
+                // CAS context prefilled (Phase 12d).
+                const qs = new URLSearchParams({ component });
+                const ctx = [selProject?.name, selCourse?.name].filter(Boolean).join(' / ');
+                if (ctx) qs.set('context', ctx);
+                if (selectedPrompt?.id) qs.set('promptId', selectedPrompt.id);
+                navigate(`/prompt-library/requests/new?${qs.toString()}`);
+              }}
+            >
+              📬 Request a Change
             </Button>
           </div>
 

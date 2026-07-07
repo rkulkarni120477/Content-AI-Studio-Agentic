@@ -749,6 +749,23 @@ editor).
   this shape (Library + Courses); the underlying principle (organize by the workflow hierarchy)
   survives in the Courses view.
 
+### Phase 12d — "Request a Change" from the CAS tabs (user-approved 2026-07-07)
+
+**Trigger:** capability check "can we consume/request prompts from the CAS flows?" — consume yes
+(every tab's prompt panel lists the registry; note the panel dropdown is preview-only: generation
+re-resolves lock chain → default unless the user explicitly overrides), request **no** (the PL
+Requests workflow had no entry point from CAS).
+
+- [x] `InlinePromptControls` (CDD/Blueprint/Generate tabs) and `PromptLibraryPanel` (Style tab)
+  gain a "📬 Request a Change" action deep-linking to `/prompt-library/requests/new` with
+  `component`, `promptId` (the selected registry prompt), and `context` (project/course names,
+  where the panel has them) prefilled.
+- [x] `RequestNewPage` reads the new params: title defaults to "<CAS category> prompt change",
+  description seeded with the originating tab + context; everything stays user-editable.
+- **Known UX trap (flagged, not fixed):** the CAS panel's prompt dropdown looks like a selector
+  but is a preview — picking a non-default prompt does NOT change what generation uses (bind it
+  in Courses, or explicitly override). Candidate follow-up: a hint in the panel.
+
 **Tests:** service-level CAS-mapping suite (6 labels, generate split, case-insensitivity,
 non-admin no-leak) + promotion-helper suite (slug, suffixing, soft-deleted names count) + API
 suites for unified list/cas_category and the full promote contract (in-place flip, inertness,
@@ -799,6 +816,7 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 
 | Date | Session focus | Phases touched | Outcome |
 |---|---|---|---|
+| 2026-07-07 | **Phase 12d — request-from-CAS entry point** (capability check → "go ahead") | 12d (new subsection) | Found: consume=yes via each CAS tab's prompt panel (with the preview-only dropdown caveat now documented), request=no path from CAS. Added "📬 Request a Change" to `InlinePromptControls` + `PromptLibraryPanel`, deep-linking to the PL request form with component/promptId/context prefilled; `RequestNewPage` seeds title/description from those params. Frontend **48 passed**, build green; no backend changes. |
 | 2026-07-07 | **Phase 12c — Flow folded into Courses** (user asked whether Flow/Library overlap; recommendation approved with "Go ahead with perfection") | 12c (new subsection) | Courses slot rows gained the Bind/Unbind lock editor (scope picker incl. global/project; pool filtered to the slot's `_acceptable_variants` — stricter than Flow's whole-component pool). Flow page deleted, nav entry + `plFlow` removed, `/flow` redirects to Courses. Also removed earlier in the review: Flow's library-prompt reference rail (`e35e7ae`, last library surfacing). Locked "console shape" decision annotated as superseded. Frontend **48 passed** (Flow nav test retired), build green, no backend changes. Live smoke: bind cdd course-lock on course 8 → by-course shows `course_lock` → unbind → back to `default`. |
 | 2026-07-07 | **Phase 12b — freeform library retired from display** (user: "only CAS related ones to be surfaced") | 12b (new subsection) | Console list now `kind=pipeline` only; category filter = the six CAS names; `/meta` tags pipeline-scoped for pipeline managers (library fallback for everyone else, no-leak); Library nav entry + New Prompt action pipeline-manager-only; non-managers redirected to Courses. The 20 legacy library prompts stay in the DB untouched (display retirement, not deletion — their fate is a stakeholder call). New Prompt kept as the draft→promote path. Suites: backend **293**, frontend **49**, build green, ruff baseline-identical. Live smoke on :8001 (restarted, pid 140403): admin meta tags = pipeline tags only, CDD CAS filter → prompt 4. |
 | 2026-07-07 | **Phase 12 — unified Library presentation** (eighth implementation session; user question "should we unify Library and Pipeline?" → recommendation "unify presentation, not model" → user: "Go ahead with perfection") | 12 (new) | All three items built, tested, live-smoked. Backend: `cas_category` filter param (label→resolution-key map in one place, no-leak for non-admins) + `POST /prompts/{id}/promote` (in-place kind flip, unique slug registry name, inert until defaulted/locked, pipeline-manager-gated) + helpers `slugify_prompt_name`/`unique_prompt_name`. Frontend: list page tab toggle removed (admins browse `kind=all`), category select gains admin-only "CAS Workflow" optgroup (six doc names), detail page gains the promote panel with inertness warning. 16 new backend tests + 2 frontend; suites backend **291**, frontend **48**, build green; ruff findings byte-identical to baseline (zero introduced). Rehearsal smoke: 20+8 under kind=all, CDD filter → prompt 4, full promote round-trip on a throwaway row then soft-deleted. :8001 restarted on this code (pid 138980) — ready for the user's walkthrough. Model-merge (dropping `prompt_kind`) explicitly rejected in the plan. |

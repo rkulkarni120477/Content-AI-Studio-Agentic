@@ -2,16 +2,27 @@ import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { createRequest } from '../api/requests';
 import { useToast } from '../context/ToastContext';
+import { componentCategoryLabel } from '../utils/prompt';
 import { plRequests } from '../paths';
 
 export default function RequestNewPage() {
   const [searchParams] = useSearchParams();
   const promptId = searchParams.get('promptId') || '';
+  // Deep-link prefill from the CAS generation tabs (Phase 12d): which
+  // pipeline category the request is about, and the project/course the
+  // requester was working in.
+  const component = searchParams.get('component') || '';
+  const context = searchParams.get('context') || '';
+  const componentLabel = component ? componentCategoryLabel(component, null) : '';
   const navigate = useNavigate();
   const { show } = useToast();
 
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState(componentLabel ? `${componentLabel} prompt change` : '');
+  const [description, setDescription] = useState(
+    componentLabel || context
+      ? `Requested from the ${componentLabel || component} tab.${context ? `\nContext: ${context}` : ''}\n\n`
+      : '',
+  );
   const [type, setType] = useState(promptId ? 'update' : 'new');
   const [saving, setSaving] = useState(false);
 

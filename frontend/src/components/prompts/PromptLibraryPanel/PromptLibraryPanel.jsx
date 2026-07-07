@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
 import { promptsService } from '@features/prompts/services/promptsService';
@@ -41,6 +42,7 @@ export default function PromptLibraryPanel({
   defaultSettingsOpen = true,
 }) {
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
   const prompts = useAppSelector(selectPrompts);
   const promptsLoading = useAppSelector(selectPromptsLoading);
   const modelChoice = useAppSelector(selectModelChoice);
@@ -411,6 +413,20 @@ export default function PromptLibraryPanel({
               {metaParts.length > 0 && (
                 <p className={styles.meta}>{metaParts.join('  ·  ')}</p>
               )}
+
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Ask the prompt admins for a new prompt or a change to this one"
+                onClick={() => {
+                  // Deep-link into the Prompt Library request form (Phase 12d).
+                  const qs = new URLSearchParams({ component });
+                  if (selectedPrompt?.id) qs.set('promptId', selectedPrompt.id);
+                  navigate(`/prompt-library/requests/new?${qs.toString()}`);
+                }}
+              >
+                📬 Request a Change
+              </Button>
 
               <div className={styles.tabs} role="tablist">
                 {PANEL_TABS.map((t) => (
