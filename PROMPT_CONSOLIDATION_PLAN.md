@@ -666,6 +666,53 @@ endpoints).
 
 ---
 
+## Phase 12 — Unified Library presentation (doc §3/§5.1 spirit, user-approved 2026-07-07)
+
+**Decision (user: "Go ahead with perfection"):** unify the *presentation*, not the *model*.
+The doc's world has one Prompt Library whose categories are the six CAS tabs; ours already has one
+table — the remaining seam was the Library/Pipeline tab split in the console. `prompt_kind` and the
+`(component_type, variant)` resolution keys stay exactly as they are (load-bearing: a freeform
+category string must never steer generation, and the admin-only boundary rides on kind). What
+changes is the UI and two additive API affordances:
+
+- [x] **12.1 Unified list** — the console list page drops the Library/⚙Pipeline tab toggle; pipeline
+  managers browse `kind=all` (both kinds in one list; non-admins keep sending nothing and stay
+  server-stripped to library rows). Scope selects (project→course) now always visible to pipeline
+  managers.
+- [x] **12.2 CAS categories as first-class filter values** — the category select gains a
+  "CAS Workflow" optgroup (admin-only) with the doc's six names; sent as a distinct `cas_category`
+  param so a freeform library category named "CDD" can never collide. Server maps each label back
+  to its resolution key in ONE place (`_CAS_CATEGORY_KEYS`): Assessment→quiz, Component→(generate,
+  interactive) exact, Lesson Generation→generate minus interactive, others→component. Unknown label
+  → empty; non-admin → empty (same no-leak shape as the scope filter).
+- [x] **12.3 Promote-to-pipeline** — `POST /prompt-library/prompts/{id}/promote`
+  (`prompt_library.manage` + pipeline-manager role, 403 otherwise). The kind flips **in place**:
+  same id, same version history — still exactly one master record (doc §6). Registry name is the
+  slugified title (`unique_prompt_name` suffixes past collisions, soft-deleted rows included);
+  freeform category is cleared (classification is the resolution key now); legacy tags
+  comma-string mirrored. Guards: valid component only, no follow-up hierarchies, non-empty
+  content, double-promote 404s (row left the library write surface). **Promotion is inert for
+  generation** — nothing fires until an admin makes the row a component default or binds a scope
+  lock; this is the sanctioned §5.1 path ("create in library, appears in CAS") without letting a
+  text field steer generation, and the opt-in answer to the §5.2 deviation question.
+  Detail-page UI: "⚙ Promote to pipeline…" panel (library rows, pipeline managers only) with the
+  six CAS slots and an inertness warning in the confirm.
+
+**Explicitly rejected (same grounds as the §7.1 verdict):** dropping `prompt_kind` / letting
+category strings control CAS visibility — downgrades a structured, permission-guarded
+classification into a typo-prone convention.
+
+**Tests:** service-level CAS-mapping suite (6 labels, generate split, case-insensitivity,
+non-admin no-leak) + promotion-helper suite (slug, suffixing, soft-deleted names count) + API
+suites for unified list/cas_category and the full promote contract (in-place flip, inertness,
+write-surface exit, collision suffix, variant slot, 400s, reviewer 403). Backend 291, frontend 48
+(CAS constants pinned against `componentCategoryLabel` round-trip), build green. Live-smoked on
+rehearsal: 20 library + 8 pipeline under `kind=all`; CDD→`default_cdd_prompt`; promote round-trip
+on a throwaway row (created → promoted → filtered under Blueprint → library PUT 404s → soft-deleted
+clean).
+
+---
+
 ## Locked decisions
 
 - **Table base:** native CAS `prompts` tables are canonical; port `pl_*` features onto them; retire `pl_*`. (See "Table-base decision".)
@@ -705,6 +752,7 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 
 | Date | Session focus | Phases touched | Outcome |
 |---|---|---|---|
+| 2026-07-07 | **Phase 12 — unified Library presentation** (eighth implementation session; user question "should we unify Library and Pipeline?" → recommendation "unify presentation, not model" → user: "Go ahead with perfection") | 12 (new) | All three items built, tested, live-smoked. Backend: `cas_category` filter param (label→resolution-key map in one place, no-leak for non-admins) + `POST /prompts/{id}/promote` (in-place kind flip, unique slug registry name, inert until defaulted/locked, pipeline-manager-gated) + helpers `slugify_prompt_name`/`unique_prompt_name`. Frontend: list page tab toggle removed (admins browse `kind=all`), category select gains admin-only "CAS Workflow" optgroup (six doc names), detail page gains the promote panel with inertness warning. 16 new backend tests + 2 frontend; suites backend **291**, frontend **48**, build green; ruff findings byte-identical to baseline (zero introduced). Rehearsal smoke: 20+8 under kind=all, CDD filter → prompt 4, full promote round-trip on a throwaway row then soft-deleted. :8001 restarted on this code (pid 138980) — ready for the user's walkthrough. Model-merge (dropping `prompt_kind`) explicitly rejected in the plan. |
 | 2026-07-06 | **Full verification pass over the Phase 11 stretch** (seventh implementation session, close-out) | 11 | Commit `a9bf0b1`. Adversarial re-review of all 9 session commits. **One real defect found & fixed:** the by-course view applied no variant filter on NULL-variant slots — a fixing bound to a variant-keyed prompt (e.g. generate/interactive) displayed as the effective Lesson Generation lock while live generation (`_acceptable_variants=(None,)`) would skip it; `resolve_slot` now mirrors the loader exactly (NULL→NULL-only, interactive→exact-only, others exact-then-NULL, never sideways) + pinning test. Also closed the untested pipeline branch of duplicate-check (incl. unknown-kind coercion — never 500s) and fixed the 3 ruff findings this stretch introduced (import order, 2 unused test locals; remaining ruff/eslint noise is pre-existing repo-wide — `npm run lint` is broken by the unfinished ESLint-9 flat-config migration, flagged as a separate hygiene item). Verified clean: no category-bypass write paths (request flow creates no prompts; duplicate copies source category), no other CAS override surfaces, provenance set on all 4 CDD/BP prompt paths, permission gates match their pre-existing counterparts. Suites: backend **275**, frontend **46**, build green. Live smoke on rehearsal (throwaway :8002; the user's :8001 untouched): by-course for all 16 courses incl. a real course lock (course 7 style) rendering `course_lock`+scope name; full-body case-mangled dup-check self-match; blank-category 400; course-8 scope filter → exactly the 4 inherited defaults; counts 20/8. **:8001 still runs pre-Phase-11 code — restart before the acceptance pass over the new surfaces.** |
 | 2026-07-06 | **Phase 11 executed — all 8 build/decision items** (seventh implementation session, cont.) | 11 | Six commits (`18fe1ce`, `39875e5`, `0ec8666`, `f8418cc`, `aebb30c`, `f197857`, `74a8e17`). (1) **Taxonomy**: `componentCategoryLabel()` maps keys→doc categories (generate→Lesson Generation, quiz→Assessment, generate+interactive→Component); wired through list/card/CSV/Flow/form/detail; keys unchanged. (2) **Course-grouped view**: `GET /prompts/by-course` (one-pass resolution replicating `resolve_fixed_prompt`; six doc-category slots + dynamic variant-default slots) + **Courses** tab with collapsible groups & source badges; live-smoked on rehearsal (16 courses). (3) **Scope filters**: `course_id`/`cluster_id`/`project_id` on browse (upward chain + downward subtree + defaults; non-admin no-leak pinned) + Project→Course selects on the Pipeline tab. (4) **Facets**: `GET /prompts/fixings` w/ scope names; detail-page read-only "Used by" chips (deliberately NOT freeform tags). (5) **Dup warning**: normalized-content probe + confirm on create (warns, never blocks). (6) **tag_type: declined** (typed facts are relational — deviation recorded). (7) **Category mandatory: enforced** (400 on blank create/explicit-blank update; 'General' fallback removed). (8) **Archived exclusion**: dormant `deleted_at` guards on every selection surface + resolution tier (zero reachable behavior change, flag-off identical) + 7 pinning tests. Suites: backend **270 passed** (+27 this stretch), frontend **46 passed**, build green. Remaining Phase 11: 3 deviation sign-offs (tenant, per-course copies, ID format) + acceptance pass over the new surfaces (needs :8001 restart to serve the new endpoints). |
 | 2026-07-06 | **Walkthrough support + requirements-doc alignment** (seventh implementation session) | 7b (walkthrough fix), 11 (new) | (1) Walkthrough feedback fix (commit `29ddf0a`): Pipeline-tab Category column was empty by design (pipeline rows carry no freeform `category` — their key is `component_type`+`variant`); added `pipelineStageLabel()` deriving the display label from the real key and wired it into the list row, card footer, and CSV export — no schema change, label can never drift from what generation resolves. 4 new vitest cases (43 total green), build green. (2) Assessed the implementation against `Technical Requirements- Prompt Library and Content AI Studio Sync.docx`: data-model core (master record + dedup, mapping table, versioning, bidirectional sync, category-controlled CAS dropdowns) already delivered — often stronger than spec (`prompt_fixings` full scope hierarchy, enforced phase-appropriateness, append-only versions); gaps are presentation/metadata: course-grouped view, scope filters, taxonomy naming (Assessment/Component/Lesson Generation vs generate+variants), scope facets, duplicate-content warning, plus three deviations to confirm (no tenant column, no per-course prompt copies, integer IDs). Added **Phase 11 — Requirements-doc alignment** capturing all of it (8 build/decision items, 3 deviation sign-offs, ordering note: taxonomy decision before the grouped view; all additive, after 7b sign-off). |
