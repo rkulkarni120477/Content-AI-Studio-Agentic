@@ -42,10 +42,6 @@ export async function fetchPrompt(id) {
   return res.json();
 }
 
-export async function fetchRootPrompts() {
-  return fetchPrompts({ roots_only: '1' });
-}
-
 export async function fetchChildPrompts(parentId) {
   return fetchPrompts({ parent_id: parentId, roots_only: '0' });
 }

@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
   checkDuplicate,
-  createPrompt,
   deleteAttachment,
   fetchPrompt,
-  fetchRootPrompts,
   updatePrompt,
   uploadAttachment,
 } from '../api/prompts';
@@ -17,23 +15,20 @@ import {
 } from '../api/pipeline';
 import { fetchTeams } from '../api/teams';
 import { useToast } from '../context/ToastContext';
-import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
+import { canManagePipelinePrompts } from '../utils/permissions';
 import { useAuth } from '../context/AuthContext';
 import TeamMultiSelect from '../components/TeamMultiSelect';
 import { extractVarNames, findLegacyVarNames, toLabel } from '../utils/prompt';
-import { plHome, plPrompt, plPromptEdit } from '../paths';
+import { plCourses, plHome, plPrompt } from '../paths';
 
 export default function PromptFormPage() {
   const { id } = useParams();
-  const [searchParams] = useSearchParams();
-  const initialParentId = searchParams.get('parentId') || '';
   const isEdit = Boolean(id);
   const navigate = useNavigate();
   const { show } = useToast();
 
   const [teamOptions, setTeamOptions] = useState([]);
-  const [rootPrompts, setRootPrompts] = useState([]);
-  const [parentId, setParentId] = useState(initialParentId);
+  const [parentId, setParentId] = useState('');
   const [loadedPrompt, setLoadedPrompt] = useState(null);
   const [loading, setLoading] = useState(isEdit);
   const [title, setTitle] = useState('');
@@ -49,8 +44,8 @@ export default function PromptFormPage() {
   const [attachments, setAttachments] = useState([]);
   const [saving, setSaving] = useState(false);
 
-  // Pipeline-kind state (Phase 7b dual editor).
-  const [kind, setKind] = useState('library');
+  // Pipeline-kind state (Phase 7b dual editor; since 12b creation is
+  // pipeline-only — the library branch remains for EDITING legacy rows).
   const [systemPrompt, setSystemPrompt] = useState('');
   const [componentType, setComponentType] = useState('');
   const [variant, setVariant] = useState('');
@@ -59,14 +54,14 @@ export default function PromptFormPage() {
   const [pipeVarDefs, setPipeVarDefs] = useState({});
 
   const { user } = useAuth();
-  const canEdit = canManagePrompts(user);
   const canPipeline = canManagePipelinePrompts(user);
-  const isPipeline = isEdit ? loadedPrompt?.prompt_kind === 'pipeline' : kind === 'pipeline';
+  // Creation is always pipeline (all prompts are CAS prompts now); editing
+  // follows the loaded row's kind so the 20 legacy library rows stay editable.
+  const isPipeline = isEdit ? loadedPrompt?.prompt_kind === 'pipeline' : true;
 
   useEffect(() => {
     void fetchTeams().then(setTeamOptions);
-    if (canEdit) void fetchRootPrompts().then(setRootPrompts);
-  }, [canEdit]);
+  }, []);
 
   useEffect(() => {
     if (!isEdit || !id) return;
@@ -245,6 +240,8 @@ export default function PromptFormPage() {
       show('Category is required.');
       return;
     }
+    // Only reachable on EDIT of a legacy library row — creation is always
+    // pipeline now.
     setSaving(true);
     try {
       const body = {
@@ -259,26 +256,18 @@ export default function PromptFormPage() {
         visibility,
         teams: visibility === 'team' ? selectedTeamIds : [],
         variables,
-        create_version: isEdit ? createVersion : false,
-        version_note: isEdit ? versionNote.trim() : '',
+        create_version: createVersion,
+        version_note: versionNote.trim(),
       };
-      if (!isEdit) {
-        body.parent_id = parentId || null;
-      } else if (
+      if (
         loadedPrompt?.can_have_children !== false &&
         !(loadedPrompt?.children && loadedPrompt.children.length > 0)
       ) {
         body.parent_id = parentId || null;
       }
-      if (isEdit && id) {
-        await updatePrompt(id, body);
-        show('Prompt updated!');
-        navigate(plPrompt(id));
-      } else {
-        const created = await createPrompt(body);
-        show('Prompt saved!');
-        navigate(plPromptEdit(created.id));
-      }
+      await updatePrompt(id, body);
+      show('Prompt updated!');
+      navigate(plPrompt(id));
     } catch (err) {
       show(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -314,54 +303,34 @@ export default function PromptFormPage() {
     return <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 48 }}>Loading…</p>;
   }
 
+  // Creation is pipeline-manager-only (the nav action already hides it; this
+  // guards direct URL hits) — freeform library creation is retired (12b).
+  if (!isEdit && !canPipeline) {
+    return <Navigate to={plCourses} replace />;
+  }
+
   return (
     <>
       <Link to={isEdit && id ? plPrompt(id) : plHome} className="back-link">
         ← {isEdit ? 'Back to prompt' : 'Back to library'}
       </Link>
       <div className="page-header">
-        <h1>{isEdit ? 'Edit prompt' : parentId ? 'New follow-up prompt' : 'New prompt'}</h1>
+        <h1>{isEdit ? 'Edit prompt' : 'New prompt'}</h1>
       </div>
 
       <form className="page-card" onSubmit={(e) => void handleSubmit(e)}>
-        {!isEdit && canPipeline && (
-          <div className="field">
-            <label>Prompt kind</label>
-            <select value={kind} onChange={(e) => setKind(e.target.value)}>
-              <option value="library">Library — shareable freeform prompt</option>
-              <option value="pipeline">Pipeline — drives live generation (admin)</option>
-            </select>
-            {kind === 'pipeline' && (
-              <p className="var-tip" style={{ marginTop: 6 }}>
-                Pipeline prompts are resolved by generation. Saving commits
-                through the approval gate; admins instant-deploy.
-              </p>
-            )}
-          </div>
+        {!isEdit && (
+          <p className="var-tip" style={{ marginTop: 0 }}>
+            ⚙ This creates a CAS pipeline prompt — resolved by generation once
+            an admin makes it a stage default or binds it to a scope. Saving
+            commits through the approval gate; admins instant-deploy.
+          </p>
         )}
         {!isPipeline && loadedPrompt?.parent && (
           <div className="field">
             <label>Parent prompt</label>
             <p style={{ fontSize: '.9rem' }}>
               <Link to={plPrompt(loadedPrompt.parent.id)}>{loadedPrompt.parent.title}</Link>
-            </p>
-          </div>
-        )}
-        {!isEdit && !isPipeline && canEdit && loadedPrompt?.can_have_children !== false && (
-          <div className="field">
-            <label>Parent prompt (optional)</label>
-            <select value={parentId} onChange={(e) => setParentId(e.target.value)} disabled={Boolean(initialParentId)}>
-              <option value="">— None (standalone prompt) —</option>
-              {rootPrompts
-                .filter((rp) => String(rp.id) !== String(id))
-                .map((rp) => (
-                  <option key={rp.id} value={rp.id}>
-                    {rp.title}
-                  </option>
-                ))}
-            </select>
-            <p className="var-tip" style={{ marginTop: 6 }}>
-              Follow-up prompts belong to a parent and cannot have their own follow-ups.
             </p>
           </div>
         )}

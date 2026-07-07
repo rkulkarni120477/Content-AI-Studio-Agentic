@@ -17,7 +17,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 import { CAS_SLOT_OPTIONS, componentCategoryLabel, fillPromptContent, starsDisplay } from '../utils/prompt';
-import { plHome, plPrompt, plPromptEdit, plPromptNewChild, plRequestNew } from '../paths';
+import { plHome, plPrompt, plPromptEdit, plRequestNew } from '../paths';
 
 // Mirrors the backend's _STATE_TRANSITIONS (illegal moves 409 server-side).
 const STATE_ACTIONS = {
@@ -357,11 +357,6 @@ export default function PromptDetailPage() {
           {(isPipeline ? canPipeline : canManage) && (
             <Link to={plPromptEdit(prompt.id)} className="btn btn-ghost">
               Edit
-            </Link>
-          )}
-          {canManage && !isPipeline && prompt.can_have_children && (
-            <Link to={plPromptNewChild(prompt.id)} className="btn btn-ghost">
-              ＋ Add follow-up
             </Link>
           )}
           {isPipeline && canPipeline && pipe?.component_type && (
