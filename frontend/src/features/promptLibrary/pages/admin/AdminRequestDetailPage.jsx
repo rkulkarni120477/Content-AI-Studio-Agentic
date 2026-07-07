@@ -96,10 +96,15 @@ export default function AdminRequestDetailPage() {
             fontSize: '.8rem',
             lineHeight: 1.5,
             whiteSpace: 'pre-wrap',
+            // global.scss styles pre as light-on-dark; this block is on a
+            // light card, so both colors must be set together.
             background: 'var(--tag-bg)',
+            color: 'var(--text)',
             padding: '10px 12px',
             borderRadius: 6,
             margin: 0,
+            maxHeight: 340,
+            overflowY: 'auto',
           }}
         >
           {proposed}
