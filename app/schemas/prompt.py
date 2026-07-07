@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _validate_tag_lengths(raw: str | None) -> str | None:
@@ -190,6 +190,19 @@ class PromptListItem(BaseModel):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _name_falls_back_to_title(cls, data):
+        # Carried-over library rows have a title but no registry name (name is
+        # pipeline-only) — without this, one such row 500s the whole listing.
+        if not isinstance(data, dict) and not getattr(data, "name", None):
+            title = getattr(data, "title", None)
+            if title:
+                copied = {f: getattr(data, f, None) for f in cls.model_fields}
+                copied["name"] = title
+                return copied
+        return data
 
 
 class PromptDeployResponse(BaseModel):

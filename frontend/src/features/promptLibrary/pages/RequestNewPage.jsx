@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { fetchPrompts } from '../api/prompts';
+import { listAllPrompts } from '../api/flow';
 import { createRequest } from '../api/requests';
 import { useToast } from '../context/ToastContext';
 import { componentCategoryLabel } from '../utils/prompt';
@@ -31,12 +31,12 @@ export default function RequestNewPage() {
 
   useEffect(() => {
     if (type !== 'update' || prompts !== null) return;
-    fetchPrompts({})
+    listAllPrompts()
       .then((list) =>
         setPrompts(
           (Array.isArray(list) ? list : [])
             .slice()
-            .sort((a, b) => (a.title || '').localeCompare(b.title || '')),
+            .sort((a, b) => (a.name || '').localeCompare(b.name || '')),
         ),
       )
       .catch(() => setPrompts([]));
@@ -96,7 +96,11 @@ export default function RequestNewPage() {
                 <option value="">— Choose a prompt —</option>
                 {prompts.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.title}
+                    {p.name}
+                    {p.component_type
+                      ? ` — ${componentCategoryLabel(p.component_type, p.variant)}`
+                      : ''}
+                    {p.is_default ? ' ★' : ''}
                   </option>
                 ))}
               </select>

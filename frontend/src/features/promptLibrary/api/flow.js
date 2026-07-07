@@ -50,6 +50,23 @@ export async function listComponentPrompts(component) {
   return data.items || [];
 }
 
+// Every live prompt, all components — the request form's "Prompt to update"
+// picker. The prompt-library list endpoint hides pipeline rows from
+// non-managers (they browse via the Courses tab instead), but a requester may
+// reference any prompt; this host registry list only needs prompts.view.
+export async function listAllPrompts() {
+  const items = [];
+  let page = 1;
+  for (;;) {
+    const data = await hostFetch(`/api/v1/prompts?page=${page}&page_size=100`);
+    const batch = data.items || [];
+    items.push(...batch);
+    if (!batch.length || items.length >= (data.total ?? items.length) || page >= 10) break;
+    page += 1;
+  }
+  return items;
+}
+
 // All scope locks referencing a prompt — the detail page's "used by" facets.
 // scope_name carries the bound course/cluster/project name (null for global).
 export async function listPromptFixings(promptId) {
