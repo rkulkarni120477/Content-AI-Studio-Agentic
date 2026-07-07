@@ -408,3 +408,126 @@ class TestCategoryMandatory:
             headers=auth_headers,
         )
         assert r.status_code == 200 and r.json()["duplicate_of"] is None
+
+
+class TestUnifiedListAndCasCategory:
+    """Phase 12 — one list across kinds + CAS-category filter param."""
+
+    def _seed_pipeline(self, db, name="uni_cdd", component="cdd", variant=None):
+        from promptops_app.database import Prompt
+
+        p = Prompt(prompt_kind="pipeline", name=name, owner="admin",
+                   component_type=component, variant=variant)
+        db.add(p)
+        db.commit()
+        return p
+
+    def test_kind_all_returns_both_kinds_for_admins(self, client, auth_headers, db):
+        created = _create(client, auth_headers).json()
+        pipe = self._seed_pipeline(db)
+        r = client.get("/api/v1/prompt-library/prompts?kind=all", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        kinds = {row["id"]: row["prompt_kind"] for row in r.json()}
+        assert kinds.get(created["id"]) == "library"
+        assert kinds.get(pipe.id) == "pipeline"
+
+    def test_cas_category_filters_to_the_slot(self, client, auth_headers, db):
+        _create(client, auth_headers, category="CDD")  # freeform decoy
+        pipe = self._seed_pipeline(db, name="uni_cas_cdd")
+        self._seed_pipeline(db, name="uni_cas_style", component="style")
+        r = client.get(
+            "/api/v1/prompt-library/prompts?kind=all&cas_category=CDD",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+        assert [row["id"] for row in r.json()] == [pipe.id]
+
+    def test_cas_category_is_empty_for_non_admins(self, client, author_headers, db):
+        self._seed_pipeline(db, name="uni_hidden")
+        r = client.get(
+            "/api/v1/prompt-library/prompts?kind=all&cas_category=CDD",
+            headers=author_headers,
+        )
+        assert r.status_code == 200
+        assert r.json() == []
+
+
+class TestPromoteEndpoint:
+    """Phase 12 — POST /prompts/{pid}/promote (library → pipeline, in place)."""
+
+    @staticmethod
+    def _reviewer_headers(client, db):
+        from app.core.security import hash_password
+        from promptops_app.database import User
+
+        db.add(User(username="test_reviewer", password_hash=hash_password("test_password"),
+                    role="reviewer", is_active=True))
+        db.commit()
+        r = client.post("/api/v1/auth/login",
+                        json={"username": "test_reviewer", "password": "test_password"})
+        assert r.status_code == 200
+        return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    def _promote(self, client, headers, pid, **body):
+        payload = {"component_type": "blueprint"}
+        payload.update(body)
+        return client.post(f"/api/v1/prompt-library/prompts/{pid}/promote",
+                           json=payload, headers=headers)
+
+    def test_promote_flips_kind_in_place_and_stays_inert(self, client, auth_headers):
+        created = _create(client, auth_headers,
+                          title="Management Blueprint Prompt", category="Blueprint").json()
+        r = self._promote(client, auth_headers, created["id"])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Same master record: id and version history survive the kind flip.
+        assert body["id"] == created["id"]
+        assert body["prompt_kind"] == "pipeline"
+        assert len(body["versions"]) == len(created["versions"])
+        pipe = body["pipeline"]
+        assert pipe["component_type"] == "blueprint" and pipe["variant"] is None
+        assert pipe["name"] == "management_blueprint_prompt"
+        # Inert for generation until an admin defaults/locks it.
+        assert pipe["is_default"] is False
+        # Freeform category no longer shadows the CAS classification.
+        assert body["category"] == ""
+
+    def test_promoted_row_leaves_the_library_write_surface(self, client, auth_headers):
+        created = _create(client, auth_headers).json()
+        assert self._promote(client, auth_headers, created["id"]).status_code == 200
+        r = client.put(f"/api/v1/prompt-library/prompts/{created['id']}",
+                       json={"description": "nope"}, headers=auth_headers)
+        assert r.status_code == 404
+        r = self._promote(client, auth_headers, created["id"])  # double-promote
+        assert r.status_code == 404
+
+    def test_registry_name_collisions_get_suffixed(self, client, auth_headers):
+        first = _create(client, auth_headers, title="Same Title").json()
+        second = _create(client, auth_headers, title="Same Title").json()
+        assert self._promote(client, auth_headers, first["id"]).json()["pipeline"]["name"] == "same_title"
+        assert self._promote(client, auth_headers, second["id"]).json()["pipeline"]["name"] == "same_title_2"
+
+    def test_promote_into_the_component_slot_keeps_variant(self, client, auth_headers):
+        created = _create(client, auth_headers, title="Widget Builder").json()
+        r = self._promote(client, auth_headers, created["id"],
+                          component_type="generate", variant="Interactive")
+        assert r.status_code == 200, r.text
+        pipe = r.json()["pipeline"]
+        assert (pipe["component_type"], pipe["variant"]) == ("generate", "interactive")
+
+    def test_invalid_component_and_hierarchy_400(self, client, auth_headers):
+        created = _create(client, auth_headers).json()
+        r = self._promote(client, auth_headers, created["id"], component_type="nonsense")
+        assert r.status_code == 400
+        parent = _create(client, auth_headers, title="Parent").json()
+        child = _create(client, auth_headers, title="Child", parent_id=parent["id"]).json()
+        assert self._promote(client, auth_headers, child["id"]).status_code == 400
+        assert self._promote(client, auth_headers, parent["id"]).status_code == 400
+
+    def test_promote_requires_pipeline_manager_role(self, client, auth_headers, db):
+        created = _create(client, auth_headers).json()
+        reviewer = self._reviewer_headers(client, db)
+        # Reviewers hold prompt_library.manage but are not pipeline managers.
+        r = self._promote(client, reviewer, created["id"])
+        assert r.status_code == 403
+        assert "Pipeline manager" in r.json()["detail"]

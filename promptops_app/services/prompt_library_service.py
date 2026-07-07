@@ -352,6 +352,10 @@ def apply_list_filters(q: Query, args: dict) -> Query:
         except ValueError:
             q = q.filter(False)
 
+    cas_category = (args.get("cas_category") or "").strip()
+    if cas_category:
+        q = _apply_cas_category_filter(q, cas_category)
+
     scope = {}
     for field in ("course_id", "cluster_id", "project_id"):
         raw = str(args.get(field) or "").strip()
@@ -364,6 +368,74 @@ def apply_list_filters(q: Query, args: dict) -> Query:
         q = _apply_scope_filter(q, scope)
 
     return apply_sort(q, args.get("sort", "updated"))
+
+
+# The requirements doc's six CAS workflow categories, resolved back to the
+# load-bearing (component_type [, variant]) resolution keys. This map is the
+# only place a display label is translated into classification — labels
+# themselves never drive generation.
+_CAS_CATEGORY_KEYS = {
+    "style": ("style",),
+    "cdd": ("cdd",),
+    "blueprint": ("blueprint",),
+    "assessment": ("quiz",),
+    "lesson generation": ("generate",),
+    "component": ("generate", "interactive"),
+}
+
+# Components a library prompt may be promoted into (matches the resolution
+# keys the generation loader understands).
+VALID_PIPELINE_COMPONENTS = ("style", "cdd", "blueprint", "generate", "quiz")
+
+
+def _apply_cas_category_filter(q: Query, label: str) -> Query:
+    """Filter to the pipeline rows of one CAS workflow category (Phase 12).
+
+    ``label`` is one of the doc's six category names (case-insensitive);
+    unknown labels match nothing. The generate component splits the way the
+    display labels do: Component = the exact interactive slot, Lesson
+    Generation = every other generate row. Library rows carry no component,
+    so the filter implies pipeline-kind — non-admin browse queries are
+    already library-only and simply match nothing (no existence leak).
+    """
+    key = _CAS_CATEGORY_KEYS.get(label.strip().lower())
+    if key is None:
+        return q.filter(False)
+    component = key[0]
+    q = q.filter(Prompt.prompt_kind == "pipeline",
+                 Prompt.component_type == component)
+    if component == "generate":
+        if len(key) == 2:
+            q = q.filter(Prompt.variant == key[1])
+        else:
+            q = q.filter(or_(Prompt.variant.is_(None),
+                             Prompt.variant != "interactive"))
+    return q
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_prompt_name(title: str) -> str:
+    """Library title → pipeline registry-name stem (snake_case)."""
+    slug = _SLUG_RE.sub("_", (title or "").lower()).strip("_")
+    return slug or "promoted_prompt"
+
+
+def unique_prompt_name(db: Session, base: str) -> str:
+    """First free registry name for *base* (``prompts.name`` is globally
+    unique, soft-deleted rows included, so the scan spans all rows)."""
+    taken = {
+        n for (n,) in db.query(Prompt.name)
+        .filter(Prompt.name.isnot(None), Prompt.name.like(f"{base}%"))
+        .all()
+    }
+    if base not in taken:
+        return base
+    i = 2
+    while f"{base}_{i}" in taken:
+        i += 1
+    return f"{base}_{i}"
 
 
 def _apply_scope_filter(q: Query, scope: dict) -> Query:

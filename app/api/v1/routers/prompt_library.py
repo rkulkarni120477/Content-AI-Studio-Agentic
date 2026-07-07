@@ -244,6 +244,61 @@ def duplicate_check(payload: dict = Body(...), db: Session = Depends(get_db),
     }}
 
 
+@router.post("/prompts/{pid}/promote")
+def promote_prompt(pid: int, request: Request, payload: dict = Body(...), db: Session = Depends(get_db),
+                   user=Depends(require_permission("prompt_library.manage"))):
+    """Promote a library prompt to an admin-managed pipeline prompt (Phase 12,
+    doc §5.1 spirit). The kind flips IN PLACE — id and version history
+    survive, so there is still exactly one master record (doc §6). Promotion
+    is inert for generation: the row merely becomes eligible; nothing fires
+    until an admin makes it a component default or binds a scope lock."""
+    if not svc.can_manage_pipeline_prompts(user.role):
+        raise HTTPException(status_code=403, detail="Pipeline manager role required")
+    p = _get_library_prompt(db, pid)
+    if not p:
+        raise HTTPException(status_code=404, detail="Not found")
+    data = payload or {}
+    component = (data.get("component_type") or "").strip().lower()
+    if component not in svc.VALID_PIPELINE_COMPONENTS:
+        raise HTTPException(status_code=400, detail=(
+            f"component_type must be one of {', '.join(svc.VALID_PIPELINE_COMPONENTS)}"))
+    variant = (data.get("variant") or "").strip().lower() or None
+    if variant and len(variant) > 50:
+        raise HTTPException(status_code=400, detail="variant too long (max 50)")
+    # Pipeline rows live outside the library follow-up hierarchy.
+    if p.parent_id is not None or svc.child_count(db, pid):
+        raise HTTPException(status_code=400, detail=(
+            "Prompts in a follow-up hierarchy cannot be promoted — detach the parent/children first"))
+    if not svc.get_prompt_content(p).strip():
+        raise HTTPException(status_code=400, detail="Prompt has no content to promote")
+    name = svc.unique_prompt_name(
+        db, (data.get("name") or "").strip() or svc.slugify_prompt_name(p.title or ""))
+    old_category = p.category
+    p.prompt_kind = "pipeline"
+    p.name = name
+    p.component_type = component
+    p.variant = variant
+    p.is_default = False
+    # Classification is (component_type, variant) from here on; a leftover
+    # freeform category would shadow it in category filters.
+    p.category = None
+    p.tags = ",".join(t.tag for t in (p.tag_rows or []))  # legacy mirror on pipeline writes
+    p.updated_at = svc.now_utc()
+    db.commit()
+    svc.log_event(db, "prompt.promote", "update", entity_type="prompt", entity_id=pid,
+                  summary=(f"Promoted prompt '{p.title}' to pipeline "
+                           f"({component}{'/' + variant if variant else ''}) as '{name}'"),
+                  changes={"prompt_kind": {"old": "library", "new": "pipeline"},
+                           "component_type": {"old": None, "new": component},
+                           "variant": {"old": None, "new": variant},
+                           "category": {"old": old_category, "new": None},
+                           "name": {"old": None, "new": name}},
+                  actor_username=user.username, actor_role=user.role,
+                  ip_address=_client_ip(request), user_agent=request.headers.get("User-Agent"))
+    db.commit()
+    return svc.prompt_to_dict(db, p)
+
+
 @router.post("/prompts", status_code=201)
 def create_prompt(request: Request, payload: dict = Body(...), db: Session = Depends(get_db),
                   user=Depends(require_permission("prompt_library.manage"))):

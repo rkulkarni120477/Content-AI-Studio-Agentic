@@ -372,3 +372,75 @@ class TestDuplicateDetection:
         p.deleted_at = svc.now_utc()
         db.flush()
         assert svc.find_duplicate_prompt(db, "ghost body") is None
+
+
+class TestCasCategoryFilter:
+    """Phase 12 — the doc's six CAS categories as unified-list filter values."""
+
+    def _pipe(self, db, name, component_type, variant=None):
+        p = Prompt(prompt_kind="pipeline", name=name, owner="admin",
+                   component_type=component_type, variant=variant)
+        db.add(p)
+        db.flush()
+        return p
+
+    def _seed(self, db):
+        self._pipe(db, "cc_style", "style")
+        self._pipe(db, "cc_cdd", "cdd")
+        self._pipe(db, "cc_bp", "blueprint")
+        self._pipe(db, "cc_bp_teacher", "blueprint", "teacher")
+        self._pipe(db, "cc_quiz", "quiz")
+        self._pipe(db, "cc_lesson", "generate")
+        self._pipe(db, "cc_lesson_var", "generate", "lesson")
+        self._pipe(db, "cc_interactive", "generate", "interactive")
+        _mk_library_prompt(db, title="cc lib", content="cc lib body")
+
+    def _browse(self, db, label, role="admin"):
+        q = svc.browse_prompts_query(db, role, None, kind="all")
+        rows = svc.apply_list_filters(q, {"cas_category": label}).all()
+        return {p.name or p.title for p in rows}
+
+    def test_each_label_maps_to_its_resolution_key(self, db):
+        self._seed(db)
+        assert self._browse(db, "Style") == {"cc_style"}
+        assert self._browse(db, "CDD") == {"cc_cdd"}
+        assert self._browse(db, "Blueprint") == {"cc_bp", "cc_bp_teacher"}
+        assert self._browse(db, "Assessment") == {"cc_quiz"}
+
+    def test_generate_splits_between_lesson_generation_and_component(self, db):
+        self._seed(db)
+        assert self._browse(db, "Lesson Generation") == {"cc_lesson", "cc_lesson_var"}
+        assert self._browse(db, "Component") == {"cc_interactive"}
+
+    def test_label_matching_is_case_insensitive_unknown_is_empty(self, db):
+        self._seed(db)
+        assert self._browse(db, "lesson generation") == {"cc_lesson", "cc_lesson_var"}
+        assert self._browse(db, "Nonsense") == set()
+
+    def test_cas_filter_never_leaks_to_non_admins(self, db):
+        self._seed(db)
+        for role in ("author", "reviewer"):
+            assert self._browse(db, "CDD", role=role) == set()
+
+
+class TestPromotionHelpers:
+    """Phase 12 — registry-name helpers behind promote-to-pipeline."""
+
+    def test_slugify_prompt_name(self, db):
+        assert svc.slugify_prompt_name("Management Blueprint Prompt!") == \
+            "management_blueprint_prompt"
+        assert svc.slugify_prompt_name("  --  ") == "promoted_prompt"
+        assert svc.slugify_prompt_name("") == "promoted_prompt"
+
+    def test_unique_prompt_name_suffixes_past_taken_names(self, db):
+        db.add(Prompt(prompt_kind="pipeline", name="ph_stem", owner="admin"))
+        db.add(Prompt(prompt_kind="pipeline", name="ph_stem_2", owner="admin"))
+        db.flush()
+        assert svc.unique_prompt_name(db, "ph_stem") == "ph_stem_3"
+        assert svc.unique_prompt_name(db, "ph_fresh") == "ph_fresh"
+
+    def test_unique_prompt_name_counts_soft_deleted_rows(self, db):
+        db.add(Prompt(prompt_kind="pipeline", name="ph_gone", owner="admin",
+                      deleted_at=svc.now_utc()))
+        db.flush()
+        assert svc.unique_prompt_name(db, "ph_gone") == "ph_gone_2"
