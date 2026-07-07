@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
+import { selectIsAdmin, selectIsReviewer } from '@features/auth/authSlice';
 import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
 import { commitPromptThunk } from '@features/prompts/promptsThunks';
 import { promptsService } from '@features/prompts/services/promptsService';
@@ -26,7 +28,7 @@ import {
   buildPromptDownloadMd,
   COMPONENT_LABELS,
 } from '@utils/promptDefaults';
-import { downloadBlob } from '@utils/helpers';
+import { downloadBlob, extractErrorMessage } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
@@ -63,6 +65,10 @@ export default function InlinePromptControls({
   const selProject = useAppSelector(selectSelectedProject);
   const selCluster = useAppSelector(selectSelectedCluster);
   const selCourse = useAppSelector(selectSelectedCourse);
+  const isAdmin = useAppSelector(selectIsAdmin);
+  // prompts.create / prompts.manage are admin+reviewer only — authors go
+  // through 📬 Request a Change instead of seeing buttons that would 403.
+  const canManagePrompts = useAppSelector(selectIsReviewer);
 
   const [selectedKey, setSelectedKey] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -214,49 +220,81 @@ export default function InlinePromptControls({
   }
 
   async function handleSaveInstruction() {
-    if (!saveInstrForm.name.trim() || !extraInstructions.trim()) return;
-    await adminService.saveInstruction({
-      name: saveInstrForm.name.trim(),
-      component,
-      content: extraInstructions.trim(),
-      project_id: selProject?.id,
-      cluster_id: selCluster?.id,
-      course_id: selCourse?.id,
-      as_new_version: saveInstrForm.asNewVersion,
-    });
-    setShowSaveInstr(false);
-    setSaveInstrForm({ name: '', asNewVersion: false });
-    const list = await adminService.listInstructions({
-      component,
-      project_id: selProject?.id,
-      course_id: selCourse?.id,
-    });
-    setSavedInstrs(list || []);
+    if (!saveInstrForm.name.trim()) {
+      toast.error('Name the instructions first.');
+      return;
+    }
+    if (!extraInstructions.trim()) {
+      toast.error('There are no additional instructions to save.');
+      return;
+    }
+    try {
+      await adminService.saveInstruction({
+        name: saveInstrForm.name.trim(),
+        component,
+        content: extraInstructions.trim(),
+        project_id: selProject?.id,
+        cluster_id: selCluster?.id,
+        course_id: selCourse?.id,
+        as_new_version: saveInstrForm.asNewVersion,
+      });
+      toast.success(`Instructions saved as "${saveInstrForm.name.trim()}".`);
+      setShowSaveInstr(false);
+      setSaveInstrForm({ name: '', asNewVersion: false });
+      const list = await adminService.listInstructions({
+        component,
+        project_id: selProject?.id,
+        course_id: selCourse?.id,
+      });
+      setSavedInstrs(list || []);
+    } catch (err) {
+      toast.error(extractErrorMessage(err));
+    }
   }
 
   async function handleCreatePrompt() {
-    await dispatch(commitPromptThunk({
-      name: createForm.name,
-      description: createForm.description,
-      component_type: component,
-      system_prompt: createForm.system,
-      user_prompt_template: createForm.user,
-    })).unwrap();
-    setShowCreate(false);
-    dispatch(fetchPromptsThunk({ component }));
+    if (!createForm.name.trim()) {
+      toast.error('Asset name is required.');
+      return;
+    }
+    try {
+      await dispatch(commitPromptThunk({
+        name: createForm.name,
+        description: createForm.description,
+        component_type: component,
+        system_prompt: createForm.system,
+        user_prompt_template: createForm.user,
+      })).unwrap();
+      toast.success(`"${createForm.name.trim()}" created.`);
+      setShowCreate(false);
+      dispatch(fetchPromptsThunk({ component }));
+    } catch (err) {
+      toast.error(extractErrorMessage(err));
+    }
   }
 
   async function handleSaveEditVersion() {
     if (!selectedPrompt?.id) return;
-    await promptsService.commitVersion(selectedPrompt.id, {
-      version: editForm.version,
-      system_prompt: editForm.system,
-      user_prompt_template: editForm.user,
-      change_reason: editForm.reason || 'Edited via inline controls.',
-    });
-    setShowEdit(false);
-    dispatch(fetchPromptsThunk({ component }));
-    loadPromptDetail(selectedPrompt.id);
+    if (!editForm.version.trim()) {
+      toast.error('Version tag is required.');
+      return;
+    }
+    try {
+      await promptsService.commitVersion(selectedPrompt.id, {
+        version: editForm.version,
+        system_prompt: editForm.system,
+        user_prompt_template: editForm.user,
+        change_reason: editForm.reason || 'Edited via inline controls.',
+      });
+      toast.success(isAdmin
+        ? `Version ${editForm.version} saved and deployed.`
+        : `Version ${editForm.version} saved as a draft — it deploys after approval.`);
+      setShowEdit(false);
+      dispatch(fetchPromptsThunk({ component }));
+      loadPromptDetail(selectedPrompt.id);
+    } catch (err) {
+      toast.error(extractErrorMessage(err));
+    }
   }
 
   async function handleImprove() {
@@ -270,6 +308,8 @@ export default function InlinePromptControls({
         user_prompt_template: result.user_prompt_template || effectiveUser,
       });
       setShowImprove(false);
+    } catch (err) {
+      toast.error(extractErrorMessage(err));
     } finally {
       setImproving(false);
     }
@@ -411,22 +451,26 @@ export default function InlinePromptControls({
             </Button>
           </div>
           <div className={styles.actionRow}>
-            <Button variant="ghost" size="sm" onClick={() => { setShowCreate(!showCreate); setShowEdit(false); setShowImprove(false); }}>
-              ➕ New Prompt
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => {
-              setEditForm({
-                version: nextPromptVersion(selectedPrompt?.active_version),
-                reason: '',
-                system: effectiveSystem,
-                user: effectiveUser,
-              });
-              setShowEdit(!showEdit);
-              setShowCreate(false);
-              setShowImprove(false);
-            }} disabled={!selectedPrompt}>
-              ✏️ Edit Prompt
-            </Button>
+            {canManagePrompts && (
+              <Button variant="ghost" size="sm" onClick={() => { setShowCreate(!showCreate); setShowEdit(false); setShowImprove(false); }}>
+                ➕ New Prompt
+              </Button>
+            )}
+            {canManagePrompts && (
+              <Button variant="ghost" size="sm" onClick={() => {
+                setEditForm({
+                  version: nextPromptVersion(selectedPrompt?.active_version),
+                  reason: '',
+                  system: effectiveSystem,
+                  user: effectiveUser,
+                });
+                setShowEdit(!showEdit);
+                setShowCreate(false);
+                setShowImprove(false);
+              }} disabled={!selectedPrompt}>
+                ✏️ Edit Prompt
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -554,7 +598,7 @@ export default function InlinePromptControls({
         projectName={selProject?.name}
         clusterName={selCluster?.name}
         courseName={selCourse?.name}
-        onEditPrompt={openEditFromView}
+        onEditPrompt={canManagePrompts ? openEditFromView : undefined}
       />
     </section>
   );

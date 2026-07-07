@@ -101,9 +101,11 @@ export default function PromptDetailsModal({
           <Button variant="secondary" fullWidth onClick={handleDownload}>
             ⬇️ Download Prompt
           </Button>
-          <Button variant="secondary" fullWidth onClick={handleEdit} disabled={!promptMeta}>
-            ✏️ Edit Prompt
-          </Button>
+          {onEditPrompt && (
+            <Button variant="secondary" fullWidth onClick={handleEdit} disabled={!promptMeta}>
+              ✏️ Edit Prompt
+            </Button>
+          )}
           <Button variant="primary" fullWidth onClick={onClose}>
             ✕ Close
           </Button>
