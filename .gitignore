@@ -37,3 +37,8 @@ backups/
 
 # Client requirements docs — keep out of the repo
 *.docx
+
+# Internal planning/ops docs — keep local, not in the repo
+PROMPT_CONSOLIDATION_PLAN.md
+MIGRATION_RUNBOOK.md
+CAS_PromptInject.md
