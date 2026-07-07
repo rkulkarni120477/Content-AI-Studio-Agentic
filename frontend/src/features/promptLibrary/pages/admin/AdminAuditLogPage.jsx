@@ -64,8 +64,8 @@ export default function AdminAuditLogPage() {
     <>
       <div className="page-header">
         <div>
-          <h1>Audit Log</h1>
-          <p className="subtitle">Security and compliance activity trail</p>
+          <h1>Audit log</h1>
+          <p className="subtitle">Security and compliance activity trail.</p>
         </div>
         {canExport && (
           <button type="button" className="btn btn-ghost" onClick={handleExport}>

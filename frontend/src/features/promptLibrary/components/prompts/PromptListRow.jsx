@@ -34,7 +34,7 @@ export default function PromptListRow({
           {p.title}
         </Link>
         {p.archived && (
-          <span className="badge badge-draft" title="Soft-deleted — never reaches generation or CAS selection">
+          <span className="badge badge-draft" title="Archived — excluded from generation and all pickers until restored">
             🗄 Archived
           </span>
         )}

@@ -23,7 +23,7 @@ export default function PromptCard({ prompt: p, isAdmin, onCopy, onDuplicate, on
       <div className="card-header">
         <div className="card-title">{p.title}</div>
         {p.archived && (
-          <span className="badge badge-draft" title="Soft-deleted — never reaches generation or CAS selection">
+          <span className="badge badge-draft" title="Archived — excluded from generation and all pickers until restored">
             🗄 Archived
           </span>
         )}

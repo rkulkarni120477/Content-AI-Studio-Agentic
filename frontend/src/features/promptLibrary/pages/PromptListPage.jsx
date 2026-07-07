@@ -121,7 +121,7 @@ export default function PromptListPage() {
   async function handleCopy(id, content) {
     await navigator.clipboard.writeText(content);
     await markPromptUsed(id);
-    show('Copied! Paste it into ChatGPT ✓');
+    show('Prompt copied to clipboard ✓');
   }
 
   async function handleDuplicate(id) {
@@ -140,7 +140,7 @@ export default function PromptListPage() {
   async function handleRestore(id) {
     try {
       await restorePrompt(id);
-      show('Prompt restored ♻ — back on every surface.');
+      show('Prompt restored ♻ — available again everywhere.');
     } catch (err) {
       show(err instanceof Error ? err.message : 'Restore failed');
     }
@@ -170,7 +170,7 @@ export default function PromptListPage() {
   }
 
   if (!canPipeline) {
-    // Readers browse CAS prompts through the Courses/Flow views; the
+    // Readers browse CAS prompts through the Courses view; the
     // freeform library list is retired from display (Phase 12b).
     return <Navigate to={plCourses} replace />;
   }
@@ -252,7 +252,7 @@ export default function PromptListPage() {
           </select>
           <label
             style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '.8rem', cursor: 'pointer' }}
-            title="Archived prompts never reach generation or CAS selection; show them here to inspect or restore"
+            title="Archived prompts are excluded from generation and all pickers; show them here to inspect or restore"
           >
             <input
               type="checkbox"
@@ -295,7 +295,7 @@ export default function PromptListPage() {
         ) : !prompts.length ? (
           <div className="empty">
             <div className="big">📭</div>
-            <p>No prompts found.{canEdit ? ' Add your first one!' : ''}</p>
+            <p>No prompts found. Try adjusting the search or filters.</p>
           </div>
         ) : view === 'list' ? (
           <PromptListTable

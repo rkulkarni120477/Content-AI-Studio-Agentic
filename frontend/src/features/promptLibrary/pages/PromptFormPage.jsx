@@ -277,7 +277,7 @@ export default function PromptFormPage() {
 
   async function handleUpload(e) {
     if (!id || !e.target.files?.[0]) {
-      show('Save prompt first to add attachments');
+      show('Save the prompt first to add attachments.');
       return;
     }
     try {
@@ -321,9 +321,9 @@ export default function PromptFormPage() {
       <form className="page-card" onSubmit={(e) => void handleSubmit(e)}>
         {!isEdit && (
           <p className="var-tip" style={{ marginTop: 0 }}>
-            ⚙ This creates a CAS pipeline prompt — resolved by generation once
-            an admin makes it a stage default or binds it to a scope. Saving
-            commits through the approval gate; admins instant-deploy.
+            ⚙ This creates a CAS pipeline prompt — generation uses it once an
+            admin makes it a stage default or binds it to a scope. Saving goes
+            through the approval workflow; admin saves deploy immediately.
           </p>
         )}
         {!isPipeline && loadedPrompt?.parent && (
@@ -385,7 +385,7 @@ export default function PromptFormPage() {
                   value={variant}
                   onChange={(e) => setVariant(e.target.value)}
                   list="variantList"
-                  placeholder="e.g. teacher, student, interactive (generate+interactive = Component)"
+                  placeholder="e.g. teacher, student, interactive (generate + interactive = the Component category)"
                   disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
                 />
                 <datalist id="variantList">
@@ -478,7 +478,7 @@ export default function PromptFormPage() {
               <p className="var-tip" style={{ marginTop: 6 }}>
                 Changing the prompt text commits a new version
                 {canPipeline
-                  ? ' and deploys it immediately (admin instant-deploy).'
+                  ? ' and deploys it immediately.'
                   : ' as a draft for admin approval.'}
               </p>
             )}
@@ -546,9 +546,9 @@ export default function PromptFormPage() {
                 })
               )}
               <p className="var-tip">
-                ⚡ Declaring a variable arms strict enforcement: a generation call
-                that fails to supply it errors loudly (PROMPT_MISCONFIGURED)
-                instead of silently falling back to the built-in constants.
+                ⚡ Declaring a variable turns on strict enforcement: a generation
+                call that does not supply it fails with PROMPT_MISCONFIGURED
+                instead of silently falling back to the built-in values.
                 Undeclared placeholders stay lenient.
               </p>
             </div>

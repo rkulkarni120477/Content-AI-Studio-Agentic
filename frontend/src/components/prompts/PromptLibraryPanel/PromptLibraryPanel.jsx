@@ -379,8 +379,8 @@ export default function PromptLibraryPanel({
         <>
           <h2 className={styles.section__title}>Prompts</h2>
           <p className={styles.section__hint}>
-            Create, edit, version, and improve prompt assets tagged{' '}
-            <code>{component}</code>. These are available across all generation components.
+            Create, edit, version, and improve the prompt assets used by{' '}
+            <code>{component}</code> generation.
           </p>
         </>
       )}

@@ -135,7 +135,7 @@ export default function PromptDetailPage() {
     }
     await navigator.clipboard.writeText(filledPreview);
     await markPromptUsed(id);
-    show('Copied! Paste it into ChatGPT ✓');
+    show('Prompt copied to clipboard ✓');
   }
 
   async function handleUpload(e) {
@@ -194,7 +194,7 @@ export default function PromptDetailPage() {
     try {
       await setPipelineVersionState(prompt.id, versionLabel, to);
       await refetch();
-      show(to === 'active' ? `Version ${versionLabel} deployed ✓` : `Version ${versionLabel} → ${to.replace('_', ' ')}`);
+      show(to === 'active' ? `Version ${versionLabel} deployed ✓` : `Version ${versionLabel} is now ${to.replace('_', ' ')}.`);
     } catch (err) {
       show(err instanceof Error ? err.message : 'Transition failed');
     }
@@ -212,12 +212,12 @@ export default function PromptDetailPage() {
       ? `\n\n⚠ This prompt declares ${varNames.length} variable(s): ${varNames
           .map((n) => `{{${n}}}`)
           .join(', ')}. After promotion, ${slot.label} generation MUST supply them or it will ` +
-        'fail loudly — only promote if that stage provides these values.'
+        'fail with an error — only promote if that stage provides these values.'
       : '';
     const ok = window.confirm(
       `Promote "${prompt.title}" to an admin-managed ${slot.label} pipeline prompt?\n\n` +
-        'It keeps its id and version history, but leaves the library edit surface. ' +
-        'Generation will NOT use it until you make it a component default or lock it to a scope.' +
+        'It keeps its ID and version history. ' +
+        'Generation will NOT use it until you make it a component default or lock it to a scope on the Courses tab.' +
         varWarning,
     );
     if (!ok) return;
@@ -227,7 +227,7 @@ export default function PromptDetailPage() {
       setPromoteSlot('');
       await refetch();
       void listPromptFixings(prompt.id).then(setFixings).catch(() => setFixings([]));
-      show('Promoted to pipeline ✓ — make it a default or lock a scope to put it in use.');
+      show('Promoted to pipeline ✓ — make it a default or bind it in Courses to put it in use.');
     } catch (err) {
       show(err instanceof Error ? err.message : 'Promote failed');
     }
@@ -274,7 +274,7 @@ export default function PromptDetailPage() {
               <span
                 className="badge badge-draft"
                 style={{ marginLeft: 8, verticalAlign: 'middle' }}
-                title="Soft-deleted — never reaches generation or CAS selection until restored"
+                title="Archived — excluded from generation and all pickers until restored"
               >
                 🗄 Archived
               </span>
@@ -324,7 +324,7 @@ export default function PromptDetailPage() {
                 ))}
                 {!pipe.is_default && fixings.length === 0 && (
                   <span style={{ color: 'var(--muted)' }}>
-                    nowhere yet — not a default and no scope locks (bind one in the Flow view)
+                    nowhere yet — not a default and no scope locks (bind one on the Courses tab)
                   </span>
                 )}
               </p>
@@ -371,7 +371,7 @@ export default function PromptDetailPage() {
               onClick={() => {
                 void restorePrompt(prompt.id)
                   .then(() => refetch())
-                  .then(() => show('Prompt restored ♻ — back on every surface.'))
+                  .then(() => show('Prompt restored ♻ — available again everywhere.'))
                   .catch((err) => show(err instanceof Error ? err.message : 'Restore failed'));
               }}
             >
@@ -397,10 +397,11 @@ export default function PromptDetailPage() {
             Promote to pipeline
           </div>
           <p className="view-meta">
-            The prompt keeps its id and version history but becomes an
+            The prompt keeps its ID and version history but becomes an
             admin-managed pipeline prompt classified under the chosen CAS
-            category. Promotion is inert: generation only uses it once it is
-            made a component default or locked to a scope in the Flow view.
+            category. Promotion alone changes nothing for generation: the
+            prompt is used only once it is made a component default or locked
+            to a scope on the Courses tab.
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select value={promoteSlot} onChange={(e) => setPromoteSlot(e.target.value)}>
@@ -446,9 +447,9 @@ export default function PromptDetailPage() {
             </div>
             {isPipeline && (
               <p className="var-tip" style={{ marginTop: 0 }}>
-                ⚡ Strict enforcement is armed for these: a generation call that
-                fails to supply one errors loudly instead of silently falling
-                back. Fill them below to copy a rendered prompt.
+                ⚡ Strict enforcement applies to these: a generation call that
+                does not supply one fails with an error instead of silently
+                falling back. Fill them below to copy a rendered prompt.
               </p>
             )}
             <div className="var-inputs-grid">
