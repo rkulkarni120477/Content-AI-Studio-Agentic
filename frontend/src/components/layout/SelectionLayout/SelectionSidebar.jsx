@@ -181,7 +181,7 @@ export default function SelectionSidebar({
 
       {variant === 'project' && (
         <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.PROMPT_LIBRARY)}>
-          📚 Prompt Library
+          📚 Prompts
         </button>
       )}
 

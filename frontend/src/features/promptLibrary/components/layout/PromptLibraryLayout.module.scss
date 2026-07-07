@@ -1,0 +1,188 @@
+// Prompts section shell — mirrors the host SelectionLayout/SelectionSidebar
+// look (dark indigo sticky sidebar + light content pane) so the section reads
+// as native Studio chrome rather than the ported standalone app.
+
+.layout {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.sidebar {
+  @include flex-col;
+  width: $sidebar-width;
+  min-height: 100vh;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  background: #1e1b4b;
+  border-right: 1px solid rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+  flex-shrink: 0;
+  padding: $space-4;
+  gap: $space-3;
+  overflow-y: auto;
+  @include custom-scrollbar(6px);
+}
+
+.userPill {
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(165, 180, 252, 0.25);
+  border-radius: $radius-lg;
+  padding: $space-3;
+
+  &__label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: #a5b4fc;
+    margin-bottom: 2px;
+  }
+
+  &__name {
+    color: $color-white;
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  &__role {
+    display: inline-block;
+    margin-top: $space-2;
+    color: $color-white;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
+.navBtn {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-radius: $radius-md;
+  color: #e0e7ff;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  padding: $space-2 $space-3;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  display: block;
+  transition: background $transition-fast, color $transition-fast;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: $color-white;
+    border-color: rgba(165, 180, 252, 0.5);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
+}
+
+.divider {
+  height: 1px;
+  background: rgba(165, 180, 252, 0.2);
+  margin: $space-2 0;
+  flex-shrink: 0;
+}
+
+.sectionLabel {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+  color: #a5b4fc;
+  padding: 0 $space-1;
+}
+
+.nav {
+  @include flex-col;
+  gap: $space-1;
+}
+
+.navLink {
+  display: block;
+  width: 100%;
+  padding: $space-2 $space-3;
+  border: 1px solid transparent;
+  border-radius: $radius-md;
+  color: #c7d2fe;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background $transition-fast, color $transition-fast;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: $color-white;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
+}
+
+.navLinkActive {
+  background: rgba(255, 255, 255, 0.14);
+  color: $color-white;
+  border-color: rgba(165, 180, 252, 0.5);
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+}
+
+.actionBtn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  background: $color-primary;
+  color: $color-white;
+  border: 1px solid transparent;
+  border-radius: $radius-md;
+  padding: $space-2 $space-3;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background $transition-fast;
+
+  &:hover {
+    background: $color-primary-dark;
+    color: $color-white;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
+}
+
+.footer {
+  margin-top: auto;
+  padding-top: $space-4;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: $space-6 $space-8;
+}
+
+.content {
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+@media (max-width: $bp-lg) {
+  .main {
+    padding: $space-4;
+  }
+}

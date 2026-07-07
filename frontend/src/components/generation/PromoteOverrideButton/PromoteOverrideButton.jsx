@@ -44,7 +44,7 @@ export default function PromoteOverrideButton({ sourceType, artifactId, version,
       variant="ghost"
       size="sm"
       disabled={busy}
-      title="This version was generated with a custom prompt override — save that override into the Prompt Library"
+      title="This version was generated with a custom prompt override — save that override as a managed prompt in Prompts"
       onClick={handleClick}
     >
       {busy ? 'Saving…' : '💾 Save override as prompt'}

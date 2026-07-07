@@ -290,7 +290,7 @@ export default function InlinePromptControls({
     <section className={styles.panel}>
       {headerHint && <p className={styles.hint}>{headerHint}</p>}
 
-      <h3 className={styles.panel__header}>🎯 {compLabel} Prompt Library</h3>
+      <h3 className={styles.panel__header}>🎯 {compLabel} Prompts</h3>
 
       {promptsLoading || loadingDetail ? (
         <div className={styles.center}><Loader /></div>

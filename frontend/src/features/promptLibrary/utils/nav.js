@@ -16,7 +16,7 @@ import {
   PL_BASE,
 } from '../paths';
 
-/** Intra-feature navigation (rendered inside the Prompt Library tab). */
+/** Intra-feature navigation (rendered in the Prompts section sidebar). */
 export const MAIN_NAV = [
   // The Library list surfaces only CAS pipeline prompts (Phase 12b) —
   // pipeline managers only. Readers browse the same facts via Flow/Courses.
@@ -37,7 +37,6 @@ export const HEADER_ACTIONS = [
   {
     to: plPromptNew,
     label: '＋ New Prompt',
-    className: 'btn btn-primary btn-header-action',
     // Freeform library authoring is retired from display (Phase 12b); the
     // form survives as the pipeline managers' draft → promote path.
     visible: (u) => canManagePipelinePrompts(u),
