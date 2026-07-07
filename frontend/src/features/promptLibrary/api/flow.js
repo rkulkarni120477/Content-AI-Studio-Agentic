@@ -56,14 +56,6 @@ export async function listPromptFixings(promptId) {
   return hostFetch(`/api/v1/prompts/fixings?prompt_id=${encodeURIComponent(promptId)}`);
 }
 
-export async function resolveFixing({ component, projectId, clusterId, courseId }) {
-  const qs = new URLSearchParams({ component });
-  if (projectId) qs.set('project_id', projectId);
-  if (clusterId) qs.set('cluster_id', clusterId);
-  if (courseId) qs.set('course_id', courseId);
-  return hostFetch(`/api/v1/prompts/fixings/resolve?${qs}`);
-}
-
 // Reuse is by reference (a PromptFixing row), never a copy. Admins bind any
 // pipeline prompt; other roles only prompts whose active version is approved —
 // both enforced server-side, errors surfaced to the caller.

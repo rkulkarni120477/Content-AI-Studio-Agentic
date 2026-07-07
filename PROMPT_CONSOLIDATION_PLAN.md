@@ -727,6 +727,28 @@ here), and the library API surface keeps working for anything that still referen
   delete/export the 20 legacy prompts is a stakeholder call (rides the existing "none obsolete?"
   open question).
 
+### Phase 12c — Flow folded into Courses (user-approved 2026-07-07)
+
+**Trigger:** reviewing Flow for redundancy showed its read half fully absorbed by the Phase 11/12
+surfaces (Courses view, Library scope filters, "Used by" facets) — its irreplaceable remainder was
+the Bind/Unbind pair. Console lands on two tabs matching the two object types: **Library** = the
+prompt assets (edit/version/approve/default/promote), **Courses** = who uses them (read + lock
+editor).
+
+- [x] Each Courses slot row gains a "Change…" editor: per-slot prompt pool + scope picker
+  (course/cluster/project/global, mirroring Flow) + Bind; slots showing a lock get Unbind. Same
+  server rules as always (locks by reference; non-admins only approved prompts; errors verbatim).
+- [x] Pool filtering mirrors the server's `_acceptable_variants` exactly (NULL slots → NULL-variant
+  prompts; interactive slot exact; authored-variant slots → variant or base), so anything bound
+  from a slot's editor is guaranteed to display in that slot and drive that slot's generation —
+  stricter than Flow, which offered the whole component pool.
+- [x] Flow retired: page deleted, nav entry + `plFlow` removed, `/prompt-library/flow` redirects to
+  the Courses view (bookmarks safe), unused `resolveFixing` client helper dropped. Backend fixings
+  endpoints unchanged.
+- The 2026-07-03 locked decision "Console shape: primary view is flow-organized" is superseded by
+  this shape (Library + Courses); the underlying principle (organize by the workflow hierarchy)
+  survives in the Courses view.
+
 **Tests:** service-level CAS-mapping suite (6 labels, generate split, case-insensitivity,
 non-admin no-leak) + promotion-helper suite (slug, suffixing, soft-deleted names count) + API
 suites for unified list/cas_category and the full promote contract (in-place flip, inertness,
@@ -747,7 +769,7 @@ clean).
 - **Reuse model:** reference/bind via `PromptFixing` (edit-once-propagates), **not** copy-on-inject. (Revisit only if per-course prompt reproducibility becomes a hard requirement.)
 - **Roles:** admins create + approve + set-default; authors may inject already-approved, phase-appropriate prompts.
 - **Binding scope:** full hierarchy global → project → cluster → course (already supported by `PromptFixing`).
-- **Console shape:** the Prompt Library tab's primary view is flow-organized (Project → Cluster → Course → Style/CDD/Blueprint/Generate).
+- **Console shape:** ~~the Prompt Library tab's primary view is flow-organized~~ **superseded by Phase 12c (2026-07-07):** two tabs — Library (prompt assets) + Courses (hierarchy-organized resolution view with the lock editor).
 
 ## Open questions
 
@@ -777,6 +799,7 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 
 | Date | Session focus | Phases touched | Outcome |
 |---|---|---|---|
+| 2026-07-07 | **Phase 12c — Flow folded into Courses** (user asked whether Flow/Library overlap; recommendation approved with "Go ahead with perfection") | 12c (new subsection) | Courses slot rows gained the Bind/Unbind lock editor (scope picker incl. global/project; pool filtered to the slot's `_acceptable_variants` — stricter than Flow's whole-component pool). Flow page deleted, nav entry + `plFlow` removed, `/flow` redirects to Courses. Also removed earlier in the review: Flow's library-prompt reference rail (`e35e7ae`, last library surfacing). Locked "console shape" decision annotated as superseded. Frontend **48 passed** (Flow nav test retired), build green, no backend changes. Live smoke: bind cdd course-lock on course 8 → by-course shows `course_lock` → unbind → back to `default`. |
 | 2026-07-07 | **Phase 12b — freeform library retired from display** (user: "only CAS related ones to be surfaced") | 12b (new subsection) | Console list now `kind=pipeline` only; category filter = the six CAS names; `/meta` tags pipeline-scoped for pipeline managers (library fallback for everyone else, no-leak); Library nav entry + New Prompt action pipeline-manager-only; non-managers redirected to Courses. The 20 legacy library prompts stay in the DB untouched (display retirement, not deletion — their fate is a stakeholder call). New Prompt kept as the draft→promote path. Suites: backend **293**, frontend **49**, build green, ruff baseline-identical. Live smoke on :8001 (restarted, pid 140403): admin meta tags = pipeline tags only, CDD CAS filter → prompt 4. |
 | 2026-07-07 | **Phase 12 — unified Library presentation** (eighth implementation session; user question "should we unify Library and Pipeline?" → recommendation "unify presentation, not model" → user: "Go ahead with perfection") | 12 (new) | All three items built, tested, live-smoked. Backend: `cas_category` filter param (label→resolution-key map in one place, no-leak for non-admins) + `POST /prompts/{id}/promote` (in-place kind flip, unique slug registry name, inert until defaulted/locked, pipeline-manager-gated) + helpers `slugify_prompt_name`/`unique_prompt_name`. Frontend: list page tab toggle removed (admins browse `kind=all`), category select gains admin-only "CAS Workflow" optgroup (six doc names), detail page gains the promote panel with inertness warning. 16 new backend tests + 2 frontend; suites backend **291**, frontend **48**, build green; ruff findings byte-identical to baseline (zero introduced). Rehearsal smoke: 20+8 under kind=all, CDD filter → prompt 4, full promote round-trip on a throwaway row then soft-deleted. :8001 restarted on this code (pid 138980) — ready for the user's walkthrough. Model-merge (dropping `prompt_kind`) explicitly rejected in the plan. |
 | 2026-07-06 | **Full verification pass over the Phase 11 stretch** (seventh implementation session, close-out) | 11 | Commit `a9bf0b1`. Adversarial re-review of all 9 session commits. **One real defect found & fixed:** the by-course view applied no variant filter on NULL-variant slots — a fixing bound to a variant-keyed prompt (e.g. generate/interactive) displayed as the effective Lesson Generation lock while live generation (`_acceptable_variants=(None,)`) would skip it; `resolve_slot` now mirrors the loader exactly (NULL→NULL-only, interactive→exact-only, others exact-then-NULL, never sideways) + pinning test. Also closed the untested pipeline branch of duplicate-check (incl. unknown-kind coercion — never 500s) and fixed the 3 ruff findings this stretch introduced (import order, 2 unused test locals; remaining ruff/eslint noise is pre-existing repo-wide — `npm run lint` is broken by the unfinished ESLint-9 flat-config migration, flagged as a separate hygiene item). Verified clean: no category-bypass write paths (request flow creates no prompts; duplicate copies source category), no other CAS override surfaces, provenance set on all 4 CDD/BP prompt paths, permission gates match their pre-existing counterparts. Suites: backend **275**, frontend **46**, build green. Live smoke on rehearsal (throwaway :8002; the user's :8001 untouched): by-course for all 16 courses incl. a real course lock (course 7 style) rendering `course_lock`+scope name; full-body case-mangled dup-check self-match; blank-category 400; course-8 scope filter → exactly the 4 inherited defaults; counts 20/8. **:8001 still runs pre-Phase-11 code — restart before the acceptance pass over the new surfaces.** |

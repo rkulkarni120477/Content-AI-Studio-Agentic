@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAIN_NAV, visibleHeaderActions } from '../nav';
-import { plAdminAudit, plAdminRequests, plAdminReviews, plCourses, plFlow, plHome, plRequests } from '../../paths';
+import { plAdminAudit, plAdminRequests, plAdminReviews, plCourses, plHome, plRequests } from '../../paths';
 
 const admin = { role: 'admin' };
 const reviewer = { role: 'reviewer' };
@@ -11,9 +11,9 @@ function visibleNav(user) {
 }
 
 describe('MAIN_NAV visibility', () => {
-  it('authors see Flow and their own Requests — no Library list, no admin surfaces', () => {
+  it('authors see Courses and their own Requests — no Library list, no admin surfaces', () => {
     const nav = visibleNav(author);
-    expect(nav).toContain(plFlow);
+    expect(nav).toContain(plCourses);
     expect(nav).toContain(plRequests);
     expect(nav).not.toContain(plHome);
     expect(nav).not.toContain(plAdminRequests);
@@ -38,14 +38,7 @@ describe('MAIN_NAV visibility', () => {
     expect(visibleNav(reviewer)).not.toContain(plAdminAudit);
   });
 
-  it('the Flow view is visible to every library reader', () => {
-    for (const user of [admin, reviewer, author]) {
-      expect(visibleNav(user)).toContain(plFlow);
-    }
-    expect(visibleNav(null)).not.toContain(plFlow);
-  });
-
-  it('the Courses view shares the Flow audience — every reader, no anonymous', () => {
+  it('the Courses view (now also the lock editor) is visible to every reader, no anonymous', () => {
     for (const user of [admin, reviewer, author]) {
       expect(visibleNav(user)).toContain(plCourses);
     }

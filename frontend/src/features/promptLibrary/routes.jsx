@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react';
+import { Navigate } from 'react-router-dom';
 import Loader from '@components/common/Loader/Loader';
 import ProtectedRoute from '@components/layout/ProtectedRoute/ProtectedRoute';
 import { ROLES } from '@utils/constants';
@@ -7,7 +8,6 @@ import PromptLibraryLayout from './components/layout/PromptLibraryLayout';
 const PromptListPage = lazy(() => import('./pages/PromptListPage'));
 const PromptDetailPage = lazy(() => import('./pages/PromptDetailPage'));
 const PromptFormPage = lazy(() => import('./pages/PromptFormPage'));
-const PipelineFlowPage = lazy(() => import('./pages/PipelineFlowPage'));
 const CoursePromptsPage = lazy(() => import('./pages/CoursePromptsPage'));
 const RequestsPage = lazy(() => import('./pages/RequestsPage'));
 const RequestNewPage = lazy(() => import('./pages/RequestNewPage'));
@@ -36,7 +36,9 @@ export const promptLibraryRoute = {
       path: 'prompts/:id/edit',
       element: <ProtectedRoute requiredRole={MANAGER}>{w(<PromptFormPage />)}</ProtectedRoute>,
     },
-    { path: 'flow', element: w(<PipelineFlowPage />) },
+    // Flow retired (Phase 12c) — its lock editor lives in the Courses view
+    // now; old bookmarks land there.
+    { path: 'flow', element: <Navigate to="/prompt-library/courses" replace /> },
     { path: 'courses', element: w(<CoursePromptsPage />) },
     { path: 'requests', element: w(<RequestsPage />) },
     { path: 'requests/new', element: w(<RequestNewPage />) },

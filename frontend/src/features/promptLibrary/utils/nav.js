@@ -7,7 +7,6 @@ import {
 } from './permissions';
 import {
   plHome,
-  plFlow,
   plCourses,
   plRequests,
   plAdminRequests,
@@ -22,11 +21,10 @@ export const MAIN_NAV = [
   // The Library list surfaces only CAS pipeline prompts (Phase 12b) —
   // pipeline managers only. Readers browse the same facts via Flow/Courses.
   { to: plHome, label: 'Library', end: true, visible: (u) => canManagePipelinePrompts(u) },
-  // Flow view: any reader can see what each phase resolves and bind approved
-  // prompts by reference (the approved-only rule for non-admins is server-enforced).
-  { to: plFlow, label: 'Flow', visible: (u) => canReadLibrary(u) },
-  // Course-grouped view (requirements-doc §2): same read audience as Flow —
-  // it shows the same resolution facts, grouped Course → prompts.
+  // Course-grouped view (requirements-doc §2), Phase 12c: also the lock
+  // editor (absorbed from the retired Flow view). Any reader can see what
+  // each course resolves and bind approved prompts by reference — the
+  // approved-only rule for non-admins is server-enforced.
   { to: plCourses, label: 'Courses', visible: (u) => canReadLibrary(u) },
   // Regular users see their own requests; managers get the full admin queue below.
   { to: plRequests, label: 'Requests', visible: (u) => canReadLibrary(u) && !canReadAllRequests(u) },
