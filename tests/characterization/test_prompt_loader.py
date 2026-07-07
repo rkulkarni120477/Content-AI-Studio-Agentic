@@ -88,7 +88,7 @@ class TestDbTier:
             db, "cdd_generation", system="s1", user="u1", version="v1",
         )
         db.add(PromptVersion(
-            prompt_id=prompt.id, version="v2",
+            prompt_id=prompt.id, version="v2", version_number=2,
             system_prompt="s2", user_prompt_template="u2",
             is_active=False, created_by="test_admin",
         ))
@@ -248,7 +248,8 @@ class TestComponentKeyedResolution:
         db.add(lib)
         db.commit()
         db.add(PromptVersion(
-            prompt_id=lib.id, version="v1", user_prompt_template="LIB BODY",
+            prompt_id=lib.id, version="v1", version_number=1,
+            user_prompt_template="LIB BODY",
             is_active=True, created_by="test_author",
         ))
         db.commit()

@@ -967,7 +967,7 @@ def render_inline_prompt_controls(
                     )
                     db.add(_p_new); db.commit(); db.refresh(_p_new)
                     db.add(PromptVersion(
-                        prompt_id=_p_new.id, version="v1",
+                        prompt_id=_p_new.id, version="v1", version_number=1,
                         system_prompt=_edit_sys,
                         user_prompt_template=_edit_usr,
                         change_reason="Created from AI improvement.",
@@ -1161,7 +1161,7 @@ def render_inline_prompt_controls(
                     )
                     db.add(_p_new); db.commit(); db.refresh(_p_new)
                     db.add(PromptVersion(
-                        prompt_id=_p_new.id, version="v1",
+                        prompt_id=_p_new.id, version="v1", version_number=1,
                         system_prompt=_cn_sys,
                         user_prompt_template=_cn_usr,
                         change_reason="Created via inline controls.",

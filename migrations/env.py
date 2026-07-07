@@ -44,9 +44,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # target_metadata there would make autogenerate emit DROP TABLE for every
 # table in the database).
 import promptops_app.database  # noqa: F401  — side effect: registers all models
-import promptops_app.pl_models  # noqa: F401 — registers pl_* models (normally a
-# deferred import inside init_db(); without it autogenerate would propose
-# dropping the pl_* tables. Remove together with pl_models.py in Phase 6.)
 
 from app.core.config import settings
 from promptops_app.database import Base

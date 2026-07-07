@@ -245,9 +245,9 @@ class PromptVersion(Base):
     id                   = Column(Integer, primary_key=True)
     prompt_id            = Column(Integer, ForeignKey("prompts.id"))
     version              = Column(String)
-    # Numeric ordering key (consolidation Phase 3). NULLABLE until Phase 4
-    # teaches the write paths to populate it; then it becomes NOT NULL.
-    version_number       = Column(Integer, nullable=True)
+    # Numeric ordering key (consolidation Phase 3; NOT NULL since revision
+    # 000100000004 — every write path populates it).
+    version_number       = Column(Integer, nullable=False)
     # draft|in_review|approved|active — gate enforced for pipeline rows only
     # (Phase 8); library rows are instant-publish 'active'.
     workflow_state       = Column(String(20), nullable=False, default="active",
@@ -1080,12 +1080,6 @@ class CentralRepository(Base):
 # =============================================================================
 
 def init_db():
-    # Register the Prompt Library models on this Base's metadata so they are
-    # visible to Alembic autogenerate and (when DB_AUTO_DDL is on) create_all.
-    # Imported here (not at module top) to avoid a circular import, since
-    # pl_models imports Base from this module.
-    import promptops_app.pl_models  # noqa: F401
-
     # ── Schema DDL is Alembic-owned ────────────────────────────────────────
     # As of the 000100000001 baseline revision, the schema is managed by
     # `alembic upgrade head` (the deploy pipeline runs it before boot).

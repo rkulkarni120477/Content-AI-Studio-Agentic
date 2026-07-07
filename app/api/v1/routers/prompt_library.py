@@ -9,8 +9,7 @@ request/response shapes, with the planned cutover changes:
     ignored; the slug lives in ``name`` (Phase 1 remap decision)
   * audit reads/writes the unified ``audit_logs`` table, scoped to the PL
     action families
-  * attachments live under ``PROMPT_ATTACHMENTS_DIR`` (``PL_ATTACHMENTS_DIR``
-    honored as a legacy fallback)
+  * attachments live under ``PROMPT_ATTACHMENTS_DIR``
 
 Kind separation (Decision 1): list/search accept ``kind=library|pipeline|all``
 but non-pipeline-managers are silently stripped to library rows server-side;
@@ -51,7 +50,6 @@ router = APIRouter()
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 _ATTACH_DIR = (
     os.environ.get("PROMPT_ATTACHMENTS_DIR")
-    or os.environ.get("PL_ATTACHMENTS_DIR")  # legacy name, honored until Phase 6
     or os.path.join(_REPO_ROOT, "prompt_attachments")
 )
 _ALLOWED_EXT = frozenset({

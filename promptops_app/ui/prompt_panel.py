@@ -369,6 +369,7 @@ def render_prompt_panel(
                         db.add(PromptVersion(
                             prompt_id=p_new.id,
                             version="v1",
+                            version_number=1,
                             system_prompt=n_sys,
                             user_prompt_template=n_usr,
                             change_reason="Created from Prompt Settings panel.",

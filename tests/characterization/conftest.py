@@ -107,6 +107,7 @@ def make_db_prompt(db, name: str, *, system: str, user: str,
     pv = PromptVersion(
         prompt_id=prompt.id,
         version=version,
+        version_number=int(version.lstrip("v")) if version.lstrip("v").isdigit() else 1,
         system_prompt=system,
         user_prompt_template=user,
         change_reason="characterization",
