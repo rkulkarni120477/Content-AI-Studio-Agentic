@@ -432,3 +432,99 @@ class TestPromptProvenancePersisted:
         assert params["prompt_source"] == "override"
         assert params["system_prompt_override"] == "BP OVERRIDE SYS"
         assert params["user_prompt_override"] == "BP OVERRIDE USER"
+
+
+class TestPromoteOverrideToPrompt:
+    """Phase 12e (doc §5.2 loop-closer) — POST /prompts/from-generation turns
+    a captured override (11.9 provenance) into a registry prompt on explicit
+    request. Opt-in by design: ad-hoc experiments never auto-register."""
+
+    def _gen_override_cdd(self, client, auth_headers, course, project):
+        resp = client.post(
+            "/api/v1/cdd/generate",
+            json=_cdd_payload(course, project,
+                              system_prompt_override="PROMO SYS",
+                              user_prompt_override="PROMO USER {{topic}}"),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def _version_label(self, db, cdd_id):
+        from promptops_app.database import CDDVersion
+
+        row = db.query(CDDVersion).filter(CDDVersion.cdd_id == cdd_id).first()
+        assert row is not None
+        return row.version
+
+    def test_promote_captured_cdd_override(self, client, auth_headers, db,
+                                           course, project, capture_llm):
+        cdd = self._gen_override_cdd(client, auth_headers, course, project)
+        label = self._version_label(db, cdd["cdd_id"])
+        r = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd["cdd_id"], "version": label},
+            headers=auth_headers,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["component_type"] == "cdd"
+        assert body["is_default"] is False  # inert until defaulted/locked
+        assert body["system_prompt"] == "PROMO SYS"
+        assert body["user_prompt_template"] == "PROMO USER {{topic}}"
+        assert body["name"] == f"cdd_override_{cdd['cdd_id']}_{label.lower()}"
+
+    def test_name_collisions_get_suffixed(self, client, auth_headers, db,
+                                          course, project, capture_llm):
+        cdd = self._gen_override_cdd(client, auth_headers, course, project)
+        label = self._version_label(db, cdd["cdd_id"])
+        payload = {"source_type": "cdd", "artifact_id": cdd["cdd_id"],
+                   "version": label, "name": "My Promoted Override"}
+        first = client.post("/api/v1/prompts/from-generation", json=payload,
+                            headers=auth_headers)
+        second = client.post("/api/v1/prompts/from-generation", json=payload,
+                             headers=auth_headers)
+        assert first.json()["name"] == "my_promoted_override"
+        assert second.json()["name"] == "my_promoted_override_2"
+
+    def test_non_override_version_422s(self, client, auth_headers, db,
+                                       course, project, capture_llm):
+        resp = client.post("/api/v1/cdd/generate",
+                           json=_cdd_payload(course, project), headers=auth_headers)
+        assert resp.status_code == 201, resp.text
+        cdd_id = resp.json()["cdd_id"]
+        label = self._version_label(db, cdd_id)
+        r = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd_id, "version": label},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+        assert "override" in r.text
+
+    def test_unknown_source_and_missing_version(self, client, auth_headers,
+                                                course, project):
+        r = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "style", "artifact_id": 1, "version": "v1"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+        r = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": 999999, "version": "v1"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_requires_pipeline_edit_permission(self, client, auth_headers,
+                                               author_headers, db, course,
+                                               project, capture_llm):
+        cdd = self._gen_override_cdd(client, auth_headers, course, project)
+        label = self._version_label(db, cdd["cdd_id"])
+        r = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd["cdd_id"], "version": label},
+            headers=author_headers,
+        )
+        assert r.status_code == 403

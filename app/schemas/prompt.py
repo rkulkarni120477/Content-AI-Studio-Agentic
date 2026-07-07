@@ -61,6 +61,19 @@ class PromptCreateFromTemplateRequest(BaseModel):
     )
 
 
+class PromptFromGenerationRequest(BaseModel):
+    """Body for POST /api/v1/prompts/from-generation — promote the prompt
+    override captured in a CDD/Blueprint version's generation_params (11.9
+    provenance) into a real registry prompt (doc §5.2, opt-in)."""
+
+    source_type: str = Field(..., description="'cdd' or 'blueprint'.")
+    artifact_id: int = Field(..., description="The CDD / Blueprint id the version belongs to.")
+    version: str = Field(..., description="Version label the override was captured on, e.g. 'v2'.")
+    name: str | None = Field(default=None, max_length=200,
+                             description="Registry name; defaults to a slug from the source.")
+    description: str = Field(default="", max_length=2000)
+
+
 class PromptAIGenerateRequest(BaseModel):
     """Body for POST /api/v1/prompts/generate — AI-generate a prompt from a description."""
 

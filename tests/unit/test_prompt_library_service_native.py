@@ -21,6 +21,7 @@ from promptops_app.database import (
     PromptReview,
     PromptTag,
     PromptVariable,
+    PromptVersion,
     Team,
 )
 from promptops_app.services import prompt_library_service as svc
@@ -443,6 +444,31 @@ class TestPipelineTagListing:
         # Non-admins asking for pipeline silently fall back to their library
         # scope — same no-leak shape as browse.
         assert svc.list_distinct_tags(db, "author", None, kind="pipeline") == ["kickoff"]
+
+
+class TestStateFilter:
+    """Phase 12e (doc §8) — filter by the active version's workflow_state."""
+
+    def _pipe_with_state(self, db, name, state):
+        p = Prompt(prompt_kind="pipeline", name=name, owner="admin",
+                   component_type="cdd")
+        db.add(p)
+        db.flush()
+        db.add(PromptVersion(prompt_id=p.id, version="v1", version_number=1,
+                             user_prompt_template="body", is_active=True,
+                             workflow_state=state))
+        db.flush()
+        return p
+
+    def test_state_filters_on_the_active_version(self, db):
+        self._pipe_with_state(db, "st_draft", "draft")
+        self._pipe_with_state(db, "st_active", "active")
+        q = svc.browse_prompts_query(db, "admin", None, kind="pipeline")
+        assert {p.name for p in svc.apply_list_filters(q, {"state": "draft"}).all()} == {"st_draft"}
+        q = svc.browse_prompts_query(db, "admin", None, kind="pipeline")
+        assert {p.name for p in svc.apply_list_filters(q, {"state": "active"}).all()} == {"st_active"}
+        q = svc.browse_prompts_query(db, "admin", None, kind="pipeline")
+        assert svc.apply_list_filters(q, {"state": "in_review"}).all() == []
 
 
 class TestPromotionHelpers:

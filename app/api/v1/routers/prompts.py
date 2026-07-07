@@ -42,6 +42,7 @@ from app.schemas.prompt import (
     PromptDetailRead,
     PromptFixingRead,
     PromptFixingSetRequest,
+    PromptFromGenerationRequest,
     PromptListItem,
     PromptRead,
     PromptsByCourseResponse,
@@ -234,6 +235,91 @@ def create_from_template(
     _log.info("prompt_from_template  user=%s  template=%s  name=%s",
               current_user.username, request_body.template_name, asset_id)
     return PromptRead.model_validate(prompt)
+
+
+@router.post(
+    "/from-generation",
+    response_model=PromptDetailRead,
+    status_code=201,
+    summary="Promote a captured generation override into a prompt asset",
+    description="Turns the prompt override recorded in a CDD/Blueprint version's "
+                "generation_params into a registry prompt (doc §5.2, opt-in).",
+)
+def create_from_generation(
+    request_body: PromptFromGenerationRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("prompt.pipeline.edit")),
+) -> PromptDetailRead:
+    """Phase 12e — the §5.2 loop closer. An override typed in a CAS tab is
+    captured on the artifact version (11.9 provenance); this endpoint turns
+    that capture into a real registry prompt on explicit request, so ad-hoc
+    experiments never auto-pollute the registry. The new prompt is INERT for
+    generation until an admin makes it a component default or scope-locks it.
+    """
+    import json as _json
+
+    from promptops_app.database import Prompt, PromptVersion
+    from promptops_app.repositories import blueprint_repository, cdd_repository, prompt_repository
+    from promptops_app.services.prompt_library_service import (
+        slugify_prompt_name,
+        unique_prompt_name,
+    )
+
+    source = (request_body.source_type or "").strip().lower()
+    if source not in ("cdd", "blueprint"):
+        raise ValidationError("source_type must be 'cdd' or 'blueprint'.")
+    getter = (cdd_repository.get_cdd_version if source == "cdd"
+              else blueprint_repository.get_blueprint_version)
+    row = getter(db, request_body.artifact_id, request_body.version)
+    if row is None:
+        raise NotFoundError(
+            "GenerationVersion", f"{source} {request_body.artifact_id} {request_body.version}")
+    try:
+        params = _json.loads(row.generation_params or "{}")
+    except ValueError:
+        params = {}
+    if params.get("prompt_source") != "override":
+        raise ValidationError(
+            "This version was not generated with a prompt override — nothing to promote.")
+    system_prompt = (params.get("system_prompt_override") or "").strip()
+    user_prompt = (params.get("user_prompt_override") or "").strip()
+    if not system_prompt or not user_prompt:
+        raise ValidationError("The captured override is incomplete (missing system or user prompt).")
+
+    base = slugify_prompt_name(
+        request_body.name or f"{source}_override_{request_body.artifact_id}_{row.version}")
+    name = unique_prompt_name(db, base)
+    prompt = Prompt(
+        name=name,
+        description=(request_body.description or (
+            f"Promoted from {source} #{request_body.artifact_id} version {row.version} "
+            "(override captured at generation time)."
+        )),
+        owner=current_user.username,
+        component_type=source,
+        is_default=False,
+        active_version="v1",
+    )
+    prompt_repository.set_prompt_tags(db, prompt, source)
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    db.add(PromptVersion(
+        prompt_id=prompt.id,
+        version="v1",
+        version_number=1,
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt,
+        change_reason=f"Promoted from {source} #{request_body.artifact_id} {row.version} override.",
+        is_active=True,
+        created_by=current_user.username,
+    ))
+    db.commit()
+    db.refresh(prompt)
+    _log.info("prompt_from_generation  user=%s  source=%s#%s/%s  name=%s",
+              current_user.username, source, request_body.artifact_id,
+              request_body.version, name)
+    return _prompt_detail(db, prompt)
 
 
 @router.post(

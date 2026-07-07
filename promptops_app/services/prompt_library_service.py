@@ -271,14 +271,20 @@ def base_prompt_query(db: Session) -> Query:
 
 
 def browse_prompts_query(db: Session, role: str | None, user_team,
-                         kind: str | None = None) -> Query:
+                         kind: str | None = None,
+                         include_deleted: bool = False) -> Query:
     """Console browse across kinds. ``kind`` in {library, pipeline, all};
     callers without pipeline-manager access are silently stripped to
-    library-only regardless of the requested kind (server-side, no 403)."""
+    library-only regardless of the requested kind (server-side, no 403).
+    ``include_deleted`` (doc §9 "unless explicitly enabled") surfaces
+    soft-deleted rows too — pipeline managers only; ignored for everyone
+    else."""
     kind = (kind or "library").strip().lower()
     if kind not in ("library", "pipeline", "all") or not can_manage_pipeline_prompts(role):
         kind = "library"
-    q = db.query(Prompt).filter(Prompt.deleted_at.is_(None))
+    q = db.query(Prompt)
+    if not (include_deleted and can_manage_pipeline_prompts(role)):
+        q = q.filter(Prompt.deleted_at.is_(None))
     if kind != "all":
         q = q.filter(Prompt.prompt_kind == kind)
     return apply_visibility_filter(q, role or "author", user_team)
@@ -355,6 +361,14 @@ def apply_list_filters(q: Query, args: dict) -> Query:
     cas_category = (args.get("cas_category") or "").strip()
     if cas_category:
         q = _apply_cas_category_filter(q, cas_category)
+
+    # Workflow-status filter (doc §8): a prompt's status is its ACTIVE
+    # version's workflow_state (what the detail page badges show).
+    state = (args.get("state") or "").strip().lower()
+    if state:
+        q = q.filter(Prompt.versions.any(
+            PromptVersion.is_active.is_(True)
+            & (PromptVersion.workflow_state == state)))
 
     scope = {}
     for field in ("course_id", "cluster_id", "project_id"):
@@ -657,6 +671,9 @@ def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> di
             for v in sorted(p.variables or [], key=lambda x: x.sort_order or 0)
         ],
         "prompt_kind": p.prompt_kind,
+        # Soft-deleted rows are only ever serialized on the explicit
+        # include-archived path (pipeline managers) — additive key.
+        "archived": p.deleted_at is not None,
     }
     if p.prompt_kind == "pipeline":
         # Additive pipeline block for the console (Phase 7b). Only admins ever

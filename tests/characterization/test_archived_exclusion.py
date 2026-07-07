@@ -113,3 +113,52 @@ class TestResolutionTiers:
         dead = make_db_prompt(db, "cdd_generation", system="S", user="U")
         _soft_delete(db, dead)
         assert _from_db(db, "cdd_generation", "latest") is None
+
+
+class TestExplicitArchiveAccess:
+    """Phase 12e (doc §9 'unless explicitly enabled') — archived rows stay out
+    of every default surface, but pipeline managers can opt in with
+    include_archived=1 and restore a row."""
+
+    def _archived_pipeline_row(self, db):
+        dead = make_db_prompt(db, "arch_optin", system="S", user="U",
+                              component_type="cdd")
+        _soft_delete(db, dead)
+        return dead
+
+    def test_include_archived_surfaces_the_row_for_admins_only(
+            self, client, auth_headers, author_headers, db):
+        dead = self._archived_pipeline_row(db)
+        base = "/api/v1/prompt-library/prompts?kind=pipeline"
+        # Default: hidden.
+        ids = [p["id"] for p in client.get(base, headers=auth_headers).json()]
+        assert dead.id not in ids
+        # Explicitly enabled: visible, flagged archived.
+        rows = client.get(f"{base}&include_archived=1", headers=auth_headers).json()
+        row = next((p for p in rows if p["id"] == dead.id), None)
+        assert row is not None and row["archived"] is True
+        # Non-admins: the flag is ignored, nothing pipeline-shaped leaks.
+        rows = client.get(f"{base}&include_archived=1", headers=author_headers).json()
+        assert [p for p in rows if p["id"] == dead.id] == []
+
+    def test_admin_can_open_and_restore_an_archived_row(self, client, auth_headers, db):
+        dead = self._archived_pipeline_row(db)
+        r = client.get(f"/api/v1/prompt-library/prompts/{dead.id}", headers=auth_headers)
+        assert r.status_code == 200 and r.json()["archived"] is True
+        r = client.post(f"/api/v1/prompt-library/prompts/{dead.id}/restore",
+                        headers=auth_headers)
+        assert r.status_code == 200 and r.json()["archived"] is False
+        # Restored: back on the default surfaces, restore is not repeatable.
+        ids = [p["id"] for p in client.get(
+            "/api/v1/prompt-library/prompts?kind=pipeline", headers=auth_headers).json()]
+        assert dead.id in ids
+        assert client.post(f"/api/v1/prompt-library/prompts/{dead.id}/restore",
+                           headers=auth_headers).status_code == 404
+
+    def test_non_admins_get_404_for_archived_pipeline_rows(
+            self, client, author_headers, db):
+        dead = self._archived_pipeline_row(db)
+        assert client.get(f"/api/v1/prompt-library/prompts/{dead.id}",
+                          headers=author_headers).status_code == 404
+        assert client.post(f"/api/v1/prompt-library/prompts/{dead.id}/restore",
+                           headers=author_headers).status_code == 403

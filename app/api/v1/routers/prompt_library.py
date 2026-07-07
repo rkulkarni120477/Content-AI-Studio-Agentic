@@ -131,11 +131,16 @@ def _get_library_prompt(db: Session, pid: int) -> Prompt | None:
 # Prompts
 # ==============================================================================
 
+def _include_archived(request: Request) -> bool:
+    return (request.query_params.get("include_archived") or "").strip().lower() in ("1", "true", "yes")
+
+
 @router.get("/prompts")
 def list_prompts(request: Request, db: Session = Depends(get_db),
                  user=Depends(require_permission("prompt_library.view"))):
     kind = request.query_params.get("kind")
-    q = svc.browse_prompts_query(db, user.role, None, kind=kind)
+    q = svc.browse_prompts_query(db, user.role, None, kind=kind,
+                                 include_deleted=_include_archived(request))
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_optin(request, q)
     return _paginated_body(_enrich_prompts(db, items), total, page, limit)
@@ -148,7 +153,8 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
     if not q_text:
         raise HTTPException(status_code=400, detail="q query parameter required")
     kind = request.query_params.get("kind")
-    q = svc.browse_prompts_query(db, user.role, None, kind=kind)
+    q = svc.browse_prompts_query(db, user.role, None, kind=kind,
+                                 include_deleted=_include_archived(request))
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_forced(request, q)
     return _paginated_body(_enrich_prompts(db, items), total, page, limit, extra={"q": q_text})
@@ -183,13 +189,37 @@ def get_prompt(pid: int, db: Session = Depends(get_db),
                user=Depends(require_permission("prompt_library.view"))):
     # Reads span kinds so pipeline managers can open pipeline rows (Phase 7b);
     # can_access_prompt hides them from everyone else with the same 404.
-    p = (db.query(Prompt)
-         .filter(Prompt.id == pid, Prompt.deleted_at.is_(None))
-         .first())
+    # Pipeline managers may also open ARCHIVED rows (doc §9 "unless explicitly
+    # enabled" — needed to inspect/restore); everyone else keeps the 404.
+    p = db.query(Prompt).filter(Prompt.id == pid).first()
     if not p or not svc.can_access_prompt(p, user.role, None):
+        raise HTTPException(status_code=404, detail="Not found")
+    if p.deleted_at is not None and not svc.can_manage_pipeline_prompts(user.role):
         raise HTTPException(status_code=404, detail="Not found")
     stats = svc.review_stats_batch(db, [p.id])
     return svc.enrich(db, p, stats)
+
+
+@router.post("/prompts/{pid}/restore")
+def restore_prompt(pid: int, request: Request, db: Session = Depends(get_db),
+                   user=Depends(require_permission("prompt_library.manage"))):
+    """Un-archive a soft-deleted prompt (doc §9 "unless explicitly enabled").
+    The same visibility rule as reads applies: a caller who could not see the
+    row gets the same 404 as a nonexistent id."""
+    p = (db.query(Prompt)
+         .filter(Prompt.id == pid, Prompt.deleted_at.isnot(None))
+         .first())
+    if not p or not svc.can_access_prompt(p, user.role, None):
+        raise HTTPException(status_code=404, detail="Not found")
+    p.deleted_at = None
+    p.updated_at = svc.now_utc()
+    db.commit()
+    svc.log_event(db, "prompt.restore", "update", entity_type="prompt", entity_id=pid,
+                  summary=f"Restored prompt '{p.title or p.name}' from archive",
+                  actor_username=user.username, actor_role=user.role,
+                  ip_address=_client_ip(request), user_agent=request.headers.get("User-Agent"))
+    db.commit()
+    return svc.prompt_to_dict(db, p)
 
 
 @router.post("/prompts/{pid}/use")

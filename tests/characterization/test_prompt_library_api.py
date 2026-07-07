@@ -180,9 +180,13 @@ class TestDeleteAndDuplicate:
             "/api/v1/prompt-library/prompts", headers=auth_headers
         ).json()
         assert all(p["id"] != created["id"] for p in listing)
-        assert client.get(
+        # Phase 12e contract: pipeline managers can still OPEN an archived row
+        # by id (to inspect/restore — doc §9 "unless explicitly enabled");
+        # everyone else keeps the pre-existing 404.
+        read = client.get(
             f"/api/v1/prompt-library/prompts/{created['id']}", headers=auth_headers
-        ).status_code == 404
+        )
+        assert read.status_code == 200 and read.json()["archived"] is True
 
     def test_duplicate_creates_new_id(self, client, auth_headers):
         created = _create(client, auth_headers).json()
