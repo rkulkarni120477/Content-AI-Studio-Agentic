@@ -7,6 +7,7 @@ import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
+import Select from '@components/common/Select/Select';
 import AppBrand from '@components/common/AppBrand/AppBrand';
 import {
   CLUSTER_PROMPT_API_MESSAGE,
@@ -15,6 +16,8 @@ import {
 import { clusterPromptService } from '@features/clusterPrompt/clusterPromptService';
 import { promptLabel } from '@features/clusterPrompt/clusterPromptUtils';
 import styles from './SelectionSidebar.module.scss';
+
+const LMS_PLATFORM_OPTIONS = ['Canvas', 'Moodle', 'TalentLMS', 'Docebo'];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]:    '#7c3aed',
@@ -53,7 +56,7 @@ export default function SelectionSidebar({
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewCluster, setShowNewCluster] = useState(false);
   const [showNewCourse, setShowNewCourse] = useState(false);
-  const [form, setForm] = useState({ name: '', client: '', description: '' });
+  const [form, setForm] = useState({ name: '', client: '', description: '', lms_platform: '' });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
@@ -75,7 +78,7 @@ export default function SelectionSidebar({
   }
 
   function resetForm() {
-    setForm({ name: '', client: '', description: '' });
+    setForm({ name: '', client: '', description: '', lms_platform: '' });
     setCopyPromptIds([]);
   }
 
@@ -96,6 +99,9 @@ export default function SelectionSidebar({
       };
       if (clusterPromptApiReady && copyPromptIds.length) {
         payload.copy_prompt_ids = copyPromptIds.map(Number);
+      }
+      if (form.lms_platform) {
+        payload.lms_platform = form.lms_platform;
       }
       await onCreateCluster(payload);
       setShowNewCluster(false);
@@ -143,7 +149,7 @@ export default function SelectionSidebar({
       {variant === 'course' && (
         <div className={styles.navRow3}>
           <button type="button" className={styles.navBtn} onClick={goDashboard}>← Projects</button>
-          <button type="button" className={styles.navBtn} onClick={goClusters}>← Clusters</button>
+          <button type="button" className={styles.navBtn} onClick={goClusters}>← Categories</button>
         </div>
       )}
 
@@ -188,20 +194,20 @@ export default function SelectionSidebar({
       {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCluster((v) => !v)}>
-            ➕ New Cluster {showNewCluster ? '▾' : '▸'}
+            ➕ New Category {showNewCluster ? '▾' : '▸'}
           </button>
           {showNewCluster && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Cluster Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label="Category Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
               </label>
               <MultiSelect
-                label="Choose Cluster Prompts"
+                label="Choose Category Prompts"
                 hint={
                   clusterPromptApiReady
-                    ? 'Select cluster prompts to auto-inject into the Style context for every course in this cluster. Optional.'
+                    ? 'Select category prompts to auto-inject into the Style context for every course in this category. Optional.'
                     : `${CLUSTER_PROMPT_API_MESSAGE} Selection is preserved in UI only until APIs are available.`
                 }
                 options={promptOptions}
@@ -209,7 +215,14 @@ export default function SelectionSidebar({
                 onChange={setCopyPromptIds}
                 disabled={!clusterPromptApiReady}
               />
-              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Cluster</Button>
+              <Select
+                label="Choose LMS Platform"
+                placeholder="Choose options"
+                options={LMS_PLATFORM_OPTIONS}
+                value={form.lms_platform}
+                onChange={(e) => setForm((f) => ({ ...f, lms_platform: e.target.value }))}
+              />
+              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Category</Button>
             </form>
           )}
         </div>

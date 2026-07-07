@@ -140,6 +140,22 @@
   padding: $space-3;
   background: rgba(0, 0, 0, 0.15);
   border-radius: $radius-md;
+
+  // Shared form controls (Input / Select / MultiSelect) ship with dark-gray
+  // labels meant for light backgrounds, which are unreadable on this dark
+  // sidebar. Lighten labels/hints here only. The MultiSelect option menu is
+  // portaled to <body>, so its white-background text is unaffected.
+  label {
+    color: #c7d2fe;
+  }
+
+  // The MultiSelect trigger ("Choose Cluster Prompts") muted its placeholder
+  // to a light gray, making it read lighter than the native Select below it.
+  // Match the Select's dark placeholder here only (scoped via the trigger's
+  // aria attribute) so other MultiSelect usages are unaffected.
+  button[aria-haspopup='listbox'] > span:first-child {
+    color: #111827;
+  }
 }
 
 .textareaLabel {
