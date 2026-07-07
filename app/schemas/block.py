@@ -209,6 +209,21 @@ class GenerationValidateResponse(BaseModel):
 # Rating and plagiarism
 # ---------------------------------------------------------------------------
 
+class BlockReorderRequest(BaseModel):
+    """Body for PUT /courses/{course_id}/blocks/reorder — TOC display order."""
+
+    block_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        description="Ordered list of block IDs (first = top of TOC).",
+    )
+
+
+class BlockReorderResponse(BaseModel):
+    updated: int
+    block_ids: list[int]
+
+
 class BlockRatingRequest(BaseModel):
     rating: int = Field(..., ge=1, le=5)
 

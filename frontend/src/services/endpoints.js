@@ -133,6 +133,7 @@ export const BLOCKS = {
   SEARCH:           '/api/v1/search',
   LIST:             (genId)    => `/api/v1/generations/${genId}/blocks`,
   LIST_COURSE:      (courseId) => `/api/v1/courses/${courseId}/blocks`,
+  REORDER_COURSE:   (courseId) => `/api/v1/courses/${courseId}/blocks/reorder`,
   GET:              (id)       => `/api/v1/${id}`,
   UPDATE:           (id)       => `/api/v1/${id}`,
   AUTOSAVE:         (id)       => `/api/v1/${id}/autosave`,

@@ -116,11 +116,16 @@ def list_generations_by_ids(db, gen_ids: list):
 
 # ── Block ────────────────────────────────────────────────────────────────────
 
+def _block_sort_order():
+    """Primary sort by display position; fall back to id for legacy rows."""
+    return (Block.position.asc(), Block.id.asc())
+
+
 def list_blocks_for_generation(db, gen_id: int):
     return (
         db.query(Block)
         .filter(Block.generation_id == gen_id)
-        .order_by(Block.id.asc())
+        .order_by(*_block_sort_order())
         .all()
     )
 
@@ -135,10 +140,43 @@ def list_blocks_for_gen_ids(db, gen_ids: list, limit: int = 500):
     return (
         db.query(Block)
         .filter(Block.generation_id.in_(gen_ids))
-        .order_by(Block.id.asc())
+        .order_by(*_block_sort_order())
         .limit(limit)
         .all()
     )
+
+
+def reorder_course_blocks(db, course_id: int, block_ids: list[int]) -> list[Block]:
+    """Persist a new display order for blocks belonging to a course.
+
+    Only blocks that belong to the course are updated.  Positions are 1-based.
+    """
+    if not block_ids:
+        return []
+
+    gens = list_course_generations(db, course_id=course_id)
+    gen_ids = {g.id for g in gens}
+    if not gen_ids:
+        return []
+
+    blocks = (
+        db.query(Block)
+        .filter(Block.id.in_(block_ids), Block.generation_id.in_(gen_ids))
+        .all()
+    )
+    block_map = {b.id: b for b in blocks}
+    ordered: list[Block] = []
+    for idx, block_id in enumerate(block_ids, start=1):
+        block = block_map.get(block_id)
+        if block is None:
+            continue
+        block.position = idx
+        ordered.append(block)
+
+    db.commit()
+    for block in ordered:
+        db.refresh(block)
+    return ordered
 
 
 def get_block_by_id(db, block_id: int):

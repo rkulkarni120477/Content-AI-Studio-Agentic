@@ -151,6 +151,7 @@ export const ROUTES = {
   GENERATE:     (courseId) => `/workspace/${courseId}/generate`,
   EDITOR:       (courseId) => `/workspace/${courseId}/editor`,
   WORKFLOW:     (courseId) => `/workspace/${courseId}/workflow`,
+  EXPORT:       (courseId) => `/workspace/${courseId}/export`,
   ANALYTICS:    (courseId) => `/workspace/${courseId}/analytics`,
   CENTRAL:      '/central',
 };

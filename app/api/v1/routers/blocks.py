@@ -40,6 +40,8 @@ from app.schemas.block import (
     BlockRegenerateItemResponse,
     BlockRegenerateRequest,
     BlockRegenerateResponse,
+    BlockReorderRequest,
+    BlockReorderResponse,
     BlockRestoreResponse,
     BlockScoreResponse,
     BlockSnapshotRequest,
@@ -172,6 +174,30 @@ def list_course_blocks(
         for b in all_blocks[start: start + page_size]
     ]
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.put(
+    "/courses/{course_id}/blocks/reorder",
+    response_model=BlockReorderResponse,
+    summary="Reorder published/approved blocks (TOC)",
+    description="Sets display order for course blocks. Used by the Workflow published TOC panel.",
+)
+def reorder_course_blocks(
+    course_id: int,
+    request_body: BlockReorderRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> BlockReorderResponse:
+    """Persist a new TOC order for blocks in a course."""
+    from promptops_app.repositories import generation_repository
+
+    updated = generation_repository.reorder_course_blocks(
+        db, course_id, request_body.block_ids,
+    )
+    return BlockReorderResponse(
+        updated=len(updated),
+        block_ids=[b.id for b in updated],
+    )
 
 
 @router.get("/{block_id}", response_model=BlockRead, summary="Get full block content")
@@ -641,12 +667,16 @@ def rate_block(
 @router.get(
     "/courses/{course_id}/export",
     summary="Export the full course as a file",
-    description="Exports all approved/published blocks across all generations. Supports docx, pdf, html, md, json, zip.",
+    description="Exports all approved/published blocks across all generations. Supports docx, pdf, html, md, json, zip, imscc.",
 )
 def export_course(
     course_id: int,
-    format: str = Query(default="docx", description="docx | pdf | html | md | json | zip"),
+    format: str = Query(default="docx", description="docx | pdf | html | md | json | zip | imscc"),
     template: str = Query(default="default", description="default | storyboard | teacher_guide | quiz_bank | client"),
+    workflow_state: str | None = Query(
+        default=None,
+        description="Optional filter, e.g. 'published' — only include blocks in this state.",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
 ) -> Response:
@@ -665,6 +695,11 @@ def export_course(
     all_blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
 
     approved_blocks = [b for b in all_blocks if b.workflow_state.lower() in WorkflowState.EXPORTABLE]
+    if workflow_state:
+        approved_blocks = [
+            b for b in approved_blocks
+            if b.workflow_state.lower() == workflow_state.lower()
+        ]
     if not approved_blocks:
         raise WorkflowError("No approved or published blocks found for this course.")
 
@@ -676,11 +711,12 @@ def export_course(
         fmt=format,
         topic=topic,
         blocks=[(b.block_label, b.content or "") for b in approved_blocks],
+        block_types=[b.block_type or "" for b in approved_blocks],
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
         entity_type="full_course",
         template=template,
-        file_name=f"{topic.replace(' ', '_')}_export.{format}",
+        file_name=f"{topic.replace(' ', '_')}_export.{format if format != 'imscc' else 'imscc'}",
     )
 
     result = export_content(db, export_req)
