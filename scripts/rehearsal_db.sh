@@ -41,8 +41,9 @@ cmd_dump() {
     url=$(prod_url)
     echo ">> Full custom-format dump (all tables)..."
     pg_dump "$url" -Fc -f "$BACKUP_DIR/promptops_db_full_${stamp}.dump"
-    echo ">> Plain-SQL dump of the 10 pl_* tables (Phase 2/6 safety artifact)..."
-    pg_dump "$url" --format=plain --inserts -t 'pl_*' -f "$BACKUP_DIR/pl_tables_pre_migration_${stamp}.sql"
+    # (The pl_* plain-SQL dump step was removed 2026-07-07: Phase 6 dropped
+    # those tables after the carry-over; the pre-drop artifacts remain in
+    # backups/pl_tables_pre_migration_*.sql.)
     ls -la "$BACKUP_DIR"
 }
 
@@ -80,17 +81,13 @@ cmd_reset() {
 
 cmd_verify() {
     psql "$REHEARSAL_URL" -Atc "
-        SELECT 'tables='   || (SELECT count(*) FROM information_schema.tables WHERE table_schema='public')
+        SELECT 'rev='      || (SELECT version_num FROM alembic_version)
+            || ' tables='  || (SELECT count(*) FROM information_schema.tables WHERE table_schema='public')
+            || ' pl_tables=' || (SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'pl\_%')
             || ' prompts=' || (SELECT count(*) FROM prompts)
             || ' prompt_versions=' || (SELECT count(*) FROM prompt_versions)
-            || ' pl_prompts=' || (SELECT count(*) FROM pl_prompts)
-            || ' pl_total=' || (
-                 (SELECT count(*) FROM pl_prompts) + (SELECT count(*) FROM pl_prompt_versions)
-               + (SELECT count(*) FROM pl_prompt_tags) + (SELECT count(*) FROM pl_prompt_variables)
-               + (SELECT count(*) FROM pl_teams) + (SELECT count(*) FROM pl_prompt_requests)
-               + (SELECT count(*) FROM pl_attachments) + (SELECT count(*) FROM pl_prompt_teams)
-               + (SELECT count(*) FROM pl_reviews) + (SELECT count(*) FROM pl_audit_events));"
-    echo "(expected at 2026-07-05 baseline: tables=47 prompts=8 prompt_versions=7 pl_prompts=20 pl_total=126)"
+            || ' fragments=' || (SELECT count(*) FROM prompt_fragments);"
+    echo "(expected at 2026-07-07 post-consolidation: rev=000100000006 tables=47 pl_tables=0 prompts=32 prompt_versions=31 fragments=2)"
 }
 
 case "${1:-}" in
