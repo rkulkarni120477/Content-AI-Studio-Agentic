@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { fetchPrompt } from '../../api/prompts';
 import { fetchRequests, updateRequest } from '../../api/requests';
 import { useToast } from '../../context/ToastContext';
-import { plAdminRequests } from '../../paths';
+import { plAdminRequests, plPrompt, plPromptEdit, plPromptNew } from '../../paths';
 
 export default function AdminRequestDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { show } = useToast();
   const [request, setRequest] = useState(null);
+  const [linkedPrompt, setLinkedPrompt] = useState(null); // prompt | 'missing' | null
   const [status, setStatus] = useState('');
   const [adminNotes, setAdminNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -27,9 +29,20 @@ export default function AdminRequestDetailPage() {
     });
   }, [id, navigate]);
 
+  useEffect(() => {
+    if (!request?.prompt_id) return;
+    fetchPrompt(request.prompt_id)
+      .then((p) => setLinkedPrompt(p || 'missing'))
+      .catch(() => setLinkedPrompt('missing'));
+  }, [request?.prompt_id]);
+
   async function handleSave(e) {
     e.preventDefault();
     if (!id) return;
+    if (status === 'rejected' && !adminNotes.trim()) {
+      show('Add an admin note explaining the rejection — the requester will see it.');
+      return;
+    }
     setSaving(true);
     try {
       await updateRequest(id, { status, admin_notes: adminNotes.trim() });
@@ -52,14 +65,62 @@ export default function AdminRequestDetailPage() {
         ← Back to requests
       </Link>
       <div className="page-header">
-        <h1>{request.title}</h1>
+        <div>
+          <h1>{request.title}</h1>
+          <p className="view-meta">
+            Requested by <strong>{request.requested_by}</strong>
+            {request.created_at && ` · ${new Date(request.created_at).toLocaleDateString()}`}
+            {request.updated_at && request.updated_at !== request.created_at
+              && ` · updated ${new Date(request.updated_at).toLocaleDateString()}`}
+          </p>
+        </div>
+        <div className="page-actions">
+          {request.prompt_id && linkedPrompt && linkedPrompt !== 'missing' && (
+            <Link to={plPromptEdit(linkedPrompt.id)} className="btn btn-primary">
+              ✏️ Edit the prompt
+            </Link>
+          )}
+          {request.type === 'new' && !request.prompt_id && (
+            <Link
+              to={`${plPromptNew}?${new URLSearchParams({
+                description:
+                  `Requested by ${request.requested_by} (request #${request.id}): ${request.title}`
+                  + (request.description ? `\n\n${request.description}` : ''),
+              })}`}
+              className="btn btn-primary"
+            >
+              ＋ Draft this prompt
+            </Link>
+          )}
+        </div>
       </div>
 
       <form className="page-card" onSubmit={(e) => void handleSave(e)}>
         <div className="field">
           <label>Description</label>
-          <p style={{ fontSize: '.9rem', lineHeight: 1.5 }}>{request.description || '—'}</p>
+          <p style={{ fontSize: '.9rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+            {request.description || '—'}
+          </p>
         </div>
+        {request.prompt_id && (
+          <div className="field">
+            <label>Linked prompt</label>
+            {linkedPrompt === null ? (
+              <p style={{ fontSize: '.9rem', color: 'var(--muted)' }}>Loading…</p>
+            ) : linkedPrompt === 'missing' ? (
+              <p style={{ fontSize: '.9rem', color: 'var(--muted)' }}>
+                Prompt #{request.prompt_id} is no longer available (deleted or inaccessible).
+              </p>
+            ) : (
+              <p style={{ fontSize: '.9rem' }}>
+                <Link to={plPrompt(linkedPrompt.id)}>{linkedPrompt.title}</Link>
+                {linkedPrompt.archived && (
+                  <span className="badge badge-draft" style={{ marginLeft: 8 }}>🗄 Archived</span>
+                )}
+              </p>
+            )}
+          </div>
+        )}
         <div className="inline-fields">
           <div className="field">
             <label>Type</label>
@@ -82,6 +143,9 @@ export default function AdminRequestDetailPage() {
         <div className="field">
           <label>Admin notes</label>
           <textarea value={adminNotes} onChange={(e) => setAdminNotes(e.target.value)} rows={4} />
+          <p className="var-tip" style={{ marginTop: 6 }}>
+            The requester sees the status and these notes on their “My requests” page.
+          </p>
         </div>
         <div className="modal-footer">
           <Link to={plAdminRequests} className="btn btn-ghost">

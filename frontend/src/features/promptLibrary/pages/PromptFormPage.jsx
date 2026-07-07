@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   checkDuplicate,
   deleteAttachment,
@@ -25,6 +25,9 @@ export default function PromptFormPage() {
   const { id } = useParams();
   const isEdit = Boolean(id);
   const navigate = useNavigate();
+  // "Draft this prompt" on an admin request deep-links here with the request
+  // context prefilled into the description (create mode only).
+  const [searchParams] = useSearchParams();
   const { show } = useToast();
 
   const [teamOptions, setTeamOptions] = useState([]);
@@ -33,7 +36,7 @@ export default function PromptFormPage() {
   const [loading, setLoading] = useState(isEdit);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(() => (isEdit ? '' : searchParams.get('description') || ''));
   const [category, setCategory] = useState('');
   const [tags, setTags] = useState('');
   const [visibility, setVisibility] = useState('draft');

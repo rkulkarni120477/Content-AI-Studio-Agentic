@@ -55,6 +55,19 @@ export default function RequestsPage() {
                           {r.description}
                         </div>
                       )}
+                      {r.admin_notes && (
+                        <div
+                          style={{
+                            fontSize: '.78rem',
+                            marginTop: 6,
+                            padding: '6px 10px',
+                            background: 'var(--tag-bg)',
+                            borderRadius: 6,
+                          }}
+                        >
+                          💬 <strong>Admin response:</strong> {r.admin_notes}
+                        </div>
+                      )}
                     </td>
                     <td>{r.type}</td>
                     <td>

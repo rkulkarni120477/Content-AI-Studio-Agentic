@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch } from '../../api/client';
-import { plAdminRequest } from '../../paths';
+import { plAdminRequest, plPrompt } from '../../paths';
 
 function statusClass(status) {
   return `req-status req-${status}`;
@@ -74,6 +74,15 @@ export default function AdminRequestsPage() {
                     <tr key={r.id}>
                       <td>
                         <strong>{r.title}</strong>
+                        {r.prompt_id && (
+                          <Link
+                            to={plPrompt(r.prompt_id)}
+                            style={{ marginLeft: 8, fontSize: '.75rem', whiteSpace: 'nowrap' }}
+                            title="Open the prompt this request is about"
+                          >
+                            🔗 prompt #{r.prompt_id}
+                          </Link>
+                        )}
                         {r.admin_notes && (
                           <div style={{ fontSize: '.73rem', color: 'var(--muted)' }}>{r.admin_notes}</div>
                         )}
