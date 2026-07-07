@@ -5,7 +5,7 @@
 .layout {
   display: flex;
   min-height: 100vh;
-  background: var(--bg);
+  background: $color-gray-50; // same value as the feature's --bg token
 }
 
 .sidebar {
