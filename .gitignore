@@ -34,3 +34,6 @@ test_copyleaks.py
 
 # DB dumps / rehearsal artifacts (contain prod data — never commit)
 backups/
+
+# Client requirements docs — keep out of the repo
+*.docx
