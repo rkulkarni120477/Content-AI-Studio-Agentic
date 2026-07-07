@@ -9,7 +9,8 @@ const LOGO_SRC = '/ContentStudio.png';
  */
 export default function AppBrand({ variant = 'sidebar', showTag = true, compact = false, className }) {
   const isHero = variant === 'hero';
-  const logoHeight = isHero ? 52 : 32;
+  // Sidebar brand is compact enough to share its row with the collapse toggle.
+  const logoHeight = isHero ? 52 : 28;
 
   if (compact) {
     return (
