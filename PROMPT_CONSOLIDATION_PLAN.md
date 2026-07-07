@@ -719,6 +719,9 @@ here), and the library API surface keeps working for anything that still referen
 - [x] **New Prompt survives as the draft → promote path** (create library draft → detail →
   Promote to pipeline). A freshly created draft is not listed (pipeline-only list) but the create
   flow lands on its detail page where the promote panel lives.
+- [x] **Flow's "Reference playbook prompts" rail removed** (found in the Flow-redundancy review,
+  same directive): it keyword-matched *library* prompts per phase — the last remaining library
+  surfacing in the console.
 - **Not surfaced ≠ deleted:** requests/reviews/teams/audit pages and the library CRUD API remain
   functional but dormant; library rows are reachable by direct detail link. Whether to eventually
   delete/export the 20 legacy prompts is a stakeholder call (rides the existing "none obsolete?"

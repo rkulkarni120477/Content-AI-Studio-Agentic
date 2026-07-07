@@ -16,7 +16,6 @@ import {
   resolveFixing,
   unbindFixing,
 } from '../api/flow';
-import { fetchPrompts } from '../api/prompts';
 import { useToast } from '../context/ToastContext';
 import { plPrompt } from '../paths';
 
@@ -25,31 +24,26 @@ const PHASES = [
     key: 'style',
     label: 'Style',
     desc: 'Style extraction — reference documents → tone/voice profile.',
-    refWords: ['style', 'tone'],
   },
   {
     key: 'cdd',
     label: 'CDD',
     desc: 'Course structural planning.',
-    refWords: ['course'],
   },
   {
     key: 'blueprint',
     label: 'Blueprint',
     desc: 'Module detailing — teacher/student variants resolve at generation time.',
-    refWords: ['blueprint'],
   },
   {
     key: 'generate',
     label: 'Lesson Generation',
     desc: 'Lesson authoring (key: generate; variant=interactive serves the Component category).',
-    refWords: ['storyboard', 'development'],
   },
   {
     key: 'quiz',
     label: 'Assessment',
     desc: 'Quiz / assessment authoring (key: quiz).',
-    refWords: ['assessment', 'quiz', 'tagging'],
   },
 ];
 
@@ -71,7 +65,6 @@ export default function PipelineFlowPage() {
   const [pools, setPools] = useState({});      // phase key -> PromptListItem[]
   const [fixings, setFixings] = useState({});  // phase key -> PromptFixingRead | null
   const [choice, setChoice] = useState({});    // phase key -> { promptId, scope }
-  const [libraryPrompts, setLibraryPrompts] = useState([]);
   const [busy, setBusy] = useState({});        // phase key -> bool
 
   const course = courses.find((c) => String(c.id) === String(selCourse)) || null;
@@ -86,7 +79,6 @@ export default function PipelineFlowPage() {
 
   useEffect(() => {
     void listProjects().then(setProjects).catch(() => show('Could not load projects.'));
-    void fetchPrompts({ roots_only: '1' }).then(setLibraryPrompts).catch(() => {});
     for (const ph of PHASES) {
       void listComponentPrompts(ph.key)
         .then((items) => setPools((prev) => ({ ...prev, [ph.key]: items })))
@@ -167,13 +159,6 @@ export default function PipelineFlowPage() {
     }
   }
 
-  function referenceFor(phase) {
-    return libraryPrompts.filter((p) => {
-      const cat = (p.category || '').toLowerCase();
-      return phase.refWords.some((w) => cat.includes(w));
-    });
-  }
-
   return (
     <>
       <div className="page-header">
@@ -221,7 +206,6 @@ export default function PipelineFlowPage() {
         const baseDefault = pool.find((p) => p.is_default && !p.variant) || null;
         const variantDefaults = pool.filter((p) => p.is_default && p.variant);
         const sel = choice[phase.key] || { promptId: '', scope: ctx.courseId ? 'course' : 'global' };
-        const refs = referenceFor(phase);
 
         return (
           <div key={phase.key} className="page-card" style={{ marginBottom: 12 }}>
@@ -325,23 +309,6 @@ export default function PipelineFlowPage() {
               </button>
             </div>
 
-            {refs.length > 0 && (
-              <details style={{ marginTop: 10 }}>
-                <summary style={{ fontSize: '.78rem', color: 'var(--muted)', cursor: 'pointer' }}>
-                  📚 Reference playbook prompts ({refs.length})
-                </summary>
-                <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: '.82rem' }}>
-                  {refs.map((r) => (
-                    <li key={r.id}>
-                      <Link to={plPrompt(r.id)}>{r.title}</Link>
-                      {r.category && (
-                        <span style={{ color: 'var(--muted)' }}> — {r.category}</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
           </div>
         );
       })}
