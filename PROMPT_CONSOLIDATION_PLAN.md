@@ -766,6 +766,25 @@ Requests workflow had no entry point from CAS).
   but is a preview — picking a non-default prompt does NOT change what generation uses (bind it
   in Courses, or explicitly override). Candidate follow-up: a hint in the panel.
 
+### Phase 12e — coverage-audit gap closers (user-approved 2026-07-07)
+
+From the final doc-coverage audit: the two buildable gaps (§5.2 loop-closer + the §8/§9
+letter-gaps), all opt-in and additive.
+
+- [x] **"Promote override to prompt"** — `POST /api/v1/prompts/from-generation`
+  (`prompt.pipeline.edit`): reads the override captured in a CDD/Blueprint version's
+  `generation_params` (11.9 provenance) and creates a registry prompt from it (slugged unique
+  name, component = source type, inert until defaulted/locked; non-override versions 422).
+  Frontend: `PromoteOverrideButton` appears above the content view on the CDD + Blueprint pages
+  ONLY when the displayed version was override-generated; success navigates to the new prompt.
+- [x] **Workflow-status filter (doc §8)** — list param `state` filters on the ACTIVE version's
+  `workflow_state`; console gets an "Any Status / Draft / In review / Approved / Active" select.
+- [x] **Archived opt-in + restore (doc §9 "unless explicitly enabled")** — list/search param
+  `include_archived=1` (pipeline managers only; ignored for everyone else — no-leak), rows carry
+  an additive `archived` flag; admins can OPEN archived rows by id (contract change pinned in the
+  soft-delete characterization) and `POST /prompts/{pid}/restore` un-archives (404 for callers who
+  couldn't see the row). Console: "🗄 Archived" checkbox, badges, ♻ Restore on card/row/detail.
+
 **Tests:** service-level CAS-mapping suite (6 labels, generate split, case-insensitivity,
 non-admin no-leak) + promotion-helper suite (slug, suffixing, soft-deleted names count) + API
 suites for unified list/cas_category and the full promote contract (in-place flip, inertness,
@@ -816,6 +835,7 @@ _Append one entry per work session. Keep entries short — link to commits/PRs r
 
 | Date | Session focus | Phases touched | Outcome |
 |---|---|---|---|
+| 2026-07-07 | **Phase 12e — coverage-audit gap closers** (doc coverage audit → "go ahead" on both buildable gaps) | 12e (new subsection) | §5.2 loop closed: `POST /prompts/from-generation` promotes a captured CDD/Blueprint override (11.9 provenance) into a registry prompt (opt-in, inert, unique slug, 422 on non-override versions, admin-gated) with a conditional `PromoteOverrideButton` on both CAS pages. §8 status filter (`state` on the active version's workflow_state). §9 "unless explicitly enabled": `include_archived=1` (admin-only, no-leak), archived rows openable by admins (soft-delete characterization re-pinned), `POST /restore`, console checkbox+badges+♻. Suites: backend **302** (+11), frontend **48**, build green, ruff baseline-identical after fixing the 1 introduced finding. :8001 restarted (old stale instance found holding the port and killed); live smoke: state=active → 6 rows, archived probe visible→restored→re-archived. |
 | 2026-07-07 | **Phase 12d — request-from-CAS entry point** (capability check → "go ahead") | 12d (new subsection) | Found: consume=yes via each CAS tab's prompt panel (with the preview-only dropdown caveat now documented), request=no path from CAS. Added "📬 Request a Change" to `InlinePromptControls` + `PromptLibraryPanel`, deep-linking to the PL request form with component/promptId/context prefilled; `RequestNewPage` seeds title/description from those params. Frontend **48 passed**, build green; no backend changes. |
 | 2026-07-07 | **Phase 12c — Flow folded into Courses** (user asked whether Flow/Library overlap; recommendation approved with "Go ahead with perfection") | 12c (new subsection) | Courses slot rows gained the Bind/Unbind lock editor (scope picker incl. global/project; pool filtered to the slot's `_acceptable_variants` — stricter than Flow's whole-component pool). Flow page deleted, nav entry + `plFlow` removed, `/flow` redirects to Courses. Also removed earlier in the review: Flow's library-prompt reference rail (`e35e7ae`, last library surfacing). Locked "console shape" decision annotated as superseded. Frontend **48 passed** (Flow nav test retired), build green, no backend changes. Live smoke: bind cdd course-lock on course 8 → by-course shows `course_lock` → unbind → back to `default`. |
 | 2026-07-07 | **Phase 12b — freeform library retired from display** (user: "only CAS related ones to be surfaced") | 12b (new subsection) | Console list now `kind=pipeline` only; category filter = the six CAS names; `/meta` tags pipeline-scoped for pipeline managers (library fallback for everyone else, no-leak); Library nav entry + New Prompt action pipeline-manager-only; non-managers redirected to Courses. The 20 legacy library prompts stay in the DB untouched (display retirement, not deletion — their fate is a stakeholder call). New Prompt kept as the draft→promote path. Suites: backend **293**, frontend **49**, build green, ruff baseline-identical. Live smoke on :8001 (restarted, pid 140403): admin meta tags = pipeline tags only, CDD CAS filter → prompt 4. |
