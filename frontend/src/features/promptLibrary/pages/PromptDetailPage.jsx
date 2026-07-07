@@ -203,10 +203,22 @@ export default function PromptDetailPage() {
   async function handlePromote() {
     const slot = CAS_SLOT_OPTIONS.find((s) => s.label === promoteSlot);
     if (!slot) return;
+    // Declared variables survive promotion and arm strict enforcement: a
+    // generation call that fails to supply one errors loudly. Warn up front
+    // so nobody promotes a {{var}}-heavy prompt into a stage whose builder
+    // doesn't provide those names.
+    const varNames = (prompt.variables || []).map((v) => v.name);
+    const varWarning = varNames.length
+      ? `\n\n⚠ This prompt declares ${varNames.length} variable(s): ${varNames
+          .map((n) => `{{${n}}}`)
+          .join(', ')}. After promotion, ${slot.label} generation MUST supply them or it will ` +
+        'fail loudly — only promote if that stage provides these values.'
+      : '';
     const ok = window.confirm(
       `Promote "${prompt.title}" to an admin-managed ${slot.label} pipeline prompt?\n\n` +
         'It keeps its id and version history, but leaves the library edit surface. ' +
-        'Generation will NOT use it until you make it a component default or lock it to a scope.',
+        'Generation will NOT use it until you make it a component default or lock it to a scope.' +
+        varWarning,
     );
     if (!ok) return;
     try {

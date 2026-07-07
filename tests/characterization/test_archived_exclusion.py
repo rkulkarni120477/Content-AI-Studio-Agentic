@@ -162,3 +162,25 @@ class TestExplicitArchiveAccess:
                           headers=author_headers).status_code == 404
         assert client.post(f"/api/v1/prompt-library/prompts/{dead.id}/restore",
                            headers=author_headers).status_code == 403
+
+    def test_reviewers_cannot_restore_what_they_cannot_see(self, client, db):
+        # Reviewers hold prompt_library.manage but are NOT pipeline managers:
+        # archived rows are invisible to them everywhere, so restore must be
+        # the same 404 — nobody may restore what they cannot see.
+        from app.core.security import hash_password
+        from promptops_app.database import User
+
+        db.add(User(username="arch_reviewer", password_hash=hash_password("test_password"),
+                    role="reviewer", is_active=True))
+        db.commit()
+        r = client.post("/api/v1/auth/login",
+                        json={"username": "arch_reviewer", "password": "test_password"})
+        headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+        lib = make_db_prompt(db, "arch_lib_reviewer", system="S", user="U")
+        lib.prompt_kind = "library"
+        lib.title = "Reviewer-visible once live"
+        lib.visibility = "global"
+        _soft_delete(db, lib)
+        assert client.post(f"/api/v1/prompt-library/prompts/{lib.id}/restore",
+                           headers=headers).status_code == 404

@@ -209,7 +209,10 @@ def restore_prompt(pid: int, request: Request, db: Session = Depends(get_db),
     p = (db.query(Prompt)
          .filter(Prompt.id == pid, Prompt.deleted_at.isnot(None))
          .first())
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    # Archived rows are visible to pipeline managers only (see get_prompt) —
+    # nobody may restore what they cannot see.
+    if (not p or not svc.can_access_prompt(p, user.role, None)
+            or not svc.can_manage_pipeline_prompts(user.role)):
         raise HTTPException(status_code=404, detail="Not found")
     p.deleted_at = None
     p.updated_at = svc.now_utc()
