@@ -47,14 +47,15 @@ export default function PromptListPage() {
     // Only CAS pipeline prompts are surfaced (Phase 12b) — the freeform
     // library rows stay in the DB but leave the console display entirely.
     const params = { roots_only: '1', kind: 'pipeline' };
-    // Most specific scope wins server-side; send only one. "(No cluster)"
+    // Most specific scope wins server-side; send only one. "(No category)"
     // is a display bucket, not a lockable scope — it narrows only once a
     // course is picked.
     if (scopeCourse) params.course_id = scopeCourse;
     else if (scopeCluster && scopeCluster !== 'none') params.cluster_id = scopeCluster;
     if (q) params.q = q;
-    // Categories are the doc's six CAS names, resolved server-side to the
-    // (component_type, variant) resolution keys.
+    // Workflows = the doc's six CAS category names ("Category" now means
+    // cluster in the UI), resolved server-side to the (component_type,
+    // variant) resolution keys — the cas_category param name is internal.
     if (category.startsWith('cas:')) params.cas_category = category.slice(4);
     if (tag) params.tag = tag;
     // Workflow status = the active version's state (doc §8).
@@ -193,9 +194,10 @@ export default function PromptListPage() {
             </svg>
           </div>
           <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">All Categories</option>
-            {/* The doc's six CAS categories — structural (component/variant-
-                backed), never freeform strings. */}
+            <option value="">All Workflows</option>
+            {/* The doc's six CAS workflow categories — structural (component/
+                variant-backed), never freeform strings. Labeled "Workflow"
+                in the UI; "Category" is the cluster level's display name. */}
             {CAS_CATEGORIES.map((c) => (
               <option key={`cas:${c}`} value={`cas:${c}`}>
                 {c}
@@ -207,9 +209,9 @@ export default function PromptListPage() {
               <select
                 value={scopeCluster}
                 onChange={(e) => setScopeCluster(e.target.value)}
-                title="Show the prompts this cluster uses (locks + inherited defaults)"
+                title="Show the prompts this category uses (locks + inherited defaults)"
               >
-                <option value="">All Clusters</option>
+                <option value="">All Categories</option>
                 {scopeClusters.map(([id, name]) => (
                   <option key={id} value={id}>
                     {name}

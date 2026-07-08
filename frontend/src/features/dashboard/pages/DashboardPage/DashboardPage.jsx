@@ -89,12 +89,12 @@ export default function DashboardPage() {
           <section className={styles.panel}>
             <div className={styles.panel__header}>
               <h2 className={styles.panel__title}>
-                Clusters — <span className={styles.panel__subtitle}>{selProj.name}</span>
+                Categories — <span className={styles.panel__subtitle}>{selProj.name}</span>
               </h2>
             </div>
             <div className={styles.panel__list}>
               {clusters?.items?.length === 0 ? (
-                <EmptyState title="No clusters" message="No clusters found in this project." />
+                <EmptyState title="No categories" message="No categories found in this project." />
               ) : (
                 clusters?.items?.map((cluster) => (
                   <button
