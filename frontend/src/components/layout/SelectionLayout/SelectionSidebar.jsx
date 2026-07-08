@@ -18,6 +18,7 @@ import {
 } from '@features/clusterPrompt/clusterPromptApiDeps';
 import { clusterPromptService } from '@features/clusterPrompt/clusterPromptService';
 import { promptLabel } from '@features/clusterPrompt/clusterPromptUtils';
+import { HEADER_ACTIONS, MAIN_NAV } from '@features/promptLibrary/utils/nav';
 import styles from './SelectionSidebar.module.scss';
 
 const LMS_PLATFORM_OPTIONS = ['Canvas', 'Moodle', 'TalentLMS', 'Docebo'];
@@ -60,6 +61,11 @@ export default function SelectionSidebar({
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewCluster, setShowNewCluster] = useState(false);
   const [showNewCourse, setShowNewCourse] = useState(false);
+  // Prompt options group (Category screen) — open by default so every prompt
+  // destination is visible without leaving the view.
+  const [showPrompts, setShowPrompts] = useState(true);
+  // The PL visibility rules read user.role; useAuth exposes role separately.
+  const promptNavItems = [...MAIN_NAV, ...HEADER_ACTIONS].filter((i) => i.visible({ role }));
 
   // Collapsed-rail ➕: expand the sidebar and open the create form in one click.
   function expandWith(openForm) {
@@ -241,22 +247,11 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {variant === 'project' && (
-        <button
-          type="button"
-          className={cn(styles.navBtn, collapsed && styles.iconOnly)}
-          onClick={() => navigate(ROUTES.PROMPT_LIBRARY)}
-          title={collapsed ? 'Prompts' : undefined}
-        >
-          {collapsed ? '📚' : '📚 Prompts'}
-        </button>
-      )}
-
       {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && collapsed && (
         <button
           type="button"
           className={cn(styles.navBtn, styles.iconOnly)}
-          title="New Cluster"
+          title="New Category"
           onClick={() => expandWith(setShowNewCluster)}
         >
           ➕
@@ -296,6 +291,43 @@ export default function SelectionSidebar({
               />
               <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Category</Button>
             </form>
+          )}
+        </div>
+      )}
+
+      {variant === 'cluster' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="Prompts"
+          onClick={() => expandWith(setShowPrompts)}
+        >
+          📚
+        </button>
+      )}
+
+      {variant === 'cluster' && !collapsed && (
+        <div className={styles.expander}>
+          <button
+            type="button"
+            className={styles.expander__toggle}
+            onClick={() => setShowPrompts((v) => !v)}
+          >
+            📚 Prompts {showPrompts ? '▾' : '▸'}
+          </button>
+          {showPrompts && (
+            <div className={styles.navCol}>
+              {promptNavItems.map((item) => (
+                <button
+                  key={item.to}
+                  type="button"
+                  className={styles.navBtn}
+                  onClick={() => navigate(item.to)}
+                >
+                  {item.icon} {item.label}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       )}

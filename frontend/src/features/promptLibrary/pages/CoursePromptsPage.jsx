@@ -29,7 +29,7 @@ import { plPrompt } from '../paths';
 
 const SOURCE_BADGES = {
   course_lock: { className: 'badge-global', text: '🔒 Course lock' },
-  cluster_lock: { className: 'badge-global', text: '🔒 Cluster lock' },
+  cluster_lock: { className: 'badge-global', text: '🔒 Category lock' },
   project_lock: { className: 'badge-global', text: '🔒 Project lock' },
   global_lock: { className: 'badge-global', text: '🔒 Global lock' },
   default: { className: 'badge-team', text: 'Default' },
@@ -149,7 +149,7 @@ function SlotRow({ slot, group, canOpen, pool, busy, onLoadPool, onBind, onUnbin
             <select value={scope} onChange={(e) => setScope(e.target.value)}>
               <option value="course">Course</option>
               <option value="cluster" disabled={!group.cluster_id}>
-                Cluster
+                Category
               </option>
               <option value="project">Project</option>
               <option value="global">Global</option>
@@ -262,7 +262,7 @@ export default function CoursePromptsPage() {
   }
 
   // Cluster-basis filter: courses group under their cluster; courses without
-  // one land in a "(No cluster)" bucket so none disappear from the picker.
+  // one land in a "(No category)" bucket so none disappear from the picker.
   // Cluster names are unique only within a project (every project gets an
   // auto-migrated "General"), so ambiguous names get their project appended.
   const clusters = useMemo(() => clusterOptions(groups), [groups]);
@@ -281,14 +281,14 @@ export default function CoursePromptsPage() {
           Each course is listed with the prompt every category currently uses. A shared
           default can appear under many courses, but it is one prompt — edit it once and
           every course that uses it gets the update. To give a course its own prompt,
-          use “Change…” on a row to lock a different prompt to that course, its cluster,
+          use “Change…” on a row to lock a different prompt to that course, its category,
           its project, or globally — locks show a 🔒 badge, and the most specific one
           wins. Non-admins can only lock prompts whose active version is approved.
         </p>
         <div className="field" style={{ maxWidth: 320 }}>
-          <label>Cluster</label>
+          <label>Category</label>
           <select value={selCluster} onChange={(e) => setSelCluster(e.target.value)}>
-            <option value="">All clusters</option>
+            <option value="">All categories</option>
             {clusters.map(([id, name]) => (
               <option key={id} value={id}>
                 {name}

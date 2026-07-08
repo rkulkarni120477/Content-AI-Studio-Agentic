@@ -143,9 +143,9 @@ export default function WorkspaceSidebar() {
           type="button"
           className={styles.backBtn}
           onClick={goClusters}
-          title={collapsed ? 'Back to Clusters' : undefined}
+          title={collapsed ? 'Back to Categories' : undefined}
         >
-          {collapsed ? '🗂️' : '← Clusters'}
+          {collapsed ? '🗂️' : '← Categories'}
         </button>
         <button
           type="button"

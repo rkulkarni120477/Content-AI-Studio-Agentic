@@ -39,6 +39,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -767,6 +768,106 @@ def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None =
     return d
 
 
+# ── Excel export (list page "Export XLSX") ────────────────────────────────────
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Serializer-side mirror of the console's componentCategoryLabel
+# (frontend utils/prompt.js) — resolution keys → the doc's six CAS workflow
+# display names. The UI calls these "Workflows" ("Category" means cluster).
+_WORKFLOW_LABELS = {
+    "style": "Style",
+    "cdd": "CDD",
+    "blueprint": "Blueprint",
+    "generate": "Lesson Generation",
+    "quiz": "Assessment",
+}
+
+
+def cas_workflow_label(component_type: str | None, variant: str | None) -> str:
+    if not component_type:
+        return f"Pipeline / {variant}" if variant else "Pipeline"
+    if component_type == "generate":
+        if variant == "interactive":
+            return "Component"
+        if not variant or variant == "lesson":
+            return "Lesson Generation"
+    base = _WORKFLOW_LABELS.get(component_type, component_type.replace("_", " ").title())
+    return f"{base} / {variant}" if variant else base
+
+
+# Same column set the retired client-side CSV export produced, with the
+# category column renamed to match the list page's Workflow filter.
+_XLSX_COLUMNS = (
+    "id", "parent_id", "parent_title", "title", "prompt", "description",
+    "workflow", "visibility", "teams", "tags", "variable_names", "created_by",
+    "created_at", "updated_at", "last_used_at", "review_count", "review_avg",
+    "version_count",
+)
+
+# Excel hard limit per cell; anything longer corrupts the sheet.
+_XLSX_CELL_MAX = 32767
+
+
+def _xlsx_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return value
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    return ILLEGAL_CHARACTERS_RE.sub("", str(value))[:_XLSX_CELL_MAX]
+
+
+def _xlsx_row(d: dict) -> list:
+    if d.get("prompt_kind") == "pipeline":
+        pipe = d.get("pipeline") or {}
+        workflow = cas_workflow_label(pipe.get("component_type"), pipe.get("variant"))
+    else:
+        workflow = d.get("category") or ""
+    stats = d.get("_review_stats") or {}
+    return [
+        d.get("id"),
+        d.get("parent_id") or "",
+        (d.get("parent") or {}).get("title") or "",
+        d.get("title"),
+        (d.get("content") or "").strip(),
+        d.get("description"),
+        workflow,
+        d.get("visibility"),
+        "; ".join(str(t) for t in (d.get("teams") or [])),
+        "; ".join(d.get("tags") or []),
+        "; ".join(v.get("name", "") for v in (d.get("variables") or [])),
+        d.get("created_by"),
+        d.get("created_at"),
+        d.get("updated_at"),
+        d.get("last_used_at") or "",
+        stats.get("count", 0),
+        stats.get("avg", 0),
+        d.get("_version_count") or len(d.get("versions") or []) or 1,
+    ]
+
+
+def prompts_to_xlsx(rows: list[dict]) -> bytes:
+    """Serialized-prompt dicts → a single-sheet .xlsx workbook (bytes)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Prompts"
+    ws.append(list(_XLSX_COLUMNS))
+    header_font = Font(bold=True)
+    for cell in ws[1]:
+        cell.font = header_font
+    ws.freeze_panes = "A2"
+    for d in rows:
+        ws.append([_xlsx_cell(v) for v in _xlsx_row(d)])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def review_to_dict(r: PromptReview) -> dict:
     return {
         "id": r.id,
@@ -885,7 +986,10 @@ def log_event(
         ))
         db.flush()
     except Exception:  # audit must never break the main request
-        pass
+        logging.getLogger(__name__).warning(
+            "audit log_event failed  action=%s  entity=%s/%s",
+            event_type, entity_type, entity_id, exc_info=True,
+        )
 
 
 def _short_action(action: str | None) -> str:
