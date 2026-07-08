@@ -241,7 +241,7 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {variant === 'project' && (
+      {variant === 'cluster' && (
         <button
           type="button"
           className={cn(styles.navBtn, collapsed && styles.iconOnly)}
