@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to EC2
+      - name: Deploy Backend to EC2
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -28,23 +28,34 @@ jobs:
           script: |
             set -e
 
+            echo "===================================="
+            echo "Starting Backend Deployment"
+            echo "===================================="
+
             cd /opt/content-ai
 
-            echo "Pulling latest code..."
+            echo "Fetching latest code..."
             git fetch origin
+
             git checkout sami
+
             git pull origin sami
 
-            echo "Building containers..."
+            echo "Building Docker images..."
             docker compose build
 
-            echo "Restarting containers..."
+            echo "Starting containers..."
             docker compose up -d
 
-            echo "Cleaning unused images..."
+            echo "Removing unused Docker images..."
             docker image prune -f
 
-            echo "Checking backend..."
-            curl -fsS https://cas-api.academian.com/docs >/dev/null
+            echo "Waiting for API to start..."
+            sleep 20
 
-            echo "Backend deployment completed successfully."
+            echo "Checking backend health..."
+            curl -I https://cas-api.academian.com/docs
+
+            echo "===================================="
+            echo "Backend Deployment Successful"
+            echo "===================================="
