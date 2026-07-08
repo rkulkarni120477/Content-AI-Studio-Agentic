@@ -247,43 +247,6 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {variant === 'cluster' && collapsed && (
-        <button
-          type="button"
-          className={cn(styles.navBtn, styles.iconOnly)}
-          title="Prompts"
-          onClick={() => expandWith(setShowPrompts)}
-        >
-          📚
-        </button>
-      )}
-
-      {variant === 'cluster' && !collapsed && (
-        <div className={styles.expander}>
-          <button
-            type="button"
-            className={styles.expander__toggle}
-            onClick={() => setShowPrompts((v) => !v)}
-          >
-            📚 Prompts {showPrompts ? '▾' : '▸'}
-          </button>
-          {showPrompts && (
-            <div className={styles.navCol}>
-              {promptNavItems.map((item) => (
-                <button
-                  key={item.to}
-                  type="button"
-                  className={styles.navBtn}
-                  onClick={() => navigate(item.to)}
-                >
-                  {item.icon} {item.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && collapsed && (
         <button
           type="button"
@@ -328,6 +291,43 @@ export default function SelectionSidebar({
               />
               <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Category</Button>
             </form>
+          )}
+        </div>
+      )}
+
+      {variant === 'cluster' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="Prompts"
+          onClick={() => expandWith(setShowPrompts)}
+        >
+          📚
+        </button>
+      )}
+
+      {variant === 'cluster' && !collapsed && (
+        <div className={styles.expander}>
+          <button
+            type="button"
+            className={styles.expander__toggle}
+            onClick={() => setShowPrompts((v) => !v)}
+          >
+            📚 Prompts {showPrompts ? '▾' : '▸'}
+          </button>
+          {showPrompts && (
+            <div className={styles.navCol}>
+              {promptNavItems.map((item) => (
+                <button
+                  key={item.to}
+                  type="button"
+                  className={styles.navBtn}
+                  onClick={() => navigate(item.to)}
+                >
+                  {item.icon} {item.label}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       )}
