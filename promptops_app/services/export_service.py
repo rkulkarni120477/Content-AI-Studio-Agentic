@@ -53,6 +53,7 @@ MIME_TYPES: dict[str, str] = {
     "pdf":  "application/pdf",
     "json": "application/json",
     "zip":  "application/zip",
+    "imscc": "application/vnd.ims.imsccv1p1+zip",
 }
 
 # ── Exportable workflow states ─────────────────────────────────────────────────
@@ -85,6 +86,7 @@ class ExportRequest:
     blocks: list[tuple[str, str]]              # [(label, content), ...]
     user_name: str
     is_admin: bool
+    block_types: Optional[list[str]] = None    # parallel to blocks — used by IMSCC export
     entity_type: str = ""                      # "generation" | "cdd" | "blueprint" | "full_course"
     entity_id: Optional[int] = None
     project_id: Optional[int] = None
@@ -197,6 +199,18 @@ def _build_zip(request: ExportRequest) -> bytes:
     return build_zip(request.topic, request.blocks, template=request.template, base_filename=base).read()
 
 
+def _build_imscc(request: ExportRequest) -> bytes:
+    from promptops_app.exporters.imscc_exporter import build_imscc
+    base = _safe(request.topic)
+    typed_blocks: list[tuple[str, str, str]] = []
+    for i, (lbl, cnt) in enumerate(request.blocks):
+        bt = ""
+        if request.block_types and i < len(request.block_types):
+            bt = request.block_types[i] or ""
+        typed_blocks.append((lbl, cnt, bt))
+    return build_imscc(request.topic, typed_blocks, base_filename=base).read()
+
+
 _BUILDERS = {
     "md":   _build_md,
     "json": _build_json,
@@ -204,6 +218,7 @@ _BUILDERS = {
     "docx": _build_docx,
     "pdf":  _build_pdf,
     "zip":  _build_zip,
+    "imscc": _build_imscc,
 }
 
 

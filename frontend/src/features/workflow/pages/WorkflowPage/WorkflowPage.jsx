@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchWorkflowBlocksThunk, submitBlockThunk, approveBlockThunk, requestChangesThunk,
@@ -83,6 +84,8 @@ function filterBlocks(blocks, filters) {
 }
 
 export default function WorkflowPage() {
+  const { courseId: routeCourseId } = useParams();
+  const workspaceCourseId = routeCourseId ? Number(routeCourseId) : null;
   const dispatch = useAppDispatch();
   const blocksByState = useAppSelector(selectBlocksByState);
   const allRawBlocks = useAppSelector(selectWorkflowBlocks);
@@ -119,14 +122,20 @@ export default function WorkflowPage() {
       f.project_id = filters.projectId;
     } else if (!isAdmin && selProject?.id) {
       f.project_id = selProject.id;
+    } else if (selCourse?.project_id) {
+      f.project_id = selCourse.project_id;
     }
     if (filters.courseId != null) {
       f.course_id = filters.courseId;
+    } else if (workspaceCourseId) {
+      f.course_id = workspaceCourseId;
+    } else if (selCourse?.id) {
+      f.course_id = selCourse.id;
     }
     if (filters.search?.trim()) f.search = filters.search.trim();
     if (filters.reviewer) f.reviewer = filters.reviewer;
     return f;
-  }, [filters, isAdmin, selProject?.id]);
+  }, [filters, isAdmin, selProject?.id, selCourse?.id, selCourse?.project_id, workspaceCourseId]);
 
   const loadAdminBreakdown = useCallback(() => {
     if (!showAdminBreakdown) return;
@@ -173,7 +182,7 @@ export default function WorkflowPage() {
   }, [canApprove, isAdmin]);
 
   useEffect(() => {
-    const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null);
+    const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
     if (!projId) {
       setProjectCourses([]);
       return;
@@ -181,7 +190,7 @@ export default function WorkflowPage() {
     api.get(PROJECTS.COURSES(projId))
       .then((res) => setProjectCourses(normalizeList(res)))
       .catch(() => setProjectCourses([]));
-  }, [filters.projectId, isAdmin, selProject?.id]);
+  }, [filters.projectId, isAdmin, selProject?.id, selCourse?.project_id]);
 
   const filteredBlocks = useMemo(
     () => filterBlocks(normalizeList(allRawBlocks), filters),
@@ -240,7 +249,7 @@ export default function WorkflowPage() {
     }
   }
 
-  const scopeProjId = filters.projectId ?? (!isAdmin ? selProject?.id : null);
+  const scopeProjId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
   const showCourseFilter = Boolean(scopeProjId) && projectCourses.length > 0;
 
   const blockSelectOptions = filteredBlocks.map((b) => ({

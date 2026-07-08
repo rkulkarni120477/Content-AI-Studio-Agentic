@@ -24,6 +24,7 @@ const BlueprintPage = lazy(() => import('@features/blueprint/pages/BlueprintPage
 const GeneratePage  = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
 const EditorPage    = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
 const WorkflowPage  = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
+const ExportPage    = lazy(() => import('@features/export/pages/ExportPage/ExportPage'));
 const StylePage     = lazy(() => import('@features/style/pages/StylePage/StylePage'));
 const AnalyticsPage = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
 
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
       { path: 'generate',  element: wrap(<GeneratePage />) },
       { path: 'editor',    element: wrap(<EditorPage />) },
       { path: 'workflow',  element: wrap(<WorkflowPage />) },
+      { path: 'export',    element: wrap(<ExportPage />) },
       { path: 'analytics', element: wrap(<AnalyticsPage />) },
     ],
   },
