@@ -40,18 +40,18 @@ describe('clusterOptions', () => {
     expect(opts.map(([, label]) => label)).toEqual(['Aviation', 'Demo']);
   });
 
-  it('sorts by label and appends the "(No category)" bucket last', () => {
+  it('sorts by label and appends the "(No cluster)" bucket last', () => {
     const opts = clusterOptions([
       group({ cluster_id: 20, cluster_name: 'Zulu' }),
       group({ course_id: 2, cluster_id: 10, cluster_name: 'Alpha Cluster' }),
       group({ course_id: 3, cluster_id: null, cluster_name: null }),
     ]);
-    expect(opts.map(([, label]) => label)).toEqual(['Alpha Cluster', 'Zulu', '(No category)']);
+    expect(opts.map(([, label]) => label)).toEqual(['Alpha Cluster', 'Zulu', '(No cluster)']);
     expect(opts[2][0]).toBe('none');
   });
 
   it('falls back to id-based labels when names are missing', () => {
     const opts = clusterOptions([group({ cluster_name: null })]);
-    expect(opts[0][1]).toBe('Category 10');
+    expect(opts[0][1]).toBe('Cluster 10');
   });
 });

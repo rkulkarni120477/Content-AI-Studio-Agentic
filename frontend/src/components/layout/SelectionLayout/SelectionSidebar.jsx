@@ -256,7 +256,7 @@ export default function SelectionSidebar({
         <button
           type="button"
           className={cn(styles.navBtn, styles.iconOnly)}
-          title="New Category"
+          title="New Cluster"
           onClick={() => expandWith(setShowNewCluster)}
         >
           ➕
