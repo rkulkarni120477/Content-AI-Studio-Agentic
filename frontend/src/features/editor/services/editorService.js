@@ -129,7 +129,7 @@ export function buildPromptMarkdown({
     '# Prompt Export',
     '',
     `**Project:** ${projectName || '—'}`,
-    `**Cluster:** ${clusterName || '—'}`,
+    `**Category:** ${clusterName || '—'}`,
     `**Course:** ${courseName || '—'}`,
     `**Component:** ${component || 'generate'}`,
     `**Prompt:** ${promptName || '—'} (${promptVersion || '—'})`,

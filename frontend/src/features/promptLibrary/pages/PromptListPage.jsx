@@ -47,7 +47,7 @@ export default function PromptListPage() {
     // Only CAS pipeline prompts are surfaced (Phase 12b) — the freeform
     // library rows stay in the DB but leave the console display entirely.
     const params = { roots_only: '1', kind: 'pipeline' };
-    // Most specific scope wins server-side; send only one. "(No cluster)"
+    // Most specific scope wins server-side; send only one. "(No category)"
     // is a display bucket, not a lockable scope — it narrows only once a
     // course is picked.
     if (scopeCourse) params.course_id = scopeCourse;
@@ -207,9 +207,9 @@ export default function PromptListPage() {
               <select
                 value={scopeCluster}
                 onChange={(e) => setScopeCluster(e.target.value)}
-                title="Show the prompts this cluster uses (locks + inherited defaults)"
+                title="Show the prompts this category uses (locks + inherited defaults)"
               >
-                <option value="">All Clusters</option>
+                <option value="">All Categories</option>
                 {scopeClusters.map(([id, name]) => (
                   <option key={id} value={id}>
                     {name}
