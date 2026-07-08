@@ -97,6 +97,29 @@ def list_editor_generations(
     return q.limit(limit).all()
 
 
+def list_latest_generations_for_blueprint(db, blueprint_id: int, limit: int = 500):
+    """One Generation per distinct topic (lesson) within a module — the most recent attempt.
+
+    Modules are regenerated/attempted repeatedly (same topic, many rows); this collapses
+    that history down to the current version of each lesson for module-level export.
+    """
+    gens = (
+        db.query(Generation)
+        .filter(Generation.blueprint_id == blueprint_id)
+        .order_by(Generation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    seen_topics = set()
+    latest = []
+    for g in gens:
+        if g.topic in seen_topics:
+            continue
+        seen_topics.add(g.topic)
+        latest.append(g)
+    return latest
+
+
 def list_generations_for_project(db, project_id: int, limit: int = 500):
     """Return generation IDs for a project. Capped to avoid OOM on large tenants."""
     return (

@@ -40,5 +40,7 @@ backups/
 
 # Internal planning/ops docs — keep local, not in the repo
 PROMPT_CONSOLIDATION_PLAN.md
+PROMPT_CONSOLIDATION_PLAN 1.md
+project_execution.md
 MIGRATION_RUNBOOK.md
 CAS_PromptInject.md

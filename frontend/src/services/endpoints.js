@@ -113,6 +113,7 @@ export const BLUEPRINT = {
   PIN:              (id)       => `/api/v1/blueprints/${id}/pin`,
   SET_ACTIVE:       (id)       => `/api/v1/blueprints/${id}/pin`,
   EXPORT:           (id)       => `/api/v1/blueprints/${id}/export`,
+  EXPORT_LESSONS:   (id)       => `/api/v1/blueprints/${id}/export-lessons`,
   PARSE_COMPONENTS: (id)       => `/api/v1/blueprints/${id}/components`,
   COMPLETION:       (id)       => `/api/v1/blueprints/${id}/completion-status`,
 };

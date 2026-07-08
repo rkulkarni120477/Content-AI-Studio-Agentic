@@ -64,7 +64,7 @@ export default function ClustersPage() {
     setCreateLoading(true);
     try {
       await dashboardService.createCluster(pid, data);
-      toast.success('Cluster created');
+      toast.success('Category created');
       dispatch(fetchClustersThunk(pid));
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -83,7 +83,7 @@ export default function ClustersPage() {
     setDeleteLoading(true);
     try {
       await dashboardService.deleteCluster(deleteTarget.id);
-      toast.success('Cluster deleted');
+      toast.success('Category deleted');
       setDeleteTarget(null);
       dispatch(fetchClustersThunk(pid));
     } catch (e) {
@@ -107,8 +107,8 @@ export default function ClustersPage() {
       <div className={pageStyles.headerRow}>
         <SelectionPageHeader
           eyebrow={`Project: ${selProj.name}`}
-          title="Select Cluster"
-          subtitle="Choose a domain cluster to browse its courses."
+          title="Select Category"
+          subtitle="Choose a domain category to browse its courses."
         />
         {canManage && (
           <Button
@@ -117,7 +117,7 @@ export default function ClustersPage() {
             className={pageStyles.cpBtn}
             onClick={() => setCpMgrOpen((v) => !v)}
           >
-            ➕ Cluster Prompt
+            ➕ Category Prompt
           </Button>
         )}
       </div>
@@ -127,7 +127,7 @@ export default function ClustersPage() {
       )}
 
       {clusters?.items?.length === 0 ? (
-        <EmptyState title="No clusters" message="Create a cluster using the sidebar panel." />
+        <EmptyState title="No categories" message="Create a category using the sidebar panel." />
       ) : (
         <div className={gridStyles.grid}>
           {clusters?.items?.map((cluster) => (
@@ -147,7 +147,7 @@ export default function ClustersPage() {
       )}
 
       <EditEntityModal open={Boolean(editModal)} entityType="cluster" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchClustersThunk(pid))} />
-      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Cluster" message={`Delete "${deleteTarget?.name}"? Clusters with active courses cannot be deleted.`} loading={deleteLoading} />
+      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Category" message={`Delete "${deleteTarget?.name}"? Categories with active courses cannot be deleted.`} loading={deleteLoading} />
     </SelectionLayout>
   );
 }
