@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
   deletePrompt,
+  downloadPromptsXlsx,
   duplicatePrompt,
   fetchMeta,
   fetchPrompts,
@@ -14,7 +15,6 @@ import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { exportPromptsCsv } from '../utils/csvExport';
 import { clusterOptions } from '../utils/clusters';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 import { CAS_CATEGORIES } from '../utils/prompt';
@@ -152,17 +152,12 @@ export default function PromptListPage() {
     setTag(t);
   }
 
-  async function handleExportCsv() {
+  async function handleExportXlsx() {
     if (loading || exporting) return;
     setExporting(true);
     try {
-      const list = await fetchPrompts(buildFilterParams());
-      if (!list.length) {
-        show('No prompts to export for the current filters.');
-        return;
-      }
-      exportPromptsCsv(list);
-      show(`Exported ${list.length} prompt${list.length !== 1 ? 's' : ''} to CSV.`);
+      await downloadPromptsXlsx(buildFilterParams());
+      show('Excel export downloaded.');
     } catch {
       show('Export failed. Please try again.');
     } finally {
@@ -282,11 +277,11 @@ export default function PromptListPage() {
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            onClick={handleExportCsv}
+            onClick={handleExportXlsx}
             disabled={loading || exporting || prompts.length === 0}
-            title="Download filtered prompts as CSV (includes full prompt text)"
+            title="Download filtered prompts as an Excel workbook (includes full prompt text)"
           >
-            {exporting ? 'Exporting…' : '⬇ Export CSV'}
+            {exporting ? 'Exporting…' : '⬇ Export XLSX'}
           </button>
         </div>
       </div>
