@@ -39,6 +39,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -885,7 +886,10 @@ def log_event(
         ))
         db.flush()
     except Exception:  # audit must never break the main request
-        pass
+        logging.getLogger(__name__).warning(
+            "audit log_event failed  action=%s  entity=%s/%s",
+            event_type, entity_type, entity_id, exc_info=True,
+        )
 
 
 def _short_action(action: str | None) -> str:
