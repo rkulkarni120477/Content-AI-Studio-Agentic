@@ -87,6 +87,7 @@ class ExportRequest:
     user_name: str
     is_admin: bool
     block_types: Optional[list[str]] = None    # parallel to blocks — used by IMSCC export
+    block_html: Optional[list[str]] = None     # parallel to blocks — pre-rendered Canvas HTML (IMSCC)
     entity_type: str = ""                      # "generation" | "cdd" | "blueprint" | "full_course"
     entity_id: Optional[int] = None
     project_id: Optional[int] = None
@@ -202,12 +203,15 @@ def _build_zip(request: ExportRequest) -> bytes:
 def _build_imscc(request: ExportRequest) -> bytes:
     from promptops_app.exporters.imscc_exporter import build_imscc
     base = _safe(request.topic)
-    typed_blocks: list[tuple[str, str, str]] = []
+    typed_blocks: list[tuple[str, str, str, str]] = []
     for i, (lbl, cnt) in enumerate(request.blocks):
         bt = ""
         if request.block_types and i < len(request.block_types):
             bt = request.block_types[i] or ""
-        typed_blocks.append((lbl, cnt, bt))
+        html = ""
+        if request.block_html and i < len(request.block_html):
+            html = request.block_html[i] or ""
+        typed_blocks.append((lbl, cnt, bt, html))
     return build_imscc(request.topic, typed_blocks, base_filename=base).read()
 
 

@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@services/apiClient';
 import { BLOCKS, WORKFLOW } from '@services/endpoints';
 import { WORKFLOW_STATES } from '@utils/constants';
-import { truncate, downloadBlob } from '@utils/helpers';
+import { truncate, downloadBlob, downloadText } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
+import Modal from '@components/common/Modal/Modal';
 import toast from 'react-hot-toast';
 import styles from './PublishedTocPanel.module.scss';
 
@@ -24,12 +25,23 @@ function moveItem(list, fromIndex, toIndex) {
   return next;
 }
 
+function htmlFilename(block) {
+  const base = (block.block_label || `block_${block.id}`)
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 60) || `block_${block.id}`;
+  return `${base}.html`;
+}
+
 export default function PublishedTocPanel({ courseId, courseName, projectCourses = [] }) {
   const [blocks, setBlocks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [dragIndex, setDragIndex] = useState(null);
+  const [regenId, setRegenId] = useState(null);
+  const [downloadId, setDownloadId] = useState(null);
+  const [preview, setPreview] = useState(null); // { block, html, at, loading }
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
 
@@ -54,6 +66,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           block_label: b.block_label,
           position: b.position ?? 0,
           workflow_state: b.workflow_state,
+          has_html: false,
         }));
       }
       setBlocks(sortBlocks(items));
@@ -132,6 +145,70 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
     }
   }
 
+  async function handlePreviewHtml(block) {
+    setPreview({ block, html: null, at: null, loading: true });
+    try {
+      const res = await api.get(BLOCKS.CANVAS_HTML(block.id));
+      setPreview({
+        block,
+        html: res.content_html || '',
+        at: res.content_html_at || null,
+        hasHtml: !!res.has_html,
+        loading: false,
+      });
+    } catch {
+      toast.error('Failed to load HTML preview.');
+      setPreview(null);
+    }
+  }
+
+  async function handleRegenerateHtml(block) {
+    setRegenId(block.id);
+    try {
+      const res = await api.post(BLOCKS.CANVAS_HTML_REGEN(block.id));
+      toast.success(`HTML regenerated for “${truncate(block.block_label || `Block ${block.id}`, 40)}”.`);
+      setBlocks((prev) =>
+        prev.map((b) => (b.id === block.id ? { ...b, has_html: true } : b)),
+      );
+      if (preview && preview.block?.id === block.id) {
+        setPreview({
+          block,
+          html: res.content_html || '',
+          at: res.content_html_at || null,
+          hasHtml: true,
+          loading: false,
+        });
+      }
+    } catch (err) {
+      toast.error(err?.message || 'HTML regeneration failed.');
+    } finally {
+      setRegenId(null);
+    }
+  }
+
+  async function handleDownloadHtml(block) {
+    setDownloadId(block.id);
+    try {
+      let html = '';
+      if (preview?.block?.id === block.id && preview.html) {
+        html = preview.html;
+      } else {
+        const res = await api.get(BLOCKS.CANVAS_HTML(block.id));
+        if (!res.has_html || !res.content_html) {
+          toast.error('No Canvas HTML available to download.');
+          return;
+        }
+        html = res.content_html;
+      }
+      downloadText(html, htmlFilename(block), 'text/html;charset=utf-8');
+      toast.success('HTML downloaded.');
+    } catch {
+      toast.error('Failed to download HTML.');
+    } finally {
+      setDownloadId(null);
+    }
+  }
+
   if (!courseId) {
     return (
       <p className={styles.hint}>
@@ -194,35 +271,114 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
               <span className={styles.index}>{index + 1}</span>
               <div className={styles.body}>
                 <p className={styles.label}>{truncate(block.block_label || `Block ${block.id}`, 60)}</p>
-                <p className={styles.meta}>#{block.id}</p>
+                <p className={styles.meta}>
+                  #{block.id}
+                  {block.has_html && <span className={styles.htmlBadge} title="Canvas HTML ready">● HTML</span>}
+                </p>
               </div>
               <div className={styles.actions}>
                 <button
                   type="button"
-                  className={styles.arrowBtn}
-                  disabled={saving || index === 0}
-                  onClick={() => moveUp(index)}
-                  title="Move up"
-                  aria-label="Move up"
+                  className={styles.iconBtn}
+                  disabled={!block.has_html}
+                  onClick={() => handlePreviewHtml(block)}
+                  title={block.has_html ? 'Preview Canvas HTML' : 'No HTML generated yet — use Regenerate'}
+                  aria-label="Preview Canvas HTML"
                 >
-                  ▲
+                  👁
                 </button>
                 <button
                   type="button"
-                  className={styles.arrowBtn}
-                  disabled={saving || index === blocks.length - 1}
-                  onClick={() => moveDown(index)}
-                  title="Move down"
-                  aria-label="Move down"
+                  className={styles.iconBtn}
+                  disabled={!block.has_html || downloadId === block.id}
+                  onClick={() => handleDownloadHtml(block)}
+                  title={downloadId === block.id ? 'Downloading…' : 'Download Canvas HTML'}
+                  aria-label="Download Canvas HTML"
                 >
-                  ▼
+                  {downloadId === block.id ? '⏳' : '⬇'}
                 </button>
+                <button
+                  type="button"
+                  className={styles.iconBtn}
+                  disabled={regenId === block.id}
+                  onClick={() => handleRegenerateHtml(block)}
+                  title={regenId === block.id ? 'Generating HTML…' : 'Regenerate Canvas HTML'}
+                  aria-label="Regenerate Canvas HTML"
+                >
+                  {regenId === block.id ? '⏳' : '↻'}
+                </button>
+                <div className={styles.arrowStack}>
+                  <button
+                    type="button"
+                    className={styles.arrowBtn}
+                    disabled={saving || index === 0}
+                    onClick={() => moveUp(index)}
+                    title="Move up"
+                    aria-label="Move up"
+                  >
+                    ▲
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.arrowBtn}
+                    disabled={saving || index === blocks.length - 1}
+                    onClick={() => moveDown(index)}
+                    title="Move down"
+                    aria-label="Move down"
+                  >
+                    ▼
+                  </button>
+                </div>
               </div>
             </li>
           ))}
         </ol>
       )}
       {saving && <p className={styles.saving}>Saving order…</p>}
+
+      <Modal
+        open={!!preview}
+        onClose={() => setPreview(null)}
+        title={preview ? `Canvas HTML — ${truncate(preview.block?.block_label || `Block ${preview.block?.id}`, 50)}` : 'Canvas HTML'}
+        size="xl"
+        footer={
+          preview && (
+            <>
+              <span className={styles.previewMeta}>
+                {preview.at
+                  ? `Generated ${new Date(preview.at).toLocaleString()}`
+                  : 'Not generated yet'}
+              </span>
+              <span className={styles.previewFooterActions}>
+                <Button
+                  variant="secondary"
+                  disabled={regenId === preview.block?.id}
+                  onClick={() => handleRegenerateHtml(preview.block)}
+                >
+                  {regenId === preview.block?.id ? 'Generating…' : '↻ Regenerate'}
+                </Button>
+                <Button variant="primary" onClick={() => setPreview(null)}>Close</Button>
+              </span>
+            </>
+          )
+        }
+      >
+        {preview?.loading ? (
+          <div className={styles.loading}><Loader size="md" /></div>
+        ) : preview?.html ? (
+          <iframe
+            title="Canvas HTML preview"
+            className={styles.previewFrame}
+            sandbox="allow-same-origin"
+            srcDoc={preview.html}
+          />
+        ) : (
+          <div className={styles.previewEmpty}>
+            <p>No Canvas HTML has been generated for this block yet.</p>
+            <p>Click <strong>Regenerate</strong> to build it now, or re-publish the block.</p>
+          </div>
+        )}
+      </Modal>
     </section>
   );
 }

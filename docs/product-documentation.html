@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Content AI Studio — Product Documentation</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --accent: #2563eb;
+      --accent-light: #eff6ff;
+      --border: #e2e8f0;
+      --code-bg: #0f172a;
+      --sidebar-w: 280px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+    }
+    .layout { display: flex; min-height: 100vh; }
+    nav.sidebar {
+      width: var(--sidebar-w);
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 1.5rem 1rem;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      overflow-y: auto;
+      font-size: 0.88rem;
+    }
+    nav.sidebar h2 {
+      font-size: 1rem;
+      color: #93c5fd;
+      margin: 0 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid #334155;
+    }
+    nav.sidebar a {
+      display: block;
+      color: #cbd5e1;
+      text-decoration: none;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      margin-bottom: 2px;
+    }
+    nav.sidebar a:hover { background: #1e293b; color: #fff; }
+    nav.sidebar .sub { padding-left: 1rem; font-size: 0.82rem; }
+    main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      padding: 2rem 3rem 4rem;
+      max-width: 1100px;
+    }
+    h1 { font-size: 2rem; color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 0.5rem; }
+    h2 { font-size: 1.45rem; margin-top: 2.5rem; color: #1e40af; }
+    h3 { font-size: 1.1rem; margin-top: 1.5rem; color: #334155; }
+    p, li { color: #334155; }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      margin: 1rem 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 1rem 0;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.55rem 0.75rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--accent-light); font-weight: 600; }
+    tr:nth-child(even) { background: #f8fafc; }
+    code, .path {
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      font-size: 0.85em;
+      background: #f1f5f9;
+      padding: 0.1em 0.4em;
+      border-radius: 4px;
+      color: #0f172a;
+    }
+    pre {
+      background: var(--code-bg);
+      color: #e2e8f0;
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+    pre code { background: none; color: inherit; padding: 0; }
+    .diagram {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.25rem 0;
+      overflow-x: auto;
+    }
+    .badge {
+      display: inline-block;
+      background: var(--accent-light);
+      color: var(--accent);
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.2em 0.6em;
+      border-radius: 999px;
+      margin-right: 0.35rem;
+    }
+    .flow-step {
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+      margin: 0.75rem 0;
+    }
+    .flow-step .num {
+      background: var(--accent);
+      color: #fff;
+      width: 1.75rem;
+      height: 1.75rem;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .toc-print { display: none; }
+    @media print {
+      nav.sidebar { display: none; }
+      main { margin-left: 0; max-width: 100%; }
+    }
+    @media (max-width: 900px) {
+      nav.sidebar { position: static; width: 100%; }
+      .layout { flex-direction: column; }
+      main { margin-left: 0; padding: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <h2>📚 Content AI Studio</h2>
+    <a href="#overview">Overview</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#repo-structure">Repo Structure</a>
+    <a href="#backend">Backend</a>
+    <div class="sub">
+      <a href="#api-routers">API Routers</a>
+      <a href="#services">Services</a>
+      <a href="#database">Database Models</a>
+      <a href="#jobs">Background Jobs</a>
+    </div>
+    <a href="#frontend">Frontend</a>
+    <div class="sub">
+      <a href="#routing">Routing</a>
+      <a href="#redux">Redux State</a>
+      <a href="#api-client">API Client</a>
+    </div>
+    <a href="#user-flows">User Flows</a>
+    <div class="sub">
+      <a href="#flow-auth">Auth</a>
+      <a href="#flow-pipeline">Content Pipeline</a>
+      <a href="#flow-workflow">Workflow</a>
+      <a href="#flow-export">Export / IMSCC</a>
+    </div>
+    <a href="#export-pipelines">Export Pipelines</a>
+    <a href="#rbac">Auth &amp; RBAC</a>
+    <a href="#env-vars">Environment Variables</a>
+    <a href="#local-setup">Local Setup</a>
+    <a href="#file-index">File Index</a>
+  </nav>
+
+  <main>
+    <h1>Content AI Studio</h1>
+    <p class="muted">Product documentation — architecture, file map, and data flows.<br>
+    Generated for the codebase at <code>Content-AI-Studio/</code>. Open this file in any browser.</p>
+
+    <!-- OVERVIEW -->
+    <section id="overview">
+      <h2>1. Product Overview</h2>
+      <div class="card">
+        <p><strong>Content AI Studio</strong> is an enterprise eLearning content generation platform. Authors create instructional content through an AI-assisted pipeline: define style → design course (CDD) → blueprint modules → generate blocks → edit → approve → publish → export to LMS.</p>
+        <p><span class="badge">Backend</span> FastAPI + SQLAlchemy + PostgreSQL</p>
+        <p><span class="badge">Frontend</span> React 18 + Vite + Redux Toolkit</p>
+        <p><span class="badge">AI</span> OpenAI + AWS Bedrock (Claude)</p>
+        <p><span class="badge">Jobs</span> Thread pool (generation) + Celery/Redis (plagiarism)</p>
+        <p><span class="badge">Legacy</span> Streamlit UI still in <code>promptops_app/</code> (optional, port 8501)</p>
+      </div>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section id="architecture">
+      <h2>2. System Architecture</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph Client["Browser"]
+    React["React SPA\nfrontend/"]
+  end
+
+  subgraph API["FastAPI Layer — app/"]
+    Routers["API Routers\napp/api/v1/routers/"]
+    Auth["Auth + RBAC\napp/core/"]
+    Schemas["Pydantic Schemas\napp/schemas/"]
+  end
+
+  subgraph Domain["Domain Layer — promptops_app/"]
+    Services["Services\npromptops_app/services/"]
+    Repos["Repositories\npromptops_app/repositories/"]
+  end
+
+  subgraph Data["Infrastructure"]
+    PG[("PostgreSQL")]
+    Redis[("Redis")]
+    LLM["OpenAI / Bedrock"]
+    Copyleaks["Copyleaks API"]
+  end
+
+  React -->|"HTTP /api/v1/*\nJWT Bearer"| Routers
+  Routers --> Auth
+  Routers --> Schemas
+  Routers --> Services
+  Services --> Repos
+  Repos --> PG
+  Services --> LLM
+  Services --> Redis
+  Celery["Celery Worker\nplagiarism_jobs"] --> Redis
+  Celery --> Copyleaks
+        </pre>
+      </div>
+
+      <h3>Layer responsibilities</h3>
+      <table>
+        <tr><th>Layer</th><th>Directory</th><th>Responsibility</th></tr>
+        <tr><td>HTTP / API</td><td><code>app/</code></td><td>Routes, validation, auth, CORS, error handling. Entry: <code>app/main.py</code></td></tr>
+        <tr><td>Domain</td><td><code>promptops_app/</code></td><td>Business logic, ORM models, exporters, LLM calls, jobs</td></tr>
+        <tr><td>UI</td><td><code>frontend/</code></td><td>React SPA — primary user interface</td></tr>
+        <tr><td>Legacy UI</td><td><code>promptops_app/streamlit_app.py</code></td><td>Streamlit pages (transition-era)</td></tr>
+      </table>
+    </section>
+
+    <!-- REPO STRUCTURE -->
+    <section id="repo-structure">
+      <h2>3. Repository Structure</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+graph LR
+  ROOT["Content-AI-Studio/"]
+  ROOT --> APP["app/\nFastAPI API"]
+  ROOT --> PO["promptops_app/\nDomain core"]
+  ROOT --> FE["frontend/\nReact SPA"]
+  ROOT --> TESTS["tests/"]
+  ROOT --> SCRIPTS["scripts/"]
+  ROOT --> DOCS["docs/"]
+
+  APP --> AR["api/v1/routers/"]
+  APP --> AC["core/\nconfig, security"]
+  APP --> AS["schemas/"]
+
+  PO --> PDB["database.py\n(all ORM models)"]
+  PO --> PS["services/"]
+  PO --> PR["repositories/"]
+  PO --> PE["exporters/"]
+  PO --> PJ["jobs/"]
+  PO --> PP["parsers/"]
+  PO --> PPrompts["prompts/templates/"]
+
+  FE --> FF["features/\nauth, cdd, editor…"]
+  FE --> FC["components/"]
+  FE --> FS["services/\napiClient, endpoints"]
+        </pre>
+      </div>
+
+      <table>
+        <tr><th>Path</th><th>Purpose</th></tr>
+        <tr><td><code>app/main.py</code></td><td>FastAPI entry — lifespan, CORS, mounts <code>/api/v1</code></td></tr>
+        <tr><td><code>app/api/v1/router.py</code></td><td>Aggregates all API routers</td></tr>
+        <tr><td><code>app/core/config.py</code></td><td>Pydantic settings from <code>.env</code></td></tr>
+        <tr><td><code>app/core/dependencies.py</code></td><td><code>get_current_user</code>, <code>require_permission</code></td></tr>
+        <tr><td><code>promptops_app/database.py</code></td><td>All SQLAlchemy models + <code>init_db()</code> + seed</td></tr>
+        <tr><td><code>promptops_app/services/</code></td><td>Business logic (workflow, export, LLM, etc.)</td></tr>
+        <tr><td><code>promptops_app/repositories/</code></td><td>DB query layer (one repo per entity)</td></tr>
+        <tr><td><code>promptops_app/exporters/</code></td><td>HTML, DOCX, PDF, IMSCC, QTI builders</td></tr>
+        <tr><td><code>frontend/src/app/routes.jsx</code></td><td>React Router configuration</td></tr>
+        <tr><td><code>frontend/src/app/store.js</code></td><td>Redux store — all feature slices</td></tr>
+        <tr><td><code>frontend/src/services/endpoints.js</code></td><td>All API URL constants</td></tr>
+        <tr><td><code>docker-compose.yml</code></td><td>api, redis, celery, streamlit, webhook server</td></tr>
+        <tr><td><code>project_execution.md</code></td><td>Local run instructions</td></tr>
+      </table>
+    </section>
+
+    <!-- BACKEND -->
+    <section id="backend">
+      <h2>4. Backend</h2>
+
+      <h3 id="api-routers">4.1 API Routers</h3>
+      <p>All mounted at prefix <code>/api/v1</code> via <code>app/api/v1/router.py</code>.</p>
+
+      <table>
+        <tr><th>Router File</th><th>Prefix</th><th>Key Endpoints</th></tr>
+        <tr><td><code>health.py</code></td><td>—</td><td><code>GET /health</code></td></tr>
+        <tr><td><code>auth.py</code></td><td><code>/auth</code></td><td>login, logout, refresh, me</td></tr>
+        <tr><td><code>workspace.py</code></td><td><code>/workspace</code></td><td>workspace state + sidebar config (JWT claims)</td></tr>
+        <tr><td><code>projects.py</code></td><td><code>/projects</code></td><td>CRUD projects, user assignment</td></tr>
+        <tr><td><code>clusters.py</code></td><td>root</td><td>clusters under projects</td></tr>
+        <tr><td><code>courses.py</code></td><td>root</td><td>courses, active CDD, user assignment</td></tr>
+        <tr><td><code>styles.py</code></td><td><code>/styles</code></td><td>style CRUD, understand, activate, documents</td></tr>
+        <tr><td><code>documents.py</code></td><td><code>/documents</code></td><td>upload, parse, chunk reference docs</td></tr>
+        <tr><td><code>cdd.py</code></td><td><code>/cdd</code></td><td>generate, versions, pin, regenerate, export</td></tr>
+        <tr><td><code>blueprints.py</code></td><td><code>/blueprints</code></td><td>generate, versions, pin, components, export</td></tr>
+        <tr><td><code>generations.py</code></td><td><code>/generations</code></td><td>launch, list, export, completion-status</td></tr>
+        <tr><td><code>jobs.py</code></td><td><code>/jobs</code></td><td>poll generation job status</td></tr>
+        <tr><td><code>blocks.py</code></td><td>root</td><td>edit, autosave, regenerate, validate, plagiarism, <strong>course export</strong>, reorder TOC</td></tr>
+        <tr><td><code>workflow.py</code></td><td><code>/workflow</code></td><td>kanban list, submit/approve/publish/archive, bulk-approve</td></tr>
+        <tr><td><code>prompts.py</code></td><td><code>/prompts</code></td><td>prompt registry CRUD, versions, deploy</td></tr>
+        <tr><td><code>prompt_library.py</code></td><td><code>/prompt-library</code></td><td>Prompt Library lists, requests, reviews, audit</td></tr>
+        <tr><td><code>analytics.py</code></td><td><code>/analytics</code></td><td>usage, audit trail, LLM cost, reviews</td></tr>
+        <tr><td><code>admin.py</code></td><td><code>/admin</code></td><td>permissions, model catalog, clear DB, central repo</td></tr>
+      </table>
+
+      <p>Separate webhook server: <code>api_server.py</code> → Copyleaks callbacks on port 8502.</p>
+
+      <h3 id="services">4.2 Key Services</h3>
+      <table>
+        <tr><th>Service File</th><th>Role</th></tr>
+        <tr><td><code>llm_service.py</code></td><td>OpenAI + Bedrock text generation</td></tr>
+        <tr><td><code>export_service.py</code></td><td>Central export orchestrator — routes to format builders</td></tr>
+        <tr><td><code>workflow_service.py</code></td><td>Approval state machine + SLA tracking</td></tr>
+        <tr><td><code>validation_service.py</code></td><td>Rule-based content validation</td></tr>
+        <tr><td><code>evaluation_service.py</code></td><td>AI quality scoring for blocks</td></tr>
+        <tr><td><code>plagiarism_service.py</code></td><td>Copyleaks integration</td></tr>
+        <tr><td><code>style_service.py</code></td><td>Style intelligence / understanding layer</td></tr>
+        <tr><td><code>audit_service.py</code></td><td>Enterprise audit trail logging</td></tr>
+        <tr><td><code>usage_service.py</code></td><td>LLM token/cost logging</td></tr>
+      </table>
+
+      <h3 id="database">4.3 Database Models</h3>
+      <p>All ORM models live in a single file: <code>promptops_app/database.py</code>. Schema is created/updated on startup via <code>init_db()</code> called from <code>app/main.py</code> lifespan.</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+erDiagram
+  Project ||--o{ Cluster : contains
+  Cluster ||--o{ Course : contains
+  Course ||--o| Style : active_style
+  Course ||--o| CourseDesignDocument : active_cdd
+  Course ||--o| ModuleBlueprint : active_blueprint
+  CourseDesignDocument ||--o{ CDDVersion : versions
+  ModuleBlueprint ||--o{ BlueprintVersion : versions
+  Course ||--o{ Generation : has
+  Generation ||--o{ Block : produces
+  Block ||--o{ BlockVersion : history
+  Block ||--o{ WorkflowEvent : transitions
+  Block ||--o| PlagiarismReport : scan
+  User ||--o{ ProjectUserAssignment : assigned
+        </pre>
+      </div>
+
+      <table>
+        <tr><th>Model</th><th>Table</th><th>Description</th></tr>
+        <tr><td>Project</td><td>projects</td><td>Top-level tenant container</td></tr>
+        <tr><td>Cluster</td><td>clusters</td><td>Group of courses in a project</td></tr>
+        <tr><td>Course</td><td>courses</td><td>Workspace unit — holds active style/CDD/blueprint IDs</td></tr>
+        <tr><td>Style</td><td>styles</td><td>Instructional style + intelligence layer</td></tr>
+        <tr><td>CourseDesignDocument</td><td>course_design_documents</td><td>CDD — course-level design doc</td></tr>
+        <tr><td>ModuleBlueprint</td><td>module_blueprints</td><td>Lesson/module structure for generation</td></tr>
+        <tr><td>Generation</td><td>generations</td><td>One AI generation run (topic + metadata)</td></tr>
+        <tr><td>Block</td><td>blocks</td><td>Atomic content unit — editor + workflow target</td></tr>
+        <tr><td>GenerationJob</td><td>generation_jobs</td><td>Async job status for content generation</td></tr>
+        <tr><td>WorkflowEvent</td><td>workflow_events</td><td>Audit log of state transitions</td></tr>
+        <tr><td>User</td><td>users</td><td>admin | author | reviewer</td></tr>
+      </table>
+
+      <h3 id="jobs">4.4 Background Jobs</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant UI as React Generate Page
+  participant API as POST /generations/launch
+  participant Pool as ThreadPoolExecutor
+  participant Job as generation_jobs.py
+  participant DB as PostgreSQL
+
+  UI->>API: launch generation
+  API->>DB: create GenerationJob (queued)
+  API->>Pool: submit run_generation_job
+  API-->>UI: job_id
+  loop Poll every 3s
+    UI->>API: GET /jobs/{id}
+    API-->>UI: status + progress
+  end
+  Pool->>Job: context → prompt → LLM → split → validate → save
+  Job->>DB: Generation + Blocks created
+        </pre>
+      </div>
+
+      <table>
+        <tr><th>Job Type</th><th>Mechanism</th><th>File</th></tr>
+        <tr><td>Content generation</td><td>ThreadPoolExecutor (NOT Celery)</td><td><code>promptops_app/jobs/generation_jobs.py</code>, <code>job_runner.py</code></td></tr>
+        <tr><td>Plagiarism scan</td><td>Celery + Redis</td><td><code>promptops_app/jobs/plagiarism_jobs.py</code>, <code>celery_app.py</code></td></tr>
+        <tr><td>Job status stages</td><td>DB-persisted</td><td><code>promptops_app/jobs/job_status.py</code></td></tr>
+      </table>
+    </section>
+
+    <!-- FRONTEND -->
+    <section id="frontend">
+      <h2>5. Frontend</h2>
+      <p>React 18 SPA built with Vite. Entry: <code>frontend/src/main.jsx</code>. Feature-based architecture with Redux Toolkit.</p>
+
+      <h3 id="routing">5.1 Routing</h3>
+      <p>Defined in <code>frontend/src/app/routes.jsx</code>. Protected by <code>ProtectedRoute</code>. Workspace pages use <code>WorkspaceLayout</code> + <code>WorkspaceSidebar</code>.</p>
+
+      <table>
+        <tr><th>URL</th><th>Page Component</th><th>Feature Dir</th></tr>
+        <tr><td><code>/login</code></td><td>LoginPage</td><td><code>features/auth/</code></td></tr>
+        <tr><td><code>/dashboard</code></td><td>ProjectsPage</td><td><code>features/dashboard/</code></td></tr>
+        <tr><td><code>/projects/:id/clusters</code></td><td>ClustersPage</td><td><code>features/dashboard/</code></td></tr>
+        <tr><td><code>/projects/.../courses</code></td><td>CoursesPage</td><td><code>features/dashboard/</code></td></tr>
+        <tr><td><code>/workspace/:id/style</code></td><td>StylePage</td><td><code>features/style/</code></td></tr>
+        <tr><td><code>/workspace/:id/cdd</code></td><td>CddPage</td><td><code>features/cdd/</code></td></tr>
+        <tr><td><code>/workspace/:id/blueprint</code></td><td>BlueprintPage</td><td><code>features/blueprint/</code></td></tr>
+        <tr><td><code>/workspace/:id/generate</code></td><td>GeneratePage</td><td><code>features/generate/</code></td></tr>
+        <tr><td><code>/workspace/:id/editor</code></td><td>EditorPage</td><td><code>features/editor/</code></td></tr>
+        <tr><td><code>/workspace/:id/workflow</code></td><td>WorkflowPage</td><td><code>features/workflow/</code></td></tr>
+        <tr><td><code>/workspace/:id/export</code></td><td>ExportPage</td><td><code>features/export/</code></td></tr>
+        <tr><td><code>/workspace/:id/analytics</code></td><td>AnalyticsPage</td><td><code>features/analytics/</code></td></tr>
+        <tr><td><code>/prompt-library/*</code></td><td>PromptLibraryLayout</td><td><code>features/promptLibrary/</code></td></tr>
+        <tr><td><code>/central</code></td><td>CentralPage (admin)</td><td><code>features/central/</code></td></tr>
+      </table>
+
+      <p>Sidebar nav items defined in <code>frontend/src/components/layout/WorkspaceSidebar/WorkspaceSidebar.jsx</code>.</p>
+
+      <h3 id="redux">5.2 Redux State</h3>
+      <p>Store: <code>frontend/src/app/store.js</code></p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph Slices["Redux Slices"]
+    auth["authSlice\nuser, token, permissions"]
+    dash["dashboardSlice\nproject, cluster, course"]
+    style["styleSlice"]
+    cdd["cddSlice"]
+    bp["blueprintSlice"]
+    gen["generateSlice\njob polling"]
+    ed["editorSlice\nblocks, versions"]
+    wf["workflowSlice\nkanban blocks"]
+    ana["analyticsSlice"]
+  end
+  Component -->|"dispatch thunk"| Thunk
+  Thunk --> Service
+  Service --> apiClient
+  apiClient -->|"response"| Slice
+  Slice -->|"selector"| Component
+        </pre>
+      </div>
+
+      <table>
+        <tr><th>Slice</th><th>File</th><th>Stores</th></tr>
+        <tr><td>auth</td><td><code>features/auth/authSlice.js</code></td><td>user, token, permissions, isAuthChecked</td></tr>
+        <tr><td>dashboard</td><td><code>features/dashboard/dashboardSlice.js</code></td><td>selected project/cluster/course, lists</td></tr>
+        <tr><td>cdd</td><td><code>features/cdd/cddSlice.js</code></td><td>active CDD, versions, generation state</td></tr>
+        <tr><td>blueprint</td><td><code>features/blueprint/blueprintSlice.js</code></td><td>active blueprint, components</td></tr>
+        <tr><td>generate</td><td><code>features/generate/generateSlice.js</code></td><td>job status, polling</td></tr>
+        <tr><td>editor</td><td><code>features/editor/editorSlice.js</code></td><td>blocks, active block, versions</td></tr>
+        <tr><td>workflow</td><td><code>features/workflow/workflowSlice.js</code></td><td>kanban blocks, filters, pending count</td></tr>
+        <tr><td>style</td><td><code>features/style/styleSlice.js</code></td><td>styles list, active style</td></tr>
+        <tr><td>prompts</td><td><code>features/prompts/promptsSlice.js</code></td><td>prompt registry filters and selection</td></tr>
+        <tr><td>analytics</td><td><code>features/analytics/analyticsSlice.js</code></td><td>metrics, audit data</td></tr>
+      </table>
+
+      <h3 id="api-client">5.3 API Client Pattern</h3>
+      <table>
+        <tr><th>File</th><th>Role</th></tr>
+        <tr><td><code>frontend/src/services/apiClient.js</code></td><td>Axios instance — JWT interceptor, 401 logout, error normalization, download/upload helpers</td></tr>
+        <tr><td><code>frontend/src/services/endpoints.js</code></td><td>All <code>/api/v1/*</code> URL constants</td></tr>
+        <tr><td><code>features/*/services/*Service.js</code></td><td>Per-feature API calls using apiClient + endpoints</td></tr>
+        <tr><td><code>features/*/*Thunks.js</code></td><td>Async Redux actions — call service, update slice, show toasts</td></tr>
+      </table>
+
+      <pre><code>// Standard data flow (every feature)
+Component
+  → dispatch(thunk({ ... }))
+  → thunk calls featureService.someAction()
+  → service calls api.get/post(endpoints.SOME_URL)
+  → response → slice reducer updates state
+  → component re-renders via useSelector</code></pre>
+    </section>
+
+    <!-- USER FLOWS -->
+    <section id="user-flows">
+      <h2>6. User Flows</h2>
+
+      <h3 id="flow-auth">6.1 Authentication</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant LP as LoginPage
+  participant API as /api/v1/auth
+  participant LS as localStorage
+
+  U->>LP: username + password
+  LP->>API: POST /auth/login
+  API-->>LP: JWT + user + permissions
+  LP->>LS: store token (VITE_TOKEN_KEY)
+  LP->>API: GET /auth/me (boot)
+  Note over LP: Axios interceptor attaches Bearer token
+  U->>LP: navigate to /dashboard
+        </pre>
+      </div>
+      <p><strong>Key files:</strong> <code>features/auth/pages/LoginPage/</code>, <code>features/auth/authThunks.js</code>, <code>app/api/v1/routers/auth.py</code>, <code>app/core/security.py</code></p>
+
+      <h3 id="flow-pipeline">6.2 Content Pipeline (Style → CDD → Blueprint → Generate → Editor)</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  A["🎨 Style\nStylePage\n/styles"] --> B["📘 CDD\nCddPage\n/cdd/generate"]
+  B --> C["🧩 Blueprint\nBlueprintPage\n/blueprints/generate"]
+  C --> D["⚙️ Generate\nGeneratePage\n/generations/launch"]
+  D --> E["✏️ Editor\nEditorPage\n/blocks edit"]
+  E --> F["🚦 Workflow\nWorkflowPage\napprove → publish"]
+  F --> G["📦 Export\nExportPage\nIMSCC download"]
+
+  style fill:#eff6ff
+  style G fill:#f0fdf4
+        </pre>
+      </div>
+
+      <table>
+        <tr><th>Step</th><th>Frontend</th><th>Backend API</th><th>Core Service / File</th></tr>
+        <tr><td>1. Style</td><td><code>StylePage</code></td><td><code>POST /styles/{id}/understand</code></td><td><code>style_service.py</code></td></tr>
+        <tr><td>2. CDD</td><td><code>CddPage</code></td><td><code>POST /cdd/generate</code></td><td><code>llm_service.py</code>, <code>cdd_parser.py</code></td></tr>
+        <tr><td>3. Pin CDD</td><td><code>cddThunks</code></td><td><code>POST /cdd/{id}/pin</code></td><td>sets <code>Course.active_cdd_id</code></td></tr>
+        <tr><td>4. Blueprint</td><td><code>BlueprintPage</code></td><td><code>POST /blueprints/generate</code></td><td><code>blueprint_parser.py</code></td></tr>
+        <tr><td>5. Generate</td><td><code>GeneratePage</code></td><td><code>POST /generations/launch</code></td><td><code>generation_jobs.py</code></td></tr>
+        <tr><td>6. Poll job</td><td><code>generateThunks</code></td><td><code>GET /jobs/{id}</code></td><td><code>job_status.py</code></td></tr>
+        <tr><td>7. Edit</td><td><code>EditorPage</code></td><td><code>PUT /{block_id}</code></td><td><code>autosave_service.py</code></td></tr>
+      </table>
+
+      <h3 id="flow-workflow">6.3 Workflow (Approval Pipeline)</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+stateDiagram-v2
+  [*] --> draft
+  draft --> in_review : submit
+  in_review --> approved : approve
+  in_review --> changes_requested : request changes
+  in_review --> rejected : reject
+  changes_requested --> in_review : resubmit
+  rejected --> draft : reset
+  approved --> published : publish
+  published --> archived : archive
+  approved --> archived : archive
+        </pre>
+      </div>
+      <table>
+        <tr><th>Action</th><th>API</th><th>Frontend</th></tr>
+        <tr><td>List blocks (Kanban)</td><td><code>GET /workflow/blocks</code></td><td><code>WorkflowPage</code>, <code>workflowThunks.js</code></td></tr>
+        <tr><td>Submit for review</td><td><code>POST /workflow/blocks/{id}/submit</code></td><td><code>submitBlockThunk</code></td></tr>
+        <tr><td>Approve</td><td><code>POST /workflow/blocks/{id}/approve</code></td><td><code>approveBlockThunk</code></td></tr>
+        <tr><td>Publish</td><td><code>POST /workflow/blocks/{id}/publish</code></td><td><code>publishBlockThunk</code></td></tr>
+        <tr><td>Bulk approve</td><td><code>POST /workflow/bulk-approve</code></td><td><code>bulkApproveThunk</code></td></tr>
+      </table>
+      <p>State machine enforced in <code>promptops_app/services/workflow_service.py</code>. UI permission gating via <code>useAuth().hasPermission()</code>.</p>
+
+      <h3 id="flow-export">6.4 Export &amp; IMSCC</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  EP["ExportPage\nPublishedTocPanel"] -->|"load published blocks"| API1["GET /courses/{id}/blocks?workflow_state=published"]
+  EP -->|"drag reorder"| API2["PUT /courses/{id}/blocks/reorder"]
+  EP -->|"Export IMSCC"| API3["GET /courses/{id}/export?format=imscc"]
+  API3 --> ES["export_service.py"]
+  ES --> IMSCC["imscc_exporter.py"]
+  IMSCC --> HTML["wiki_content/*.html\nmarkdown_html.py"]
+  IMSCC --> QTI["assessment/*.xml\nqti_exporter.py + qti_parser.py"]
+  IMSCC --> MAN["imsmanifest.xml"]
+        </pre>
+      </div>
+      <table>
+        <tr><th>File</th><th>Role</th></tr>
+        <tr><td><code>features/export/pages/ExportPage/ExportPage.jsx</code></td><td>Export screen wrapper</td></tr>
+        <tr><td><code>features/export/components/PublishedTocPanel/</code></td><td>TOC reorder UI + IMSCC download button</td></tr>
+        <tr><td><code>promptops_app/exporters/imscc_exporter.py</code></td><td>Builds .imscc ZIP package</td></tr>
+        <tr><td><code>promptops_app/exporters/qti_exporter.py</code></td><td>QTI 1.2 XML for Canvas/Moodle/Blackboard quizzes</td></tr>
+        <tr><td><code>promptops_app/exporters/markdown_html.py</code></td><td>Markdown → HTML for lesson pages</td></tr>
+      </table>
+    </section>
+
+    <!-- EXPORT PIPELINES -->
+    <section id="export-pipelines">
+      <h2>7. Export Pipelines</h2>
+      <p>Central orchestrator: <code>promptops_app/services/export_service.py</code> → <code>export_content(db, request)</code></p>
+
+      <table>
+        <tr><th>Format</th><th>Extension</th><th>Builder File</th><th>Use Case</th></tr>
+        <tr><td>Markdown</td><td>.md</td><td>inline in export_service</td><td>Raw text export</td></tr>
+        <tr><td>JSON</td><td>.json</td><td>inline</td><td>Structured data</td></tr>
+        <tr><td>HTML</td><td>.html</td><td><code>html_exporter.py</code></td><td>Web view, 5 templates</td></tr>
+        <tr><td>DOCX</td><td>.docx</td><td><code>docx_exporter.py</code></td><td>Word document</td></tr>
+        <tr><td>PDF</td><td>.pdf</td><td><code>pdf_exporter.py</code></td><td>PDF (needs reportlab)</td></tr>
+        <tr><td>ZIP</td><td>.zip</td><td><code>full_course_exporter.py</code></td><td>MD + HTML + DOCX bundle</td></tr>
+        <tr><td>IMSCC</td><td>.imscc</td><td><code>imscc_exporter.py</code></td><td>LMS import (Canvas, Moodle, Blackboard)</td></tr>
+      </table>
+
+      <p>HTML/DOCX templates: <code>default</code>, <code>storyboard</code>, <code>teacher_guide</code>, <code>quiz_bank</code>, <code>client</code></p>
+      <p>Only blocks in <code>approved</code> or <code>published</code> workflow state are exported. Permission: <code>export.course</code>.</p>
+    </section>
+
+    <!-- RBAC -->
+    <section id="rbac">
+      <h2>8. Authentication &amp; RBAC</h2>
+      <table>
+        <tr><th>Role</th><th>DB Value</th><th>Capabilities</th></tr>
+        <tr><td>Admin</td><td><code>admin</code></td><td>Full platform access, all projects, user management</td></tr>
+        <tr><td>Lead (Reviewer)</td><td><code>reviewer</code></td><td>Approve/publish content in assigned projects</td></tr>
+        <tr><td>ID (Author)</td><td><code>author</code></td><td>Create and edit own content</td></tr>
+      </table>
+
+      <p><strong>Enforcement layers:</strong></p>
+      <ul>
+        <li>Backend: <code>require_permission("key")</code> in <code>app/core/dependencies.py</code></li>
+        <li>Permission matrix: <code>promptops_app/auth/permission_matrix.py</code></li>
+        <li>Role definitions: <code>app/core/permissions.py</code></li>
+        <li>Frontend: <code>useAuth().hasPermission()</code> hides UI buttons; server is authoritative</li>
+      </ul>
+
+      <table>
+        <tr><th>Permission Key</th><th>Used For</th></tr>
+        <tr><td><code>workflow.submit</code></td><td>Submit block for review</td></tr>
+        <tr><td><code>workflow.approve</code></td><td>Approve / request changes / reject</td></tr>
+        <tr><td><code>workflow.publish</code></td><td>Publish approved block</td></tr>
+        <tr><td><code>export.course</code></td><td>Download exports + IMSCC + TOC reorder</td></tr>
+        <tr><td><code>generate.run</code></td><td>Launch content generation</td></tr>
+        <tr><td><code>editor.edit</code></td><td>Save block edits</td></tr>
+        <tr><td><code>cdd.generate</code> / <code>blueprint.generate</code></td><td>AI document generation</td></tr>
+      </table>
+    </section>
+
+    <!-- ENV VARS -->
+    <section id="env-vars">
+      <h2>9. Environment Variables</h2>
+      <h3>Backend (<code>.env</code> — see <code>.env.example</code>, loaded by <code>app/core/config.py</code>)</h3>
+      <table>
+        <tr><th>Variable</th><th>Required</th><th>Description</th></tr>
+        <tr><td><code>JWT_SECRET_KEY</code></td><td>✅</td><td>HS256 signing secret for JWT tokens</td></tr>
+        <tr><td><code>DATABASE_URL</code></td><td>✅</td><td>PostgreSQL connection string</td></tr>
+        <tr><td><code>REDIS_URL</code></td><td>✅</td><td>Redis for Celery broker</td></tr>
+        <tr><td><code>ALLOWED_ORIGINS</code></td><td></td><td>CORS origins (comma-separated)</td></tr>
+        <tr><td><code>OPENAI_API_KEY</code></td><td></td><td>OpenAI API key</td></tr>
+        <tr><td><code>AWS_ACCESS_KEY_ID</code> / <code>AWS_SECRET_ACCESS_KEY</code></td><td></td><td>AWS Bedrock credentials</td></tr>
+        <tr><td><code>BEDROCK_MODEL_ID</code></td><td></td><td>Default Claude model on Bedrock</td></tr>
+        <tr><td><code>COPYLEAKS_EMAIL</code> / <code>COPYLEAKS_API_KEY</code></td><td></td><td>Plagiarism detection</td></tr>
+        <tr><td><code>PROMPTOPS_APPROVAL_SLA_HOURS</code></td><td></td><td>Workflow SLA (default 24)</td></tr>
+      </table>
+
+      <h3>Frontend (<code>frontend/.env</code>)</h3>
+      <table>
+        <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>VITE_API_BASE_URL</code></td><td><code>http://localhost:8000</code></td><td>Backend API URL</td></tr>
+        <tr><td><code>VITE_TOKEN_KEY</code></td><td><code>content_ai_jwt</code></td><td>localStorage key for JWT</td></tr>
+        <tr><td><code>VITE_JOB_POLL_INTERVAL_MS</code></td><td><code>3000</code></td><td>Generation job poll interval</td></tr>
+        <tr><td><code>VITE_API_TIMEOUT_MS</code></td><td><code>120000</code></td><td>API request timeout</td></tr>
+      </table>
+    </section>
+
+    <!-- LOCAL SETUP -->
+    <section id="local-setup">
+      <h2>10. Local Development Setup</h2>
+      <div class="card">
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>Python 3.11+ (use <code>py</code> on Windows)</li>
+          <li>Node.js 18+</li>
+          <li>PostgreSQL running locally</li>
+          <li>Redis (for Celery plagiarism tasks)</li>
+        </ul>
+      </div>
+
+      <pre><code># 1. Environment
+cp .env.example .env
+cp frontend/.env.example frontend/.env
+# Set JWT_SECRET_KEY, DATABASE_URL, API keys
+
+# 2. Python backend
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install markdown   # for IMSCC HTML export
+
+# 3. Start API (terminal 1)
+py -m uvicorn app.main:app --reload --port 8000
+# Docs: http://localhost:8000/docs
+
+# 4. Celery worker (terminal 2) — plagiarism scans
+celery -A promptops_app.celery_app worker --loglevel=info --concurrency=2
+
+# 5. Frontend (terminal 3)
+cd frontend
+npm install
+npm run dev
+# App: http://localhost:3000
+
+# 6. Seed dev data (optional)
+py scripts/seed_db.py
+# Login: admin / admin123</code></pre>
+
+      <p>Full guide also in <code>project_execution.md</code>.</p>
+    </section>
+
+    <!-- FILE INDEX -->
+    <section id="file-index">
+      <h2>11. Quick File Index</h2>
+      <h3>Backend — start here</h3>
+      <table>
+        <tr><th>When you need to…</th><th>Look in…</th></tr>
+        <tr><td>Add a new API endpoint</td><td><code>app/api/v1/routers/</code> + <code>app/schemas/</code></td></tr>
+        <tr><td>Change business logic</td><td><code>promptops_app/services/</code></td></tr>
+        <tr><td>Change DB queries</td><td><code>promptops_app/repositories/</code></td></tr>
+        <tr><td>Add/change a DB table</td><td><code>promptops_app/database.py</code> + <code>init_db()</code></td></tr>
+        <tr><td>Change export format</td><td><code>promptops_app/exporters/</code> + <code>export_service.py</code></td></tr>
+        <tr><td>Change LLM prompts</td><td><code>promptops_app/prompts/templates/</code></td></tr>
+        <tr><td>Change permissions</td><td><code>app/core/permissions.py</code></td></tr>
+        <tr><td>Change config/env</td><td><code>app/core/config.py</code> + <code>.env</code></td></tr>
+      </table>
+
+      <h3>Frontend — start here</h3>
+      <table>
+        <tr><th>When you need to…</th><th>Look in…</th></tr>
+        <tr><td>Add a new page</td><td><code>features/&lt;name&gt;/pages/</code> + <code>app/routes.jsx</code></td></tr>
+        <tr><td>Add sidebar nav item</td><td><code>components/layout/WorkspaceSidebar/WorkspaceSidebar.jsx</code></td></tr>
+        <tr><td>Add API call</td><td><code>services/endpoints.js</code> + <code>features/*/services/*Service.js</code></td></tr>
+        <tr><td>Change global state</td><td><code>features/*/*Slice.js</code> + <code>app/store.js</code></td></tr>
+        <tr><td>Change auth/login</td><td><code>features/auth/</code></td></tr>
+        <tr><td>Change workflow UI</td><td><code>features/workflow/pages/WorkflowPage/</code></td></tr>
+        <tr><td>Change export/IMSCC UI</td><td><code>features/export/</code></td></tr>
+        <tr><td>Shared UI components</td><td><code>components/common/</code>, <code>components/layout/</code></td></tr>
+        <tr><td>Route constants</td><td><code>utils/constants.js</code> → <code>ROUTES</code></td></tr>
+      </table>
+    </section>
+
+    <p class="muted" style="margin-top:3rem;padding-top:1rem;border-top:1px solid var(--border);">
+      Content AI Studio — Product Documentation · Open <code>docs/product-documentation.html</code> in your browser
+    </p>
+  </main>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'neutral',
+    securityLevel: 'loose',
+    flowchart: { curve: 'basis' },
+  });
+</script>
+</body>
+</html>

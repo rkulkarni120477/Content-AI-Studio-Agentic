@@ -593,6 +593,9 @@ class Block(Base):
     draft_content         = Column(Text)            # in-progress draft; never overwrites content
     draft_saved_at        = Column(DateTime)        # timestamp of last autosave
     draft_saved_by        = Column(String(100))    # username who triggered last autosave
+    # ── Canvas HTML rendition (generated at publish) ──────────────────────────
+    content_html          = Column(Text)            # LMS-ready standalone HTML built from content on publish
+    content_html_at       = Column(DateTime)        # when content_html was last generated
     # ─────────────────────────────────────────────────────────────────────────
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
@@ -1214,6 +1217,8 @@ def _run_legacy_ddl():
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_content TEXT",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_saved_at TIMESTAMP",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_saved_by VARCHAR(100)",
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS content_html TEXT",
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS content_html_at TIMESTAMP",
         # blocks — extended approval workflow (Phase 11)
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(100)",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(100)",

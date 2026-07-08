@@ -74,15 +74,22 @@ class _ManifestEntry(NamedTuple):
 
 
 def _normalize_blocks(
-    blocks: list[tuple[str, str] | tuple[str, str, str]],
-) -> list[tuple[str, str, str]]:
-    """Normalize export blocks to (label, content, block_type) triples."""
-    normalized: list[tuple[str, str, str]] = []
+    blocks: list[tuple[str, ...]],
+) -> list[tuple[str, str, str, str]]:
+    """Normalize export blocks to (label, content, block_type, content_html) quads.
+
+    Accepts 2-, 3-, or 4-element tuples for backward compatibility:
+      (label, content)
+      (label, content, block_type)
+      (label, content, block_type, content_html)
+    """
+    normalized: list[tuple[str, str, str, str]] = []
     for entry in blocks:
-        if len(entry) >= 3:
-            normalized.append((entry[0], entry[1], entry[2] or ""))
-        else:
-            normalized.append((entry[0], entry[1], ""))
+        label = entry[0] if len(entry) > 0 else ""
+        content = entry[1] if len(entry) > 1 else ""
+        block_type = (entry[2] or "") if len(entry) > 2 else ""
+        content_html = (entry[3] or "") if len(entry) > 3 else ""
+        normalized.append((label, content, block_type, content_html))
     return normalized
 
 
@@ -179,18 +186,48 @@ def _block_html(label: str, content: str, refs: list[_MediaRef]) -> str:
 
 
 def _build_manifest(topic: str, items: list[_ManifestEntry]) -> str:
-    """Build imsmanifest.xml from manifest entries."""
+    """Build imsmanifest.xml from manifest entries.
+
+    Canvas (and most LMSs) build the Table of Contents / Modules from a *nested*
+    organization tree, not a flat list of items. The required shape is:
+
+        <organization>
+          <item>                      <!-- root wrapper, no title/ref -->
+            <item><title>Module</title>   <!-- module = container, no ref -->
+              <item identifierref=..>     <!-- leaf = links to a resource -->
+                <title>Page</title>
+              </item>
+            </item>
+          </item>
+        </organization>
+
+    A flat list of leaf items directly under <organization> imports the pages but
+    produces no module/TOC in Canvas, which is exactly the reported symptom.
+    """
     manifest_id = _uid("manifest")
     org_id = _uid("org")
+    root_id = _uid("root")
+    module_id = _uid("module")
 
-    item_xml = []
+    safe_topic = escape(topic)
+
+    leaf_xml = []
     for entry in items:
         safe_label = escape(entry.label)
-        item_xml.append(
-            f'      <item identifier="{entry.item_id}" identifierref="{entry.resource_id}">\n'
-            f"        <title>{safe_label}</title>\n"
-            f"      </item>"
+        leaf_xml.append(
+            f'          <item identifier="{entry.item_id}" identifierref="{entry.resource_id}">\n'
+            f"            <title>{safe_label}</title>\n"
+            f"          </item>"
         )
+
+    organization_body = (
+        f'      <item identifier="{root_id}">\n'
+        f'        <item identifier="{module_id}">\n'
+        f"          <title>{safe_topic}</title>\n"
+        f"{chr(10).join(leaf_xml)}\n"
+        f"        </item>\n"
+        f"      </item>"
+    )
 
     resource_xml = []
     for entry in items:
@@ -209,7 +246,6 @@ def _build_manifest(topic: str, items: list[_ManifestEntry]) -> str:
                 f"    </resource>"
             )
 
-    safe_topic = escape(topic)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <manifest identifier="{manifest_id}" {_MANIFEST_NS}>
   <metadata>
@@ -225,8 +261,7 @@ def _build_manifest(topic: str, items: list[_ManifestEntry]) -> str:
   </metadata>
   <organizations>
     <organization identifier="{org_id}" structure="rooted-hierarchy">
-      <title>{safe_topic}</title>
-{chr(10).join(item_xml)}
+{organization_body}
     </organization>
   </organizations>
   <resources>
@@ -238,7 +273,7 @@ def _build_manifest(topic: str, items: list[_ManifestEntry]) -> str:
 
 def build_imscc(
     topic: str,
-    blocks: list[tuple[str, str] | tuple[str, str, str]],
+    blocks: list[tuple[str, ...]],
     base_filename: str = "course",
 ) -> BytesIO:
     """Build an IMS Common Cartridge 1.1 package as a BytesIO ZIP stream.
@@ -246,7 +281,12 @@ def build_imscc(
     Parameters
     ----------
     topic : Course title used in the manifest organization.
-    blocks : Ordered list of (label, content) or (label, content, block_type).
+    blocks : Ordered list of tuples. Each may be
+        ``(label, content)``, ``(label, content, block_type)``, or
+        ``(label, content, block_type, content_html)``. When ``content_html`` is
+        present it is a complete standalone HTML document (the Canvas HTML
+        rendition generated at publish) and is packaged verbatim; otherwise the
+        markdown ``content`` is converted to HTML at export time.
     base_filename : Unused at runtime; kept for API symmetry with other exporters.
     """
     buf = BytesIO()
@@ -255,7 +295,7 @@ def build_imscc(
     normalized = _normalize_blocks(blocks)
 
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for idx, (label, content, block_type) in enumerate(normalized, start=1):
+        for idx, (label, content, block_type, content_html) in enumerate(normalized, start=1):
             item_id = _uid("item")
             resource_id = _uid("res")
             display_label = label or f"Block {idx}"
@@ -270,14 +310,18 @@ def build_imscc(
                     ))
                     continue
 
-            refs = _detect_media(content or "", idx)
-            for ref in refs:
-                zip_path = ref.placeholder_path.replace("../", "")
-                all_media.append((zip_path, _placeholder_svg(ref.original, ref.media_type)))
-
             href = f"wiki_content/block_{idx}.html"
-            html = _block_html(label, content or "", refs)
-            zf.writestr(href, html.encode("utf-8"))
+            if content_html and content_html.strip():
+                # Pre-rendered Canvas HTML — package as-is (self-contained doc).
+                zf.writestr(href, content_html.encode("utf-8"))
+            else:
+                refs = _detect_media(content or "", idx)
+                for ref in refs:
+                    zip_path = ref.placeholder_path.replace("../", "")
+                    all_media.append((zip_path, _placeholder_svg(ref.original, ref.media_type)))
+                html = _block_html(label, content or "", refs)
+                zf.writestr(href, html.encode("utf-8"))
+
             manifest_items.append(_ManifestEntry(
                 item_id, resource_id, display_label, href, "webcontent",
             ))

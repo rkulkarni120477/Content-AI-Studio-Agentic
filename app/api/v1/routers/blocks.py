@@ -33,6 +33,7 @@ from app.core.exceptions import LLMGenerationError, NotFoundError, WorkflowError
 from app.schemas.block import (
     BlockAutosaveRequest,
     BlockAutosaveResponse,
+    BlockCanvasHtmlResponse,
     BlockListItem,
     BlockRatingRequest,
     BlockRead,
@@ -170,6 +171,7 @@ def list_course_blocks(
             content_preview=(b.content or "")[:300],
             workflow_state=b.workflow_state, position=b.position or 0, rating=b.rating,
             generation_id=b.generation_id,
+            has_html=bool(getattr(b, "content_html", None) and b.content_html.strip()),
         )
         for b in all_blocks[start: start + page_size]
     ]
@@ -661,6 +663,89 @@ def rate_block(
 
 
 # ---------------------------------------------------------------------------
+# Canvas HTML rendition (preview / regenerate)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{block_id}/canvas-html",
+    response_model=BlockCanvasHtmlResponse,
+    summary="Get a block's Canvas-ready HTML rendition (preview)",
+    description="Returns the LMS-ready HTML generated at publish, used by the IMSCC export.",
+)
+def get_block_canvas_html(
+    block_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> BlockCanvasHtmlResponse:
+    """Return the stored Canvas HTML for a block (for preview in the Export screen)."""
+    block = _get_block_or_404(db, block_id)
+    html = getattr(block, "content_html", None)
+    return BlockCanvasHtmlResponse(
+        block_id=block.id,
+        block_label=block.block_label or f"Block {block.id}",
+        has_html=bool(html and html.strip()),
+        content_html=html,
+        content_html_at=getattr(block, "content_html_at", None),
+    )
+
+
+@router.post(
+    "/{block_id}/canvas-html/regenerate",
+    response_model=BlockCanvasHtmlResponse,
+    summary="Regenerate a block's Canvas-ready HTML rendition",
+    description="Re-runs the Canvas HTML Lesson Generator on the block's content and stores the result.",
+)
+def regenerate_block_canvas_html(
+    block_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> BlockCanvasHtmlResponse:
+    """Regenerate and persist the Canvas HTML for a single block."""
+    from datetime import datetime, timezone
+
+    from promptops_app.services.canvas_html_service import generate_canvas_html
+    from promptops_app.services.usage_service import UsageLogContext
+
+    block = _get_block_or_404(db, block_id)
+
+    if not (block.content or "").strip():
+        raise WorkflowError("Block has no content to convert to HTML.")
+
+    gen = block.generation
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=getattr(gen, "project_id", None) if gen else None,
+        course_id=getattr(gen, "course_id", None) if gen else None,
+        entity_type="canvas_html",
+        entity_id=str(block.id),
+    )
+    html = generate_canvas_html(
+        label=block.block_label or "",
+        content=block.content or "",
+        block_type=block.block_type or "",
+        usage_ctx=usage_ctx,
+    )
+    if not html:
+        raise LLMGenerationError("Canvas HTML generation failed. Please try again.")
+
+    block.content_html = html
+    block.content_html_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(block)
+
+    _log.info("block_canvas_html_regenerated  user=%s  block_id=%d",
+              current_user.username, block_id)
+
+    return BlockCanvasHtmlResponse(
+        block_id=block.id,
+        block_label=block.block_label or f"Block {block.id}",
+        has_html=True,
+        content_html=block.content_html,
+        content_html_at=block.content_html_at,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Full course export
 # ---------------------------------------------------------------------------
 
@@ -712,6 +797,7 @@ def export_course(
         topic=topic,
         blocks=[(b.block_label, b.content or "") for b in approved_blocks],
         block_types=[b.block_type or "" for b in approved_blocks],
+        block_html=[getattr(b, "content_html", None) or "" for b in approved_blocks],
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
         entity_type="full_course",

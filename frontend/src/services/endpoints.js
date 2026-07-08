@@ -149,6 +149,8 @@ export const BLOCKS = {
   VALIDATE_COURSE:  (courseId) => `/api/v1/courses/${courseId}/validate`,
   EXPORT_COURSE:    (courseId) => `/api/v1/courses/${courseId}/export`,
   RATING:           (id)       => `/api/v1/${id}/rating`,
+  CANVAS_HTML:          (id)   => `/api/v1/${id}/canvas-html`,
+  CANVAS_HTML_REGEN:    (id)   => `/api/v1/${id}/canvas-html/regenerate`,
 };
 
 // ─── Workflow ─────────────────────────────────────────────────────────────────

@@ -51,6 +51,7 @@ class BlockListItem(BaseModel):
     position: int = 0
     rating: Optional[int] = None
     generation_id: Optional[int] = None
+    has_html: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -222,6 +223,15 @@ class BlockReorderRequest(BaseModel):
 class BlockReorderResponse(BaseModel):
     updated: int
     block_ids: list[int]
+
+
+class BlockCanvasHtmlResponse(BaseModel):
+    """Canvas-ready HTML rendition for a single block (preview)."""
+    block_id: int
+    block_label: str
+    has_html: bool
+    content_html: Optional[str] = None
+    content_html_at: Optional[datetime] = None
 
 
 class BlockRatingRequest(BaseModel):
