@@ -1,0 +1,50 @@
+name: Deploy Content AI Backend
+
+on:
+  push:
+    branches:
+      - sami
+    paths:
+      - "app/**"
+      - "api_server.py"
+      - "promptops_app/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "requirements.txt"
+      - ".github/workflows/backend-deploy.yml"
+
+jobs:
+  deploy:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /opt/content-ai
+
+            echo "Pulling latest code..."
+            git fetch origin
+            git checkout sami
+            git pull origin sami
+
+            echo "Building containers..."
+            docker compose build
+
+            echo "Restarting containers..."
+            docker compose up -d
+
+            echo "Cleaning unused images..."
+            docker image prune -f
+
+            echo "Checking backend..."
+            curl -fsS https://cas-api.academian.com/docs >/dev/null
+
+            echo "Backend deployment completed successfully."
