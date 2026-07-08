@@ -88,6 +88,7 @@ class ExportRequest:
     is_admin: bool
     block_types: Optional[list[str]] = None    # parallel to blocks — used by IMSCC export
     block_html: Optional[list[str]] = None     # parallel to blocks — pre-rendered Canvas HTML (IMSCC)
+    modules: Optional[list[tuple[str, list[int]]]] = None  # (title, [block index]) — IMSCC module grouping
     entity_type: str = ""                      # "generation" | "cdd" | "blueprint" | "full_course"
     entity_id: Optional[int] = None
     project_id: Optional[int] = None
@@ -212,7 +213,9 @@ def _build_imscc(request: ExportRequest) -> bytes:
         if request.block_html and i < len(request.block_html):
             html = request.block_html[i] or ""
         typed_blocks.append((lbl, cnt, bt, html))
-    return build_imscc(request.topic, typed_blocks, base_filename=base).read()
+    return build_imscc(
+        request.topic, typed_blocks, base_filename=base, modules=request.modules,
+    ).read()
 
 
 _BUILDERS = {

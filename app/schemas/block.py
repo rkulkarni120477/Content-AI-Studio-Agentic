@@ -234,6 +234,56 @@ class BlockCanvasHtmlResponse(BaseModel):
     content_html_at: Optional[datetime] = None
 
 
+# ---------------------------------------------------------------------------
+# Course modules (Canvas-style export grouping)
+# ---------------------------------------------------------------------------
+
+class ModuleBlock(BaseModel):
+    """A published block as it appears within a module or the unassigned list."""
+    id: int
+    block_label: str
+    position: int = 0
+    workflow_state: str
+    has_html: bool = False
+
+
+class CourseModuleRead(BaseModel):
+    id: int
+    title: str
+    position: int = 0
+    blocks: list[ModuleBlock] = Field(default_factory=list)
+
+
+class CourseModulesResponse(BaseModel):
+    modules: list[CourseModuleRead] = Field(default_factory=list)
+    unassigned: list[ModuleBlock] = Field(default_factory=list)
+
+
+class CourseModuleCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
+
+class CourseModuleRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
+
+class CourseModuleReorderRequest(BaseModel):
+    module_ids: list[int] = Field(..., min_length=1)
+
+
+class ModuleLayoutRow(BaseModel):
+    module_id: int
+    block_ids: list[int] = Field(default_factory=list)
+
+
+class ModuleLayoutRequest(BaseModel):
+    modules: list[ModuleLayoutRow] = Field(default_factory=list)
+
+
+class ModuleLayoutResponse(BaseModel):
+    updated: int
+
+
 class BlockRatingRequest(BaseModel):
     rating: int = Field(..., ge=1, le=5)
 

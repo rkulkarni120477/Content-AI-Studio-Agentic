@@ -547,6 +547,22 @@ class Generation(Base):
     blocks = relationship("Block", back_populates="generation", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
+class CourseModule(Base):
+    """A Canvas-style module grouping published blocks for IMSCC export.
+
+    Modules are ordered by ``position`` and each published block may belong to at
+    most one module (``blocks.module_id``). Unassigned blocks fall into a default
+    module at export time.
+    """
+    __tablename__ = "course_modules"
+    id         = Column(Integer, primary_key=True)
+    course_id  = Column(Integer, nullable=False, index=True)   # FK to courses.id
+    title      = Column(String(255), nullable=False)
+    position   = Column(Integer, default=0)                    # display order within a course
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
 class Block(Base):
     """A generated content block — the atomic unit of the approval workflow.
 
@@ -596,6 +612,8 @@ class Block(Base):
     # ── Canvas HTML rendition (generated at publish) ──────────────────────────
     content_html          = Column(Text)            # LMS-ready standalone HTML built from content on publish
     content_html_at       = Column(DateTime)        # when content_html was last generated
+    # ── Export module grouping (Canvas-style modules) ─────────────────────────
+    module_id             = Column(Integer, ForeignKey("course_modules.id"), nullable=True)
     # ─────────────────────────────────────────────────────────────────────────
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
@@ -1219,6 +1237,7 @@ def _run_legacy_ddl():
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_saved_by VARCHAR(100)",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS content_html TEXT",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS content_html_at TIMESTAMP",
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS module_id INTEGER",
         # blocks — extended approval workflow (Phase 11)
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(100)",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(100)",

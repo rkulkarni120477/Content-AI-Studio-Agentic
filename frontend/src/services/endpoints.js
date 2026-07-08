@@ -153,6 +153,16 @@ export const BLOCKS = {
   CANVAS_HTML_REGEN:    (id)   => `/api/v1/${id}/canvas-html/regenerate`,
 };
 
+// ─── Export Modules (Canvas-style grouping) ────────────────────────────────────
+export const MODULES = {
+  LIST:             (courseId) => `/api/v1/courses/${courseId}/modules`,
+  CREATE:           (courseId) => `/api/v1/courses/${courseId}/modules`,
+  RENAME:           (moduleId) => `/api/v1/modules/${moduleId}`,
+  DELETE:           (moduleId) => `/api/v1/modules/${moduleId}`,
+  REORDER:          (courseId) => `/api/v1/courses/${courseId}/modules/reorder`,
+  SAVE_LAYOUT:      (courseId) => `/api/v1/courses/${courseId}/modules/layout`,
+};
+
 // ─── Workflow ─────────────────────────────────────────────────────────────────
 export const WORKFLOW = {
   LIST:             '/api/v1/workflow/blocks',
