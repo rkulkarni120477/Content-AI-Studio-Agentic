@@ -105,11 +105,18 @@ class User(Base):
     __tablename__ = "users"
     id            = Column(Integer, primary_key=True)
     username      = Column(String, unique=True)
-    password_hash = Column(String)
-    role          = Column(String)           # admin | author | reviewer
+    password_hash = Column(String)           # nullable — Microsoft-only users have none
+    role          = Column(String)           # legacy/default role; effective role is per-tenant (TenantMembership)
     permissions   = Column(Text)             # JSON list — future-ready granular perms
     is_active     = Column(Boolean, default=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
+    # ── Tenant identity (project-as-tenant + Microsoft auth) ──────────────────
+    project_id        = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)  # last-active tenant
+    is_platform_admin = Column(Boolean, default=False, nullable=False)
+    microsoft_oid     = Column(String(64), nullable=True, index=True)
+    email             = Column(String(255), nullable=True, index=True)
+    display_name      = Column(String(200), nullable=True)
+    memberships       = relationship("TenantMembership", back_populates="user", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 class Document(Base):
@@ -1014,19 +1021,34 @@ class UserPromptHistory(Base):
 
 
 class Project(Base):
-    """Top-level client project container."""
+    """Top-level client project container — this IS the tenant.
+
+    Tenant fields: slug (organization code, unique), status (active|suspended),
+    max_users (license), and optional per-tenant Azure app credentials.
+    """
     __tablename__ = "projects"
     id               = Column(Integer, primary_key=True)
-    name             = Column(String(255), nullable=False)
+    name             = Column(String(255), nullable=False)   # display name
     description      = Column(Text)
     client_name      = Column(String(255))
     created_by       = Column(String(100))
     created_at       = Column(DateTime, default=datetime.utcnow)
     is_active        = Column(Boolean, default=True)
     active_style_id  = Column(Integer, nullable=True)   # Project-level active style (FK to styles.id)
+    # ── Tenant (organization) fields ──────────────────────────────────────────
+    slug                   = Column(String(64), unique=True, index=True, nullable=True)  # org code
+    status                 = Column(String(20), nullable=False, default="active")        # active|suspended
+    max_users              = Column(Integer, nullable=False, default=50)
+    microsoft_auth_enabled = Column(Boolean, nullable=False, default=True)
+    azure_tenant_id        = Column(String(64), nullable=True)
+    azure_client_id        = Column(String(64), nullable=True)
+    azure_client_secret    = Column(String(512), nullable=True)
+    azure_new_user_role    = Column(String(32), nullable=True)
+    allowed_email_domains  = Column(String(500), nullable=True)
     clusters         = relationship("Cluster", back_populates="project", cascade="all, delete-orphan")
     courses          = relationship("Course", back_populates="project", cascade="all, delete-orphan")
     assignments      = relationship("ProjectUserAssignment", back_populates="project", cascade="all, delete-orphan")
+    memberships      = relationship("TenantMembership", back_populates="project", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -1119,6 +1141,29 @@ class CourseUserAssignment(Base):
     course_id   = Column(Integer, ForeignKey("courses.id"), nullable=False)
     username    = Column(String(100), nullable=False)
     assigned_at = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class TenantMembership(Base):
+    """Membership of a User in a Project (tenant), with a per-tenant role.
+
+    A person may belong to several tenants (via several org codes) with a
+    different role in each. One global User row, many memberships.
+    role: admin | reviewer | author (tenant_admin/prompt_manager/user).
+    """
+    __tablename__ = "tenant_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_membership_user_project"),
+    )
+    id         = Column(Integer, primary_key=True)
+    user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    role       = Column(String(20), nullable=False, default="author")
+    active     = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(100))
+    user       = relationship("User", back_populates="memberships")
+    project    = relationship("Project", back_populates="memberships")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -1314,6 +1359,21 @@ def _run_legacy_ddl():
         "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP",
         # cluster_prompts — make cluster assignment optional (Req 2)
         "ALTER TABLE cluster_prompts ALTER COLUMN cluster_id DROP NOT NULL",
+        # ── Tenant (organization) system — Microsoft auth + org codes ─────────
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS project_id INTEGER",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE NOT NULL",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_oid VARCHAR(64)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug VARCHAR(64)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS max_users INTEGER DEFAULT 50",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS microsoft_auth_enabled BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_tenant_id VARCHAR(64)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_client_id VARCHAR(64)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_client_secret VARCHAR(512)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_new_user_role VARCHAR(32)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS allowed_email_domains VARCHAR(500)",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
@@ -1370,6 +1430,12 @@ def _run_legacy_ddl():
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_logs(model_name, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_status ON llm_usage_logs(status, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_entity ON llm_usage_logs(entity_type, entity_id)",
+            # Tenant (organization) system
+            "CREATE INDEX IF NOT EXISTS idx_users_project_id ON users(project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_users_microsoft_oid ON users(microsoft_oid)",
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+            "CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user ON tenant_memberships(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tenant_memberships_project ON tenant_memberships(project_id)",
         ]
     for stmt in _index_migrations:
         with engine.begin() as conn:
@@ -1407,6 +1473,33 @@ def _run_data_backfills():
                 LIMIT 1
             )
             WHERE cluster_id IS NULL
+        """))
+
+    # ── Tenant (organization) backfill (idempotent) ───────────────────────────
+    # Give every project a slug + tenant defaults so it can act as a tenant.
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE projects
+            SET slug = regexp_replace(lower(coalesce(name, 'org')), '[^a-z0-9]+', '-', 'g') || '-' || id::text
+            WHERE slug IS NULL OR slug = ''
+        """))
+        conn.execute(text("UPDATE projects SET status = 'active' WHERE status IS NULL"))
+        conn.execute(text("UPDATE projects SET max_users = 50 WHERE max_users IS NULL"))
+        conn.execute(text("UPDATE projects SET microsoft_auth_enabled = TRUE WHERE microsoft_auth_enabled IS NULL"))
+    with engine.begin() as conn:
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_slug ON projects(slug)"))
+    # Membership for every existing non-platform-admin user that has a project_id.
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO tenant_memberships (user_id, project_id, role, active, created_at, created_by)
+            SELECT u.id, u.project_id, COALESCE(u.role, 'author'), COALESCE(u.is_active, TRUE), NOW(), 'migration'
+            FROM users u
+            WHERE u.project_id IS NOT NULL
+              AND u.is_platform_admin = FALSE
+              AND NOT EXISTS (
+                  SELECT 1 FROM tenant_memberships m
+                  WHERE m.user_id = u.id AND m.project_id = u.project_id
+              )
         """))
 
 

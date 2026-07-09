@@ -155,6 +155,8 @@ export const ROUTES = {
   EXPORT:       (courseId) => `/workspace/${courseId}/export`,
   ANALYTICS:    (courseId) => `/workspace/${courseId}/analytics`,
   PROMPT_LIBRARY: '/prompt-library',
+  TENANTS:        '/dashboard',
+  TENANT_USERS:   (tenantId) => `/tenants/${tenantId}/users`,
 };
 
 // ─── Local Storage Keys ───────────────────────────────────────────────────────

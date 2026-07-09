@@ -56,6 +56,8 @@ def create_access_token(
     username: str,
     role: str,
     *,
+    project_id: int | None = None,
+    is_platform_admin: bool = False,
     workspace: dict | None = None,
     config: dict | None = None,
 ) -> str:
@@ -77,10 +79,12 @@ def create_access_token(
     expire = now + datetime.timedelta(days=settings.jwt_token_expire_days)
 
     payload: dict = {
-        "sub":  username,
-        "role": role,
-        "iat":  now,
-        "exp":  expire,
+        "sub":               username,
+        "role":              role,
+        "project_id":        project_id,
+        "is_platform_admin": is_platform_admin,
+        "iat":               now,
+        "exp":               expire,
     }
 
     # Only embed non-null workspace values to keep the token small.
