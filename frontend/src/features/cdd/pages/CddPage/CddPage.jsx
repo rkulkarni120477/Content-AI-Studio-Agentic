@@ -370,314 +370,319 @@ export default function CddPage() {
         />
 
         <div className={styles.layout}>
-          {/* Left — Create New CDD */}
-          <section className={styles.panel}>
-            <h2 className={styles.panel__title}>➕ Create New CDD</h2>
-            <p className={styles.requiredHint}>
-              Fields marked <span className={styles.requiredMark}>*</span> are required.
-            </p>
+          <details className={styles.accordion} open>
+            <summary className={styles.accordion__summary}>➕ Create New CDD</summary>
+            <div className={styles.accordion__body}>
+              <p className={styles.requiredHint}>
+                Fields marked <span className={styles.requiredMark}>*</span> are required.
+              </p>
 
-            {stylesList.length > 0 ? (
-              <>
-                <Select
-                  label="🎨 Style for this CDD"
-                  options={styleOptions}
-                  value={selectedStyleId != null ? String(selectedStyleId) : ''}
-                  onChange={(e) => setSelectedStyleId(e.target.value ? Number(e.target.value) : null)}
-                />
-                {selectedStyle ? (
-                  <div className={styles.styleBannerOk}>
-                    🎨 <strong>{selectedStyle.name}</strong> will be applied
-                    <span className={styles.styleBannerOk__muted}> ({stylePinLabel})</span>
-                  </div>
-                ) : (
-                  <div className={styles.styleBannerWarn}>
-                    ⚠️ No style selected — CDD will be generated without style constraints.
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className={styles.styleBannerInfo}>
-                ℹ️ No styles created yet. Go to the <strong>Style</strong> tab to create one.
-              </div>
-            )}
-
-            <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
-              <Input
-                label="Course Title *"
-                required
-                placeholder="e.g. Foundations of Clinical Nursing"
-                error={generateForm.formState.errors.course_title?.message}
-                {...generateForm.register('course_title')}
-              />
-              <Input
-                label="Document Title"
-                placeholder="e.g. Nursing Foundations CDD v1"
-                {...generateForm.register('document_title')}
-              />
-              <Input
-                label="Estimated Duration (hours) *"
-                type="number"
-                min={1}
-                max={500}
-                {...generateForm.register('duration_hours', { valueAsNumber: true })}
-              />
-
-              <div className={styles.extraSection}>
-                <label className={styles.extraSection__label}>
-                  💬 Additional Instructions <span className={styles.optional}>(optional)</span>
-                </label>
-                {savedInstrs.length > 0 && (
-                  <div className={styles.instrLoad}>
-                    <Select
-                      label=""
-                      options={[
-                        { value: '— Start fresh —', label: '— Start fresh —' },
-                        ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
-                      ]}
-                      value={loadInstrSel}
-                      onChange={(e) => setLoadInstrSel(e.target.value)}
-                    />
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      type="button"
-                      onClick={() => {
-                        if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
-                        else {
-                          const rec = savedInstrs.find((r) => r.name === loadInstrSel);
-                          if (rec) setExtraInstructions(rec.content);
-                        }
-                      }}
-                    >
-                      📥 Load
-                    </Button>
-                  </div>
-                )}
-                <textarea
-                  className={styles.textarea}
-                  rows={4}
-                  placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6."
-                  value={extraInstructions}
-                  onChange={(e) => setExtraInstructions(e.target.value)}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  type="button"
-                  fullWidth
-                  onClick={() => setShowSaveInstr(!showSaveInstr)}
-                >
-                  💾 Save Instructions
-                </Button>
-                {showSaveInstr && (
-                  <div className={styles.saveInstrPanel}>
-                    <Input
-                      placeholder="e.g. Clinical simulation focus"
-                      value={saveInstrName}
-                      onChange={(e) => setSaveInstrName(e.target.value)}
-                    />
-                    <label className={styles.checkLabel}>
-                      <input
-                        type="checkbox"
-                        checked={saveInstrNewVer}
-                        onChange={(e) => setSaveInstrNewVer(e.target.checked)}
-                      />
-                      New version
-                    </label>
-                    <Button variant="primary" size="sm" type="button" onClick={handleSaveInstructions}>
-                      Confirm
-                    </Button>
-                  </div>
-                )}
-              </div>
-            </form>
-
-            {error && <ErrorState message={error} onRetry={() => dispatch(fetchCddsThunk(courseId))} />}
-          </section>
-
-          {/* Right — CDD Library */}
-          <section className={styles.panel}>
-            <h2 className={styles.panel__title}>📂 Your Course Design Documents</h2>
-
-            {isLoading ? (
-              <div className={styles.center}><Loader size="lg" /></div>
-            ) : cdds.length === 0 ? (
-              <EmptyState
-                title="No CDDs yet"
-                message="Create your first CDD using the form on the left."
-              />
-            ) : (
-              <>
-                <Select
-                  label="Select CDD to View/Edit"
-                  options={cdds.map((c) => ({
-                    value: String(c.id),
-                    label: `${c.title || c.course_title} (ID: ${c.id})`,
-                  }))}
-                  value={viewCddId != null ? String(viewCddId) : ''}
-                  onChange={(e) => {
-                    const id = Number(e.target.value);
-                    setViewCddId(id);
-                    setSelectedCddId(id);
-                    if (id) dispatch(fetchCddVersionsThunk(id));
-                  }}
-                />
-
-                {displayCdd && (
-                  <>
-                    <div className={styles.metrics}>
-                      <div className={styles.metric}>
-                        <span className={styles.metric__label}>Active Version</span>
-                        <span className={styles.metric__value}>{displayCdd.active_version || '—'}</span>
-                      </div>
-                      <div className={styles.metric}>
-                        <span className={styles.metric__label}>State</span>
-                        <span className={styles.metric__value}>
-                          {(displayCdd.workflow_state || 'draft').replace(/^\w/, (c) => c.toUpperCase())}
-                        </span>
-                      </div>
-                      <div className={styles.metric}>
-                        <span className={styles.metric__label}>Total Versions</span>
-                        <span className={styles.metric__value}>{versions.length}</span>
-                      </div>
+              {stylesList.length > 0 ? (
+                <>
+                  <Select
+                    label="🎨 Style for this CDD"
+                    options={styleOptions}
+                    value={selectedStyleId != null ? String(selectedStyleId) : ''}
+                    onChange={(e) => setSelectedStyleId(e.target.value ? Number(e.target.value) : null)}
+                  />
+                  {selectedStyle ? (
+                    <div className={styles.styleBannerOk}>
+                      🎨 <strong>{selectedStyle.name}</strong> will be applied
+                      <span className={styles.styleBannerOk__muted}> ({stylePinLabel})</span>
                     </div>
+                  ) : (
+                    <div className={styles.styleBannerWarn}>
+                      ⚠️ No style selected — CDD will be generated without style constraints.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className={styles.styleBannerInfo}>
+                  ℹ️ No styles created yet. Go to the <strong>Style</strong> tab to create one.
+                </div>
+              )}
 
-                    <ul className={styles.list}>
-                      {cdds.map((cdd) => (
-                        <li
-                          key={cdd.id}
-                          className={`${styles.listItem} ${viewCddId === cdd.id ? styles['listItem--active'] : ''}`}
-                        >
-                          <div className={styles.listItem__info}>
-                            <span className={styles.listItem__title}>{cdd.title || cdd.course_title}</span>
-                            <span className={styles.listItem__meta}>{formatDate(cdd.created_at)}</span>
+              <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
+                <Input
+                  label="Course Title *"
+                  required
+                  placeholder="e.g. Foundations of Clinical Nursing"
+                  error={generateForm.formState.errors.course_title?.message}
+                  {...generateForm.register('course_title')}
+                />
+                <Input
+                  label="Document Title"
+                  placeholder="e.g. Nursing Foundations CDD v1"
+                  {...generateForm.register('document_title')}
+                />
+                <Input
+                  label="Estimated Duration (hours) *"
+                  type="number"
+                  min={1}
+                  max={500}
+                  {...generateForm.register('duration_hours', { valueAsNumber: true })}
+                />
+
+                <div className={styles.extraSection}>
+                  <label className={styles.extraSection__label}>
+                    💬 Additional Instructions <span className={styles.optional}>(optional)</span>
+                  </label>
+                  {savedInstrs.length > 0 && (
+                    <div className={styles.instrLoad}>
+                      <Select
+                        label=""
+                        options={[
+                          { value: '— Start fresh —', label: '— Start fresh —' },
+                          ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
+                        ]}
+                        value={loadInstrSel}
+                        onChange={(e) => setLoadInstrSel(e.target.value)}
+                      />
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        type="button"
+                        onClick={() => {
+                          if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
+                          else {
+                            const rec = savedInstrs.find((r) => r.name === loadInstrSel);
+                            if (rec) setExtraInstructions(rec.content);
+                          }
+                        }}
+                      >
+                        📥 Load
+                      </Button>
+                    </div>
+                  )}
+                  <textarea
+                    className={styles.textarea}
+                    rows={4}
+                    placeholder="e.g. Focus on clinical simulation. Include DEI examples. Emphasise Bloom's levels 4–6."
+                    value={extraInstructions}
+                    onChange={(e) => setExtraInstructions(e.target.value)}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    type="button"
+                    className={styles.saveInstrBtn}
+                    onClick={() => setShowSaveInstr(!showSaveInstr)}
+                  >
+                    💾 Save Instructions
+                  </Button>
+                  {showSaveInstr && (
+                    <div className={styles.saveInstrPanel}>
+                      <Input
+                        placeholder="e.g. Clinical simulation focus"
+                        value={saveInstrName}
+                        onChange={(e) => setSaveInstrName(e.target.value)}
+                      />
+                      <label className={styles.checkLabel}>
+                        <input
+                          type="checkbox"
+                          checked={saveInstrNewVer}
+                          onChange={(e) => setSaveInstrNewVer(e.target.checked)}
+                        />
+                        New version
+                      </label>
+                      <Button variant="primary" size="sm" type="button" onClick={handleSaveInstructions}>
+                        Confirm
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </form>
+
+              {error && <ErrorState message={error} onRetry={() => dispatch(fetchCddsThunk(courseId))} />}
+            </div>
+          </details>
+
+          <details className={styles.accordion} open>
+            <summary className={styles.accordion__summary}>📂 Your Course Design Documents</summary>
+            <div className={styles.accordion__body}>
+              {isLoading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : cdds.length === 0 ? (
+                <EmptyState
+                  title="No CDDs yet"
+                  message="Create your first CDD using the form above."
+                />
+              ) : (
+                <>
+                  <Select
+                    label="Select CDD to View/Edit"
+                    options={cdds.map((c) => ({
+                      value: String(c.id),
+                      label: `${c.title || c.course_title} (ID: ${c.id})`,
+                    }))}
+                    value={viewCddId != null ? String(viewCddId) : ''}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      setViewCddId(id);
+                      setSelectedCddId(id);
+                      if (id) dispatch(fetchCddVersionsThunk(id));
+                    }}
+                  />
+
+                  {displayCdd && (
+                    <>
+                      <div className={styles.metrics}>
+                        <div className={styles.metric}>
+                          <span className={styles.metric__label}>Active Version</span>
+                          <span className={styles.metric__value}>{displayCdd.active_version || '—'}</span>
+                        </div>
+                        <div className={styles.metric}>
+                          <span className={styles.metric__label}>State</span>
+                          <span className={styles.metric__value}>
+                            {(displayCdd.workflow_state || 'draft').replace(/^\w/, (c) => c.toUpperCase())}
+                          </span>
+                        </div>
+                        <div className={styles.metric}>
+                          <span className={styles.metric__label}>Total Versions</span>
+                          <span className={styles.metric__value}>{versions.length}</span>
+                        </div>
+                      </div>
+
+                      <ul className={styles.list}>
+                        {cdds.map((cdd) => (
+                          <li
+                            key={cdd.id}
+                            className={`${styles.listItem} ${viewCddId === cdd.id ? styles['listItem--active'] : ''}`}
+                          >
+                            <div className={styles.listItem__info}>
+                              <span className={styles.listItem__title}>{cdd.title || cdd.course_title}</span>
+                              <span className={styles.listItem__meta}>{formatDate(cdd.created_at)}</span>
+                            </div>
+                            {activeCdd?.id === cdd.id ? (
+                              <span className={styles.badge__active}>Active</span>
+                            ) : (
+                              <Button variant="ghost" size="sm" onClick={() => onSetActive(cdd.id)}>
+                                Set Active
+                              </Button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+
+                      <div className={styles.activeContent}>
+                        <div className={styles.activeContent__header}>
+                          <h3 className={styles.activeContent__title}>
+                            {displayCdd.title || displayCdd.course_title}
+                          </h3>
+                          <div className={styles.activeContent__actions}>
+                            <Button variant="ghost" size="sm" onClick={() => onExport('markdown')}>↓ MD</Button>
+                            <Button variant="ghost" size="sm" onClick={() => onExport('docx')}>↓ DOCX</Button>
+                            <Button variant="ghost" size="sm" onClick={handleDownloadPrompt}>⬇️ Prompt</Button>
+                            <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
+                              + Save Version
+                            </Button>
                           </div>
-                          {activeCdd?.id === cdd.id ? (
-                            <span className={styles.badge__active}>Active</span>
-                          ) : (
-                            <Button variant="ghost" size="sm" onClick={() => onSetActive(cdd.id)}>
-                              Set Active
-                            </Button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-
-                    <div className={styles.activeContent}>
-                      <div className={styles.activeContent__header}>
-                        <h3 className={styles.activeContent__title}>
-                          {displayCdd.title || displayCdd.course_title}
-                        </h3>
-                        <div className={styles.activeContent__actions}>
-                          <Button variant="ghost" size="sm" onClick={() => onExport('markdown')}>↓ MD</Button>
-                          <Button variant="ghost" size="sm" onClick={() => onExport('docx')}>↓ DOCX</Button>
-                          <Button variant="ghost" size="sm" onClick={handleDownloadPrompt}>⬇️ Prompt</Button>
-                          <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
-                            + Save Version
-                          </Button>
                         </div>
+
+                        {versions.length > 0 && (
+                          <div className={styles.versionRow}>
+                            <Select
+                              label="View Version"
+                              options={versions.map((v) => ({
+                                value: v.version,
+                                label: `${v.version}${v.is_active ? ' (active)' : ''}`,
+                              }))}
+                              value={viewVersion || displayCdd.active_version || ''}
+                              onChange={(e) => setViewVersion(e.target.value)}
+                            />
+                            {viewVersion && viewVersion !== displayCdd.active_version && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => dispatch(activateCddVersionThunk({
+                                  cddId: displayCdd.id,
+                                  version: viewVersion,
+                                  courseId: Number(courseId),
+                                }))}
+                              >
+                                Set as Active Version
+                              </Button>
+                            )}
+                          </div>
+                        )}
+
+                        {versions.length > 0 && (
+                          <div className={styles.versions}>
+                            <span className={styles.versions__label}>Versions:</span>
+                            {versions.map((v) => (
+                              <button
+                                key={v.version}
+                                type="button"
+                                className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}
+                                title={v.is_active ? 'Active version' : `View ${v.version}`}
+                                onClick={() => setViewVersion(v.version)}
+                              >
+                                {v.version}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <PromoteOverrideButton
+                          sourceType="cdd"
+                          artifactId={displayCdd?.id}
+                          version={versionDetail?.version || displayCdd?.active_content?.version}
+                          generationParams={versionDetail?.generation_params
+                            || displayCdd?.active_content?.generation_params}
+                        />
+                        <CddContentView
+                          fullContent={previewFullContent}
+                          sections={previewSections}
+                          editable
+                          saving={savingBlock}
+                          onSaveBlock={onSaveCddBlock}
+                          onRegenerateSection={onRegenerateCddSection}
+                          onRegenerateItem={onRegenerateCddItem}
+                        />
                       </div>
 
-                      {versions.length > 0 && (
-                        <div className={styles.versionRow}>
-                          <Select
-                            label="View Version"
-                            options={versions.map((v) => ({
-                              value: v.version,
-                              label: `${v.version}${v.is_active ? ' (active)' : ''}`,
-                            }))}
-                            value={viewVersion || displayCdd.active_version || ''}
-                            onChange={(e) => setViewVersion(e.target.value)}
-                          />
-                          {viewVersion && viewVersion !== displayCdd.active_version && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => dispatch(activateCddVersionThunk({
-                                cddId: displayCdd.id,
-                                version: viewVersion,
-                                courseId: Number(courseId),
-                              }))}
-                            >
-                              Set as Active Version
-                            </Button>
-                          )}
-                        </div>
-                      )}
+                      <Button
+                        variant="primary"
+                        className={styles.setActiveBtn}
+                        onClick={() => onSetActive(displayCdd.id)}
+                        disabled={activeCdd?.id === displayCdd.id}
+                      >
+                        📌 Set as Active CDD for Generation
+                      </Button>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </details>
 
-                      {versions.length > 0 && (
-                        <div className={styles.versions}>
-                          <span className={styles.versions__label}>Versions:</span>
-                          {versions.map((v) => (
-                            <button
-                              key={v.version}
-                              type="button"
-                              className={`${styles.versionTag} ${v.is_active ? styles['versionTag--active'] : ''}`}
-                              title={v.is_active ? 'Active version' : `View ${v.version}`}
-                              onClick={() => setViewVersion(v.version)}
-                            >
-                              {v.version}
-                            </button>
-                          ))}
-                        </div>
-                      )}
+          <details className={styles.accordion} open>
+            <summary className={styles.accordion__summary}>🎯 CDD Prompts</summary>
+            <div className={styles.accordion__body}>
+              <InlinePromptControls
+                component="cdd"
+                embedded
+                extraInstructions={extraInstructions}
+                onPromptsChange={setPromptConfig}
+                headerHint="📝 Fill in the course fields above, then configure the prompt and generate your CDD below."
+              />
 
-                      <PromoteOverrideButton
-                        sourceType="cdd"
-                        artifactId={displayCdd?.id}
-                        version={versionDetail?.version || displayCdd?.active_content?.version}
-                        generationParams={versionDetail?.generation_params
-                          || displayCdd?.active_content?.generation_params}
-                      />
-                      <CddContentView
-                        fullContent={previewFullContent}
-                        sections={previewSections}
-                        editable
-                        saving={savingBlock}
-                        onSaveBlock={onSaveCddBlock}
-                        onRegenerateSection={onRegenerateCddSection}
-                        onRegenerateItem={onRegenerateCddItem}
-                      />
-                    </div>
-
-                    <Button
-                      variant="primary"
-                      fullWidth
-                      onClick={() => onSetActive(displayCdd.id)}
-                      disabled={activeCdd?.id === displayCdd.id}
-                    >
-                      📌 Set as Active CDD for Generation
-                    </Button>
-                  </>
-                )}
-              </>
-            )}
-          </section>
-        </div>
-
-        <hr className={styles.divider} />
-
-        <InlinePromptControls
-          component="cdd"
-          extraInstructions={extraInstructions}
-          onPromptsChange={setPromptConfig}
-          headerHint="📝 Fill in the course fields on the left, then configure the prompt and generate your CDD below."
-        />
-
-        <div className={styles.generateRow}>
-          <Button
-            variant="primary"
-            size="lg"
-            className={styles.generateRow__main}
-            loading={isGenerating}
-            onClick={onGenerate}
-          >
-            {isGenerating ? 'Generating CDD…' : '🤖 Generate CDD with AI'}
-          </Button>
-          <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
-            ⬇️ Download Prompt
-          </Button>
+              <div className={styles.generateRow}>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className={styles.generateRow__main}
+                  loading={isGenerating}
+                  onClick={onGenerate}
+                >
+                  {isGenerating ? 'Generating CDD…' : '🤖 Generate CDD with AI'}
+                </Button>
+                <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
+                  ⬇️ Download Prompt
+                </Button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
 
