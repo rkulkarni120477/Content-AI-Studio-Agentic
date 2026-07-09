@@ -16,7 +16,8 @@ const lazy$ = (factory) => {
 };
 
 const LoginPage     = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
-const ProjectsPage  = lazy(() => import('@features/dashboard/pages/ProjectsPage/ProjectsPage'));
+const TenantsPage     = lazy(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
+const TenantUsersPage = lazy(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
 const ClustersPage  = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
 const CoursesPage   = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
 const CddPage       = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
@@ -45,7 +46,22 @@ export const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Navigate to={ROUTES.DASHBOARD} replace /> },
-      { path: ROUTES.DASHBOARD, element: wrap(<ProjectsPage />) },
+      {
+        path: ROUTES.DASHBOARD,
+        element: (
+          <ProtectedRoute platformAdminOnly>
+            {wrap(<TenantsPage />)}
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: '/tenants/:tenantId/users',
+        element: (
+          <ProtectedRoute platformAdminOnly>
+            {wrap(<TenantUsersPage />)}
+          </ProtectedRoute>
+        ),
+      },
       { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
       { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
       promptLibraryRoute,

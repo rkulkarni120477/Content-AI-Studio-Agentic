@@ -33,6 +33,9 @@ from typing import Optional
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Reserved organization code meaning "platform administrator login" (not a tenant).
+PLATFORM_SLUG = "platform"
+
 
 class AppSettings(BaseSettings):
     """
@@ -97,6 +100,20 @@ class AppSettings(BaseSettings):
         alias="JWT_TOKEN_EXPIRE_DAYS",
         gt=0,
     )
+
+    # ── Microsoft Entra ID (Azure AD) OAuth ───────────────────────────────────
+    # Platform-wide default Azure app; a tenant (Project) may override per-tenant.
+    # Nothing in the Microsoft sign-in flow works until these are set in .env.
+    microsoft_auth_enabled: bool = Field(default=False, alias="MICROSOFT_AUTH_ENABLED")
+    azure_client_id: Optional[str] = Field(default=None, alias="AZURE_CLIENT_ID")
+    azure_client_secret: Optional[SecretStr] = Field(default=None, alias="AZURE_CLIENT_SECRET")
+    azure_tenant_id: str = Field(default="common", alias="AZURE_TENANT_ID")
+    azure_redirect_uri: Optional[str] = Field(default=None, alias="AZURE_REDIRECT_URI")
+    azure_new_user_role: str = Field(default="author", alias="AZURE_NEW_USER_ROLE")
+
+    # ── Login options ─────────────────────────────────────────────────────────
+    local_login_enabled: bool = Field(default=True, alias="LOCAL_LOGIN_ENABLED")
+    frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[SecretStr] = Field(
@@ -209,6 +226,15 @@ class AppSettings(BaseSettings):
     def jwt_secret_value(self) -> str:
         """Return the raw JWT signing secret string."""
         return self.jwt_secret_key.get_secret_value()
+
+    @property
+    def azure_client_secret_value(self) -> Optional[str]:
+        """Return the raw Azure client secret string, or None if not configured."""
+        return self.azure_client_secret.get_secret_value() if self.azure_client_secret else None
+
+    def microsoft_ready(self) -> bool:
+        """True when the platform-wide Azure app credentials are present."""
+        return bool(self.microsoft_auth_enabled and self.azure_client_id and self.azure_client_secret_value)
 
     @property
     def copyleaks_api_key_value(self) -> str:

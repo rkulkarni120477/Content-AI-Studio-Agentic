@@ -38,6 +38,33 @@ class LoginRequest(BaseModel):
         max_length=256,
         description="The user's plain-text password (transmitted over HTTPS only).",
     )
+    organization_code: Optional[str] = Field(
+        default=None, max_length=64,
+        description="Tenant org code (required for tenant local login; ignored for platform admin).",
+    )
+    platform_admin: bool = Field(
+        default=False,
+        description="True to authenticate as a platform administrator (org code ignored).",
+    )
+
+
+class AuthConfigResponse(BaseModel):
+    """Public sign-in options for the login screen."""
+
+    microsoft_enabled: bool = False
+    local_login_enabled: bool = True
+    platform_slug: str = "platform"
+
+
+class TenantLoginInfoResponse(BaseModel):
+    """Public info for a given organization code."""
+
+    valid: bool
+    slug: Optional[str] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    microsoft_enabled: bool = False
+    error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +87,8 @@ class UserProfileResponse(BaseModel):
     permissions: list[str] = Field(
         description="All permission keys this user holds. Used by the frontend for UI gating."
     )
+    project_id: Optional[int] = Field(default=None, description="Active tenant (project) id; None for platform admin.")
+    is_platform_admin: bool = Field(default=False, description="True for platform super-admins.")
 
 
 class TokenResponse(BaseModel):

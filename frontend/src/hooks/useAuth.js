@@ -6,6 +6,8 @@ import {
   selectIsAdmin,
   selectIsReviewer,
   selectAuthLoading,
+  selectIsPlatformAdmin,
+  selectProjectId,
 } from '@features/auth/authSlice';
 import { logoutThunk } from '@features/auth/authThunks';
 import { ROLES } from '@utils/constants';
@@ -17,12 +19,15 @@ export function useAuth() {
   const role          = useAppSelector(selectUserRole);
   const isAdmin       = useAppSelector(selectIsAdmin);
   const isReviewer    = useAppSelector(selectIsReviewer);
+  const isPlatformAdmin = useAppSelector(selectIsPlatformAdmin);
+  const projectId       = useAppSelector(selectProjectId);
   const isLoading     = useAppSelector(selectAuthLoading);
 
   const isAuthor      = role === ROLES.AUTHOR;
   const canApprove    = isAdmin || isReviewer;
   const canGenerate   = Boolean(user);
-  const canManageUsers = isAdmin || (user?.permissions?.includes('users.create') ?? false);
+  // User management is platform-admin only in the tenant model.
+  const canManageUsers = isPlatformAdmin;
   const canClearDb = isAdmin || (user?.permissions?.includes('system.clear_db') ?? false);
 
   function logout() {
@@ -41,6 +46,8 @@ export function useAuth() {
     isAdmin,
     isReviewer,
     isAuthor,
+    isPlatformAdmin,
+    projectId,
     canApprove,
     canGenerate,
     canManageUsers,
