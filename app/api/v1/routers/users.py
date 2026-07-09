@@ -21,7 +21,6 @@ from app.core.exceptions import DuplicateResourceError, NotFoundError
 from app.core.permissions import role_label
 from app.core.security import hash_password
 from app.core.tenant_context import (
-    effective_tenant_id_for_write,
     is_platform_admin_user,
     tenant_id_from_user,
 )
@@ -97,26 +96,18 @@ def create_user(
     """
     Create a user account with a hashed password.
 
-    Replicates the "Create User" form in the Analytics admin tab.
+    Platform admin only — user management is centralised on the Platform
+    Users page. Replicates the "Create User" form in the Analytics admin tab.
     Password is hashed with PBKDF2-HMAC-SHA256 to match the existing scheme.
     """
     from fastapi import HTTPException
-    from promptops_app.database import Tenant, User
-    from promptops_app.repositories import user_repository
+    from promptops_app.database import User
 
-    tid = effective_tenant_id_for_write(current_user)
+    if not is_platform_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Platform admin access required.")
 
-    # Enforce license: count active users in this tenant.
-    tenant = db.query(Tenant).filter(Tenant.id == tid).first()
-    if tenant:
-        active_count = db.query(User).filter(
-            User.tenant_id == tid, User.is_active == True,
-        ).count()
-        if active_count >= tenant.max_users:
-            raise HTTPException(status_code=403, detail="User license limit reached for this organisation.")
-
-    # Check for duplicate username within this tenant.
-    if user_repository.get_user_by_username(db, request_body.username, tenant_id=tid):
+    # Usernames are globally unique (not per-tenant) — check unscoped.
+    if db.query(User).filter(User.username == request_body.username).first():
         raise DuplicateResourceError("User", request_body.username)
 
     user = User(
@@ -124,15 +115,15 @@ def create_user(
         password_hash=hash_password(request_body.password),
         role=request_body.role,
         is_active=True,
-        tenant_id=tid,
+        project_id=request_body.project_id,
         is_platform_admin=False,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    _log.info("user_created  by=%s  new_user=%s  role=%s",
-              current_user.username, user.username, user.role)
+    _log.info("user_created  by=%s  new_user=%s  role=%s  project_id=%s",
+              current_user.username, user.username, user.role, user.project_id)
     return _to_user_read(user)
 
 
@@ -198,7 +189,12 @@ def update_user_role(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.edit")),
 ) -> UserRead:
-    """Change a user's platform role. Admin only."""
+    """Change a user's platform role. Platform admin only."""
+    from fastapi import HTTPException
+
+    if not is_platform_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Platform admin access required.")
+
     user = _get_user_or_404(db, user_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user))
     old_role = user.role
     user.role = request_body.role
@@ -222,11 +218,16 @@ def toggle_user(
     current_user=Depends(require_permission("users.toggle")),
 ) -> UserRead:
     """
-    Enable or disable a user account.
+    Enable or disable a user account. Platform admin only.
 
     Replicates the active/inactive toggle in the Analytics admin tab.
     Deactivated users cannot log in but their data is preserved.
     """
+    from fastapi import HTTPException
+
+    if not is_platform_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Platform admin access required.")
+
     user = _get_user_or_404(db, user_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user))
     user.is_active = request_body.is_active
     db.commit()

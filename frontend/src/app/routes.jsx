@@ -1,6 +1,5 @@
 import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import ProtectedRoute from '@components/layout/ProtectedRoute/ProtectedRoute';
-import PlatformAdminGuard from '@components/layout/PlatformAdminGuard/PlatformAdminGuard';
 import WorkspaceLayout from '@components/layout/WorkspaceLayout/WorkspaceLayout';
 import { ROUTES, ROLES } from '@utils/constants';
 import { lazy, Suspense } from 'react';
@@ -15,20 +14,19 @@ const lazy$ = (factory) => {
   );
 };
 
-const LoginPage              = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
-const ProjectsPage           = lazy(() => import('@features/dashboard/pages/ProjectsPage/ProjectsPage'));
-const ClustersPage           = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
-const CoursesPage            = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
-const CddPage                = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
-const BlueprintPage          = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
-const GeneratePage           = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
-const EditorPage             = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
-const WorkflowPage           = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
-const StylePage              = lazy(() => import('@features/style/pages/StylePage/StylePage'));
-const AnalyticsPage          = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
-const CentralPage            = lazy(() => import('@features/central/pages/CentralPage/CentralPage'));
-const PlatformTenantsPage    = lazy(() => import('@features/platform/pages/PlatformTenantsPage/PlatformTenantsPage'));
-const PlatformTenantUsersPage = lazy(() => import('@features/platform/pages/PlatformTenantUsersPage/PlatformTenantUsersPage'));
+const LoginPage        = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
+const TenantsPage      = lazy(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
+const TenantUsersPage  = lazy(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
+const ClustersPage     = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
+const CoursesPage      = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
+const CddPage          = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
+const BlueprintPage    = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
+const GeneratePage     = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
+const EditorPage       = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
+const WorkflowPage     = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
+const StylePage        = lazy(() => import('@features/style/pages/StylePage/StylePage'));
+const AnalyticsPage    = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
+const CentralPage      = lazy(() => import('@features/central/pages/CentralPage/CentralPage'));
 
 const wrap = (comp) => (
   <Suspense fallback={<Loader size="xl" overlay />}>
@@ -47,7 +45,14 @@ export const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Navigate to={ROUTES.DASHBOARD} replace /> },
-      { path: ROUTES.DASHBOARD, element: wrap(<ProjectsPage />) },
+      {
+        path: ROUTES.DASHBOARD,
+        element: (
+          <ProtectedRoute platformAdminOnly>
+            {wrap(<TenantsPage />)}
+          </ProtectedRoute>
+        ),
+      },
       { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
       { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
       {
@@ -55,6 +60,14 @@ export const router = createBrowserRouter([
         element: (
           <ProtectedRoute requiredRole={ROLES.ADMIN}>
             {wrap(<CentralPage />)}
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: ROUTES.TENANT_USERS(':tenantId'),
+        element: (
+          <ProtectedRoute platformAdminOnly>
+            {wrap(<TenantUsersPage />)}
           </ProtectedRoute>
         ),
       },
@@ -77,16 +90,6 @@ export const router = createBrowserRouter([
       { path: 'editor',    element: wrap(<EditorPage />) },
       { path: 'workflow',  element: wrap(<WorkflowPage />) },
       { path: 'analytics', element: wrap(<AnalyticsPage />) },
-    ],
-  },
-
-  {
-    path: '/platform',
-    element: <PlatformAdminGuard />,
-    children: [
-      { path: 'tenants',                    element: wrap(<PlatformTenantsPage />) },
-      { path: 'tenants/:tenantId/users',    element: wrap(<PlatformTenantUsersPage />) },
-      { index: true, element: <Navigate to="/platform/tenants" replace /> },
     ],
   },
 

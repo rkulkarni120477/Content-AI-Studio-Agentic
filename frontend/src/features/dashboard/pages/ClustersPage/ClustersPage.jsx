@@ -100,6 +100,7 @@ export default function ClustersPage() {
       sidebarProps={{
         variant: 'cluster',
         projectName: selProj.name,
+        projectId: selProj.id,
         onCreateCluster: handleCreate,
         createLoading,
       }}

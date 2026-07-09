@@ -94,7 +94,7 @@ api_v1_router.include_router(analytics_router, prefix="/analytics",  tags=["Anal
 # ── System administration ─────────────────────────────────────────────────────
 api_v1_router.include_router(admin_router,     prefix="/admin",      tags=["Admin"])
 
-# ── Platform — tenant management (platform super-admin only) ──────────────────
+# ── Platform — tenant (organization) management (platform super-admin only) ───
 api_v1_router.include_router(
     platform_tenants_router,
     prefix="/platform/tenants",

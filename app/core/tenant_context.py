@@ -1,88 +1,93 @@
 """
-Tenant scoping utilities — the single enforcement point for multi-tenant isolation.
+Tenant context — project-as-tenant isolation layer.
 
-Every repository function that reads or writes tenant-owned data must route through
-these helpers.  The pattern ensures:
-  - Platform admins see all tenants' data (or a single tenant when they pass one).
-  - Tenant users only ever see data belonging to their own tenant.
-  - Cross-tenant access returns 404, never 403 (don't leak resource existence).
+Every non-platform-admin User belongs to a single Project (User.project_id).
+That Project IS the tenant: a regular user only ever sees data belonging to
+their own project. Platform admins (is_platform_admin=True, project_id=None)
+see everything unless they explicitly scope a request to one project.
 
-Usage in a route
-----------------
-    from app.core.tenant_context import apply_tenant_filter, get_scoped_or_404
-
-    def list_docs(db, current_user):
-        tid   = tenant_id_from_user(current_user)
-        admin = is_platform_admin_user(current_user)
-        q = db.query(Document).filter(Document.status == "active")
-        return apply_tenant_filter(q, Document, tid, admin).all()
+Scoping strategy (apply_tenant_filter)
+---------------------------------------
+Different tables carry the tenant boundary on different columns:
+  - Project itself        -> filter on Project.id (the tenant's own identity)
+  - Cluster/Course/User/…  -> filter on their integer ``project_id`` FK
+  - Document/Style/Prompt  -> filter on their legacy string ``tenant_id``
+                              column (no project_id FK exists on these
+                              tables); we store str(project_id) into it.
+                              NULL tenant_id rows (system-seeded defaults,
+                              and everything created before tenant isolation
+                              existed) are treated as shared/global and stay
+                              visible to every tenant — only rows explicitly
+                              tagged with a *different* project are excluded.
+  - CentralRepository      -> never filtered — it is a platform-wide shared
+                              library, intentionally visible across projects
 """
 
 from __future__ import annotations
 
+from sqlalchemy import false, or_
 from sqlalchemy.orm import Query
 
 
-# ---------------------------------------------------------------------------
-# Query scoping
-# ---------------------------------------------------------------------------
+def _as_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-def apply_tenant_filter(
-    q: Query,
-    model,
-    tenant_id: str | None,
-    is_platform_admin: bool = False,
-) -> Query:
-    """
-    Scope a SQLAlchemy query to a tenant.
 
-    Rules
-    -----
-    - Model has no tenant_id column  → return query unchanged
-    - Platform admin + no tenant_id  → return all rows (cross-tenant view)
-    - Platform admin + tenant_id     → filter to that tenant
-    - Regular user                   → always filter to their tenant_id
+def apply_tenant_filter(q: Query, model, tenant_id=None, is_platform_admin: bool = False) -> Query:
+    """Scope a query to the caller's project (tenant).
+
+    Platform admin with no explicit tenant_id sees every row. A resolvable
+    tenant_id restricts to that project's rows. A user with no tenant_id
+    (unassigned, awaiting assignment) matches nothing.
     """
-    if not hasattr(model, "tenant_id"):
+    from promptops_app.database import CentralRepository, Project
+
+    if model is CentralRepository:
+        # Central Repository is a platform-wide shared library — not tenant-scoped.
         return q
-    if is_platform_admin and not tenant_id:
-        return q  # platform admin sees everything unless scoped explicitly
-    if tenant_id:
-        return q.filter(model.tenant_id == tenant_id)
+
+    if is_platform_admin and tenant_id is None:
+        return q
+
+    pid = _as_int(tenant_id)
+    if pid is None:
+        return q.filter(false())
+
+    if model is Project:
+        return q.filter(Project.id == pid)
+    if hasattr(model, "project_id"):
+        return q.filter(model.project_id == pid)
+    if hasattr(model, "tenant_id"):
+        # NULL tenant_id = shared/global content (system defaults, pre-tenancy
+        # rows) — visible to every tenant, not just an accidental leak.
+        return q.filter(or_(model.tenant_id.is_(None), model.tenant_id == str(pid)))
     return q
 
 
-def get_scoped_or_404(
-    db,
-    model,
-    pk: int | str,
-    tenant_id: str | None,
-    is_platform_admin: bool = False,
-):
-    """
-    Fetch one row by primary key, scoped to the current tenant.
-
-    Raises NotFoundError (404) if the row does not exist or belongs to a
-    different tenant — intentionally indistinguishable to prevent leaking
-    resource existence across tenants.
-    """
+def get_scoped_or_404(db, model, pk, tenant_id=None, is_platform_admin: bool = False):
+    """Fetch one row by primary key, scoped to tenant; raises NotFoundError (404) if missing."""
     from app.core.exceptions import NotFoundError
 
-    q = db.query(model)
-    q = apply_tenant_filter(q, model, tenant_id, is_platform_admin)
+    q = apply_tenant_filter(db.query(model), model, tenant_id, is_platform_admin)
     obj = q.filter(model.id == pk).first()
     if obj is None:
         raise NotFoundError(model.__tablename__, pk)
     return obj
 
 
-# ---------------------------------------------------------------------------
-# User attribute helpers
-# ---------------------------------------------------------------------------
-
 def tenant_id_from_user(current_user) -> str | None:
-    """Extract the tenant_id private attribute from an authenticated user."""
-    return getattr(current_user, "_tenant_id", None)
+    """Return the caller's tenant identifier (their project id, as a string).
+
+    None for a platform admin (sees all) or for a regular user not yet
+    assigned to a project (awaiting assignment).
+    """
+    if bool(getattr(current_user, "_is_platform_admin", False)):
+        return None
+    pid = getattr(current_user, "_project_id", None)
+    return str(pid) if pid is not None else None
 
 
 def is_platform_admin_user(current_user) -> bool:
@@ -90,67 +95,38 @@ def is_platform_admin_user(current_user) -> bool:
     return bool(getattr(current_user, "_is_platform_admin", False))
 
 
-def tenant_slug_from_user(current_user) -> str | None:
-    """Extract the tenant_slug private attribute from an authenticated user."""
-    return getattr(current_user, "_tenant_slug", None)
+def tenant_slug_from_user(current_user) -> None:
+    """Always returns None — no slug concept in the project-as-tenant model."""
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Write-path helpers
-# ---------------------------------------------------------------------------
+def assert_project_in_tenant(db, project_id, tenant_id=None, is_platform_admin: bool = False) -> None:
+    """Raise NotFoundError (404) if project_id does not belong to the caller's tenant.
 
-def assert_project_in_tenant(
-    db,
-    project_id: int | None,
-    tenant_id: str | None,
-    is_platform_admin: bool = False,
-) -> None:
+    A None project_id means there is nothing to check (e.g. an optional
+    filter query param was omitted) and is always allowed through.
     """
-    Guard for CDD/Blueprint/Generation reads that take a project_id param.
-
-    Platform admins can access any project.
-    Tenant users must only access projects that belong to their tenant.
-    Raises HTTP 404 (not 403) to avoid leaking project existence.
-    """
-    if is_platform_admin or project_id is None:
+    if project_id is None:
         return
-    if not tenant_id:
+    if is_platform_admin:
         return
-    from fastapi import HTTPException
-    from promptops_app.database import Project
-    proj = db.query(Project).filter(
-        Project.id == project_id,
-        Project.tenant_id == tenant_id,
-    ).first()
-    if proj is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
+
+    from app.core.exceptions import NotFoundError
+
+    pid = _as_int(tenant_id)
+    if pid is None or pid != _as_int(project_id):
+        raise NotFoundError("Project", project_id)
 
 
-def effective_tenant_id_for_write(
-    current_user,
-    body_tenant_id: str | None = None,
-) -> str:
+def effective_tenant_id_for_write(current_user, body_tenant_id=None) -> str | None:
+    """Return the tenant id (project id, as a string) to stamp on a new row.
+
+    Platform admin: an explicit override (e.g. from the request body) or None.
+    Regular user: always their own project id — a body override is ignored so
+    a regular user can never write into another tenant.
     """
-    Return the tenant_id to use for a CREATE or UPDATE operation.
-
-    Platform admin:  reads tenant_id from the request body (required — they
-                     must explicitly target a tenant when writing data).
-    Regular user:    always uses their own tenant_id.
-
-    Raises HTTP 400 if a platform admin omits tenant_id in the body.
-    Raises HTTP 403 if a regular user somehow has no tenant context.
-    """
-    from fastapi import HTTPException
-
-    if is_platform_admin_user(current_user):
-        if not body_tenant_id:
-            raise HTTPException(
-                status_code=400,
-                detail="tenant_id is required in the request body for platform admin write operations.",
-            )
-        return body_tenant_id
-
-    tid = tenant_id_from_user(current_user)
-    if not tid:
-        raise HTTPException(status_code=403, detail="No tenant context — cannot write.")
-    return tid
+    if bool(getattr(current_user, "_is_platform_admin", False)):
+        pid = _as_int(body_tenant_id)
+        return str(pid) if pid is not None else None
+    pid = getattr(current_user, "_project_id", None)
+    return str(pid) if pid is not None else None

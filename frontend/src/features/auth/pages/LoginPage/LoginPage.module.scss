@@ -4,11 +4,16 @@
 }
 
 .sidebar {
-  width: $sidebar-width;
+  width: 420px;
+  max-width: 100%;
   background: #1e1b4b;
   border-right: 1px solid rgba(99, 102, 241, 0.3);
   padding: $space-8 $space-6;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+  overflow-y: auto;
 
   &__label {
     font-size: 0.8rem;
@@ -16,7 +21,52 @@
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    margin-bottom: $space-6;
+    margin: 0;
+  }
+}
+
+.brandRow {
+  margin-bottom: $space-2;
+}
+
+.hint {
+  font-size: $font-size-xs;
+  color: #a5b4fc;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.msBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+}
+
+.msLogo {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  background:
+    linear-gradient(#f25022, #f25022) 0 0 / 7px 7px no-repeat,
+    linear-gradient(#7fba00, #7fba00) 9px 0 / 7px 7px no-repeat,
+    linear-gradient(#00a4ef, #00a4ef) 0 9px / 7px 7px no-repeat,
+    linear-gradient(#ffb900, #ffb900) 9px 9px / 7px 7px no-repeat;
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+  color: #c7d2fe;
+  font-weight: 600;
+  cursor: pointer;
+
+  input[type='checkbox'] {
+    width: 16px;
+    height: 16px;
+    accent-color: #818cf8;
+    cursor: pointer;
   }
 }
 
@@ -116,9 +166,20 @@
 }
 
 .divider {
-  border: none;
-  border-top: 1px solid #e4e7ef;
-  margin: $space-6 0;
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: #a5b4fc;
+  font-size: $font-size-xs;
+  gap: $space-3;
+  margin: $space-2 0;
+
+  &::before,
+  &::after {
+    content: '';
+    flex: 1;
+    border-top: 1px solid rgba(165, 180, 252, 0.3);
+  }
 }
 
 .features {

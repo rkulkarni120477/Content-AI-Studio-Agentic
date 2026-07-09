@@ -53,7 +53,10 @@ export default function SelectionSidebar({
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewCluster, setShowNewCluster] = useState(false);
   const [showNewCourse, setShowNewCourse] = useState(false);
-  const [form, setForm] = useState({ name: '', client: '', description: '' });
+  const [form, setForm] = useState({
+    name: '', client: '', description: '',
+    adminUsername: '', adminPassword: '', adminDisplayName: '',
+  });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
@@ -75,7 +78,10 @@ export default function SelectionSidebar({
   }
 
   function resetForm() {
-    setForm({ name: '', client: '', description: '' });
+    setForm({
+      name: '', client: '', description: '',
+      adminUsername: '', adminPassword: '', adminDisplayName: '',
+    });
     setCopyPromptIds([]);
   }
 
@@ -87,6 +93,9 @@ export default function SelectionSidebar({
         name: form.name.trim(),
         client_name: form.client.trim() || null,
         description: form.description.trim() || null,
+        admin_username: form.adminUsername.trim() || undefined,
+        admin_password: form.adminPassword || undefined,
+        admin_display_name: form.adminDisplayName.trim() || undefined,
       });
       setShowNewProject(false);
     } else if (variant === 'cluster' && onCreateCluster) {
@@ -132,78 +141,39 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {variant === 'cluster' && (
+      {variant === 'cluster' && isPlatformAdmin && (
         <div className={styles.navRow}>
           <button type="button" className={styles.navBtn} onClick={goDashboard}>
-            ← Projects
+            ← Tenants
           </button>
         </div>
       )}
 
       {variant === 'course' && (
         <div className={styles.navRow3}>
-          <button type="button" className={styles.navBtn} onClick={goDashboard}>← Projects</button>
+          {isPlatformAdmin && (
+            <button type="button" className={styles.navBtn} onClick={goDashboard}>← Tenants</button>
+          )}
           <button type="button" className={styles.navBtn} onClick={goClusters}>← Clusters</button>
         </div>
       )}
 
       <div className={styles.divider} />
 
-      {isAdmin && variant === 'project' && (
-        <div className={styles.expander}>
-          <button
-            type="button"
-            className={styles.expander__toggle}
-            onClick={() => setShowNewProject((v) => !v)}
-          >
-            ➕ New Project {showNewProject ? '▾' : '▸'}
-          </button>
-          {showNewProject && (
-            <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Project Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
-              <Input label="Client Name" value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} />
-              <label className={styles.textareaLabel}>
-                Description
-                <textarea
-                  rows={3}
-                  value={form.description}
-                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-                  className={styles.textarea}
-                />
-              </label>
-              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>
-                Create Project
-              </Button>
-            </form>
-          )}
-        </div>
-      )}
-
-      {isAdmin && variant === 'project' && (
+      {isAdmin && (variant === 'cluster' || variant === 'course') && (
         <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.CENTRAL)}>
           🗄️ Repository
         </button>
       )}
 
-      {(variant === 'project' || variant === 'platform') && (
-        <div className={styles.dashNav}>
-          <button
-            type="button"
-            className={`${styles.navBtn} ${variant === 'project' ? styles['navBtn--active'] : ''}`}
-            onClick={() => navigate(ROUTES.DASHBOARD)}
-          >
-            📊 Project Dashboard
-          </button>
-          {isPlatformAdmin && (
-            <button
-              type="button"
-              className={`${styles.navBtn} ${variant === 'platform' ? styles['navBtn--active'] : ''}`}
-              onClick={() => navigate(ROUTES.PLATFORM_TENANTS)}
-            >
-              🏢 Tenant Dashboard
-            </button>
-          )}
-        </div>
+      {isPlatformAdmin && variant === 'cluster' && projectId && (
+        <button
+          type="button"
+          className={styles.navBtn}
+          onClick={() => navigate(ROUTES.TENANT_USERS(projectId))}
+        >
+          👥 Manage Users
+        </button>
       )}
 
       {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && (

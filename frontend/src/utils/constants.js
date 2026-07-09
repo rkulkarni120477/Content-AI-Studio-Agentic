@@ -152,9 +152,9 @@ export const ROUTES = {
   EDITOR:       (courseId) => `/workspace/${courseId}/editor`,
   WORKFLOW:     (courseId) => `/workspace/${courseId}/workflow`,
   ANALYTICS:    (courseId) => `/workspace/${courseId}/analytics`,
-  CENTRAL:         '/central',
-  PLATFORM_TENANTS: '/platform/tenants',
-  PLATFORM_USERS:   (tenantId) => `/platform/tenants/${tenantId}/users`,
+  CENTRAL:        '/central',
+  TENANTS:        '/dashboard',
+  TENANT_USERS:   (tenantId) => `/tenants/${tenantId}/users`,
 };
 
 // ─── Local Storage Keys ───────────────────────────────────────────────────────

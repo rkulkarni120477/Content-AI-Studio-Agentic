@@ -1,10 +1,9 @@
 import { useAppSelector } from '@app/hooks';
-import { selectUser, selectTenantSlug, selectIsPlatformAdmin } from '@features/auth/authSlice';
+import { selectUser, selectIsPlatformAdmin } from '@features/auth/authSlice';
 import styles from './Header.module.scss';
 
 export default function Header({ title, breadcrumbs, actions }) {
   const user            = useAppSelector(selectUser);
-  const tenantSlug      = useAppSelector(selectTenantSlug);
   const isPlatformAdmin = useAppSelector(selectIsPlatformAdmin);
 
   return (
@@ -34,9 +33,6 @@ export default function Header({ title, breadcrumbs, actions }) {
           <div className={styles.header__user}>
             {isPlatformAdmin && (
               <span className={styles.header__badge} data-variant="platform">Platform Admin</span>
-            )}
-            {!isPlatformAdmin && tenantSlug && (
-              <span className={styles.header__badge} data-variant="tenant">{tenantSlug}</span>
             )}
             <span className={styles.header__username}>{user.username}</span>
           </div>

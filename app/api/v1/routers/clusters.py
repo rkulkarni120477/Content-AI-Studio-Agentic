@@ -21,8 +21,9 @@ import logging
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.dependencies import get_current_user, get_db, get_tenant_context, require_permission
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.tenant_context import assert_project_in_tenant
 from app.schemas.cluster import (
     ClusterCreateRequest,
     ClusterListItem,
@@ -36,12 +37,13 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_cluster_or_404(db: Session, cluster_id: int):
-    """Fetch a cluster by ID or raise HTTP 404."""
+def _get_cluster_or_404(db: Session, cluster_id: int, tenant_id=None, is_platform_admin=False):
+    """Fetch a cluster by ID (tenant-scoped) or raise HTTP 404."""
     from promptops_app.database import Cluster
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id, Cluster.is_active == True).first()  # noqa: E712
     if cluster is None:
         raise NotFoundError("Cluster", cluster_id)
+    assert_project_in_tenant(db, cluster.project_id, tenant_id, is_platform_admin)
     return cluster
 
 
@@ -57,10 +59,14 @@ def list_clusters(
     page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> PaginatedResponse[ClusterListItem]:
     """Return all clusters in a project. Replaces the cluster dropdown in Streamlit."""
     from sqlalchemy import func
     from promptops_app.database import Cluster, Course
+
+    tid, is_admin = tenant_ctx
+    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     rows = (
         db.query(Cluster, func.count(Course.id).label("course_count"))
@@ -98,6 +104,7 @@ def create_cluster(
     request_body: ClusterCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cluster.create")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> ClusterRead:
     """Create a new cluster inside a project. Replaces cluster creation form in Streamlit."""
     from promptops_app.database import Cluster, ClusterPrompt, Project
@@ -105,6 +112,9 @@ def create_cluster(
     project = db.query(Project).filter(Project.id == project_id).first()
     if project is None:
         raise NotFoundError("Project", project_id)
+
+    tid, is_admin = tenant_ctx
+    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     cluster = Cluster(
         project_id=project_id,
@@ -154,9 +164,11 @@ def get_cluster(
     cluster_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> ClusterRead:
     """Return cluster details."""
-    return ClusterRead.model_validate(_get_cluster_or_404(db, cluster_id))
+    tid, is_admin = tenant_ctx
+    return ClusterRead.model_validate(_get_cluster_or_404(db, cluster_id, tid, is_admin))
 
 
 @router.put(
@@ -170,9 +182,11 @@ def update_cluster(
     request_body: ClusterUpdateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cluster.edit")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> ClusterRead:
     """Update cluster name or description. Replaces cluster edit form in Streamlit."""
-    cluster = _get_cluster_or_404(db, cluster_id)
+    tid, is_admin = tenant_ctx
+    cluster = _get_cluster_or_404(db, cluster_id, tid, is_admin)
 
     if request_body.name is not None:
         cluster.name = request_body.name
@@ -196,11 +210,13 @@ def delete_cluster(
     cluster_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cluster.delete")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> MessageResponse:
     """Soft-delete a cluster. Replaces cluster delete action in Streamlit."""
     from promptops_app.database import Course
 
-    cluster = _get_cluster_or_404(db, cluster_id)
+    tid, is_admin = tenant_ctx
+    cluster = _get_cluster_or_404(db, cluster_id, tid, is_admin)
 
     active_course_count = (
         db.query(Course)
@@ -232,11 +248,13 @@ def list_courses_in_cluster(
     page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> PaginatedResponse[CourseListItem]:
     """Return all courses inside a cluster."""
     from promptops_app.database import Course
 
-    _get_cluster_or_404(db, cluster_id)
+    tid, is_admin = tenant_ctx
+    _get_cluster_or_404(db, cluster_id, tid, is_admin)
 
     courses = (
         db.query(Course)

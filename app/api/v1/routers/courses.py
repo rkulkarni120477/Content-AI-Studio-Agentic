@@ -15,8 +15,9 @@ import logging
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.dependencies import get_current_user, get_db, get_tenant_context, require_permission
 from app.core.exceptions import NotFoundError
+from app.core.tenant_context import assert_project_in_tenant
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.course import (
     CourseCreateRequest,
@@ -33,12 +34,13 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_course_or_404(db: Session, course_id: int):
-    """Fetch a course by ID or raise HTTP 404."""
+def _get_course_or_404(db: Session, course_id: int, tenant_id=None, is_platform_admin=False):
+    """Fetch a course by ID (tenant-scoped) or raise HTTP 404."""
     from promptops_app.repositories import course_repository
     course = course_repository.get_course_by_id(db, course_id)
     if course is None:
         raise NotFoundError("Course", course_id)
+    assert_project_in_tenant(db, course.project_id, tenant_id, is_platform_admin)
     return course
 
 
@@ -53,9 +55,13 @@ def list_courses(
     page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> PaginatedResponse[CourseListItem]:
     """Return all courses in a project. Replaces the course dropdown in Streamlit."""
     from promptops_app.repositories import course_repository
+
+    tid, is_admin = tenant_ctx
+    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     courses = course_repository.list_courses_for_project(db, project_id)
     total = len(courses)
@@ -79,9 +85,13 @@ def create_course(
     request_body: CourseCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.create")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> CourseRead:
     """Create a new course. Admin or Reviewer (Lead)."""
     from promptops_app.database import Course
+
+    tid, is_admin = tenant_ctx
+    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     course = Course(
         name=request_body.name,
@@ -106,9 +116,11 @@ def get_course(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> CourseRead:
     """Return course details including active CDD and Blueprint IDs."""
-    return CourseRead.model_validate(_get_course_or_404(db, course_id))
+    tid, is_admin = tenant_ctx
+    return CourseRead.model_validate(_get_course_or_404(db, course_id, tid, is_admin))
 
 
 @router.get(
@@ -128,11 +140,13 @@ def get_course_active_cdd(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDRead:
     """Return the active/pinned CDD for a course by course id."""
     from promptops_app.repositories import cdd_repository
 
-    course = _get_course_or_404(db, course_id)
+    tid, is_admin = tenant_ctx
+    course = _get_course_or_404(db, course_id, tid, is_admin)
     if not course.active_cdd_id:
         raise NotFoundError("Active CDD for course", course_id)
 
@@ -153,9 +167,11 @@ def update_course(
     request_body: CourseUpdateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.edit")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> CourseRead:
     """Update course name or cluster. Admin or Reviewer."""
-    course = _get_course_or_404(db, course_id)
+    tid, is_admin = tenant_ctx
+    course = _get_course_or_404(db, course_id, tid, is_admin)
 
     if request_body.name is not None:
         course.name = request_body.name
@@ -179,9 +195,11 @@ def delete_course(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.delete")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> None:
     """Archive a course. Admin only."""
-    course = _get_course_or_404(db, course_id)
+    tid, is_admin = tenant_ctx
+    course = _get_course_or_404(db, course_id, tid, is_admin)
     course.is_active = False
     db.commit()
     _log.info("course_deleted  user=%s  course_id=%d", current_user.username, course_id)
@@ -196,11 +214,13 @@ def list_course_users(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> list[CourseUserListItem]:
     """Return usernames with course-level access."""
     from promptops_app.repositories import course_assignment_repository
 
-    _get_course_or_404(db, course_id)
+    tid, is_admin = tenant_ctx
+    _get_course_or_404(db, course_id, tid, is_admin)
     usernames = sorted(course_assignment_repository.get_assigned_usernames(db, course_id))
     return [CourseUserListItem(username=u) for u in usernames]
 
@@ -216,12 +236,14 @@ def assign_user_to_course(
     request_body: CourseUserAssignRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> MessageResponse:
     """Grant course-level access by username."""
     from promptops_app.database import User
     from promptops_app.repositories import course_assignment_repository
 
-    _get_course_or_404(db, course_id)
+    tid, is_admin = tenant_ctx
+    _get_course_or_404(db, course_id, tid, is_admin)
     user = db.query(User).filter(
         User.username == request_body.username,
         User.is_active == True,  # noqa: E712
@@ -246,11 +268,13 @@ def unassign_user_from_course(
     username: str,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> None:
     """Revoke course-level access."""
     from promptops_app.repositories import course_assignment_repository
 
-    _get_course_or_404(db, course_id)
+    tid, is_admin = tenant_ctx
+    _get_course_or_404(db, course_id, tid, is_admin)
     course_assignment_repository.unassign_user_from_course(db, course_id, username)
     _log.info("course_user_unassigned  by=%s  username=%s  course_id=%d",
               current_user.username, username, course_id)

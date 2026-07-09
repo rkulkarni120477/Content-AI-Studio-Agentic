@@ -1,353 +1,338 @@
 """
-Platform Tenant Management router — platform super-admin only.
+Platform Tenants router — organization (tenant) management for the platform
+super-admin. A tenant is a Project.
 
-All endpoints in this file require the caller to be a platform admin
-(is_platform_admin=True in the JWT).  Regular tenant users cannot reach any
-of these endpoints — they will receive a 403 before any business logic runs.
+Mounted at /api/v1/platform/tenants. Every endpoint requires
+is_platform_admin=True on the authenticated user.
 
-Mount point: /api/v1/platform/tenants
+Endpoints
+---------
+  GET    /platform/tenants                      list all tenants (+ usage)
+  POST   /platform/tenants                      create tenant + initial admin
+  PUT    /platform/tenants/{id}                 update name/status/license/azure
+  GET    /platform/tenants/{id}/usage           active_users / max_users
+  GET    /platform/tenants/{id}/users           list members
+  POST   /platform/tenants/{id}/users           add a member (username+password)
+  PUT    /platform/tenants/{id}/users/{user_id} edit role/display/password/active
+  DELETE /platform/tenants/{id}/users/{user_id} remove membership
 """
 
 from __future__ import annotations
 
 import logging
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
+from app.core.exceptions import NotFoundError, ValidationError
+from app.core.permissions import role_label
 from app.core.security import hash_password
 from app.schemas.tenant import (
     TenantCreateRequest,
+    TenantCreateResponse,
+    TenantMemberCreateRequest,
+    TenantMemberRead,
+    TenantMemberUpdateRequest,
     TenantRead,
     TenantUpdateRequest,
-    TenantUserCreateRequest,
-    TenantUserUpdateRequest,
     TenantUsageResponse,
 )
+from app.services import tenant_service
 
 _log = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Internal guard — called at the top of every endpoint
+# Guard
 # ---------------------------------------------------------------------------
 
-def _require_platform_admin(current_user) -> None:
+def _require_platform_admin(current_user=Depends(get_current_user)):
     if not getattr(current_user, "_is_platform_admin", False):
         raise HTTPException(status_code=403, detail="Platform admin access required.")
+    return current_user
 
 
-def _tenant_or_404(db: Session, tenant_id: str):
-    from promptops_app.database import Tenant
-    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
-    if tenant is None:
-        raise HTTPException(status_code=404, detail=f"Tenant '{tenant_id}' not found.")
-    return tenant
+# ---------------------------------------------------------------------------
+# Serializers
+# ---------------------------------------------------------------------------
 
-
-def _tenant_dict(tenant, db: Session) -> TenantRead:
-    from promptops_app.database import User
-    active_users = db.query(User).filter(
-        User.tenant_id == tenant.id, User.is_active == True,
-    ).count()
+def _tenant_read(db: Session, project) -> TenantRead:
     return TenantRead(
-        id=tenant.id,
-        slug=tenant.slug,
-        name=tenant.name,
-        max_users=tenant.max_users,
-        status=tenant.status,
-        active_users=active_users,
-        created_at=tenant.created_at,
-        created_by=tenant.created_by,
+        id=project.id,
+        slug=project.slug,
+        name=project.name,
+        status=project.status or "active",
+        max_users=project.max_users or 50,
+        microsoft_auth_enabled=bool(getattr(project, "microsoft_auth_enabled", True)),
+        allowed_email_domains=project.allowed_email_domains or None,
+        active_users=tenant_service.active_member_count(db, project.id),
+        created_at=project.created_at,
+        created_by=project.created_by,
     )
+
+
+def _member_read(user, membership) -> TenantMemberRead:
+    return TenantMemberRead(
+        user_id=user.id,
+        username=user.username,
+        display_name=user.display_name or user.username,
+        role=membership.role,
+        role_display=role_label(membership.role),
+        active=bool(membership.active),
+        email=user.email,
+        auth_provider="microsoft" if user.microsoft_oid else "local",
+    )
+
+
+def _get_tenant_or_404(db: Session, project_id: int):
+    from promptops_app.database import Project
+
+    project = db.get(Project, project_id)
+    if project is None:
+        raise NotFoundError("Project", project_id)
+    return project
+
+
+def _get_membership_or_404(db: Session, project_id: int, user_id: int):
+    from promptops_app.database import TenantMembership
+
+    m = (
+        db.query(TenantMembership)
+        .filter(TenantMembership.project_id == project_id, TenantMembership.user_id == user_id)
+        .first()
+    )
+    if m is None:
+        raise NotFoundError("Membership", user_id)
+    return m
 
 
 # ---------------------------------------------------------------------------
 # Tenant CRUD
 # ---------------------------------------------------------------------------
 
-@router.get(
-    "",
-    response_model=list[TenantRead],
-    summary="List all tenants",
-)
+@router.get("", response_model=list[TenantRead], summary="List all tenants")
 def list_tenants(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _=Depends(_require_platform_admin),
 ) -> list[TenantRead]:
-    """Return all tenants ordered by name. Platform admin only."""
-    from promptops_app.database import Tenant
+    from promptops_app.database import Project
 
-    _require_platform_admin(current_user)
-    tenants = db.query(Tenant).order_by(Tenant.name).all()
-    return [_tenant_dict(t, db) for t in tenants]
+    projects = db.query(Project).filter(Project.is_active == True).order_by(Project.name).all()  # noqa: E712
+    return [_tenant_read(db, p) for p in projects]
 
 
-@router.post(
-    "",
-    response_model=TenantRead,
-    status_code=201,
-    summary="Create a tenant with an initial admin user",
-)
+@router.post("", response_model=TenantCreateResponse, status_code=201, summary="Create a tenant")
 def create_tenant(
     body: TenantCreateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-) -> TenantRead:
-    """
-    Create a new tenant and its initial admin user in one atomic operation.
-
-    The slug must be unique, lowercase, and must not be "platform" (reserved).
-    """
-    from promptops_app.database import Tenant, User
-
-    _require_platform_admin(current_user)
-
-    slug = body.slug.strip().lower()
-    if slug == "platform":
-        raise HTTPException(status_code=400, detail="'platform' is a reserved organisation code.")
-    if db.query(Tenant).filter(Tenant.slug == slug).first():
-        raise HTTPException(status_code=409, detail=f"Organisation code '{slug}' already exists.")
-
-    tenant = Tenant(
-        id=str(uuid.uuid4()),
-        slug=slug,
-        name=body.name,
-        max_users=body.max_users,
-        status="active",
-        created_by=current_user.username,
-    )
-    db.add(tenant)
-    db.flush()  # assigns tenant.id before creating the admin user
-
-    admin_user = User(
-        username=body.admin_username,
-        password_hash=hash_password(body.admin_password),
-        role="admin",
-        tenant_id=tenant.id,
-        is_active=True,
-        is_platform_admin=False,
-    )
-    db.add(admin_user)
+    current_user=Depends(_require_platform_admin),
+) -> TenantCreateResponse:
     try:
+        project, admin_user = tenant_service.create_tenant(
+            db,
+            slug=body.slug,
+            name=body.name,
+            max_users=body.max_users,
+            created_by=current_user.username,
+            admin_username=body.admin_username,
+            admin_password_hash=hash_password(body.admin_password),
+            admin_display_name=body.admin_display_name or body.admin_username,
+        )
         db.commit()
-    except IntegrityError as exc:
+    except ValidationError:
         db.rollback()
-        detail = str(exc.orig) if exc.orig else str(exc)
-        if "username" in detail.lower():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Username '{body.admin_username}' is already taken. Choose a different admin username.",
-            )
-        raise HTTPException(status_code=409, detail="A duplicate value violates a unique constraint.")
-    db.refresh(tenant)
+        raise
+    except Exception as exc:  # pragma: no cover
+        db.rollback()
+        _log.exception("tenant_create_failed")
+        raise HTTPException(status_code=500, detail=f"Failed to create tenant: {exc}")
 
-    _log.info("tenant_created  by=%s  slug=%s  id=%s", current_user.username, slug, tenant.id)
-    return _tenant_dict(tenant, db)
+    db.refresh(project)
+    _log.info("tenant_created  by=%s  slug=%s  admin=%s",
+              current_user.username, project.slug, admin_user.username)
+    base = _tenant_read(db, project)
+    return TenantCreateResponse(**base.model_dump(), initial_admin_username=admin_user.username)
 
 
-@router.put(
-    "/{tenant_id}",
-    response_model=TenantRead,
-    summary="Update a tenant's name, max_users, or status",
-)
+@router.put("/{project_id}", response_model=TenantRead, summary="Update a tenant")
 def update_tenant(
-    tenant_id: str,
+    project_id: int,
     body: TenantUpdateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _=Depends(_require_platform_admin),
 ) -> TenantRead:
-    """Update tenant metadata. Platform admin only."""
-    _require_platform_admin(current_user)
-    tenant = _tenant_or_404(db, tenant_id)
+    project = _get_tenant_or_404(db, project_id)
 
     if body.name is not None:
-        tenant.name = body.name
+        project.name = body.name.strip()
+    if body.status is not None:
+        if body.status not in ("active", "suspended"):
+            raise ValidationError("status must be 'active' or 'suspended'.")
+        project.status = body.status
     if body.max_users is not None:
-        tenant.max_users = body.max_users
-    if body.status in ("active", "suspended"):
-        tenant.status = body.status
+        project.max_users = int(body.max_users)
+    if body.microsoft_auth_enabled is not None:
+        project.microsoft_auth_enabled = bool(body.microsoft_auth_enabled)
+    if body.allowed_email_domains is not None:
+        project.allowed_email_domains = body.allowed_email_domains.strip() or None
+    if body.azure_tenant_id is not None:
+        project.azure_tenant_id = body.azure_tenant_id.strip() or None
+    if body.azure_client_id is not None:
+        project.azure_client_id = body.azure_client_id.strip() or None
+    if body.azure_client_secret is not None and body.azure_client_secret.strip():
+        project.azure_client_secret = body.azure_client_secret.strip()
+    if body.azure_new_user_role is not None:
+        role = body.azure_new_user_role.strip() or None
+        if role and role not in tenant_service.TENANT_ASSIGNABLE_ROLES:
+            raise ValidationError("azure_new_user_role must be admin, reviewer, or author.")
+        project.azure_new_user_role = role
 
     db.commit()
-    db.refresh(tenant)
-    _log.info("tenant_updated  by=%s  tenant_id=%s", current_user.username, tenant_id)
-    return _tenant_dict(tenant, db)
+    db.refresh(project)
+    _log.info("tenant_updated  project_id=%d", project_id)
+    return _tenant_read(db, project)
 
 
-# ---------------------------------------------------------------------------
-# Tenant user management
-# ---------------------------------------------------------------------------
-
-@router.get(
-    "/{tenant_id}/users",
-    summary="List all users in a tenant",
-)
-def list_tenant_users(
-    tenant_id: str,
+@router.get("/{project_id}/usage", response_model=TenantUsageResponse, summary="Tenant license usage")
+def tenant_usage(
+    project_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    """Return all non-platform-admin users belonging to this tenant."""
-    from promptops_app.database import User
-    from app.core.permissions import role_label
+    _=Depends(_require_platform_admin),
+) -> TenantUsageResponse:
+    _get_tenant_or_404(db, project_id)
+    return TenantUsageResponse(**tenant_service.tenant_usage(db, project_id))
 
-    _require_platform_admin(current_user)
-    _tenant_or_404(db, tenant_id)
 
-    users = (
-        db.query(User)
-        .filter(User.tenant_id == tenant_id, User.is_platform_admin == False)
+# ---------------------------------------------------------------------------
+# Tenant members
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/users", response_model=list[TenantMemberRead], summary="List tenant members")
+def list_members(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> list[TenantMemberRead]:
+    from promptops_app.database import TenantMembership, User
+
+    _get_tenant_or_404(db, project_id)
+    rows = (
+        db.query(TenantMembership, User)
+        .join(User, User.id == TenantMembership.user_id)
+        .filter(TenantMembership.project_id == project_id)
         .order_by(User.username)
         .all()
     )
-    return [
-        {
-            "id":           u.id,
-            "username":     u.username,
-            "role":         u.role,
-            "role_display": role_label(u.role),
-            "is_active":    u.is_active,
-        }
-        for u in users
-    ]
+    return [_member_read(user, m) for (m, user) in rows]
 
 
-@router.post(
-    "/{tenant_id}/users",
-    status_code=201,
-    summary="Create a user in a specific tenant",
-)
-def create_tenant_user(
-    tenant_id: str,
-    body: TenantUserCreateRequest,
+@router.post("/{project_id}/users", response_model=TenantMemberRead, status_code=201, summary="Add a tenant member")
+def add_member(
+    project_id: int,
+    body: TenantMemberCreateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    """Create a new user inside a specific tenant. Enforces max_users license."""
-    from promptops_app.database import Tenant, User
+    current_user=Depends(_require_platform_admin),
+) -> TenantMemberRead:
+    from promptops_app.database import TenantMembership, User
 
-    _require_platform_admin(current_user)
-    tenant = _tenant_or_404(db, tenant_id)
+    _get_tenant_or_404(db, project_id)
+    tenant_service.assert_can_add_member(db, project_id)
 
-    # License check.
-    active_count = db.query(User).filter(
-        User.tenant_id == tenant_id, User.is_active == True,
-    ).count()
-    if active_count >= tenant.max_users:
-        raise HTTPException(status_code=403, detail="User license limit reached for this organisation.")
+    role = tenant_service.normalize_role(body.role)
 
-    # Duplicate username check within tenant.
-    if db.query(User).filter(User.username == body.username, User.tenant_id == tenant_id).first():
-        raise HTTPException(status_code=409, detail=f"Username '{body.username}' already exists in this tenant.")
+    # Usernames are globally unique. Reuse an existing user if the same username
+    # exists; otherwise create one. Then attach a membership for this tenant.
+    user = db.query(User).filter(User.username == body.username.strip()).first()
+    if user is None:
+        user = User(
+            username=body.username.strip(),
+            password_hash=hash_password(body.password),
+            display_name=(body.display_name or body.username).strip(),
+            role=role,
+            project_id=project_id,
+            is_active=True,
+            is_platform_admin=False,
+        )
+        db.add(user)
+        db.flush()
+    else:
+        if db.query(TenantMembership).filter(
+            TenantMembership.project_id == project_id, TenantMembership.user_id == user.id
+        ).first():
+            raise ValidationError(f"User '{user.username}' is already a member of this tenant.")
 
-    user = User(
-        username=body.username,
-        password_hash=hash_password(body.password),
-        role=body.role,
-        tenant_id=tenant_id,
-        is_active=True,
-        is_platform_admin=False,
+    membership = TenantMembership(
+        user_id=user.id, project_id=project_id, role=role, active=True,
+        created_by=current_user.username,
     )
-    db.add(user)
+    db.add(membership)
     db.commit()
+    db.refresh(membership)
     db.refresh(user)
+    _log.info("member_added  by=%s  project_id=%d  username=%s  role=%s",
+              current_user.username, project_id, user.username, role)
+    return _member_read(user, membership)
 
-    _log.info("tenant_user_created  by=%s  tenant_id=%s  username=%s", current_user.username, tenant_id, body.username)
-    return {"id": user.id, "username": user.username, "role": user.role, "tenant_id": tenant_id}
 
-
-@router.put(
-    "/{tenant_id}/users/{username}",
-    summary="Update a user in a specific tenant",
-)
-def update_tenant_user(
-    tenant_id: str,
-    username: str,
-    body: TenantUserUpdateRequest,
+@router.put("/{project_id}/users/{user_id}", response_model=TenantMemberRead, summary="Edit a tenant member")
+def update_member(
+    project_id: int,
+    user_id: int,
+    body: TenantMemberUpdateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    """Update role, password, active status, or display name for a tenant user."""
+    _=Depends(_require_platform_admin),
+) -> TenantMemberRead:
     from promptops_app.database import User
 
-    _require_platform_admin(current_user)
-    _tenant_or_404(db, tenant_id)
-
-    user = db.query(User).filter(User.username == username, User.tenant_id == tenant_id).first()
+    _get_tenant_or_404(db, project_id)
+    membership = _get_membership_or_404(db, project_id, user_id)
+    user = db.get(User, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found in this tenant.")
+        raise NotFoundError("User", user_id)
 
-    if body.role is not None:
-        user.role = body.role
-    if body.password is not None:
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip() or user.username
+    if body.password:
         user.password_hash = hash_password(body.password)
-    if body.is_active is not None:
-        user.is_active = body.is_active
+    if body.role is not None:
+        membership.role = tenant_service.normalize_role(body.role)
+    if body.active is not None:
+        if body.active and not membership.active:
+            tenant_service.assert_can_add_member(db, project_id)
+        membership.active = bool(body.active)
 
     db.commit()
+    db.refresh(membership)
     db.refresh(user)
-    _log.info("tenant_user_updated  by=%s  tenant_id=%s  username=%s", current_user.username, tenant_id, username)
-    return {"username": user.username, "role": user.role, "is_active": user.is_active}
+    _log.info("member_updated  project_id=%d  user_id=%d", project_id, user_id)
+    return _member_read(user, membership)
 
 
-@router.delete(
-    "/{tenant_id}/users/{username}",
-    status_code=204,
-    summary="Remove a user from a tenant",
-)
-def delete_tenant_user(
-    tenant_id: str,
-    username: str,
+@router.delete("/{project_id}/users/{user_id}", status_code=204, summary="Remove a tenant member")
+def delete_member(
+    project_id: int,
+    user_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _=Depends(_require_platform_admin),
 ) -> None:
-    """Permanently delete a user from a tenant. Platform admin only."""
-    from promptops_app.database import User
+    from promptops_app.database import TenantMembership, User
 
-    _require_platform_admin(current_user)
-    _tenant_or_404(db, tenant_id)
+    _get_tenant_or_404(db, project_id)
+    membership = _get_membership_or_404(db, project_id, user_id)
+    db.delete(membership)
 
-    user = db.query(User).filter(User.username == username, User.tenant_id == tenant_id).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found in this tenant.")
-
-    db.delete(user)
-    db.commit()
-    _log.info("tenant_user_deleted  by=%s  tenant_id=%s  username=%s", current_user.username, tenant_id, username)
-
-
-# ---------------------------------------------------------------------------
-# Tenant usage
-# ---------------------------------------------------------------------------
-
-@router.get(
-    "/{tenant_id}/usage",
-    response_model=TenantUsageResponse,
-    summary="Get license usage for a tenant",
-)
-def get_tenant_usage(
-    tenant_id: str,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-) -> TenantUsageResponse:
-    """Return active_users, max_users, and usage_percent for a tenant."""
-    from promptops_app.database import User
-
-    _require_platform_admin(current_user)
-    tenant = _tenant_or_404(db, tenant_id)
-
-    active_users = db.query(User).filter(
-        User.tenant_id == tenant_id, User.is_active == True,
-    ).count()
-    usage_percent = round((active_users / tenant.max_users) * 100, 1) if tenant.max_users else 0.0
-
-    return TenantUsageResponse(
-        active_users=active_users,
-        max_users=tenant.max_users,
-        usage_percent=usage_percent,
+    # If this user has no other memberships, is not a platform admin, and has no
+    # password (Microsoft-only), remove the orphaned user row too.
+    user = db.get(User, user_id)
+    remaining = (
+        db.query(TenantMembership)
+        .filter(TenantMembership.user_id == user_id, TenantMembership.project_id != project_id)
+        .count()
     )
+    if user and remaining == 0 and not user.is_platform_admin and not user.password_hash:
+        db.delete(user)
+
+    db.commit()
+    _log.info("member_removed  project_id=%d  user_id=%d", project_id, user_id)

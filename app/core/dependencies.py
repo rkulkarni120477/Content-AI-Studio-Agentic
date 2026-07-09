@@ -91,7 +91,7 @@ def get_current_user(
     Use as a dependency:
         def my_endpoint(current_user = Depends(get_current_user)): ...
     """
-    from promptops_app.database import User
+    from promptops_app.database import Project, TenantMembership, User
 
     if credentials is None:
         raise AuthenticationError("Authentication required. Provide a Bearer token.")
@@ -102,36 +102,47 @@ def get_current_user(
     if not username:
         raise AuthenticationError("Token is missing the subject claim.")
 
-    tenant_id: str | None = payload.get("tenant_id")
+    project_id: int | None = payload.get("project_id")
     is_platform_admin: bool = payload.get("is_platform_admin", False)
 
-    # Scope the lookup so a token from tenant-A cannot authenticate as tenant-B.
-    if is_platform_admin:
-        user = db.query(User).filter(
-            User.username == username,
-            User.is_platform_admin == True,
-        ).first()
-    elif tenant_id:
-        user = db.query(User).filter(
-            User.username == username,
-            User.tenant_id == tenant_id,
-        ).first()
-    else:
-        # Fallback for tokens issued before tenant system (backward compat).
-        user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.username == username).first()
 
     if user is None:
-        _log.warning("auth_user_not_found  username=%s  tenant_id=%s", username, tenant_id)
+        _log.warning("auth_user_not_found  username=%s", username)
         raise AuthenticationError("User account not found.")
 
     if user.is_active is False:
         _log.warning("auth_user_inactive  username=%s", username)
         raise AuthenticationError("User account is deactivated. Contact an Admin.")
 
-    # Attach tenant context from the token so route handlers don't need extra DB calls.
-    user._tenant_id = tenant_id
-    user._tenant_slug = payload.get("tenant_slug")
+    # Resolve the EFFECTIVE role for this session. A user's role is per-tenant
+    # (TenantMembership), so we re-validate membership + tenant status on every
+    # request — deactivation, role changes, and suspension take effect at once.
+    effective_role = user.role
+    if is_platform_admin:
+        effective_role = user.role or "admin"
+        project_id = None
+    elif project_id is not None:
+        project = db.get(Project, project_id)
+        if project is None or (project.status or "active") != "active" or not project.is_active:
+            raise AuthenticationError("This organization has been suspended.")
+        membership = (
+            db.query(TenantMembership)
+            .filter(TenantMembership.user_id == user.id, TenantMembership.project_id == project_id)
+            .first()
+        )
+        if membership is None or not membership.active:
+            raise AuthenticationError("Your membership in this organization is inactive.")
+        effective_role = membership.role
+
+    # Attach context so route handlers can read it without extra DB calls.
+    user._project_id        = project_id
     user._is_platform_admin = is_platform_admin
+    user._role              = effective_role
+    # Override the in-memory role column so the ~20 existing `current_user.role`
+    # reads reflect the per-tenant role. User.role is a vestigial default now
+    # (membership is source of truth), so an accidental flush is harmless.
+    user.role = effective_role
 
     return user
 
@@ -168,21 +179,15 @@ def require_permission(permission: str):
     return _check
 
 
-# ---------------------------------------------------------------------------
-# Tenant context helpers
-# ---------------------------------------------------------------------------
-
 def get_tenant_context(current_user=Depends(get_current_user)):
     """
-    Return (tenant_id, is_platform_admin) for the current request.
+    Resolve the caller's tenant context for project-scoped queries.
 
-    Use as a dependency in any route that needs to scope queries:
-        def my_endpoint(ctx = Depends(get_tenant_context)):
-            tenant_id, is_platform_admin = ctx
-            ...
+    Returns (tenant_id, is_platform_admin) — tenant_id is the caller's own
+    project id (as a string), or None for a platform admin (sees all) or an
+    unassigned user (awaiting assignment).
     """
-    from app.core.tenant_context import tenant_id_from_user, is_platform_admin_user
-    return (
-        tenant_id_from_user(current_user),
-        is_platform_admin_user(current_user),
-    )
+    from app.core.tenant_context import is_platform_admin_user, tenant_id_from_user
+
+    return (tenant_id_from_user(current_user), is_platform_admin_user(current_user))
+

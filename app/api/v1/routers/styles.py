@@ -26,7 +26,7 @@ import logging
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.dependencies import get_current_user, get_db, get_tenant_context, require_permission
 from app.core.exceptions import LLMGenerationError, NotFoundError
 from app.core.tenant_context import (
     effective_tenant_id_for_write,
@@ -50,10 +50,12 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_style_or_404(db: Session, style_id: int, *, with_documents: bool = False):
-    """Fetch a style by ID or raise HTTP 404."""
+def _get_style_or_404(db: Session, style_id: int, *, with_documents: bool = False, tenant_id=None, is_platform_admin=False):
+    """Fetch a style by ID (tenant-scoped) or raise HTTP 404."""
     from promptops_app.repositories import style_repository
-    style = style_repository.get_style_by_id(db, style_id, with_documents=with_documents)
+    style = style_repository.get_style_by_id(
+        db, style_id, with_documents=with_documents, tenant_id=tenant_id, is_platform_admin=is_platform_admin
+    )
     if style is None:
         raise NotFoundError("Style", style_id)
     return style
@@ -120,9 +122,14 @@ def create_style(
     request_body: StyleCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.create")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleRead:
     """Create a style with optional reference documents and course activation."""
+    from app.core.tenant_context import assert_project_in_tenant
     from promptops_app.database import create_style as db_create_style, set_active_style
+
+    tid, is_admin = tenant_ctx
+    assert_project_in_tenant(db, request_body.project_id, tid, is_admin)
 
     style = db_create_style(
         db,
@@ -131,6 +138,7 @@ def create_style(
         (request_body.custom_instructions or "").strip(),
         request_body.document_ids or [],
         current_user.username,
+        tenant_id=effective_tenant_id_for_write(current_user),
     )
 
     if request_body.activate:
@@ -166,9 +174,11 @@ def get_style(
     style_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleRead:
     """Return full style details including linked documents (Streamlit view panel)."""
-    style = _get_style_or_404(db, style_id, with_documents=True)
+    tid, is_admin = tenant_ctx
+    style = _get_style_or_404(db, style_id, with_documents=True, tenant_id=tid, is_platform_admin=is_admin)
     return _style_to_read(style)
 
 
@@ -182,9 +192,11 @@ def update_style(
     request_body: StyleUpdateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.edit")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleRead:
     """Update style metadata. Does not regenerate AI understanding."""
-    style = _get_style_or_404(db, style_id)
+    tid, is_admin = tenant_ctx
+    style = _get_style_or_404(db, style_id, tenant_id=tid, is_platform_admin=is_admin)
 
     if request_body.name is not None:
         style.name = request_body.name
@@ -206,9 +218,11 @@ def delete_style(
     style_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.delete")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> None:
     """Hard-delete a style. Admin only."""
-    style = _get_style_or_404(db, style_id)
+    tid, is_admin = tenant_ctx
+    style = _get_style_or_404(db, style_id, tenant_id=tid, is_platform_admin=is_admin)
     db.delete(style)
     db.commit()
     _log.info("style_deleted  user=%s  style_id=%d", current_user.username, style_id)
@@ -236,6 +250,7 @@ async def append_style_documents(
     ),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.upload")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleDocumentUploadResponse:
     """Append library documents and/or newly uploaded files to a style."""
     import io
@@ -246,7 +261,8 @@ async def append_style_documents(
     from promptops_app.parsers.file_parser import _parse_uploaded_file
     from promptops_app.repositories import document_repository
 
-    style = _get_style_or_404(db, style_id, with_documents=True)
+    tid, is_admin = tenant_ctx
+    style = _get_style_or_404(db, style_id, with_documents=True, tenant_id=tid, is_platform_admin=is_admin)
     uploaded: list[str] = []
     errors: list[str] = []
     new_doc_ids: list[int] = []
@@ -275,7 +291,7 @@ async def append_style_documents(
         if not content:
             continue
 
-        existing = document_repository.get_document_by_filename(db, name)
+        existing = document_repository.get_document_by_filename(db, name, tenant_id=tid, is_platform_admin=is_admin)
         if existing:
             new_doc_ids.append(existing.id)
             uploaded.append(name)
@@ -290,6 +306,7 @@ async def append_style_documents(
             uploaded_by=current_user.username,
             uploaded_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
+            tenant_id=effective_tenant_id_for_write(current_user),
         )
         db.add(doc)
         db.flush()
@@ -334,6 +351,7 @@ def generate_style_intelligence(
     request_body: StyleUnderstandRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.understand")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleUnderstandResponse:
     """
     Generate or regenerate style intelligence using AI.
@@ -346,7 +364,8 @@ def generate_style_intelligence(
         regenerate_style_understanding,
     )
 
-    style = _get_style_or_404(db, style_id)
+    tid, is_admin = tenant_ctx
+    style = _get_style_or_404(db, style_id, tenant_id=tid, is_platform_admin=is_admin)
 
     # Use regenerate if understanding already exists, otherwise generate fresh.
     if style.generated_summary:
@@ -406,6 +425,7 @@ def activate_style(
     request_body: StyleActivateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.activate")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleRead:
     """
     Mark a style as active for the given scope.
@@ -413,16 +433,19 @@ def activate_style(
     Replicates the "Set as Active Style" button in the Streamlit Style tab.
     Calls the existing set_active_style() function from database.py.
     """
+    from app.core.tenant_context import assert_project_in_tenant
     from promptops_app.database import set_active_style
 
-    _get_style_or_404(db, style_id)
+    tid, is_admin = tenant_ctx
+    _get_style_or_404(db, style_id, tenant_id=tid, is_platform_admin=is_admin)
+    assert_project_in_tenant(db, request_body.project_id, tid, is_admin)
     set_active_style(
         db,
         style_id,
         project_id=request_body.project_id,
         course_id=request_body.course_id,
     )
-    style = _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, tenant_id=tid, is_platform_admin=is_admin)
     db.refresh(style)
 
     _log.info("style_activated  user=%s  style_id=%d", current_user.username, style_id)
@@ -438,9 +461,11 @@ def deactivate_style(
     style_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.deactivate")),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> StyleRead:
     """Remove active status from a style."""
-    style = _get_style_or_404(db, style_id)
+    tid, is_admin = tenant_ctx
+    style = _get_style_or_404(db, style_id, tenant_id=tid, is_platform_admin=is_admin)
     style.is_active = False
     db.commit()
     db.refresh(style)

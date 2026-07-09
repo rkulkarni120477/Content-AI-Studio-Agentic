@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db
+from app.core.dependencies import get_current_user, get_db, get_tenant_context
 from app.core.exceptions import NotFoundError
 from app.core.tenant_context import (
     effective_tenant_id_for_write,
@@ -147,6 +147,7 @@ async def upload_document(
         doc_tag=source_type,
         status="active",
         uploaded_by=current_user.username,
+        tenant_id=effective_tenant_id_for_write(current_user),
     )
     db.add(doc)
     db.commit()
@@ -166,9 +167,11 @@ def get_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> DocumentRead:
     """Return document metadata without content."""
-    return DocumentRead.model_validate(_get_document_or_404(db, document_id))
+    tid, is_admin = tenant_ctx
+    return DocumentRead.model_validate(_get_document_or_404(db, document_id, tid, is_admin))
 
 
 @router.get(
@@ -181,9 +184,11 @@ def get_document_content(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> DocumentContentResponse:
     """Return the full parsed text of a document."""
-    doc = _get_document_or_404(db, document_id)
+    tid, is_admin = tenant_ctx
+    doc = _get_document_or_404(db, document_id, tid, is_admin)
     return DocumentContentResponse(id=doc.id, name=doc.filename, content=doc.content or "")
 
 
@@ -196,9 +201,11 @@ def delete_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant_ctx=Depends(get_tenant_context),
 ) -> None:
     """Soft-archive a document by marking it inactive."""
-    doc = _get_document_or_404(db, document_id)
+    tid, is_admin = tenant_ctx
+    doc = _get_document_or_404(db, document_id, tid, is_admin)
     doc.status = "archived"
     db.commit()
     _log.info("document_archived  user=%s  doc_id=%d", current_user.username, document_id)

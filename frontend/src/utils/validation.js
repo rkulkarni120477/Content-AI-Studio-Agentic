@@ -20,10 +20,8 @@ export const rating = () =>
 
 // ─── Auth Schemas ─────────────────────────────────────────────────────────────
 export const loginSchema = z.object({
-  tenant_slug:    z.string().min(1, 'Organisation code is required').trim(),
-  username:       requiredString('Username'),
-  password:       z.string().min(1, 'Password is required'),
-  platform_admin: z.boolean().optional(),
+  username: requiredString('Username'),
+  password: z.string().min(1, 'Password is required'),
 });
 
 export const createUserSchema = z.object({

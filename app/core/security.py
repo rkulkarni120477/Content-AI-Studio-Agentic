@@ -56,8 +56,7 @@ def create_access_token(
     username: str,
     role: str,
     *,
-    tenant_id: str | None = None,
-    tenant_slug: str | None = None,
+    project_id: int | None = None,
     is_platform_admin: bool = False,
     workspace: dict | None = None,
     config: dict | None = None,
@@ -69,8 +68,7 @@ def create_access_token(
     ----------
     username          : The user's login name (stored as ``sub`` claim).
     role              : The user's DB role (``admin``, ``reviewer``, ``author``).
-    tenant_id         : Tenant UUID.  None for platform admins.
-    tenant_slug       : Tenant org code.  None for platform admins.
+    project_id        : The project (tenant) the user belongs to. None for platform admins.
     is_platform_admin : True only for platform super-admin accounts.
     workspace         : Optional workspace state dict.
     config            : Optional sidebar config dict.
@@ -85,14 +83,12 @@ def create_access_token(
     payload: dict = {
         "sub":               username,
         "role":              role,
-        "tenant_id":         tenant_id,
-        "tenant_slug":       tenant_slug,
+        "project_id":        project_id,
         "is_platform_admin": is_platform_admin,
         "iat":               now,
         "exp":               expire,
     }
 
-    # Only embed non-null workspace values to keep the token small.
     if workspace:
         payload["ws"] = {k: v for k, v in workspace.items() if v is not None}
 
@@ -101,8 +97,8 @@ def create_access_token(
 
     token = jwt.encode(payload, settings.jwt_secret_value, algorithm=_ALGORITHM)
     _log.debug(
-        "token_created  user=%s  role=%s  tenant=%s  platform_admin=%s  expires=%s",
-        username, role, tenant_slug or "platform", is_platform_admin, expire.isoformat(),
+        "token_created  user=%s  role=%s  project_id=%s  platform_admin=%s  expires=%s",
+        username, role, project_id, is_platform_admin, expire.isoformat(),
     )
     return token
 

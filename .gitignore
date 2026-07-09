@@ -34,4 +34,3 @@ test_copyleaks.py
 .streamlit
 frontend/.vite
 prompt-library
-promptops_app

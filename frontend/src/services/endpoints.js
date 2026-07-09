@@ -4,6 +4,10 @@ export const AUTH = {
   LOGOUT:           '/api/v1/auth/logout',
   ME:               '/api/v1/auth/me',
   REFRESH:          '/api/v1/auth/refresh',
+  CONFIG:           '/api/v1/auth/config',
+  TENANT_LOGIN:     (slug) => `/api/v1/auth/tenant-login/${encodeURIComponent(slug)}`,
+  // Full-page browser redirect (not an XHR) — Microsoft OAuth start.
+  MICROSOFT_LOGIN:  '/api/v1/auth/login/microsoft',
 };
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -230,13 +234,13 @@ export const WORKSPACE = {
   UPDATE_CONFIG:    '/api/v1/workspace/config',
 };
 
-// ─── Platform Admin ───────────────────────────────────────────────────────────
+// ─── Platform Admin — Tenants (organizations) ───────────────────────────────────
 export const PLATFORM = {
-  TENANTS:      '/api/v1/platform/tenants',
-  TENANT:       (id)          => `/api/v1/platform/tenants/${id}`,
-  USERS:        (id)          => `/api/v1/platform/tenants/${id}/users`,
-  USER:         (id, username) => `/api/v1/platform/tenants/${id}/users/${encodeURIComponent(username)}`,
-  USAGE:        (id)          => `/api/v1/platform/tenants/${id}/usage`,
+  TENANTS:        '/api/v1/platform/tenants',
+  TENANT:         (id) => `/api/v1/platform/tenants/${id}`,
+  TENANT_USAGE:   (id) => `/api/v1/platform/tenants/${id}/usage`,
+  TENANT_USERS:   (id) => `/api/v1/platform/tenants/${id}/users`,
+  TENANT_USER:    (id, userId) => `/api/v1/platform/tenants/${id}/users/${userId}`,
 };
 
 // ─── Database Admin ───────────────────────────────────────────────────────────

@@ -21,13 +21,14 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import NotFoundError
 from app.core.tenant_context import (
-    effective_tenant_id_for_write,
     is_platform_admin_user,
     tenant_id_from_user,
 )
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.project import (
     ProjectCreateRequest,
+    ProjectCreateResponse,
+    ProjectInitialAdmin,
     ProjectListItem,
     ProjectRead,
     ProjectUpdateRequest,
@@ -54,7 +55,7 @@ def _get_project_or_404(db: Session, project_id: int, tenant_id=None, is_platfor
     "",
     response_model=PaginatedResponse[ProjectListItem],
     summary="List projects",
-    description="Admin sees all projects. Other roles see only their assigned projects.",
+    description="Platform admin sees all projects. A regular user sees only their own project (tenant).",
 )
 def list_projects(
     page: int = Query(default=1, ge=1),
@@ -62,17 +63,18 @@ def list_projects(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[ProjectListItem]:
-    """Return projects scoped to the authenticated user's role and tenant."""
-    from promptops_app.database import _get_user_projects
+    """Return projects scoped to the authenticated user's tenant.
+
+    Under the project-as-tenant model a regular user belongs to exactly one
+    project, so they only ever see that single project here — never the full
+    dashboard. An unassigned user (awaiting assignment) sees an empty list.
+    """
     from promptops_app.repositories import project_repository
 
     tid      = tenant_id_from_user(current_user)
     is_admin = is_platform_admin_user(current_user)
 
-    if current_user.role == "admin" or is_admin:
-        projects = project_repository.list_active_projects(db, tenant_id=tid, is_platform_admin=is_admin)
-    else:
-        projects = _get_user_projects(db, current_user.username, current_user.role, tenant_id=tid)
+    projects = project_repository.list_active_projects(db, tenant_id=tid, is_platform_admin=is_admin)
 
     total = len(projects)
     start = (page - 1) * page_size
@@ -86,31 +88,69 @@ def list_projects(
 
 @router.post(
     "",
-    response_model=ProjectRead,
+    response_model=ProjectCreateResponse,
     status_code=201,
-    summary="Create a project",
+    summary="Create a project (tenant)",
+    description=(
+        "Platform admin only. A project is a tenant — creating one may "
+        "optionally create its first user in the same call by supplying "
+        "admin_username/admin_password."
+    ),
 )
 def create_project(
     request_body: ProjectCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("project.create")),
-) -> ProjectRead:
-    """Create a new project. Admin only."""
-    from promptops_app.database import Project
+) -> ProjectCreateResponse:
+    """Create a new project (tenant). Platform admin only."""
+    from fastapi import HTTPException
+    from promptops_app.database import Project, User
 
-    tid = effective_tenant_id_for_write(current_user)
+    if not is_platform_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Platform admin access required.")
+
     project = Project(
         name=request_body.name,
         client_name=request_body.client_name,
         description=request_body.description,
-        tenant_id=tid,
     )
     db.add(project)
+    db.flush()
+
+    initial_admin: ProjectInitialAdmin | None = None
+    if request_body.admin_username and request_body.admin_password:
+        from app.core.security import hash_password
+
+        # Usernames are globally unique (not per-tenant) — check unscoped.
+        if db.query(User).filter(User.username == request_body.admin_username).first():
+            db.rollback()
+            raise HTTPException(status_code=409, detail=f"Username '{request_body.admin_username}' is already taken.")
+
+        admin_user = User(
+            username=request_body.admin_username,
+            password_hash=hash_password(request_body.admin_password),
+            display_name=(request_body.admin_display_name or request_body.admin_username).strip(),
+            role=request_body.admin_role,
+            project_id=project.id,
+            is_active=True,
+            is_platform_admin=False,
+        )
+        db.add(admin_user)
+        db.flush()
+        initial_admin = ProjectInitialAdmin(
+            id=admin_user.id,
+            username=admin_user.username,
+            role=admin_user.role,
+            display_name=admin_user.display_name,
+        )
+
     db.commit()
     db.refresh(project)
 
-    _log.info("project_created  user=%s  project_id=%d  name=%s", current_user.username, project.id, project.name)
-    return ProjectRead.model_validate(project)
+    _log.info("project_created  user=%s  project_id=%d  name=%s  initial_admin=%s",
+              current_user.username, project.id, project.name,
+              initial_admin.username if initial_admin else None)
+    return ProjectCreateResponse(**ProjectRead.model_validate(project).model_dump(), initial_admin=initial_admin)
 
 
 @router.get(
@@ -188,13 +228,15 @@ def list_project_users(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
 ) -> list[ProjectUserListItem]:
-    """Return usernames assigned to this project."""
-    from promptops_app.repositories import project_repository
+    """Return usernames assigned to this project (User.project_id == project_id)."""
+    from promptops_app.database import User
 
     _get_project_or_404(
         db, project_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user)
     )
-    usernames = sorted(project_repository.get_assigned_usernames(db, project_id))
+    usernames = sorted(
+        u for (u,) in db.query(User.username).filter(User.project_id == project_id).all()
+    )
     return [ProjectUserListItem(username=u) for u in usernames]
 
 
@@ -203,6 +245,7 @@ def list_project_users(
     response_model=MessageResponse,
     status_code=201,
     summary="Assign a user to a project",
+    description="Platform admin only. Sets the user's home project (tenant) — this is what determines what they can see and where they land after login.",
 )
 def assign_user_to_project(
     project_id: int,
@@ -210,25 +253,25 @@ def assign_user_to_project(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
 ) -> MessageResponse:
-    """Assign a user to a project by username."""
+    """Assign a user to a project by username. Platform admin only."""
+    from fastapi import HTTPException
     from promptops_app.database import User
-    from promptops_app.repositories import project_repository
 
-    tid      = tenant_id_from_user(current_user)
-    is_admin = is_platform_admin_user(current_user)
-    _get_project_or_404(db, project_id, tid, is_admin)
+    if not is_platform_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Platform admin access required.")
+
+    _get_project_or_404(db, project_id, None, True)
     user = db.query(User).filter(
         User.username == request_body.username,
         User.is_active == True,  # noqa: E712
         User.role != "admin",
-    )
-    if tid:
-        user = user.filter(User.tenant_id == tid)
-    user = user.first()
+        User.is_platform_admin == False,  # noqa: E712
+    ).first()
     if user is None:
         raise NotFoundError("User", request_body.username)
 
-    project_repository.assign_user_to_project(db, project_id, request_body.username)
+    user.project_id = project_id
+    db.commit()
     _log.info("user_assigned  by=%s  username=%s  project_id=%d",
               current_user.username, request_body.username, project_id)
     return MessageResponse(message=f"User '{request_body.username}' assigned to project {project_id}.")
@@ -238,6 +281,7 @@ def assign_user_to_project(
     "/{project_id}/users/{username}",
     status_code=204,
     summary="Remove a user from a project",
+    description="Platform admin only. Clears the user's project assignment — they will see an 'awaiting assignment' screen until reassigned.",
 )
 def unassign_user_from_project(
     project_id: int,
@@ -245,12 +289,17 @@ def unassign_user_from_project(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
 ) -> None:
-    """Remove a user's project assignment."""
-    from promptops_app.repositories import project_repository
+    """Remove a user's project assignment. Platform admin only."""
+    from fastapi import HTTPException
+    from promptops_app.database import User
 
-    _get_project_or_404(
-        db, project_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user)
-    )
-    project_repository.unassign_user_from_project(db, project_id, username)
+    if not is_platform_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Platform admin access required.")
+
+    _get_project_or_404(db, project_id, None, True)
+    user = db.query(User).filter(User.username == username, User.project_id == project_id).first()
+    if user is not None:
+        user.project_id = None
+        db.commit()
     _log.info("user_unassigned  by=%s  username=%s  project_id=%d",
               current_user.username, username, project_id)

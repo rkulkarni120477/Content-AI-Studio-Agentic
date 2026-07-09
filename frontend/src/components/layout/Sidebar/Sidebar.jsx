@@ -21,7 +21,7 @@ const WORKSPACE_ITEMS = [
 ];
 
 const PLATFORM_ITEMS = [
-  { label: 'Organisations', icon: '🏢', to: ROUTES.PLATFORM_TENANTS },
+  { label: 'Manage Users', icon: '👥', to: ROUTES.PLATFORM_USERS },
 ];
 
 export default function Sidebar({ courseId, collapsed, onToggle }) {

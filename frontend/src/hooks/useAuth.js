@@ -7,6 +7,7 @@ import {
   selectIsReviewer,
   selectAuthLoading,
   selectIsPlatformAdmin,
+  selectProjectId,
 } from '@features/auth/authSlice';
 import { logoutThunk } from '@features/auth/authThunks';
 import { ROLES } from '@utils/constants';
@@ -19,12 +20,15 @@ export function useAuth() {
   const isAdmin           = useAppSelector(selectIsAdmin);
   const isReviewer        = useAppSelector(selectIsReviewer);
   const isPlatformAdmin   = useAppSelector(selectIsPlatformAdmin);
+  const projectId         = useAppSelector(selectProjectId);
   const isLoading         = useAppSelector(selectAuthLoading);
 
   const isAuthor      = role === ROLES.AUTHOR;
   const canApprove    = isAdmin || isReviewer;
   const canGenerate   = Boolean(user);
-  const canManageUsers = isAdmin || (user?.permissions?.includes('users.create') ?? false);
+  // User management is platform-admin only — a project-scoped admin (Director)
+  // can no longer create/edit/toggle users, even within their own project.
+  const canManageUsers = isPlatformAdmin;
   const canClearDb = isAdmin || (user?.permissions?.includes('system.clear_db') ?? false);
 
   function logout() {
@@ -44,6 +48,7 @@ export function useAuth() {
     isReviewer,
     isAuthor,
     isPlatformAdmin,
+    projectId,
     canApprove,
     canGenerate,
     canManageUsers,
