@@ -497,7 +497,7 @@ export default function CddPage() {
             </div>
           </details>
 
-          <details className={styles.accordion} open>
+          <details className={styles.accordion}>
             <summary className={styles.accordion__summary}>📂 Your Course Design Documents</summary>
             <div className={styles.accordion__body}>
               {isLoading ? (
@@ -656,7 +656,7 @@ export default function CddPage() {
             </div>
           </details>
 
-          <details className={styles.accordion} open>
+          <details className={styles.accordion}>
             <summary className={styles.accordion__summary}>🎯 CDD Prompts</summary>
             <div className={styles.accordion__body}>
               <InlinePromptControls

@@ -730,7 +730,7 @@ export default function BlueprintPage() {
             </div>
           </details>
 
-          <details className={styles.accordion} open>
+          <details className={styles.accordion}>
             <summary className={styles.accordion__summary}>📂 Your Module Blueprints</summary>
             <div className={styles.accordion__body}>
               {isLoading ? (
@@ -895,7 +895,7 @@ export default function BlueprintPage() {
             </div>
           </details>
 
-          <details className={styles.accordion} open>
+          <details className={styles.accordion}>
             <summary className={styles.accordion__summary}>🎯 Blueprint Prompts</summary>
             <div className={styles.accordion__body}>
               <InlinePromptControls
