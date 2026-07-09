@@ -1,63 +1,147 @@
 """Prompt Repository — Prompt, PromptVersion, and PromptFixing database access."""
 
 from datetime import datetime
-from app.core.tenant_context import apply_tenant_filter
-from promptops_app.database import Prompt, PromptVersion, PromptFixing, UserPromptPreference
+
+from sqlalchemy import func, or_
+
+from promptops_app.database import (
+    Prompt,
+    PromptFixing,
+    PromptTag,
+    PromptVersion,
+    UserPromptPreference,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tags
+#
+# ``prompt_tags`` rows are canonical for every kind (Phase 8 hygiene). The
+# legacy comma-string ``prompts.tags`` is kept mirrored by set_prompt_tags so
+# the Streamlit surfaces and a rollback of this convergence stay coherent;
+# readers must prefer the rows.
+# ---------------------------------------------------------------------------
+
+def parse_tags(raw: str | None) -> list[str]:
+    """Split a legacy comma-string into normalized tags (order kept, deduped)."""
+    seen: dict[str, None] = {}
+    for part in (raw or "").split(","):
+        tag = part.strip()
+        if tag:
+            seen.setdefault(tag, None)
+    return list(seen)
+
+
+def set_prompt_tags(db, prompt: Prompt, tags: list[str] | str | None) -> None:
+    """Replace *prompt*'s tags in both stores. Caller commits.
+
+    Rows for kept tags are reused rather than recreated — a delete + insert of
+    the same composite ``(prompt_id, tag)`` PK in one flush would collide.
+    """
+    normalized = parse_tags(tags) if isinstance(tags, str) or tags is None else parse_tags(",".join(tags))
+    keep = set(normalized)
+    current = {t.tag for t in prompt.tag_rows}
+    prompt.tag_rows = [t for t in prompt.tag_rows if t.tag in keep] + [
+        PromptTag(tag=t) for t in normalized if t not in current
+    ]
+    prompt.tags = ",".join(normalized)
 
 
 # ---------------------------------------------------------------------------
 # Basic lookups
 # ---------------------------------------------------------------------------
 
-def list_all_prompts(db, tenant_id=None, is_platform_admin=False):
-    q = db.query(Prompt).order_by(Prompt.name.asc())
-    return apply_tenant_filter(q, Prompt, tenant_id, is_platform_admin).all()
+def list_all_prompts(db):
+    # Soft-deleted rows are archived — never listed (doc §9).
+    return (db.query(Prompt).filter(Prompt.deleted_at.is_(None))
+            .order_by(Prompt.name.asc()).all())
 
 
-def get_prompt_by_name(db, name: str, tenant_id=None, is_platform_admin=False):
-    q = db.query(Prompt).filter(Prompt.name == name)
-    return apply_tenant_filter(q, Prompt, tenant_id, is_platform_admin).first()
+def get_prompt_by_name(db, name: str):
+    return db.query(Prompt).filter(Prompt.name == name).first()
 
 
-def count_prompts(db, tenant_id=None, is_platform_admin=False) -> int:
-    q = db.query(Prompt)
-    return apply_tenant_filter(q, Prompt, tenant_id, is_platform_admin).count()
+def count_prompts(db) -> int:
+    return db.query(Prompt).count()
 
 
 # ---------------------------------------------------------------------------
 # Component-scoped queries
 # ---------------------------------------------------------------------------
 
-def get_default_prompt(db, component_type: str, tenant_id=None, is_platform_admin=False) -> Prompt | None:
-    """Return the single is_default=True asset for *component_type*, or None."""
-    q = (
-        db.query(Prompt)
-        .filter(
-            Prompt.component_type == component_type,
-            Prompt.is_default == True,  # noqa: E712
-        )
+def get_default_prompt(
+    db,
+    component_type: str,
+    variant: str | None = None,
+    *,
+    variant_fallback: bool = True,
+) -> Prompt | None:
+    """Return the is_default=True asset for *(component_type, variant)*, or None.
+
+    Pipeline rows only — library rows can never resolve for generation, even
+    if one were mislabeled with a component_type/is_default.
+
+    Variant semantics (the partial unique index guarantees at most one default
+    per exact ``(component_type, variant)`` pair):
+    - ``variant=None`` — the NULL-variant default only. A variant-specific
+      default can never resolve for a variant-less request (no sideways match).
+    - ``variant="x"`` — the exact ``(component_type, "x")`` default first; when
+      *variant_fallback* (default), fall back to the NULL-variant default —
+      never to a different variant.
+    - ``variant_fallback=False`` — exact variant only; callers with their own
+      bespoke fallback (Generate's interactive path) use this so a requested
+      variant can never silently resolve another variant's template.
+    """
+    base = db.query(Prompt).filter(
+        Prompt.component_type == component_type,
+        Prompt.is_default == True,  # noqa: E712
+        Prompt.prompt_kind == "pipeline",
+        # Archived/soft-deleted rows never resolve (doc §9). No write path
+        # soft-deletes pipeline rows today — this is the forward guard.
+        Prompt.deleted_at.is_(None),
     )
-    return apply_tenant_filter(q, Prompt, tenant_id, is_platform_admin).first()
+    if variant is not None:
+        row = base.filter(Prompt.variant == variant).first()
+        if row is not None or not variant_fallback:
+            return row
+    return base.filter(Prompt.variant.is_(None)).first()
 
 
-def list_prompts_by_component(db, component_type: str, tenant_id=None, is_platform_admin=False) -> list[Prompt]:
-    """Return all prompts whose component_type matches, default first then alpha."""
-    q = (
+def list_prompts_by_component(db, component_type: str) -> list[Prompt]:
+    """Return all live prompts whose component_type matches, default first then alpha.
+
+    Soft-deleted rows are excluded — this feeds CAS selection dropdowns
+    (doc §9: archived prompts never appear in selection).
+    """
+    return (
         db.query(Prompt)
-        .filter(Prompt.component_type == component_type)
+        .filter(Prompt.component_type == component_type,
+                Prompt.deleted_at.is_(None))
         .order_by(Prompt.is_default.desc(), Prompt.name.asc())
+        .all()
     )
-    return apply_tenant_filter(q, Prompt, tenant_id, is_platform_admin).all()
 
 
-def list_prompts_tagged(db, tag: str, tenant_id=None, is_platform_admin=False) -> list[Prompt]:
-    """Return prompts whose tags column contains *tag* (case-insensitive)."""
-    q = (
+def list_prompts_tagged(db, tag: str) -> list[Prompt]:
+    """Return prompts carrying *tag* (case-insensitive substring match).
+
+    Matches canonical ``prompt_tags`` rows first, with the legacy comma-string
+    as a fallback so databases that predate the tags backfill migration keep
+    resolving (the Generate pickers call this live).
+    """
+    pattern = f"%{tag}%"
+    tagged = (
+        db.query(PromptTag.prompt_id)
+        .filter(PromptTag.tag.ilike(pattern))
+        .scalar_subquery()
+    )
+    return (
         db.query(Prompt)
-        .filter(Prompt.tags.ilike(f"%{tag}%"))
+        .filter(or_(Prompt.id.in_(tagged), Prompt.tags.ilike(pattern)),
+                Prompt.deleted_at.is_(None))
         .order_by(Prompt.name.asc())
+        .all()
     )
-    return apply_tenant_filter(q, Prompt, tenant_id, is_platform_admin).all()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +175,17 @@ def get_prompt_version(db, prompt_id: int, version: str):
     )
 
 
+def _next_version_number(db, prompt_id: int) -> int:
+    """Next sequential version_number for a prompt (numbers are DB-queried,
+    never taken from possibly-stale relationship collections)."""
+    current = (
+        db.query(func.max(PromptVersion.version_number))
+        .filter(PromptVersion.prompt_id == prompt_id)
+        .scalar()
+    )
+    return (current or 0) + 1
+
+
 def deploy_new_version(
     db,
     prompt: Prompt,
@@ -100,13 +195,24 @@ def deploy_new_version(
     change_reason: str,
     created_by: str,
 ) -> PromptVersion:
-    """Deactivate all existing versions, insert a new active one, and bump updated_at."""
+    """Deactivate all existing versions, insert a new active one, and bump updated_at.
+
+    Instant-deploy — the approval gate (Phase 8) decides at the API layer who
+    may call this; retired versions are demoted from 'active' to 'approved' so
+    workflow_state stays truthful.
+    """
     db.query(PromptVersion).filter(
         PromptVersion.prompt_id == prompt.id
     ).update({PromptVersion.is_active: False})
+    db.query(PromptVersion).filter(
+        PromptVersion.prompt_id == prompt.id,
+        PromptVersion.workflow_state == "active",
+    ).update({PromptVersion.workflow_state: "approved"})
     new_ver = PromptVersion(
         prompt_id=prompt.id,
         version=version_tag,
+        version_number=_next_version_number(db, prompt.id),
+        workflow_state="active",
         system_prompt=system_prompt,
         user_prompt_template=user_prompt_template,
         change_reason=change_reason,
@@ -115,6 +221,39 @@ def deploy_new_version(
     )
     db.add(new_ver)
     prompt.active_version = version_tag
+    prompt.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(new_ver)
+    return new_ver
+
+
+def commit_draft_version(
+    db,
+    prompt: Prompt,
+    system_prompt: str,
+    user_prompt_template: str,
+    version_tag: str,
+    change_reason: str,
+    created_by: str,
+) -> PromptVersion:
+    """Insert a NEW version at workflow_state='draft', NOT active.
+
+    The approval-gate write path (Phase 8): the currently-deployed version is
+    untouched; activation happens later via the workflow-state transition
+    (draft → in_review → approved → active).
+    """
+    new_ver = PromptVersion(
+        prompt_id=prompt.id,
+        version=version_tag,
+        version_number=_next_version_number(db, prompt.id),
+        workflow_state="draft",
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt_template,
+        change_reason=change_reason,
+        is_active=False,
+        created_by=created_by,
+    )
+    db.add(new_ver)
     prompt.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(new_ver)
@@ -141,6 +280,7 @@ def resolve_fixed_prompt(
     project_id=None,
     cluster_id=None,
     course_id=None,
+    acceptable_variants: "tuple | list | None" = None,
 ) -> "PromptFixing | None":
     """Return the most-specific PromptFixing for component + context, or None.
 
@@ -152,6 +292,14 @@ def resolve_fixed_prompt(
     A course-scope fix is found by ``course_id`` alone, regardless of which
     project or cluster the course belongs to.  This keeps lookup correct
     even when the caller only knows some of the hierarchy IDs (e.g. cluster_id=None).
+
+    acceptable_variants:
+        ``None`` (default) — legacy behavior: no variant/kind filtering.
+        Otherwise a sequence of acceptable ``Prompt.variant`` values (``None``
+        meaning the NULL variant); a fixing whose bound prompt is not a
+        pipeline row with an acceptable variant is skipped, and the next
+        (broader) scope is consulted instead — a scope lock for one variant
+        never hijacks a request for another.
     """
     # Build a prioritised list of (scope_level, id_column, id_value).
     # Skip a scope when its key ID is None — no fix could have been set that way.
@@ -174,6 +322,15 @@ def resolve_fixed_prompt(
         )
         if id_col is not None:
             q = q.filter(id_col == id_val)
+        if acceptable_variants is not None:
+            variant_conds = [
+                Prompt.variant.is_(None) if v is None else Prompt.variant == v
+                for v in acceptable_variants
+            ]
+            q = q.join(Prompt, PromptFixing.prompt_id == Prompt.id).filter(
+                Prompt.prompt_kind == "pipeline",
+                or_(*variant_conds) if variant_conds else False,
+            )
         fixing = q.first()
         if fixing and fixing.prompt_id:
             return fixing

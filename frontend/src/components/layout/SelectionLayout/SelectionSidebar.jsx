@@ -7,14 +7,21 @@ import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
+import Select from '@components/common/Select/Select';
 import AppBrand from '@components/common/AppBrand/AppBrand';
+import SidebarToggle from '@components/layout/SidebarToggle/SidebarToggle';
+import { useSidebarCollapsed } from '@hooks/useSidebarCollapsed';
+import { cn } from '@utils/helpers';
 import {
   CLUSTER_PROMPT_API_MESSAGE,
   isClusterPromptApiAvailable,
 } from '@features/clusterPrompt/clusterPromptApiDeps';
 import { clusterPromptService } from '@features/clusterPrompt/clusterPromptService';
 import { promptLabel } from '@features/clusterPrompt/clusterPromptUtils';
+import { HEADER_ACTIONS, MAIN_NAV } from '@features/promptLibrary/utils/nav';
 import styles from './SelectionSidebar.module.scss';
+
+const LMS_PLATFORM_OPTIONS = ['Canvas', 'Moodle', 'TalentLMS', 'Docebo'];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]:    '#7c3aed',
@@ -34,7 +41,7 @@ export default function SelectionSidebar({
   createLoading,
 }) {
   const dispatch = useAppDispatch();
-  const { user, role, logout, isAdmin, hasPermission, isPlatformAdmin } = useAuth();
+  const { user, role, logout, isAdmin, hasPermission } = useAuth();
   const navigate = useNavigate();
 
   function goDashboard() {
@@ -50,13 +57,22 @@ export default function SelectionSidebar({
     if (onBackClusters) onBackClusters();
     else navigate(-1);
   }
+  const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewCluster, setShowNewCluster] = useState(false);
   const [showNewCourse, setShowNewCourse] = useState(false);
-  const [form, setForm] = useState({
-    name: '', client: '', description: '',
-    adminUsername: '', adminPassword: '', adminDisplayName: '',
-  });
+  // Prompt options group (Category screen) — open by default so every prompt
+  // destination is visible without leaving the view.
+  const [showPrompts, setShowPrompts] = useState(true);
+  // The PL visibility rules read user.role; useAuth exposes role separately.
+  const promptNavItems = [...MAIN_NAV, ...HEADER_ACTIONS].filter((i) => i.visible({ role }));
+
+  // Collapsed-rail ➕: expand the sidebar and open the create form in one click.
+  function expandWith(openForm) {
+    toggleCollapsed();
+    openForm(true);
+  }
+  const [form, setForm] = useState({ name: '', client: '', description: '', lms_platform: '' });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
@@ -78,10 +94,7 @@ export default function SelectionSidebar({
   }
 
   function resetForm() {
-    setForm({
-      name: '', client: '', description: '',
-      adminUsername: '', adminPassword: '', adminDisplayName: '',
-    });
+    setForm({ name: '', client: '', description: '', lms_platform: '' });
     setCopyPromptIds([]);
   }
 
@@ -93,9 +106,6 @@ export default function SelectionSidebar({
         name: form.name.trim(),
         client_name: form.client.trim() || null,
         description: form.description.trim() || null,
-        admin_username: form.adminUsername.trim() || undefined,
-        admin_password: form.adminPassword || undefined,
-        admin_display_name: form.adminDisplayName.trim() || undefined,
       });
       setShowNewProject(false);
     } else if (variant === 'cluster' && onCreateCluster) {
@@ -105,6 +115,9 @@ export default function SelectionSidebar({
       };
       if (clusterPromptApiReady && copyPromptIds.length) {
         payload.copy_prompt_ids = copyPromptIds.map(Number);
+      }
+      if (form.lms_platform) {
+        payload.lms_platform = form.lms_platform;
       }
       await onCreateCluster(payload);
       setShowNewCluster(false);
@@ -122,16 +135,32 @@ export default function SelectionSidebar({
   const roleLabel = ROLE_LABELS[role] ?? role;
 
   return (
-    <aside className={styles.sidebar} aria-label="Selection navigation">
-      <AppBrand />
-
-      <div className={styles.userPill}>
-        <div className={styles.userPill__label}>Signed in as</div>
-        <div className={styles.userPill__name}>{user?.username}</div>
-        <span className={styles.userPill__role} style={{ background: roleColor }}>{roleLabel}</span>
+    <aside
+      className={cn(styles.sidebar, collapsed && styles['sidebar--collapsed'])}
+      aria-label="Selection navigation"
+    >
+      <div className={cn(styles.header, collapsed && styles['header--collapsed'])}>
+        <AppBrand compact={collapsed} />
+        <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
       </div>
 
-      {(variant === 'cluster' || variant === 'course') && projectName && (
+      {collapsed ? (
+        <div
+          className={styles.userDot}
+          style={{ background: roleColor }}
+          title={`${user?.username} — ${roleLabel}`}
+        >
+          {(user?.username || '?').charAt(0).toUpperCase()}
+        </div>
+      ) : (
+        <div className={styles.userPill}>
+          <div className={styles.userPill__label}>Signed in as</div>
+          <div className={styles.userPill__name}>{user?.username}</div>
+          <span className={styles.userPill__role} style={{ background: roleColor }}>{roleLabel}</span>
+        </div>
+      )}
+
+      {!collapsed && (variant === 'cluster' || variant === 'course') && projectName && (
         <div className={styles.contextPill}>
           <div className={styles.contextPill__label}>Workspace</div>
           <div>📁 <strong>{projectName}</strong></div>
@@ -141,58 +170,111 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {variant === 'cluster' && isPlatformAdmin && (
+      {variant === 'cluster' && (
         <div className={styles.navRow}>
-          <button type="button" className={styles.navBtn} onClick={goDashboard}>
-            ← Tenants
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={goDashboard}
+            title={collapsed ? 'Back to Projects' : undefined}
+          >
+            {collapsed ? '🏠' : '← Projects'}
           </button>
         </div>
       )}
 
       {variant === 'course' && (
-        <div className={styles.navRow3}>
-          {isPlatformAdmin && (
-            <button type="button" className={styles.navBtn} onClick={goDashboard}>← Tenants</button>
-          )}
-          <button type="button" className={styles.navBtn} onClick={goClusters}>← Clusters</button>
+        <div className={collapsed ? styles.navCol : styles.navRow3}>
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={goDashboard}
+            title={collapsed ? 'Back to Projects' : undefined}
+          >
+            {collapsed ? '🏠' : '← Projects'}
+          </button>
+          <button
+            type="button"
+            className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+            onClick={goClusters}
+            title={collapsed ? 'Back to Categories' : undefined}
+          >
+            {collapsed ? '🗂️' : '← Categories'}
+          </button>
         </div>
       )}
 
       <div className={styles.divider} />
 
-      {isAdmin && (variant === 'cluster' || variant === 'course') && (
-        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.CENTRAL)}>
-          🗄️ Repository
-        </button>
-      )}
-
-      {isPlatformAdmin && variant === 'cluster' && projectId && (
+      {isAdmin && variant === 'project' && collapsed && (
         <button
           type="button"
-          className={styles.navBtn}
-          onClick={() => navigate(ROUTES.TENANT_USERS(projectId))}
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="New Project"
+          onClick={() => expandWith(setShowNewProject)}
         >
-          👥 Manage Users
+          ➕
         </button>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && (
+      {isAdmin && variant === 'project' && !collapsed && (
+        <div className={styles.expander}>
+          <button
+            type="button"
+            className={styles.expander__toggle}
+            onClick={() => setShowNewProject((v) => !v)}
+          >
+            ➕ New Project {showNewProject ? '▾' : '▸'}
+          </button>
+          {showNewProject && (
+            <form className={styles.form} onSubmit={submitCreate}>
+              <Input label="Project Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label="Client Name" value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} />
+              <label className={styles.textareaLabel}>
+                Description
+                <textarea
+                  rows={3}
+                  value={form.description}
+                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                  className={styles.textarea}
+                />
+              </label>
+              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>
+                Create Project
+              </Button>
+            </form>
+          )}
+        </div>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="New Category"
+          onClick={() => expandWith(setShowNewCluster)}
+        >
+          ➕
+        </button>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && !collapsed && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCluster((v) => !v)}>
-            ➕ New Cluster {showNewCluster ? '▾' : '▸'}
+            ➕ New Category {showNewCluster ? '▾' : '▸'}
           </button>
           {showNewCluster && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Cluster Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label="Category Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
               </label>
               <MultiSelect
-                label="Choose Cluster Prompts"
+                label="Choose Category Prompts"
                 hint={
                   clusterPromptApiReady
-                    ? 'Select cluster prompts to auto-inject into the Style context for every course in this cluster. Optional.'
+                    ? 'Select category prompts to auto-inject into the Style context for every course in this category. Optional.'
                     : `${CLUSTER_PROMPT_API_MESSAGE} Selection is preserved in UI only until APIs are available.`
                 }
                 options={promptOptions}
@@ -200,13 +282,68 @@ export default function SelectionSidebar({
                 onChange={setCopyPromptIds}
                 disabled={!clusterPromptApiReady}
               />
-              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Cluster</Button>
+              <Select
+                label="Choose LMS Platform"
+                placeholder="Choose options"
+                options={LMS_PLATFORM_OPTIONS}
+                value={form.lms_platform}
+                onChange={(e) => setForm((f) => ({ ...f, lms_platform: e.target.value }))}
+              />
+              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Category</Button>
             </form>
           )}
         </div>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'course' && (
+      {variant === 'cluster' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="Prompts"
+          onClick={() => expandWith(setShowPrompts)}
+        >
+          📚
+        </button>
+      )}
+
+      {variant === 'cluster' && !collapsed && (
+        <div className={styles.expander}>
+          <button
+            type="button"
+            className={styles.expander__toggle}
+            onClick={() => setShowPrompts((v) => !v)}
+          >
+            📚 Prompts {showPrompts ? '▾' : '▸'}
+          </button>
+          {showPrompts && (
+            <div className={styles.navCol}>
+              {promptNavItems.map((item) => (
+                <button
+                  key={item.to}
+                  type="button"
+                  className={styles.navBtn}
+                  onClick={() => navigate(item.to)}
+                >
+                  {item.icon} {item.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'course' && collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          title="New Course"
+          onClick={() => expandWith(setShowNewCourse)}
+        >
+          ➕
+        </button>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCourse((v) => !v)}>
             ➕ New Course {showNewCourse ? '▾' : '▸'}
@@ -225,8 +362,13 @@ export default function SelectionSidebar({
       )}
 
       <div className={styles.footer}>
-        <button type="button" className={styles.navBtn} onClick={handleSignOut}>
-          🚪 Sign Out
+        <button
+          type="button"
+          className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+          onClick={handleSignOut}
+          title={collapsed ? 'Sign Out' : undefined}
+        >
+          {collapsed ? '🚪' : '🚪 Sign Out'}
         </button>
       </div>
     </aside>

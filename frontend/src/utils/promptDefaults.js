@@ -67,7 +67,7 @@ export function buildPromptDownloadMd({
     `|---|---|`,
     `| **Project** | ${projectName || '—'} |`,
   ];
-  if (clusterName) lines.push(`| **Cluster** | ${clusterName} |`);
+  if (clusterName) lines.push(`| **Category** | ${clusterName} |`);
   if (courseName) lines.push(`| **Course** | ${courseName} |`);
   lines.push(
     `| **Component** | ${compLabel} |`,

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission, get_tenant_context
+from app.core.dependencies import get_current_user, get_db, require_permission
 from app.schemas.analytics import (
     AnalyticsSummaryResponse,
     AuditEventRead,
@@ -61,7 +61,6 @@ def get_summary(
     project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> AnalyticsSummaryResponse:
     """
     Return the six metric counters shown at the top of the Analytics page.
@@ -73,7 +72,6 @@ def get_summary(
         document_repository, generation_repository, prompt_repository,
     )
 
-    tid, is_admin = tenant_ctx
     scope = dict(
         user_name=current_user.username,
         project_id=project_id,
@@ -83,8 +81,8 @@ def get_summary(
     return AnalyticsSummaryResponse(
         generations=analytics_repository.count_generations_scoped(db, **scope),
         blocks=generation_repository.count_blocks_scoped(db, **scope),
-        prompt_assets=prompt_repository.count_prompts(db, tenant_id=tid, is_platform_admin=is_admin),
-        documents=document_repository.count_documents(db, tenant_id=tid, is_platform_admin=is_admin),
+        prompt_assets=prompt_repository.count_prompts(db),
+        documents=document_repository.count_documents(db),
         cdds=cdd_repository.count_cdds_scoped(db, **scope),
         blueprints=blueprint_repository.count_blueprints_scoped(db, **scope),
     )
@@ -99,13 +97,11 @@ def get_summary(
 def get_project_analytics(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("analytics.view_all")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> list[ProjectAnalyticsRow]:
     """Return project-level metrics for the admin comparison table."""
     from promptops_app.repositories import analytics_repository
 
-    tid, is_admin = tenant_ctx
-    projects = analytics_repository.list_active_projects_for_analytics(db, tenant_id=tid, is_platform_admin=is_admin)
+    projects = analytics_repository.list_active_projects_for_analytics(db)
     rows = []
     for p in projects:
         gen_ids = analytics_repository.get_project_generation_ids(db, p.id)
@@ -212,12 +208,10 @@ def get_usage_summary(
     date_to: str | None = Query(default=None, description="ISO date, e.g. 2026-05-18"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("llm_usage.view_own")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> UsageSummaryResponse:
     """Return token counts and cost estimates from the LLMUsageLog table."""
     from promptops_app.repositories import usage_repository
 
-    tid, is_admin = tenant_ctx
     scoped_user = current_user.username if current_user.role != "admin" else None
 
     summary = usage_repository.get_summary(
@@ -226,8 +220,6 @@ def get_usage_summary(
         project_id=project_id,
         date_from=date_from,
         date_to=date_to,
-        tenant_id=tid,
-        is_platform_admin=is_admin,
     )
 
     by_model_rows = usage_repository.cost_by_model(
@@ -236,8 +228,6 @@ def get_usage_summary(
         project_id=project_id,
         date_from=date_from,
         date_to=date_to,
-        tenant_id=tid,
-        is_platform_admin=is_admin,
     )
 
     by_model = [
@@ -301,7 +291,6 @@ def _audit_event_row(record) -> AuditEventRead:
 def get_audit_trail_filters(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> AuditTrailFiltersResponse:
     """Dropdown values for the Audit Trail tab (Streamlit parity)."""
     from app.core.permissions import rbac_check
@@ -310,7 +299,6 @@ def get_audit_trail_filters(
         get_actors, get_all_actions, get_entity_types,
     )
 
-    tid, is_admin = tenant_ctx
     actors = get_actors(db)
     if not rbac_check(current_user.role, "analytics.view_all"):
         actors = [current_user.username]
@@ -319,7 +307,7 @@ def get_audit_trail_filters(
     if rbac_check(current_user.role, "analytics.view_all"):
         projects = [
             {"id": p.id, "name": p.name}
-            for p in analytics_repository.list_active_projects_for_analytics(db, tenant_id=tid, is_platform_admin=is_admin)
+            for p in analytics_repository.list_active_projects_for_analytics(db)
         ]
 
     return AuditTrailFiltersResponse(
@@ -673,13 +661,11 @@ def get_llm_cost_dashboard(
     date_to: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("llm_usage.view_own")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> LlmCostDashboardResponse:
     from datetime import datetime as dt
 
     from promptops_app.repositories import usage_repository
 
-    tid, is_pa = tenant_ctx
     is_admin = current_user.role == "admin"
     is_lead = current_user.role == "reviewer"
     scoped_user = current_user.username if not is_admin else None
@@ -694,8 +680,6 @@ def get_llm_cost_dashboard(
         project_id=scoped_project,
         date_from=parsed_from,
         date_to=parsed_to,
-        tenant_id=tid,
-        is_platform_admin=is_pa,
     )
 
     by_model = usage_repository.cost_by_model(
@@ -704,25 +688,19 @@ def get_llm_cost_dashboard(
         project_id=scoped_project,
         date_from=parsed_from,
         date_to=parsed_to,
-        tenant_id=tid,
-        is_platform_admin=is_pa,
     )
     monthly = usage_repository.monthly_usage(
         db,
         user_name=scoped_user,
         project_id=scoped_project,
-        tenant_id=tid,
-        is_platform_admin=is_pa,
     )
 
-    by_project = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to, tenant_id=tid, is_platform_admin=is_pa) if is_admin else []
+    by_project = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to) if is_admin else []
     by_course = usage_repository.cost_by_course(
         db, project_id=scoped_project, date_from=parsed_from, date_to=parsed_to,
-        tenant_id=tid, is_platform_admin=is_pa,
     )
     by_user = usage_repository.cost_by_user(
         db, project_id=scoped_project, date_from=parsed_from, date_to=parsed_to,
-        tenant_id=tid, is_platform_admin=is_pa,
     ) if is_admin else []
 
     return LlmCostDashboardResponse(

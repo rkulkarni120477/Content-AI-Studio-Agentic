@@ -7,13 +7,12 @@ Style and CDD pages, plus the full StyleVersion versioning API.
 
 from datetime import datetime, timezone
 
-from app.core.tenant_context import apply_tenant_filter
 from promptops_app.database import Document, Style, StyleVersion
 
 
 # ── Style lookups ─────────────────────────────────────────────────────────────
 
-def get_style_by_id(db, style_id: int, *, with_documents: bool = False, tenant_id=None, is_platform_admin=False):
+def get_style_by_id(db, style_id: int, *, with_documents: bool = False):
     q = db.query(Style).filter(Style.id == style_id)
     if with_documents:
         from sqlalchemy.orm import joinedload
@@ -21,7 +20,7 @@ def get_style_by_id(db, style_id: int, *, with_documents: bool = False, tenant_i
         q = q.options(
             joinedload(Style.style_documents).joinedload(StyleDocument.document),
         )
-    return apply_tenant_filter(q, Style, tenant_id, is_platform_admin).first()
+    return q.first()
 
 
 def list_active_documents_for_style(db):

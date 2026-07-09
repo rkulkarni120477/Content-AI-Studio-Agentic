@@ -112,7 +112,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
         system_prompt: systemPrompt.trim() || null,
         user_prompt_template: userPrompt.trim() || null,
       });
-      toast.success(`Cluster prompt '${name.trim()}' created!`);
+      toast.success(`Category prompt '${name.trim()}' created!`);
       setAssignClusterId(NONE_CLUSTER);
       setName('');
       setDescription('');
@@ -127,10 +127,10 @@ export default function ClusterPromptManager({ clusters = [] }) {
   }
 
   async function handleRemove(prompt) {
-    if (!window.confirm(`Delete cluster prompt "${prompt.name}"?`)) return;
+    if (!window.confirm(`Delete category prompt "${prompt.name}"?`)) return;
     try {
       await clusterPromptService.remove(prompt.id);
-      toast.success('Cluster prompt deleted');
+      toast.success('Category prompt deleted');
       loadViewPrompts();
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -138,8 +138,8 @@ export default function ClusterPromptManager({ clusters = [] }) {
   }
 
   return (
-    <section className={styles.manager} aria-label="Cluster Prompt Manager">
-      <div className={styles.manager__header}>🗂️ Cluster Prompt Manager</div>
+    <section className={styles.manager} aria-label="Category Prompt Manager">
+      <div className={styles.manager__header}>🗂️ Category Prompt Manager</div>
 
       <div className={styles.tabs} role="tablist">
         <button
@@ -175,7 +175,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
             {aiOpen && (
               <div className={styles.aiExpander__body}>
                 <p className={styles.caption}>
-                  Use AI to generate a fresh cluster prompt or to refine your draft.
+                  Use AI to generate a fresh category prompt or to refine your draft.
                   Review the result below, then it will be pre-filled in the form.
                 </p>
                 <div className={styles.radioRow}>
@@ -241,8 +241,8 @@ export default function ClusterPromptManager({ clusters = [] }) {
 
           <form className={styles.form} onSubmit={handleCreate}>
             <Select
-              label="Assign to Cluster"
-              hint="Optional. Prompt will be auto-injected into courses under the selected cluster."
+              label="Assign to Category"
+              hint="Optional. Prompt will be auto-injected into courses under the selected category."
               options={clusterOptions}
               value={assignClusterId}
               onChange={(e) => setAssignClusterId(e.target.value)}
@@ -275,7 +275,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
               />
             </label>
             <Button type="submit" variant="primary" loading={createLoading}>
-              💾 Create Cluster Prompt
+              💾 Create Category Prompt
             </Button>
           </form>
         </div>
@@ -284,7 +284,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
       {tab === 1 && (
         <div className={styles.panel} role="tabpanel">
           <Select
-            label="Select Cluster to View Prompts"
+            label="Select Category to View Prompts"
             options={viewOptions}
             value={viewClusterId}
             onChange={(e) => setViewClusterId(e.target.value)}
@@ -294,8 +294,8 @@ export default function ClusterPromptManager({ clusters = [] }) {
           ) : viewPrompts.length === 0 ? (
             <p className={styles.empty}>
               {viewClusterId === 'unassigned'
-                ? 'No unassigned cluster prompts yet.'
-                : 'No cluster prompts assigned to this cluster yet.'}
+                ? 'No unassigned category prompts yet.'
+                : 'No category prompts assigned to this category yet.'}
             </p>
           ) : (
             <div className={styles.promptList}>

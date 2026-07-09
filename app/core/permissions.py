@@ -108,6 +108,9 @@ _PERMISSIONS: dict[str, list[str]] = {
     "prompts.view":          [_ADMIN, _REVIEWER, _AUTHOR],
     "prompts.create":        [_ADMIN, _REVIEWER],
     "prompts.manage":        [_ADMIN, _REVIEWER],
+    # Writes to pipeline-kind prompt rows (set-default, workflow-state
+    # transitions, unrestricted scope locks) — admin/prompt-engineer only.
+    "prompt.pipeline.edit":  [_ADMIN],
 
     # ── Analytics ─────────────────────────────────────────────────────────────
     "analytics.view_own":    [_ADMIN, _REVIEWER, _AUTHOR],
@@ -145,6 +148,15 @@ _PERMISSIONS: dict[str, list[str]] = {
     "central.edit":          [_ADMIN],
     "central.delete":        [_ADMIN],
 
+    # ── Prompt Library (ported standalone app; replaces Central Repository) ────
+    "prompt_library.view":            [_ADMIN, _REVIEWER, _AUTHOR],
+    "prompt_library.manage":          [_ADMIN, _REVIEWER],
+    "prompt_library.request":         [_ADMIN, _REVIEWER, _AUTHOR],
+    "prompt_library.request_manage":  [_ADMIN, _REVIEWER],
+    "prompt_library.review":          [_ADMIN, _REVIEWER, _AUTHOR],
+    "prompt_library.review_read_all": [_ADMIN, _REVIEWER],
+    "prompt_library.audit":           [_ADMIN],
+
     # ── System administration ─────────────────────────────────────────────────
     "system.clear_db":       [_ADMIN],
     "system.view_logs":      [_ADMIN, _REVIEWER],
@@ -155,6 +167,7 @@ _PERMISSIONS: dict[str, list[str]] = {
 # what the table above says.  Belt-and-suspenders guard against accidental
 # permission grants during future table updates.
 _REVIEWER_BLOCKLIST: frozenset[str] = frozenset({
+    "prompt.pipeline.edit",
     "users.create",
     "users.edit",
     "users.toggle",

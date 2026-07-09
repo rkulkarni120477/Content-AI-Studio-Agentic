@@ -13,9 +13,8 @@ import { ROUTES } from '@utils/constants';
 /**
  * Guards a route behind authentication.
  * - requiredRole: single role string or array of roles allowed
- * - platformAdminOnly: only platform admins may render this route — a regular
- *   user is bounced straight into their own project (or an "awaiting
- *   assignment" screen if they have no project yet), never the project dashboard
+ * - platformAdminOnly: only platform admins may render; others go to their
+ *   own project's clusters (never the tenant dashboard)
  * - redirectTo: where to send unauthorized users (defaults to /login)
  */
 export default function ProtectedRoute({ children, requiredRole, platformAdminOnly = false, redirectTo = ROUTES.LOGIN }) {
@@ -35,10 +34,7 @@ export default function ProtectedRoute({ children, requiredRole, platformAdminOn
   }
 
   if (platformAdminOnly && !isPlatformAdmin) {
-    // A tenant user always has a project (membership); send them to their
-    // clusters. Anything else falls back to login.
-    const fallback = projectId ? ROUTES.PROJECT_CLUSTERS(projectId) : ROUTES.LOGIN;
-    return <Navigate to={fallback} replace />;
+    return <Navigate to={projectId ? ROUTES.PROJECT_CLUSTERS(projectId) : ROUTES.LOGIN} replace />;
   }
 
   if (requiredRole) {

@@ -6,7 +6,7 @@
 .titleRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .logo {
@@ -16,11 +16,12 @@
 }
 
 .title {
-  font-size: 1.25rem;
+  font-size: 1rem;
   font-weight: 800;
   color: $color-white;
   letter-spacing: -0.02em;
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .tag {
@@ -46,6 +47,7 @@
     font-size: 2.8rem;
     color: #111827;
     letter-spacing: -0.03em;
+    white-space: normal;
   }
 
   .tag {
@@ -53,5 +55,13 @@
     font-size: 0.75rem;
     margin-top: $space-2;
     color: #6366f1;
+  }
+}
+
+.brand--compact {
+  text-align: center;
+
+  .logo {
+    display: inline-block;
   }
 }

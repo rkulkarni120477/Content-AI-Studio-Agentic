@@ -1,4 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 import { cn } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import { ROUTES, ROLES } from '@utils/constants';
@@ -10,22 +11,18 @@ const NAV_ITEMS = [
   { label: 'Workflow',     icon: '⚙️',  to: ROUTES.WORKFLOW,   roles: null },
   { label: 'Prompts',      icon: '📝', to: ROUTES.PROMPTS,    roles: null },
   { label: 'Analytics',   icon: '📊', to: ROUTES.ANALYTICS,  roles: [ROLES.ADMIN, ROLES.REVIEWER] },
-  { label: 'Central Repo',icon: '🗄️', to: ROUTES.CENTRAL,    roles: [ROLES.ADMIN] },
+  { label: 'Prompt Library', icon: '📚', to: ROUTES.PROMPT_LIBRARY, roles: null },
 ];
 
 const WORKSPACE_ITEMS = [
-  { label: 'CDD',       icon: '📋', to: 'cdd' },
-  { label: 'Blueprint', icon: '🗺️', to: 'blueprint' },
-  { label: 'Generate',  icon: '✨', to: 'generate' },
-  { label: 'Editor',    icon: '✏️', to: 'editor' },
-];
-
-const PLATFORM_ITEMS = [
-  { label: 'Manage Users', icon: '👥', to: ROUTES.PLATFORM_USERS },
+  { label: 'CDD',          icon: '📋', to: 'cdd' },
+  { label: 'Blueprint',    icon: '🗺️', to: 'blueprint' },
+  { label: 'Generate',     icon: '✨', to: 'generate' },
+  { label: 'Editor',       icon: '✏️', to: 'editor' },
 ];
 
 export default function Sidebar({ courseId, collapsed, onToggle }) {
-  const { user, role, isPlatformAdmin, logout } = useAuth();
+  const { user, role, logout } = useAuth();
   const navigate = useNavigate();
 
   function handleLogout() {
@@ -78,31 +75,6 @@ export default function Sidebar({ courseId, collapsed, onToggle }) {
                   <NavLink
                     to={`/workspace/${courseId}/${item.to}`}
                     className={({ isActive }) => cn(styles.nav__item, isActive && styles['nav__item--active'])}
-                    title={collapsed ? item.label : undefined}
-                  >
-                    <span className={styles.nav__icon} aria-hidden="true">{item.icon}</span>
-                    {!collapsed && <span className={styles.nav__label}>{item.label}</span>}
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-
-        {/* Platform Admin Nav */}
-        {isPlatformAdmin && (
-          <>
-            <div className={styles.platform__divider}>
-              {!collapsed && <span className={styles.platform__label}>Platform</span>}
-            </div>
-            <ul className={styles.nav__list}>
-              {PLATFORM_ITEMS.map((item) => (
-                <li key={item.to}>
-                  <NavLink
-                    to={item.to}
-                    className={({ isActive }) =>
-                      cn(styles.nav__item, styles['nav__item--platform'], isActive && styles['nav__item--platformActive'])
-                    }
                     title={collapsed ? item.label : undefined}
                   >
                     <span className={styles.nav__icon} aria-hidden="true">{item.icon}</span>

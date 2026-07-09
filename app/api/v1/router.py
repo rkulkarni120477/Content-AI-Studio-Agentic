@@ -31,7 +31,6 @@ Route prefix structure
 from fastapi import APIRouter
 
 from app.api.v1.routers.admin import router as admin_router
-from app.api.v1.routers.platform_tenants import router as platform_tenants_router
 from app.api.v1.routers.analytics import router as analytics_router
 from app.api.v1.routers.auth import router as auth_router
 from app.api.v1.routers.blocks import router as blocks_router
@@ -44,7 +43,9 @@ from app.api.v1.routers.documents import router as documents_router
 from app.api.v1.routers.generations import router as generations_router
 from app.api.v1.routers.health import router as health_router
 from app.api.v1.routers.jobs import router as jobs_router
+from app.api.v1.routers.platform_tenants import router as platform_tenants_router
 from app.api.v1.routers.projects import router as projects_router
+from app.api.v1.routers.prompt_library import router as prompt_library_router
 from app.api.v1.routers.prompts import router as prompts_router
 from app.api.v1.routers.styles import router as styles_router
 from app.api.v1.routers.users import router as users_router
@@ -83,6 +84,9 @@ api_v1_router.include_router(jobs_router,       prefix="/jobs",       tags=["Job
 
 # ── Prompt registry ───────────────────────────────────────────────────────────
 api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])
+
+# ── Prompt Library (ported standalone app; replaces the Central Repository UI) ──
+api_v1_router.include_router(prompt_library_router, prefix="/prompt-library", tags=["Prompt Library"])
 
 # ── Editor and workflow ───────────────────────────────────────────────────────
 api_v1_router.include_router(blocks_router,    tags=["Blocks"])

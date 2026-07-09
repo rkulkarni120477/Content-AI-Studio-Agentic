@@ -18,6 +18,7 @@ Endpoints:
   POST   /blueprints/{id}/pin            Pin to course
   GET    /blueprints/{id}/components     Parsed component list (for Generate dropdown)
   GET    /blueprints/{id}/export         Download as file
+  GET    /blueprints/{id}/export-lessons Download all generated lessons for the module as one file
 """
 
 from __future__ import annotations
@@ -30,9 +31,13 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission, get_tenant_context
-from app.core.exceptions import LLMGenerationError, NotFoundError, WorkflowError
-from app.core.tenant_context import assert_project_in_tenant
+from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.exceptions import (
+    LLMGenerationError,
+    NotFoundError,
+    PromptConfigurationError,
+    WorkflowError,
+)
 from app.schemas.blueprint import (
     BlueprintActivateVersionResponse,
     BlueprintComponent,
@@ -57,13 +62,12 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_blueprint_or_404(db: Session, blueprint_id: int, tenant_id=None, is_platform_admin=False):
-    """Fetch a blueprint by ID or raise HTTP 404, validating tenant ownership."""
+def _get_blueprint_or_404(db: Session, blueprint_id: int):
+    """Fetch a blueprint by ID or raise HTTP 404."""
     from promptops_app.repositories import blueprint_repository
     bp = blueprint_repository.get_blueprint_by_id(db, blueprint_id)
     if bp is None:
         raise NotFoundError("Blueprint", blueprint_id)
-    assert_project_in_tenant(db, bp.project_id, tenant_id, is_platform_admin)
     return bp
 
 
@@ -79,13 +83,9 @@ def list_blueprints(
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> PaginatedResponse[BlueprintListItem]:
     """Return blueprints scoped to the given project or course."""
     from promptops_app.repositories import blueprint_repository
-
-    tid, is_admin = tenant_ctx
-    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     if course_id:
         bps = blueprint_repository.list_blueprints_for_course(db, course_id=course_id, project_id=project_id)
@@ -115,7 +115,6 @@ def generate_blueprint(
     request_body: BlueprintGenerateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.generate")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> BlueprintGenerateResponse:
     """
     Generate a Module Blueprint using AI.
@@ -131,16 +130,13 @@ def generate_blueprint(
         parse_blueprint_components, get_blueprint_prompts,
     )
     from promptops_app.parsers.cdd_parser import extract_cdd_summary, extract_module_section
-    from promptops_app.prompts.prompt_builder import build_prompt
+    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt
     from promptops_app.repositories import blueprint_repository, cdd_repository, style_repository
     from promptops_app.repositories.course_repository import set_active_blueprint
     from promptops_app.services.audit_service import log_audit_event
     from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
     from promptops_app.core.llm_client import safe_json_loads
-
-    tid, is_admin = tenant_ctx
-    assert_project_in_tenant(db, request_body.project_id, tid, is_admin)
 
     _log.info("blueprint_generate_start  user=%s  course=%d  module=%s",
               current_user.username, request_body.course_id, request_body.selected_module)
@@ -178,6 +174,13 @@ def generate_blueprint(
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # Persist the override with the artifact (PL↔CAS sync review, plan
+        # Phase 11) — inline-authored prompt text must stay recoverable.
+        prompt_provenance = {
+            "prompt_source": "override",
+            "system_prompt_override": request_body.system_prompt_override,
+            "user_prompt_override": request_body.user_prompt_override,
+        }
     else:
         variables = {
             "cdd_context":        cdd_context or "No CDD linked.",
@@ -188,7 +191,24 @@ def generate_blueprint(
             "style_guidelines":   style_context,
         }
         try:
-            system_prompt, user_prompt, _, _ = build_prompt("blueprint_generation", variables, db=db)
+            system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
+                "blueprint_generation", variables, db=db,
+                project_id=course.project_id if course else request_body.project_id,
+                cluster_id=course.cluster_id if course else None,
+                course_id=request_body.course_id,
+                # Student/teacher are independently-versioned rows once authored
+                # (variant-exact wins); the NULL-variant seeded default serves
+                # both modes until then. Ignored while the resolution flag is off.
+                variant="teacher" if request_body.teacher_mode else "student",
+            )
+        except PromptVariableError as exc:
+            # A declared-variable violation is a template misconfiguration —
+            # surface it to the admin; never silently swap in the constant
+            # fallback (that would mask which prompt generation actually used).
+            raise PromptConfigurationError(
+                str(exc),
+                detail={"template": exc.template, "missing": exc.missing},
+            ) from exc
         except Exception:
             mode = "teacher" if request_body.teacher_mode else "student"
             system_prompt, user_prompt_tmpl, _ = get_blueprint_prompts(mode)
@@ -197,6 +217,13 @@ def generate_blueprint(
                 selected_module=request_body.selected_module,
                 extra_instructions_block=extra_block,
             )
+            prompt_provenance = {"prompt_source": "builtin_fallback"}
+        else:
+            prompt_provenance = {
+                "prompt_source": "registry",
+                "prompt_name": _tpl_name,
+                "prompt_version": _tpl_version,
+            }
 
     # Call LLM.
     llm_result = generate_with_metadata(
@@ -254,6 +281,9 @@ def generate_blueprint(
         "module_number": module_number,
         "extra_instructions": request_body.extra_instructions or "",
         "mode": "teacher" if request_body.teacher_mode else "student",
+        # Prompt provenance — registry template (name+version), the full
+        # inline-override text, or builtin_fallback (see the build above).
+        **prompt_provenance,
     }
 
     version_record = BlueprintVersion(
@@ -301,11 +331,10 @@ def generate_blueprint(
 
 
 @router.get("/{blueprint_id}", response_model=BlueprintRead, summary="Get a blueprint")
-def get_blueprint(blueprint_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user), tenant_ctx=Depends(get_tenant_context)) -> BlueprintRead:
+def get_blueprint(blueprint_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> BlueprintRead:
     """Return blueprint with its active version content."""
     from promptops_app.repositories import blueprint_repository
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
     result = BlueprintRead.model_validate(bp)
     if bp.active_version:
         ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version)
@@ -315,21 +344,19 @@ def get_blueprint(blueprint_id: int, db: Session = Depends(get_db), current_user
 
 
 @router.get("/{blueprint_id}/versions", response_model=list[BlueprintVersionListItem], summary="List blueprint versions")
-def list_blueprint_versions(blueprint_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user), tenant_ctx=Depends(get_tenant_context)) -> list[BlueprintVersionListItem]:
+def list_blueprint_versions(blueprint_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> list[BlueprintVersionListItem]:
     """List all saved versions for a blueprint."""
     from promptops_app.repositories import blueprint_repository
-    tid, is_admin = tenant_ctx
-    _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    _get_blueprint_or_404(db, blueprint_id)
     versions = blueprint_repository.list_blueprint_versions(db, blueprint_id)
     return [BlueprintVersionListItem.model_validate(v) for v in versions]
 
 
 @router.get("/{blueprint_id}/versions/{version}", response_model=BlueprintVersionRead, summary="Get a specific version")
-def get_blueprint_version(blueprint_id: int, version: str, db: Session = Depends(get_db), current_user=Depends(get_current_user), tenant_ctx=Depends(get_tenant_context)) -> BlueprintVersionRead:
+def get_blueprint_version(blueprint_id: int, version: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> BlueprintVersionRead:
     """Return full content of a specific blueprint version."""
     from promptops_app.repositories import blueprint_repository
-    tid, is_admin = tenant_ctx
-    _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    _get_blueprint_or_404(db, blueprint_id)
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, version)
     if not ver:
         raise NotFoundError(f"Blueprint version '{version}'", blueprint_id)
@@ -337,11 +364,10 @@ def get_blueprint_version(blueprint_id: int, version: str, db: Session = Depends
 
 
 @router.post("/{blueprint_id}/versions/{version}/activate", response_model=BlueprintActivateVersionResponse, summary="Activate a blueprint version")
-def activate_blueprint_version(blueprint_id: int, version: str, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.version")), tenant_ctx=Depends(get_tenant_context)) -> BlueprintActivateVersionResponse:
+def activate_blueprint_version(blueprint_id: int, version: str, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.version"))) -> BlueprintActivateVersionResponse:
     """Set a version as active. Deactivates all others."""
     from promptops_app.database import BlueprintVersion
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
     ver = db.query(BlueprintVersion).filter(BlueprintVersion.blueprint_id == blueprint_id, BlueprintVersion.version == version).first()
     if not ver:
         raise NotFoundError(f"Blueprint version '{version}'", blueprint_id)
@@ -354,11 +380,10 @@ def activate_blueprint_version(blueprint_id: int, version: str, db: Session = De
 
 
 @router.post("/{blueprint_id}/versions", response_model=BlueprintVersionRead, status_code=201, summary="Commit a new blueprint version")
-def create_blueprint_version(blueprint_id: int, request_body: BlueprintVersionCreateRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.version")), tenant_ctx=Depends(get_tenant_context)) -> BlueprintVersionRead:
+def create_blueprint_version(blueprint_id: int, request_body: BlueprintVersionCreateRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.version"))) -> BlueprintVersionRead:
     """Save edited content as a new named version."""
     from promptops_app.database import BlueprintVersion
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
     db.query(BlueprintVersion).filter(BlueprintVersion.blueprint_id == blueprint_id).update({BlueprintVersion.is_active: False})
     new_ver = BlueprintVersion(
         blueprint_id=blueprint_id, version=request_body.version_tag,
@@ -400,7 +425,6 @@ def regenerate_blueprint_item(
     request_body: BlueprintRegenerateItemRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.version")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> BlueprintRegenerateItemResponse:
     """
     Regenerate one item inside a blueprint section, preserving all siblings.
@@ -415,8 +439,7 @@ def regenerate_blueprint_item(
         regen_single_item,
     )
 
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
 
     original = request_body.section_content or ""
     item_index = request_body.item_index
@@ -461,7 +484,6 @@ def regenerate_blueprint_section(
     request_body: BlueprintRegenerateSectionRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.version")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> BlueprintRegenerateSectionResponse:
     """
     Regenerate a whole blueprint section using the section-regeneration prompt
@@ -472,8 +494,7 @@ def regenerate_blueprint_section(
     from promptops_app.parsers.blueprint_parser import get_blueprint_prompts
     from promptops_app.services.llm_service import generate_text as call_llm
 
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
     mode = "teacher" if request_body.teacher_mode else "student"
     regen_system, _, regen_template = get_blueprint_prompts(mode)
     cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=1500)
@@ -496,11 +517,10 @@ def regenerate_blueprint_section(
 
 
 @router.post("/{blueprint_id}/pin", response_model=BlueprintPinResponse, summary="Pin blueprint to a course")
-def pin_blueprint(blueprint_id: int, request_body: BlueprintPinRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.pin")), tenant_ctx=Depends(get_tenant_context)) -> BlueprintPinResponse:
+def pin_blueprint(blueprint_id: int, request_body: BlueprintPinRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.pin"))) -> BlueprintPinResponse:
     """Set as active blueprint for generation. Equivalent to the '📌 Set as Active Blueprint' button."""
     from promptops_app.repositories.course_repository import set_active_blueprint
-    tid, is_admin = tenant_ctx
-    _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    _get_blueprint_or_404(db, blueprint_id)
     set_active_blueprint(db, request_body.course_id, blueprint_id)
     _log.info("blueprint_pinned  user=%s  bp_id=%d  course_id=%d", current_user.username, blueprint_id, request_body.course_id)
     return BlueprintPinResponse(blueprint_id=blueprint_id, course_id=request_body.course_id)
@@ -516,7 +536,6 @@ def get_blueprint_components(
     blueprint_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> BlueprintComponentsResponse:
     """
     Parse blueprint sections into a structured component list.
@@ -527,8 +546,7 @@ def get_blueprint_components(
     from promptops_app.parsers.blueprint_parser import parse_blueprint_components
     from promptops_app.repositories import blueprint_repository
 
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version) if bp.active_version else None
 
     components = parse_blueprint_components(ver) if ver else []
@@ -547,14 +565,12 @@ def get_blueprint_completion_status(
     blueprint_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ):
     """Gate module assessment generation — mirrors Streamlit get_module_completion_status."""
     from app.schemas.generation import CompletionStatusResponse
     from promptops_app.core.content_utils import get_module_completion_status
 
-    tid, is_admin = tenant_ctx
-    _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    _get_blueprint_or_404(db, blueprint_id)
     status = get_module_completion_status(db, blueprint_id)
     return CompletionStatusResponse(
         completed=status.get("completed", False),
@@ -570,7 +586,6 @@ def export_blueprint(
     format: str = Query(default="docx", description="docx | md"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> Response:
     """Export the active blueprint version as a downloadable file."""
     from promptops_app.core.llm_client import safe_json_loads
@@ -579,8 +594,7 @@ def export_blueprint(
     from promptops_app.repositories import blueprint_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
-    tid, is_admin = tenant_ctx
-    bp = _get_blueprint_or_404(db, blueprint_id, tid, is_admin)
+    bp = _get_blueprint_or_404(db, blueprint_id)
     if not bp.active_version:
         raise WorkflowError("This blueprint has no active version to export.")
 
@@ -621,6 +635,67 @@ def export_blueprint(
     result = export_content(db, export_req)
     if not result.success:
         raise WorkflowError(f"Export failed: {result.error_message}")
+
+    return Response(
+        content=result.data, media_type=result.mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+    )
+
+
+@router.get("/{blueprint_id}/export-lessons", summary="Export all generated lessons in a module as one combined file")
+def export_module_lessons(
+    blueprint_id: int,
+    format: str = Query(default="md", description="md | docx"),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> Response:
+    """
+    Combine every lesson generated for this module (blueprint) into a single file.
+
+    Only the most recent generation per distinct lesson topic is included (a lesson
+    regenerated 9 times still contributes one section), and only blocks in an
+    exportable workflow state (approved/published) — mirrors export_course.
+    """
+    from promptops_app.repositories import generation_repository
+    from promptops_app.services.export_service import ExportRequest, export_content
+    from promptops_app.core.constants import WorkflowState
+
+    bp = _get_blueprint_or_404(db, blueprint_id)
+
+    latest_gens = generation_repository.list_latest_generations_for_blueprint(db, blueprint_id)
+    if not latest_gens:
+        raise WorkflowError("No generated lessons found for this module.")
+
+    gen_ids = [g.id for g in latest_gens]
+    all_blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
+    exportable_blocks = [b for b in all_blocks if b.workflow_state.lower() in WorkflowState.EXPORTABLE]
+    if not exportable_blocks:
+        raise WorkflowError("No approved or published lessons found for this module yet.")
+
+    # Order sections by lesson number (parsed from the generation's topic), not by
+    # database insertion order, so the combined file reads Lesson 1 -> Lesson 2 -> ...
+    topic_by_gen_id = {g.id: (g.topic or "") for g in latest_gens}
+
+    def _lesson_order(block):
+        topic = topic_by_gen_id.get(block.generation_id, "")
+        m = re.match(r"lesson\s*(\d+)", topic, re.I)
+        return (int(m.group(1)) if m else 9999, topic, block.id)
+
+    exportable_blocks.sort(key=_lesson_order)
+
+    export_req = ExportRequest(
+        fmt=format, topic=bp.title,
+        blocks=[(b.block_label, b.content or "") for b in exportable_blocks],
+        user_name=current_user.username, is_admin=(current_user.role == "admin"),
+        entity_type="module", entity_id=bp.id,
+        file_name=f"{bp.title.replace(' ', '_')}_lessons.{format}",
+    )
+    result = export_content(db, export_req)
+    if not result.success:
+        raise WorkflowError(f"Export failed: {result.error_message}")
+
+    _log.info("module_lessons_exported  user=%s  blueprint_id=%d  format=%s  blocks=%d",
+              current_user.username, blueprint_id, format, len(exportable_blocks))
 
     return Response(
         content=result.data, media_type=result.mime_type,

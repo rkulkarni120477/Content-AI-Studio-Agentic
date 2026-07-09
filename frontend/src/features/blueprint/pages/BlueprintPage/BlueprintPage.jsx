@@ -38,6 +38,7 @@ import { downloadBlob } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
+import PromoteOverrideButton from '@components/generation/PromoteOverrideButton/PromoteOverrideButton';
 import BlueprintContentView from '@components/blueprint/BlueprintContentView/BlueprintContentView';
 import toast from 'react-hot-toast';
 import Button from '@components/common/Button/Button';
@@ -819,6 +820,13 @@ export default function BlueprintPage() {
                         </p>
                       )}
 
+                      <PromoteOverrideButton
+                        sourceType="blueprint"
+                        artifactId={displayBp?.id}
+                        version={versionDetail?.version || displayBp?.active_content?.version}
+                        generationParams={versionDetail?.generation_params
+                          || displayBp?.active_content?.generation_params}
+                      />
                       <BlueprintContentView
                         fullContent={previewFullContent}
                         sections={previewSections}

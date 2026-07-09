@@ -40,9 +40,13 @@ from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission, get_tenant_context
-from app.core.exceptions import LLMGenerationError, NotFoundError, WorkflowError
-from app.core.tenant_context import assert_project_in_tenant
+from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.exceptions import (
+    LLMGenerationError,
+    NotFoundError,
+    PromptConfigurationError,
+    WorkflowError,
+)
 from app.schemas.cdd import (
     CDDActivateVersionResponse,
     CDDGenerateRequest,
@@ -71,19 +75,18 @@ router = APIRouter()
 # Helper — load CDD or raise 404
 # ---------------------------------------------------------------------------
 
-def _get_cdd_or_404(db: Session, cdd_id: int, tenant_id=None, is_platform_admin=False):
+def _get_cdd_or_404(db: Session, cdd_id: int):
     """
-    Fetch a CDD by ID from the database, validating tenant ownership.
+    Fetch a CDD by ID from the database.
 
-    Raises ``NotFoundError`` (HTTP 404) if no CDD with that ID exists or belongs
-    to a different tenant.
+    Raises ``NotFoundError`` (HTTP 404) if no CDD with that ID exists.
+    Centralising this lookup avoids duplicating the same null-check in every endpoint.
     """
     from promptops_app.repositories import cdd_repository
 
     cdd = cdd_repository.get_cdd_by_id(db, cdd_id)
     if cdd is None:
         raise NotFoundError("CDD", cdd_id)
-    assert_project_in_tenant(db, cdd.project_id, tenant_id, is_platform_admin)
     return cdd
 
 
@@ -107,7 +110,6 @@ def list_cdds(
     page_size: int = Query(default=100, ge=1, le=200, description="Items per page."),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> PaginatedResponse[CDDListItem]:
     """
     Return CDDs the current user has access to.
@@ -116,9 +118,6 @@ def list_cdds(
     Admin users can pass any project_id or omit it to see all CDDs.
     """
     from promptops_app.repositories import cdd_repository
-
-    tid, is_admin = tenant_ctx
-    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     effective_project_id = project_id if current_user.role == "admin" else (
         project_id or getattr(current_user, "default_project_id", None)
@@ -181,7 +180,6 @@ def generate_cdd(
     request_body: CDDGenerateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.generate")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDGenerateResponse:
     """
     Generate a Course Design Document using AI.
@@ -206,10 +204,7 @@ def generate_cdd(
     from promptops_app.services.audit_service import log_audit_event
     from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
-    from promptops_app.prompts.prompt_builder import build_prompt
-
-    tid, is_admin = tenant_ctx
-    assert_project_in_tenant(db, request_body.project_id, tid, is_admin)
+    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt
 
     _log.info(
         "cdd_generate_start  user=%s  course=%d  title=%s  model=%s",
@@ -223,6 +218,14 @@ def generate_cdd(
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # Persist the override with the artifact (PL↔CAS sync review, plan
+        # Phase 11): a prompt authored inline in CAS must stay recoverable —
+        # before this it drove the LLM call and was discarded.
+        prompt_provenance = {
+            "prompt_source": "override",
+            "system_prompt_override": request_body.system_prompt_override,
+            "user_prompt_override": request_body.user_prompt_override,
+        }
     else:
         course = get_course_by_id(db, request_body.course_id)
         style_context = ""
@@ -249,7 +252,25 @@ def generate_cdd(
         }
 
         try:
-            system_prompt, user_prompt, _, _ = build_prompt("cdd_generation", variables, db=db)
+            system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
+                "cdd_generation", variables, db=db,
+                project_id=course.project_id if course else None,
+                cluster_id=course.cluster_id if course else None,
+                course_id=request_body.course_id,
+            )
+            prompt_provenance = {
+                "prompt_source": "registry",
+                "prompt_name": _tpl_name,
+                "prompt_version": _tpl_version,
+            }
+        except PromptVariableError as exc:
+            # A declared-variable violation is a template misconfiguration —
+            # surface it to the admin; never silently swap in the constant
+            # fallback (that would mask which prompt generation actually used).
+            raise PromptConfigurationError(
+                str(exc),
+                detail={"template": exc.template, "missing": exc.missing},
+            ) from exc
         except Exception:
             # Fall back to inline constants if the prompt library fails.
             from promptops_app.prompt_templates import (
@@ -264,6 +285,7 @@ def generate_cdd(
                 estimated_duration=str(request_body.estimated_duration_hours),
                 extra_instructions_block=extra_block,
             )
+            prompt_provenance = {"prompt_source": "builtin_fallback"}
 
     # ── Step 2: Call the LLM ───────────────────────────────────────────────────
     usage_context = UsageLogContext(
@@ -323,6 +345,10 @@ def generate_cdd(
         "expert_domain":            request_body.expert_domain,
         "estimated_duration_hours": request_body.estimated_duration_hours,
         "extra_instructions":       request_body.extra_instructions,
+        # Prompt provenance: which registry template (name+version) produced
+        # this version, or the full override text when the user edited the
+        # prompt inline — the artifact is reproducible either way.
+        **prompt_provenance,
     }
 
     version_record = CDDVersion(
@@ -398,7 +424,6 @@ def get_cdd(
     ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDRead:
     """
     Return full CDD metadata and the content of its currently active version.
@@ -406,8 +431,7 @@ def get_cdd(
     The active version content is embedded in the response to avoid a second
     API call, matching the Streamlit pattern of loading both simultaneously.
     """
-    tid, is_admin = tenant_ctx
-    cdd = _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    cdd = _get_cdd_or_404(db, cdd_id)
     return build_cdd_read(db, cdd)
 
 
@@ -425,13 +449,11 @@ def list_cdd_versions(
     cdd_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> list[CDDVersionListItem]:
     """Return all saved versions for a CDD, newest first."""
     from promptops_app.repositories import cdd_repository
 
-    tid, is_admin = tenant_ctx
-    _get_cdd_or_404(db, cdd_id, tid, is_admin)  # validates existence + tenant
+    _get_cdd_or_404(db, cdd_id)  # validates existence
     versions = cdd_repository.list_cdd_versions(db, cdd_id)
     return [CDDVersionListItem.model_validate(v) for v in versions]
 
@@ -453,7 +475,6 @@ def get_cdd_version(
     version: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDVersionRead:
     """
     Return the full Markdown content and parsed sections for a specific CDD version.
@@ -462,8 +483,7 @@ def get_cdd_version(
     """
     from promptops_app.repositories import cdd_repository
 
-    tid, is_admin = tenant_ctx
-    _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    _get_cdd_or_404(db, cdd_id)
     version_record = cdd_repository.get_cdd_version(db, cdd_id, version)
 
     if version_record is None:
@@ -491,7 +511,6 @@ def activate_cdd_version(
     version: str,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDActivateVersionResponse:
     """
     Set a CDD version as the active version.
@@ -501,8 +520,7 @@ def activate_cdd_version(
     """
     from promptops_app.database import CDDVersion
 
-    tid, is_admin = tenant_ctx
-    cdd = _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    cdd = _get_cdd_or_404(db, cdd_id)
 
     version_record = db.query(CDDVersion).filter(
         CDDVersion.cdd_id == cdd_id,
@@ -551,7 +569,6 @@ def create_cdd_version(
     request_body: CDDVersionCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDVersionRead:
     """
     Commit a new CDD version from manually edited content.
@@ -563,8 +580,7 @@ def create_cdd_version(
     from promptops_app.database import CDDVersion
     from promptops_app.services.audit_service import log_audit_event
 
-    tid, is_admin = tenant_ctx
-    cdd = _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    cdd = _get_cdd_or_404(db, cdd_id)
 
     # Deactivate all existing versions before creating the new one.
     db.query(CDDVersion).filter(CDDVersion.cdd_id == cdd_id).update(
@@ -620,7 +636,6 @@ def regenerate_cdd_item(
     request_body: CDDRegenerateItemRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDRegenerateItemResponse:
     """
     Regenerate one bullet/line/paragraph inside a CDD section, preserving all
@@ -635,8 +650,7 @@ def regenerate_cdd_item(
         regen_single_item,
     )
 
-    tid, is_admin = tenant_ctx
-    _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    _get_cdd_or_404(db, cdd_id)
 
     original = request_body.section_content or ""
     item_index = request_body.item_index
@@ -678,7 +692,6 @@ def regenerate_cdd_section(
     request_body: CDDRegenerateSectionRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDRegenerateSectionResponse:
     """
     Regenerate a whole CDD section using the section-regeneration prompt.
@@ -692,8 +705,7 @@ def regenerate_cdd_section(
     )
     from promptops_app.services.llm_service import generate_text as call_llm
 
-    tid, is_admin = tenant_ctx
-    cdd = _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    cdd = _get_cdd_or_404(db, cdd_id)
     course_title = getattr(cdd, "course_title", None) or request_body.section_key
 
     regen_prompt = CDD_SECTION_REGENERATE_PROMPT.format(
@@ -733,7 +745,6 @@ def pin_cdd(
     request_body: CDDPinRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.pin")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CDDPinResponse:
     """
     Pin a CDD as the active CDD for a course.
@@ -743,8 +754,7 @@ def pin_cdd(
     """
     from promptops_app.repositories.course_repository import set_active_cdd
 
-    tid, is_admin = tenant_ctx
-    _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    _get_cdd_or_404(db, cdd_id)
     set_active_cdd(db, request_body.course_id, cdd_id)
 
     _log.info(
@@ -777,7 +787,6 @@ def export_cdd(
     format: str = Query(default="docx", description="Export format: docx | md"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> Response:
     """
     Export the active CDD version as a downloadable file.
@@ -789,8 +798,7 @@ def export_cdd(
     from promptops_app.repositories import cdd_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
-    tid, is_admin = tenant_ctx
-    cdd = _get_cdd_or_404(db, cdd_id, tid, is_admin)
+    cdd = _get_cdd_or_404(db, cdd_id)
 
     if not cdd.active_version:
         raise WorkflowError("This CDD has no active version to export.")

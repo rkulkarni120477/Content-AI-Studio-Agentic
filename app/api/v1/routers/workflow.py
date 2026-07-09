@@ -72,6 +72,10 @@ def _to_workflow_block(block, sla_hours: int = 24) -> WorkflowBlockRead:
     sla_data = get_sla_status(block, sla_hours=sla_hours)
     result = WorkflowBlockRead.model_validate(block)
     result.sla = SLAStatus(**sla_data) if sla_data else None
+    gen = getattr(block, "generation", None)
+    if gen is not None:
+        result.course_id = gen.course_id
+        result.project_id = gen.project_id
     return result
 
 

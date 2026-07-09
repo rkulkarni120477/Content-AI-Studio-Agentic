@@ -102,22 +102,17 @@ class AppSettings(BaseSettings):
     )
 
     # ── Microsoft Entra ID (Azure AD) OAuth ───────────────────────────────────
-    # Platform-wide default Azure app. A tenant (Project) may override these with
-    # its own azure_client_id / azure_client_secret / azure_tenant_id columns.
+    # Platform-wide default Azure app; a tenant (Project) may override per-tenant.
     # Nothing in the Microsoft sign-in flow works until these are set in .env.
     microsoft_auth_enabled: bool = Field(default=False, alias="MICROSOFT_AUTH_ENABLED")
     azure_client_id: Optional[str] = Field(default=None, alias="AZURE_CLIENT_ID")
     azure_client_secret: Optional[SecretStr] = Field(default=None, alias="AZURE_CLIENT_SECRET")
     azure_tenant_id: str = Field(default="common", alias="AZURE_TENANT_ID")
     azure_redirect_uri: Optional[str] = Field(default=None, alias="AZURE_REDIRECT_URI")
-    # Default role granted to a user auto-provisioned via Microsoft sign-in.
-    # Maps to Content AI Studio's "author" (ID) — a plain member.
     azure_new_user_role: str = Field(default="author", alias="AZURE_NEW_USER_ROLE")
 
     # ── Login options ─────────────────────────────────────────────────────────
-    # When False, only Microsoft sign-in + platform-admin login are allowed.
     local_login_enabled: bool = Field(default=True, alias="LOCAL_LOGIN_ENABLED")
-    # Where the backend sends the browser after a successful Microsoft callback.
     frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
 
     # ── OpenAI ────────────────────────────────────────────────────────────────

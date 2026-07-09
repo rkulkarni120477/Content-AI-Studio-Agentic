@@ -1,9 +1,10 @@
 import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import ProtectedRoute from '@components/layout/ProtectedRoute/ProtectedRoute';
 import WorkspaceLayout from '@components/layout/WorkspaceLayout/WorkspaceLayout';
-import { ROUTES, ROLES } from '@utils/constants';
+import { ROUTES } from '@utils/constants';
 import { lazy, Suspense } from 'react';
 import Loader from '@components/common/Loader/Loader';
+import { promptLibraryRoute } from '@features/promptLibrary/routes';
 
 const lazy$ = (factory) => {
   const Comp = lazy(factory);
@@ -14,19 +15,19 @@ const lazy$ = (factory) => {
   );
 };
 
-const LoginPage        = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
-const TenantsPage      = lazy(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
-const TenantUsersPage  = lazy(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
-const ClustersPage     = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
-const CoursesPage      = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
-const CddPage          = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
-const BlueprintPage    = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
-const GeneratePage     = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
-const EditorPage       = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
-const WorkflowPage     = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
-const StylePage        = lazy(() => import('@features/style/pages/StylePage/StylePage'));
-const AnalyticsPage    = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
-const CentralPage      = lazy(() => import('@features/central/pages/CentralPage/CentralPage'));
+const LoginPage     = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
+const TenantsPage     = lazy(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
+const TenantUsersPage = lazy(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
+const ClustersPage  = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
+const CoursesPage   = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
+const CddPage       = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
+const BlueprintPage = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
+const GeneratePage  = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
+const EditorPage    = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
+const WorkflowPage  = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
+const ExportPage    = lazy(() => import('@features/export/pages/ExportPage/ExportPage'));
+const StylePage     = lazy(() => import('@features/style/pages/StylePage/StylePage'));
+const AnalyticsPage = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
 
 const wrap = (comp) => (
   <Suspense fallback={<Loader size="xl" overlay />}>
@@ -53,24 +54,17 @@ export const router = createBrowserRouter([
           </ProtectedRoute>
         ),
       },
-      { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
-      { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
       {
-        path: ROUTES.CENTRAL,
-        element: (
-          <ProtectedRoute requiredRole={ROLES.ADMIN}>
-            {wrap(<CentralPage />)}
-          </ProtectedRoute>
-        ),
-      },
-      {
-        path: ROUTES.TENANT_USERS(':tenantId'),
+        path: '/tenants/:tenantId/users',
         element: (
           <ProtectedRoute platformAdminOnly>
             {wrap(<TenantUsersPage />)}
           </ProtectedRoute>
         ),
       },
+      { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
+      { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
+      promptLibraryRoute,
     ],
   },
 
@@ -89,6 +83,7 @@ export const router = createBrowserRouter([
       { path: 'generate',  element: wrap(<GeneratePage />) },
       { path: 'editor',    element: wrap(<EditorPage />) },
       { path: 'workflow',  element: wrap(<WorkflowPage />) },
+      { path: 'export',    element: wrap(<ExportPage />) },
       { path: 'analytics', element: wrap(<AnalyticsPage />) },
     ],
   },

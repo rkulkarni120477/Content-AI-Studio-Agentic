@@ -32,6 +32,7 @@ import {
   shouldShowAssessmentOverride,
 } from '@utils/generationGates';
 import { JOB_STATUSES } from '@utils/constants';
+import { renderMarkdownPreview } from '@utils/markdownPreview';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
@@ -584,7 +585,7 @@ export default function GeneratePage() {
                 disabled={launchDisabled}
                 onClick={onLaunch}
               >
-                {isGenerating ? 'Launching…' : '🚀 Launch Pipeline'}
+                {isGenerating ? 'Generating…' : '🚀 Generate'}
               </Button>
             </div>
 
@@ -597,7 +598,7 @@ export default function GeneratePage() {
           components.length > 0 ? (
             <div className={styles.readyState}>
               ✅ <strong>Blueprint loaded</strong> — {components.length} component(s) ready.
-              Select a component and click <strong>🚀 Launch Pipeline</strong>.
+              Select a component and click <strong>🚀 Generate</strong>.
             </div>
           ) : (
             <div className={styles.configureEmpty}>
@@ -654,7 +655,12 @@ export default function GeneratePage() {
                       <span className={styles.blockCard__label}>{block.block_label || `Block ${i + 1}`}</span>
                     </summary>
                     {block.content || block.content_preview
-                      ? <pre className={styles.blockCard__content}>{block.content || block.content_preview}</pre>
+                      ? (
+                        <div
+                          className={`${styles.blockCard__content} markdown-content`}
+                          dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(block.content || block.content_preview) }}
+                        />
+                      )
                       : <p className={styles.blockCard__tip}>Content saved — open the <strong>Editor</strong> tab to view and edit.</p>
                     }
                   </details>

@@ -14,11 +14,14 @@ from typing import Optional, List, Any
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
-    Boolean, Float, ForeignKey, JSON, text, UniqueConstraint,
+    Boolean, Float, ForeignKey, JSON, text,
+    BigInteger, SmallInteger, UniqueConstraint,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
 from promptops_app.prompt_templates import (
+    DEFAULT_STYLE_GUIDE,
+    PERSONA_PREFIX_TEMPLATE,
     SEED_PROMPT_V1_SYSTEM,
     SEED_PROMPT_V1_USER,
     SEED_PROMPT_V2_SYSTEM,
@@ -28,6 +31,8 @@ from promptops_app.prompt_templates import (
     CDD_USER_PROMPT_TEMPLATE,
     BLUEPRINT_SYSTEM_PROMPT,
     BLUEPRINT_USER_PROMPT_TEMPLATE,
+    TEACHER_BLUEPRINT_SYSTEM_PROMPT,
+    TEACHER_BLUEPRINT_USER_PROMPT_TEMPLATE,
     LESSON_WITH_CONTEXT_SYSTEM,
     LESSON_WITH_CONTEXT_USER,
 )
@@ -74,13 +79,13 @@ Settings = _DBSettings
 # Database Engine & Session Factory
 # =============================================================================
 
-engine = create_engine(
-    settings.db_url,
-    pool_pre_ping=True,   # detects dropped connections and reconnects automatically
-    pool_size=10,
-    max_overflow=20,
-    future=True,
-)
+# Pool sizing args only apply to real server databases; SQLite (used by the
+# test suite) rejects them (its SingletonThreadPool takes no size arguments).
+_engine_kwargs: dict = {"pool_pre_ping": True, "future": True}
+if not settings.db_url.startswith("sqlite"):
+    _engine_kwargs.update(pool_size=10, max_overflow=20)
+
+engine = create_engine(settings.db_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -90,51 +95,25 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 Base = declarative_base()
 
-class Tenant(Base):
-    """Organization tenant — the multi-tenancy root.
-
-    Every piece of data (users, projects, styles, etc.) belongs to exactly
-    one tenant.  Tenants are completely isolated from each other.
-
-    slug      : org code users type at login (e.g. "academian", "acme-corp")
-                must be lowercase, alphanumeric + hyphens, cannot be "platform"
-    status    : "active" | "suspended" — suspended blocks all logins + API keys
-    max_users : license cap on active users in this tenant
-    """
-    __tablename__ = "tenants"
-    id         = Column(String(36), primary_key=True)
-    slug       = Column(String(64), unique=True, nullable=False, index=True)
-    name       = Column(String(200), nullable=False)
-    max_users  = Column(Integer, nullable=False, default=50)
-    status     = Column(String(20), nullable=False, default="active")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    created_by = Column(String(100))
-    def __init__(self, **kwargs): super().__init__(**kwargs)
-
-
 class User(Base):
     """
     User account — DB roles: admin, author, reviewer.
     'admin'    → full system access (Director)
     'author'   → displayed as "ID" — instructional design access
     'reviewer' → displayed as "Lead" — lead access, admin-like within assigned project scope
-
-    project_id = NULL + is_platform_admin = TRUE  → platform super-admin (sees all projects)
-    project_id = <int> + is_platform_admin = FALSE → regular user scoped to one project/tenant
     """
     __tablename__ = "users"
-    id                = Column(Integer, primary_key=True)
-    username          = Column(String, unique=True)
-    password_hash     = Column(String)           # nullable — Microsoft-only users have none
-    role              = Column(String)           # legacy/default role; effective role is per-tenant (see TenantMembership)
-    permissions       = Column(Text)             # JSON list — future-ready granular perms
-    is_active         = Column(Boolean, default=True)
-    created_at        = Column(DateTime, default=datetime.utcnow)
-    tenant_id         = Column(String(36), nullable=True, index=True)  # legacy column, kept for DB compat
-    project_id        = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)  # last-active tenant (convenience)
+    id            = Column(Integer, primary_key=True)
+    username      = Column(String, unique=True)
+    password_hash = Column(String)           # nullable — Microsoft-only users have none
+    role          = Column(String)           # legacy/default role; effective role is per-tenant (TenantMembership)
+    permissions   = Column(Text)             # JSON list — future-ready granular perms
+    is_active     = Column(Boolean, default=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    # ── Tenant identity (project-as-tenant + Microsoft auth) ──────────────────
+    project_id        = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)  # last-active tenant
     is_platform_admin = Column(Boolean, default=False, nullable=False)
-    # ── Microsoft identity (v23) ──────────────────────────────────────────────
-    microsoft_oid     = Column(String(64), nullable=True, index=True)   # Entra object id
+    microsoft_oid     = Column(String(64), nullable=True, index=True)
     email             = Column(String(255), nullable=True, index=True)
     display_name      = Column(String(200), nullable=True)
     memberships       = relationship("TenantMembership", back_populates="user", cascade="all, delete-orphan")
@@ -150,8 +129,7 @@ class Document(Base):
     uploaded_by = Column(String(100))
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
-    status    = Column(String(20), default="active")  # active, archived
-    tenant_id = Column(String(36), nullable=True, index=True)
+    status = Column(String(20), default="active")  # active, archived
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 class Style(Base):
@@ -171,7 +149,6 @@ class Style(Base):
     created_by          = Column(String(100))
     created_at          = Column(DateTime, default=datetime.utcnow)
     updated_at          = Column(DateTime, default=datetime.utcnow)
-    tenant_id           = Column(String(36), nullable=True, index=True)
     # Many-to-many with Document via StyleDocument join table
     style_documents     = relationship("StyleDocument", back_populates="style",
                                        cascade="all, delete-orphan")
@@ -230,13 +207,37 @@ class Prompt(Base):
     description    = Column(Text)
     owner          = Column(String)
     active_version = Column(String)
-    tags           = Column(String)             # comma-separated
+    tags           = Column(String)             # comma-separated (legacy, pipeline rows only)
     component_type = Column(String(50), nullable=True)   # style|cdd|blueprint|generate
     is_default     = Column(Boolean, default=False)      # True = system seed
+    # -- unified prompt model (prompt-consolidation Phase 1/3) --------------
+    prompt_kind    = Column(String(20), nullable=False, default="pipeline",
+                            server_default="pipeline")   # pipeline|library
+    title          = Column(String(300), nullable=True)  # library display title
+    category       = Column(String(100), nullable=True)  # library category (freeform)
+    visibility     = Column(String(20), nullable=False, default="draft",
+                            server_default="draft")      # global|team|draft (library only)
+    variant        = Column(String(50), nullable=True)   # pipeline: student|teacher|lesson|assessment|interactive
+    parent_id      = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                            nullable=True, index=True)   # library follow-up hierarchy
+    last_used_at   = Column(DateTime, nullable=True)
+    deleted_at     = Column(DateTime, nullable=True, index=True)  # soft delete (library flows)
     created_at     = Column(DateTime, default=datetime.utcnow)
     updated_at     = Column(DateTime, default=datetime.utcnow)
-    tenant_id      = Column(String(36), nullable=True, index=True)
     versions = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan")
+    # -- library-feature relationships (consolidation Phase 4) ---------------
+    # `tags` is taken by the legacy comma-string column, hence `tag_rows`.
+    parent = relationship("Prompt", remote_side="Prompt.id", foreign_keys=[parent_id],
+                          back_populates="children", lazy="select")
+    children = relationship("Prompt", back_populates="parent", foreign_keys=[parent_id],
+                            lazy="selectin")
+    tag_rows = relationship("PromptTag", cascade="all, delete-orphan", lazy="selectin")
+    variables = relationship("PromptVariable", cascade="all, delete-orphan",
+                             order_by="PromptVariable.sort_order", lazy="selectin")
+    attachments = relationship("PromptAttachment", cascade="all, delete-orphan",
+                               lazy="selectin")
+    team_links = relationship("PromptTeamLink", cascade="all, delete-orphan",
+                              lazy="selectin")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 class PromptVersion(Base):
@@ -246,9 +247,20 @@ class PromptVersion(Base):
     created_by tracks which user committed this version.
     """
     __tablename__ = "prompt_versions"
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "version_number",
+                         name="uq_prompt_versions_prompt_id_version_number"),
+    )
     id                   = Column(Integer, primary_key=True)
     prompt_id            = Column(Integer, ForeignKey("prompts.id"))
     version              = Column(String)
+    # Numeric ordering key (consolidation Phase 3; NOT NULL since revision
+    # 000100000004 — every write path populates it).
+    version_number       = Column(Integer, nullable=False)
+    # draft|in_review|approved|active — gate enforced for pipeline rows only
+    # (Phase 8); library rows are instant-publish 'active'.
+    workflow_state       = Column(String(20), nullable=False, default="active",
+                                  server_default="active")
     system_prompt        = Column(Text)
     user_prompt_template = Column(Text)
     change_reason        = Column(Text)
@@ -308,6 +320,174 @@ class UserPromptPreference(Base):
     updated_at = Column(DateTime,    default=datetime.utcnow)
 
     prompt = relationship("Prompt", foreign_keys=[prompt_id])
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Prompt-consolidation Phase 1/3 — native replacements for the pl_* tables
+# (see PROMPT_CONSOLIDATION_PLAN.md). Integer PKs, no tenant column. These
+# back the library features (tags, variables, attachments, teams, reviews,
+# requests) once Phase 4 cuts the Prompt Library service over from pl_*.
+# ---------------------------------------------------------------------------
+
+class PromptTag(Base):
+    """Tag on a prompt (library rows). Replaces pl_prompt_tags."""
+    __tablename__ = "prompt_tags"
+
+    prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                       primary_key=True)
+    tag       = Column(String(100), primary_key=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptVariable(Base):
+    """Declared template variable ({{name}}). Replaces pl_prompt_variables.
+
+    Also the future DB-backed home for pipeline template variable
+    declarations (replacing prompt_loader's static _REGISTRY — Phase 8).
+    """
+    __tablename__ = "prompt_variables"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id  = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    name       = Column(String(100), nullable=False)
+    label      = Column(String(200))
+    hint       = Column(Text)
+    sort_order = Column(Integer, default=0, nullable=False, server_default="0")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptAttachment(Base):
+    """File attached to a prompt. Replaces pl_attachments.
+
+    Files live under PROMPT_ATTACHMENTS_DIR (default ./prompt_attachments).
+    """
+    __tablename__ = "prompt_attachments"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id     = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    original_name = Column(String(300))
+    stored_name   = Column(String(500))
+    size_bytes    = Column(BigInteger)
+    uploaded_by   = Column(String(100))
+    uploaded_at   = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptFragment(Base):
+    """Shared prompt fragment (consolidation Phase 9).
+
+    fragment_key : stable code-facing key — the seeded set is
+                   persona_tone | style_guide; the reserved keys guardrails |
+                   context_header | output_contract_json |
+                   output_contract_markdown | regenerate_wrapper are authored
+                   through the admin API when the content is ready.
+    Fragments are {{double}}-brace text rendered by prompt_builder.render;
+    the legacy .format constants remain the code fallback tier when no row
+    (or no active version) exists.
+    """
+    __tablename__ = "prompt_fragments"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    fragment_key   = Column(String(50), unique=True, nullable=False)
+    description    = Column(Text)
+    active_version = Column(String(50))
+    created_by     = Column(String(100))
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    updated_at     = Column(DateTime, default=datetime.utcnow)
+    versions = relationship("PromptFragmentVersion", cascade="all, delete-orphan",
+                            back_populates="fragment", lazy="selectin")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptFragmentVersion(Base):
+    """Append-only version snapshot of a PromptFragment."""
+    __tablename__ = "prompt_fragment_versions"
+    __table_args__ = (
+        UniqueConstraint("fragment_id", "version_number",
+                         name="uq_prompt_fragment_versions_fragment_id_version_number"),
+    )
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    fragment_id    = Column(Integer, ForeignKey("prompt_fragments.id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    version        = Column(String(50), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    content        = Column(Text, nullable=False)
+    change_reason  = Column(Text)
+    is_active      = Column(Boolean, default=False)
+    created_by     = Column(String(100))
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    fragment = relationship("PromptFragment", back_populates="versions")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class Team(Base):
+    """Prompt-sharing team. Replaces pl_teams (String(20) slug PK → Integer;
+    the slug is preserved in name — verified id == name for all prod rows)."""
+    __tablename__ = "teams"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    name       = Column(String(100), unique=True, nullable=False)
+    created_by = Column(String(100))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptTeamLink(Base):
+    """M:N prompt↔team visibility link. Replaces pl_prompt_teams (and the
+    redundant scalar pl_prompts.team_id, which was unused in prod)."""
+    __tablename__ = "prompt_team_links"
+
+    prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                       primary_key=True)
+    team_id   = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"),
+                       primary_key=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptReview(Base):
+    """User rating/feedback on a prompt. Replaces pl_reviews.
+
+    Named prompt_reviews — a `reviews` table already exists for
+    content-block review.
+    """
+    __tablename__ = "prompt_reviews"
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "username",
+                         name="uq_prompt_reviews_prompt_id_username"),
+    )
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id  = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    username   = Column(String(100), nullable=False)
+    rating     = Column(SmallInteger, nullable=False)
+    feedback   = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class PromptRequest(Base):
+    """User request for a new/changed prompt. Replaces pl_prompt_requests."""
+    __tablename__ = "prompt_requests"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    title        = Column(String(300), nullable=False)
+    description  = Column(Text)
+    type         = Column(String(20), nullable=False, default="new",
+                          server_default="new")     # new|change
+    prompt_id    = Column(Integer, ForeignKey("prompts.id", ondelete="SET NULL"),
+                          nullable=True)
+    requested_by = Column(String(100), nullable=False)
+    status       = Column(String(20), nullable=False, default="open",
+                          server_default="open", index=True)
+    admin_notes  = Column(Text)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -533,9 +713,13 @@ class AuditLog(Base):
     entity_id     = Column(String(64),  nullable=True)
     project_id    = Column(Integer,     nullable=True,  index=True)
     course_id     = Column(Integer,     nullable=True)
-    tenant_id     = Column(String(36),  nullable=True,  index=True)
     metadata_json = Column(Text,        nullable=True)
     ip_address    = Column(String(45),  nullable=True)   # IPv4 or IPv6
+    # -- prompt-consolidation Phase 1/3 additive columns --------------------
+    actor_role    = Column(String(64),  nullable=True)
+    user_agent    = Column(String(512), nullable=True)
+    changes       = Column(JSON,        nullable=True)   # structured diff (compute_prompt_changes)
+    summary       = Column(Text,        nullable=True)   # human-readable one-liner (audit UI)
     created_at    = Column(DateTime,    default=datetime.utcnow, index=True)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -612,7 +796,6 @@ class GenerationJob(Base):
     # Scope
     project_id = Column(Integer, nullable=True)
     course_id  = Column(Integer, nullable=True)
-    tenant_id  = Column(String(36), nullable=True, index=True)
     created_by = Column(String(100))
 
     # Timestamps
@@ -680,7 +863,6 @@ class LLMUsageLog(Base):
     user_id         = Column(String(100), nullable=True,  index=True)   # username
     project_id      = Column(Integer,     nullable=True,  index=True)
     course_id       = Column(Integer,     nullable=True)
-    tenant_id       = Column(String(36),  nullable=True,  index=True)
     entity_type     = Column(String(60),  nullable=True)   # generation | cdd | blueprint | evaluation | style
     entity_id       = Column(String(64),  nullable=True)
     prompt_template = Column(String(150), nullable=True)
@@ -820,23 +1002,18 @@ class UserPromptHistory(Base):
 class Project(Base):
     """Top-level client project container — this IS the tenant.
 
-    Tenant fields (v23, Microsoft-auth tenant system):
-      slug       : organization code users type at login (e.g. "academian", "aim003")
-                   lowercase, unique. Reserved code "platform" is not allowed.
-      status     : "active" | "suspended" — suspended blocks all member logins.
-      max_users  : license cap on active members in this tenant.
-      azure_*    : optional per-tenant Azure app; falls back to platform .env creds.
+    Tenant fields: slug (organization code, unique), status (active|suspended),
+    max_users (license), and optional per-tenant Azure app credentials.
     """
     __tablename__ = "projects"
     id               = Column(Integer, primary_key=True)
-    name             = Column(String(255), nullable=False)     # display name
+    name             = Column(String(255), nullable=False)   # display name
     description      = Column(Text)
     client_name      = Column(String(255))
     created_by       = Column(String(100))
     created_at       = Column(DateTime, default=datetime.utcnow)
     is_active        = Column(Boolean, default=True)
     active_style_id  = Column(Integer, nullable=True)   # Project-level active style (FK to styles.id)
-    tenant_id        = Column(String(36), nullable=True, index=True)  # legacy, unused
     # ── Tenant (organization) fields ──────────────────────────────────────────
     slug                   = Column(String(64), unique=True, index=True, nullable=True)  # org code
     status                 = Column(String(20), nullable=False, default="active")        # active|suspended
@@ -951,9 +1128,7 @@ class TenantMembership(Base):
 
     A person may belong to several tenants (via several org codes) with a
     different role in each. One global User row, many memberships.
-
-    role : tenant-scoped Content AI Studio role — admin | reviewer | author
-           (tenant_admin -> admin, prompt_manager -> reviewer, user -> author)
+    role: admin | reviewer | author (tenant_admin/prompt_manager/user).
     """
     __tablename__ = "tenant_memberships"
     __table_args__ = (
@@ -992,7 +1167,6 @@ class CentralRepository(Base):
     created_at    = Column(DateTime, default=datetime.utcnow)
     updated_at    = Column(DateTime, default=datetime.utcnow)
     last_used_at  = Column(DateTime, nullable=True)
-    tenant_id     = Column(String(36), nullable=True, index=True)
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -1001,7 +1175,29 @@ class CentralRepository(Base):
 # =============================================================================
 
 def init_db():
-    # Create all tables that don't exist yet (safe to run on every startup).
+    # ── Schema DDL is Alembic-owned ────────────────────────────────────────
+    # As of the 000100000001 baseline revision, the schema is managed by
+    # `alembic upgrade head` (the deploy pipeline runs it before boot).
+    # The legacy create_all()/ALTER/CREATE INDEX path below is kept only as
+    # an explicit opt-in escape hatch and is OFF by default: running both
+    # would desync alembic_version from the real schema (a container booting
+    # before `upgrade` creates a new table via create_all, then the CREATE
+    # TABLE migration fails with "already exists").
+    auto_ddl = os.getenv("DB_AUTO_DDL", "false").strip().lower() in ("1", "true", "yes")
+    if auto_ddl:
+        _run_legacy_ddl()
+
+    # Data backfills (idempotent DML, not schema) run unconditionally on
+    # PostgreSQL — they repair legacy rows and are no-ops once applied.
+    # Skipped on SQLite (the test suite) which has no legacy data and does
+    # not support the PostgreSQL syntax used.
+    if engine.dialect.name == "postgresql":
+        _run_data_backfills()
+
+
+def _run_legacy_ddl():
+    """Legacy pre-Alembic schema DDL — only runs when DB_AUTO_DDL is set."""
+    # Create all tables that don't exist yet.
     Base.metadata.create_all(bind=engine)
 
     # Column-level migrations — ADD COLUMN IF NOT EXISTS is idempotent in PostgreSQL 9.6+.
@@ -1028,8 +1224,6 @@ def init_db():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT '[]'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
-        # users — project-as-tenant model (v22)
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS project_id INTEGER",
         # course_design_documents — project/course scoping (v18)
         "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS course_id INTEGER",
@@ -1141,11 +1335,12 @@ def init_db():
         "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP",
         # cluster_prompts — make cluster assignment optional (Req 2)
         "ALTER TABLE cluster_prompts ALTER COLUMN cluster_id DROP NOT NULL",
-        # Tenant system — Phase 1
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
+        # ── Tenant (organization) system — Microsoft auth + org codes ─────────
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE NOT NULL",
-        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        # Tenant system v23 — Microsoft-auth organization/tenant model
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_oid VARCHAR(64)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug VARCHAR(64)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS max_users INTEGER DEFAULT 50",
@@ -1155,16 +1350,6 @@ def init_db():
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_client_secret VARCHAR(512)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_new_user_role VARCHAR(32)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS allowed_email_domains VARCHAR(500)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_oid VARCHAR(64)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
-        "ALTER TABLE styles ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        "ALTER TABLE generation_jobs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
@@ -1206,16 +1391,6 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_uph_name_component ON user_prompt_history(name, component)",
             "CREATE INDEX IF NOT EXISTS idx_job_metrics_job_id ON job_metrics(job_id)",
             "CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id)",
-            # Tenant system — Phase 1
-            "CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_projects_tenant_id ON projects(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_styles_tenant_id ON styles(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_documents_tenant_id ON documents(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_tenant_id ON prompts(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_central_repos_tenant_id ON central_repositories(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_generation_jobs_tenant_id ON generation_jobs(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_llm_usage_tenant_id ON llm_usage_logs(tenant_id)",
-            "CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_id ON audit_logs(tenant_id)",
             # Phase 2
             "CREATE INDEX IF NOT EXISTS idx_block_versions_block_id ON block_versions(block_id, version_num DESC)",
             "CREATE INDEX IF NOT EXISTS idx_blocks_assigned_reviewer ON blocks(assigned_reviewer)",
@@ -1231,7 +1406,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_logs(model_name, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_status ON llm_usage_logs(status, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_entity ON llm_usage_logs(entity_type, entity_id)",
-            # Tenant system v23
+            # Tenant (organization) system
+            "CREATE INDEX IF NOT EXISTS idx_users_project_id ON users(project_id)",
             "CREATE INDEX IF NOT EXISTS idx_users_microsoft_oid ON users(microsoft_oid)",
             "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
             "CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user ON tenant_memberships(user_id)",
@@ -1241,6 +1417,9 @@ def init_db():
         with engine.begin() as conn:
             conn.execute(text(stmt))
 
+
+def _run_data_backfills():
+    """Idempotent data repairs (DML only — no schema changes)."""
     # Backfill updated_at for documents where it landed NULL
     with engine.begin() as conn:
         conn.execute(text(
@@ -1272,9 +1451,8 @@ def init_db():
             WHERE cluster_id IS NULL
         """))
 
-    # ── Tenant (organization) backfill v23 (idempotent) ───────────────────────
-    # Step A: give every project a slug + sensible tenant defaults.
-    #   slug = lowercased name, non-alnum -> hyphen, deduped with the project id.
+    # ── Tenant (organization) backfill (idempotent) ───────────────────────────
+    # Give every project a slug + tenant defaults so it can act as a tenant.
     with engine.begin() as conn:
         conn.execute(text("""
             UPDATE projects
@@ -1284,12 +1462,9 @@ def init_db():
         conn.execute(text("UPDATE projects SET status = 'active' WHERE status IS NULL"))
         conn.execute(text("UPDATE projects SET max_users = 50 WHERE max_users IS NULL"))
         conn.execute(text("UPDATE projects SET microsoft_auth_enabled = TRUE WHERE microsoft_auth_enabled IS NULL"))
-    # Enforce slug uniqueness now that every row has one.
     with engine.begin() as conn:
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_slug ON projects(slug)"))
-
-    # Step B: create a membership row for every existing non-platform-admin user
-    #         that has a project_id, preserving their current role.
+    # Membership for every existing non-platform-admin user that has a project_id.
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO tenant_memberships (user_id, project_id, role, active, created_at, created_by)
@@ -1421,7 +1596,7 @@ def _slugify(name: str) -> str:
 
 
 def create_style(db, name: str, description: str, custom_instructions: str,
-                 document_ids: list, created_by: str, tenant_id: str = None) -> "Style":
+                 document_ids: list, created_by: str) -> "Style":
     """Create and persist a new Style."""
     slug = _slugify(name)
     # Ensure uniqueness
@@ -1434,7 +1609,6 @@ def create_style(db, name: str, description: str, custom_instructions: str,
         created_by=created_by, is_active=False,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
-        tenant_id=tenant_id,
     )
     db.add(style); db.commit(); db.refresh(style)
     for doc_id in (document_ids or []):
@@ -1458,11 +1632,9 @@ def add_files_to_style(db, style: "Style", new_doc_ids: list):
     return added
 
 
-def get_styles(db, tenant_id: str = None, is_platform_admin: bool = False) -> list:
-    """Return all styles ordered by most recently updated, scoped to tenant."""
-    from app.core.tenant_context import apply_tenant_filter
-    q = db.query(Style).order_by(Style.updated_at.desc())
-    return apply_tenant_filter(q, Style, tenant_id, is_platform_admin).all()
+def get_styles(db) -> list:
+    """Return all styles ordered by most recently updated."""
+    return db.query(Style).order_by(Style.updated_at.desc()).all()
 
 
 def get_active_style(db, project_id=None, course_id=None) -> "Style | None":
@@ -1727,21 +1899,15 @@ def apply_transition_local(db, block, action: str, actor: str):
 # Project / Course Query Helpers
 # =============================================================================
 
-def _get_user_projects(db, username: str, role: str, tenant_id: str = None):
-    """Return projects accessible to this user, scoped to tenant."""
+def _get_user_projects(db, username: str, role: str):
+    """Return projects accessible to this user. Admin sees all active projects."""
     if role == "admin":
-        q = db.query(Project).filter(Project.is_active == True)
-        if tenant_id:
-            q = q.filter(Project.tenant_id == tenant_id)
-        return q.order_by(Project.created_at.desc()).all()
+        return db.query(Project).filter(Project.is_active == True).order_by(Project.created_at.desc()).all()
     assigned = db.query(ProjectUserAssignment).filter(ProjectUserAssignment.username == username).all()
     proj_ids = [a.project_id for a in assigned]
     if not proj_ids:
         return []
-    q = db.query(Project).filter(Project.id.in_(proj_ids), Project.is_active == True)
-    if tenant_id:
-        q = q.filter(Project.tenant_id == tenant_id)
-    return q.order_by(Project.created_at.desc()).all()
+    return db.query(Project).filter(Project.id.in_(proj_ids), Project.is_active == True).order_by(Project.created_at.desc()).all()
 
 
 # =============================================================================
@@ -1781,22 +1947,109 @@ def seed_data(db):
     # ── Default Prompt & Versions ─────────────────────────────────────────────
     if not db.query(Prompt).first():
         p = Prompt(name="lesson_generator", description="Generates detailed eLearning lessons.", owner="admin", active_version="v1", tags="core,lesson")
+        p.tag_rows = [PromptTag(tag="core"), PromptTag(tag="lesson")]
         db.add(p); db.commit(); db.refresh(p)
         v1 = PromptVersion(
-            prompt_id=p.id, version="v1", is_active=True,
+            prompt_id=p.id, version="v1", version_number=1, is_active=True,
             system_prompt=SEED_PROMPT_V1_SYSTEM,
             user_prompt_template=SEED_PROMPT_V1_USER,
             change_reason="Initial release"
         )
         v2 = PromptVersion(
-            prompt_id=p.id, version="v2", is_active=False,
+            prompt_id=p.id, version="v2", version_number=2, is_active=False,
             system_prompt=SEED_PROMPT_V2_SYSTEM,
             user_prompt_template=SEED_PROMPT_V2_USER,
             change_reason="Enhanced engagement version"
         )
         db.add(v1); db.add(v2); db.commit()
 
-    # ── Default component prompt assets (idempotent — skip if name already exists) ─
+    # ── Default component prompt assets ──────────────────────────────────────
+    seed_default_component_prompts(db)
+    # ── Shared prompt fragments (Phase 9) ─────────────────────────────────────
+    seed_prompt_fragments(db)
+    db.commit()
+
+
+def seed_prompt_fragments(db) -> list[str]:
+    """Seed the fragment rows migrated from legacy constants (idempotent).
+
+    persona_tone carries PERSONA_PREFIX_TEMPLATE ({single}->{{double}}
+    converted — the fragment tier renders with the {{double}} engine) and
+    style_guide carries DEFAULT_STYLE_GUIDE verbatim (no placeholders).
+    The constants themselves stay in prompt_templates.py as the code
+    fallback tier. Skips keys that already exist; flushes, caller commits.
+    Returns the keys created.
+    """
+    from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
+    _persona, _ = convert_legacy_braces(PERSONA_PREFIX_TEMPLATE)
+    _FRAGMENT_SEEDS = [
+        (
+            "persona_tone",
+            "Persona prefix injected ahead of generation user prompts "
+            "(migrated from PERSONA_PREFIX_TEMPLATE).",
+            _persona,
+        ),
+        (
+            "style_guide",
+            "Fallback instructional style guide "
+            "(migrated from DEFAULT_STYLE_GUIDE).",
+            DEFAULT_STYLE_GUIDE.strip() + "\n",
+        ),
+    ]
+
+    created: list[str] = []
+    for _f_key, _f_desc, _f_content in _FRAGMENT_SEEDS:
+        if db.query(PromptFragment).filter(
+            PromptFragment.fragment_key == _f_key
+        ).first():
+            continue
+        fragment = PromptFragment(
+            fragment_key=_f_key,
+            description=_f_desc,
+            active_version="v1",
+            created_by="system",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(fragment); db.flush()
+        db.add(PromptFragmentVersion(
+            fragment_id=fragment.id,
+            version="v1",
+            version_number=1,
+            content=_f_content,
+            change_reason="System-seeded — migrated from hardcoded constant.",
+            is_active=True,
+            created_by="system",
+            created_at=datetime.utcnow(),
+        ))
+        db.flush()
+        created.append(_f_key)
+    return created
+
+
+def seed_default_component_prompts(db) -> list[str]:
+    """Seed the one ``is_default`` prompt row per taxonomy line (idempotent).
+
+    Skips any name that already exists, so it is safe on every call — fresh
+    databases get the full set, existing databases only the rows they lack
+    (``scripts/seed_taxonomy_defaults.py`` applies it to a running DB).
+    Flushes but does NOT commit — the caller owns the transaction (that is
+    what lets the seeding script offer a real --dry-run). Returns the names
+    created.
+
+    The legacy constants are {single}-brace (.format) text and stay unchanged
+    as the inline-fallback tier; the SEEDED rows are what component-keyed
+    resolution (PROMPT_RESOLVE_BY_COMPONENT) renders with the {{double}}-brace
+    engine, so bodies are converted at seed time. quiz_generation.md is already
+    {{double}} and is seeded verbatim.
+
+    Deliberately NOT seeded (Phase 8 decision): (generate, interactive) — the
+    bespoke builder routes ~10 label-specific prompts and one generic row would
+    degrade them all; Cluster/Course lines — no endpoint resolves them yet.
+    """
+    from promptops_app.prompts.brace_conversion import convert_legacy_braces
+
     _STYLE_DEFAULT_SYSTEM = (
         "You are an expert instructional style consultant. "
         "Analyse the provided style guidelines and documents, then apply the defined "
@@ -1810,38 +2063,61 @@ def seed_data(db):
         "and formatting conventions defined above."
     )
 
+    # The quiz default is the shipped file template (the tier serving quiz
+    # today) — seeding it changes nothing except giving the console a slot.
+    from promptops_app.prompts.prompt_loader import _TEMPLATE_DIR, _split
+    _quiz_sys, _quiz_usr = _split(
+        (_TEMPLATE_DIR / "quiz_generation.md").read_text(encoding="utf-8")
+    )
+
+    # (name, component_type, variant, description, system, user, needs_conversion)
     _DEFAULT_COMPONENT_PROMPTS = [
         (
-            "default_style_prompt",
-            "style",
+            "default_style_prompt", "style", None,
             "Default Style Prompt — applied when generating style-guided content.",
-            _STYLE_DEFAULT_SYSTEM,
-            _STYLE_DEFAULT_USER,
+            _STYLE_DEFAULT_SYSTEM, _STYLE_DEFAULT_USER, True,
         ),
         (
-            "default_cdd_prompt",
-            "cdd",
+            "default_cdd_prompt", "cdd", None,
             "Default CDD Prompt — generates Course Design Documents.",
-            CDD_SYSTEM_PROMPT,
-            CDD_USER_PROMPT_TEMPLATE,
+            CDD_SYSTEM_PROMPT, CDD_USER_PROMPT_TEMPLATE, True,
         ),
         (
-            "default_blueprint_prompt",
-            "blueprint",
+            "default_blueprint_prompt", "blueprint", None,
             "Default Blueprint Prompt — generates Module Blueprints from a CDD.",
-            BLUEPRINT_SYSTEM_PROMPT,
-            BLUEPRINT_USER_PROMPT_TEMPLATE,
+            BLUEPRINT_SYSTEM_PROMPT, BLUEPRINT_USER_PROMPT_TEMPLATE, True,
         ),
         (
-            "default_generate_prompt",
-            "generate",
+            "default_generate_prompt", "generate", None,
             "Default Generate Prompt — generates lesson and course component content.",
-            LESSON_WITH_CONTEXT_SYSTEM,
-            LESSON_WITH_CONTEXT_USER,
+            LESSON_WITH_CONTEXT_SYSTEM, LESSON_WITH_CONTEXT_USER, True,
+        ),
+        # Variant defaults (Phase 8 taxonomy seeds, signed off 2026-07-07):
+        # exact (component, variant) rows win over the NULL-variant fallback,
+        # so each blueprint mode becomes independently versionable while the
+        # seeded text keeps live output identical to the legacy constants.
+        (
+            "default_blueprint_teacher_prompt", "blueprint", "teacher",
+            "Default Teacher Blueprint Prompt — teacher-facing module blueprints.",
+            TEACHER_BLUEPRINT_SYSTEM_PROMPT, TEACHER_BLUEPRINT_USER_PROMPT_TEMPLATE, True,
+        ),
+        (
+            "default_blueprint_student_prompt", "blueprint", "student",
+            "Default Student Blueprint Prompt — student-facing module blueprints.",
+            BLUEPRINT_SYSTEM_PROMPT, BLUEPRINT_USER_PROMPT_TEMPLATE, True,
+        ),
+        (
+            "default_quiz_prompt", "quiz", None,
+            "Default Quiz Prompt — generates quiz and assessment content.",
+            _quiz_sys, _quiz_usr, False,
         ),
     ]
 
-    for _p_name, _p_comp, _p_desc, _p_sys, _p_usr in _DEFAULT_COMPONENT_PROMPTS:
+    created: list[str] = []
+    for _p_name, _p_comp, _p_variant, _p_desc, _p_sys, _p_usr, _p_conv in _DEFAULT_COMPONENT_PROMPTS:
+        if _p_conv:
+            _p_sys, _ = convert_legacy_braces(_p_sys)
+            _p_usr, _ = convert_legacy_braces(_p_usr)
         if not db.query(Prompt).filter(Prompt.name == _p_name).first():
             _p_new = Prompt(
                 name=_p_name,
@@ -1850,21 +2126,27 @@ def seed_data(db):
                 active_version="v1",
                 tags=_p_comp,
                 component_type=_p_comp,
+                variant=_p_variant,
                 is_default=True,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
-            db.add(_p_new); db.commit(); db.refresh(_p_new)
+            _p_new.tag_rows = [PromptTag(tag=_p_comp)]
+            db.add(_p_new); db.flush()
             db.add(PromptVersion(
                 prompt_id=_p_new.id,
                 version="v1",
+                version_number=1,
                 system_prompt=_p_sys,
                 user_prompt_template=_p_usr,
                 change_reason="System-seeded default — converted from hardcoded prompt.",
                 is_active=True,
                 created_by="system",
             ))
-            db.commit()
+            db.flush()
+            created.append(_p_name)
+    return created
+
 
 def init_db_with_seed():
     init_db()

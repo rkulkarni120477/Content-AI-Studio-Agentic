@@ -20,9 +20,14 @@ from app.core.security import (
 
 
 class TestPasswordHashing:
-    def test_hash_is_deterministic(self):
-        """The same password always produces the same hash."""
-        assert hash_password("mypassword") == hash_password("mypassword")
+    def test_hash_is_salted(self):
+        """PBKDF2 uses a random salt — hashing twice gives different hashes,
+        but both verify against the original password."""
+        first = hash_password("mypassword")
+        second = hash_password("mypassword")
+        assert first != second
+        assert verify_password("mypassword", first) is True
+        assert verify_password("mypassword", second) is True
 
     def test_different_passwords_produce_different_hashes(self):
         assert hash_password("password1") != hash_password("password2")
@@ -38,7 +43,8 @@ class TestPasswordHashing:
     def test_hash_is_not_plaintext(self):
         hashed = hash_password("secret")
         assert hashed != "secret"
-        assert len(hashed) == 64  # SHA-256 hex digest length
+        # hex(salt[16 bytes] + PBKDF2 dk[32 bytes]) = 96 hex chars
+        assert len(hashed) == 96
 
 
 class TestJWTTokens:

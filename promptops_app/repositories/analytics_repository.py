@@ -4,7 +4,6 @@ from promptops_app.database import (
     Block, CourseDesignDocument, Document, Generation, ModuleBlueprint,
     Project, PromptVersion, Review, SystemLog,
 )
-from app.core.tenant_context import apply_tenant_filter
 
 
 def count_generations_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True) -> int:
@@ -16,10 +15,13 @@ def count_generations_scoped(db, user_name: str = None, project_id: int = None, 
     return q.count()
 
 
-def list_active_projects_for_analytics(db, tenant_id=None, is_platform_admin=False):
-    q = db.query(Project).filter(Project.is_active == True)
-    q = apply_tenant_filter(q, Project, tenant_id, is_platform_admin)
-    return q.order_by(Project.name).all()
+def list_active_projects_for_analytics(db):
+    return (
+        db.query(Project)
+        .filter(Project.is_active == True)
+        .order_by(Project.name)
+        .all()
+    )
 
 
 def get_project_generation_ids(db, project_id: int, limit: int = 2000) -> list:

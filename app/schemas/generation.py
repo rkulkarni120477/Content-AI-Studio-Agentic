@@ -112,6 +112,8 @@ class GenerationListItem(BaseModel):
     topic: str
     prompt_name: Optional[str] = None
     prompt_version: Optional[str] = None
+    blueprint_id: Optional[int] = None
+    cdd_id: Optional[int] = None
     block_count: int = 0
     created_at: Optional[datetime] = None
 

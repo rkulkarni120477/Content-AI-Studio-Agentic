@@ -1,0 +1,27 @@
+.toggle {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-radius: $radius-md;
+  color: #e0e7ff;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background $transition-fast, color $transition-fast;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: $color-white;
+    border-color: rgba(165, 180, 252, 0.5);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
+}

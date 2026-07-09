@@ -20,15 +20,12 @@ from promptops_app.database import LLMUsageLog, Project, Course
 # ---------------------------------------------------------------------------
 
 def _apply_scope(q, user_name=None, project_id=None, model_name=None,
-                 date_from=None, date_to=None, tenant_id=None, is_platform_admin=False):
+                 date_from=None, date_to=None):
     if user_name:    q = q.filter(LLMUsageLog.user_id == user_name)
     if project_id:   q = q.filter(LLMUsageLog.project_id == project_id)
     if model_name:   q = q.filter(LLMUsageLog.model_name == model_name)
     if date_from:    q = q.filter(LLMUsageLog.created_at >= date_from)
     if date_to:      q = q.filter(LLMUsageLog.created_at <= date_to)
-    # Tenant isolation: platform admin with no tenant_id sees all rows.
-    if tenant_id:
-        q = q.filter(LLMUsageLog.tenant_id == tenant_id)
     return q
 
 
@@ -42,8 +39,6 @@ def get_summary(
     project_id: Optional[int] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> dict:
     """Return dashboard KPI values in one query pass."""
     q = db.query(
@@ -55,15 +50,13 @@ def get_summary(
         func.coalesce(func.avg(LLMUsageLog.duration_ms), 0.0).label("avg_duration_ms"),
     )
     q = _apply_scope(q, user_name=user_name, project_id=project_id,
-                     date_from=date_from, date_to=date_to,
-                     tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+                     date_from=date_from, date_to=date_to)
     row = q.one()
 
     # Failed count in a separate small query (avoids CASE complexity across ORM versions)
     fail_q = db.query(func.count(LLMUsageLog.id)).filter(LLMUsageLog.status == "error")
     fail_q = _apply_scope(fail_q, user_name=user_name, project_id=project_id,
-                          date_from=date_from, date_to=date_to,
-                          tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+                          date_from=date_from, date_to=date_to)
     failed = fail_q.scalar() or 0
 
     return {
@@ -87,8 +80,6 @@ def cost_by_model(
     project_id: Optional[int] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list[dict]:
     """Aggregate cost and token totals grouped by model_name."""
     q = db.query(
@@ -99,8 +90,7 @@ def cost_by_model(
         func.coalesce(func.avg(LLMUsageLog.duration_ms), 0.0).label("avg_ms"),
     ).group_by(LLMUsageLog.model_name)
     q = _apply_scope(q, user_name=user_name, project_id=project_id,
-                     date_from=date_from, date_to=date_to,
-                     tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+                     date_from=date_from, date_to=date_to)
     return [
         {
             "Model":       r.model_name or "unknown",
@@ -119,8 +109,6 @@ def cost_by_user(
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
     limit: int = 50,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list[dict]:
     """Aggregate cost and token totals grouped by user_id."""
     q = db.query(
@@ -129,8 +117,7 @@ def cost_by_user(
         func.coalesce(func.sum(LLMUsageLog.total_tokens), 0).label("tokens"),
         func.coalesce(func.sum(LLMUsageLog.estimated_cost), 0.0).label("cost"),
     ).group_by(LLMUsageLog.user_id)
-    q = _apply_scope(q, project_id=project_id, date_from=date_from, date_to=date_to,
-                     tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+    q = _apply_scope(q, project_id=project_id, date_from=date_from, date_to=date_to)
     return [
         {
             "User":     r.user_id or "(anonymous)",
@@ -147,8 +134,6 @@ def cost_by_project(
     user_name: Optional[str] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list[dict]:
     """Aggregate cost grouped by project_id, enriched with project name via join."""
     q = (
@@ -166,7 +151,6 @@ def cost_by_project(
     if user_name:  q = q.filter(LLMUsageLog.user_id == user_name)
     if date_from:  q = q.filter(LLMUsageLog.created_at >= date_from)
     if date_to:    q = q.filter(LLMUsageLog.created_at <= date_to)
-    if tenant_id:  q = q.filter(LLMUsageLog.tenant_id == tenant_id)
     return [
         {
             "Project":  r.project_name or f"Project #{r.project_id}",
@@ -184,8 +168,6 @@ def cost_by_course(
     user_name: Optional[str] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list[dict]:
     """Aggregate cost grouped by course_id, enriched with course name via join."""
     q = (
@@ -204,7 +186,6 @@ def cost_by_course(
     if user_name:  q = q.filter(LLMUsageLog.user_id == user_name)
     if date_from:  q = q.filter(LLMUsageLog.created_at >= date_from)
     if date_to:    q = q.filter(LLMUsageLog.created_at <= date_to)
-    if tenant_id:  q = q.filter(LLMUsageLog.tenant_id == tenant_id)
     return [
         {
             "Course":   r.course_name or f"Course #{r.course_id}",
@@ -221,8 +202,6 @@ def monthly_usage(
     user_name: Optional[str] = None,
     project_id: Optional[int] = None,
     months: int = 6,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list[dict]:
     """Monthly token and cost totals — PostgreSQL date_trunc GROUP BY."""
     month_col = func.date_trunc("month", LLMUsageLog.created_at)
@@ -235,7 +214,6 @@ def monthly_usage(
     )
     if user_name:  q = q.filter(LLMUsageLog.user_id == user_name)
     if project_id: q = q.filter(LLMUsageLog.project_id == project_id)
-    if tenant_id:  q = q.filter(LLMUsageLog.tenant_id == tenant_id)
     q    = q.group_by(month_col).order_by(month_col.desc()).limit(months)
     rows = q.all()
     return [
@@ -262,13 +240,10 @@ def count_usage_logs(
     entity_type: Optional[str] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> int:
     q = db.query(func.count(LLMUsageLog.id))
     q = _apply_scope(q, user_name=user_name, project_id=project_id,
-                     model_name=model_name, date_from=date_from, date_to=date_to,
-                     tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+                     model_name=model_name, date_from=date_from, date_to=date_to)
     if status:      q = q.filter(LLMUsageLog.status == status)
     if entity_type: q = q.filter(LLMUsageLog.entity_type == entity_type)
     return q.scalar() or 0
@@ -285,13 +260,10 @@ def list_usage_logs(
     date_to: Optional[datetime] = None,
     limit: int = 50,
     offset: int = 0,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list:
     q = db.query(LLMUsageLog)
     q = _apply_scope(q, user_name=user_name, project_id=project_id,
-                     model_name=model_name, date_from=date_from, date_to=date_to,
-                     tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+                     model_name=model_name, date_from=date_from, date_to=date_to)
     if status:      q = q.filter(LLMUsageLog.status == status)
     if entity_type: q = q.filter(LLMUsageLog.entity_type == entity_type)
     return (
@@ -301,25 +273,19 @@ def list_usage_logs(
     )
 
 
-def list_distinct_models(db, tenant_id=None) -> list[str]:
-    q = db.query(LLMUsageLog.model_name).distinct()
-    if tenant_id:
-        q = q.filter(LLMUsageLog.tenant_id == tenant_id)
-    return sorted({r[0] for r in q.all() if r[0]})
+def list_distinct_models(db) -> list[str]:
+    rows = db.query(LLMUsageLog.model_name).distinct().all()
+    return sorted({r[0] for r in rows if r[0]})
 
 
-def list_distinct_entity_types(db, tenant_id=None) -> list[str]:
-    q = db.query(LLMUsageLog.entity_type).distinct()
-    if tenant_id:
-        q = q.filter(LLMUsageLog.tenant_id == tenant_id)
-    return sorted({r[0] for r in q.all() if r[0]})
+def list_distinct_entity_types(db) -> list[str]:
+    rows = db.query(LLMUsageLog.entity_type).distinct().all()
+    return sorted({r[0] for r in rows if r[0]})
 
 
-def list_distinct_users(db, project_id: Optional[int] = None, tenant_id=None) -> list[str]:
+def list_distinct_users(db, project_id: Optional[int] = None) -> list[str]:
     q = db.query(LLMUsageLog.user_id).distinct()
     if project_id:
         q = q.filter(LLMUsageLog.project_id == project_id)
-    if tenant_id:
-        q = q.filter(LLMUsageLog.tenant_id == tenant_id)
     rows = q.all()
     return sorted({r[0] for r in rows if r[0]})

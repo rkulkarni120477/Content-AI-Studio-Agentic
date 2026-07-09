@@ -5,10 +5,26 @@ const LOGO_SRC = '/ContentStudio.png';
 
 /**
  * Brand block — matches Streamlit _sidebar_brand() using ContentStudio.png.
+ * `compact` renders the logo alone (collapsed-sidebar rail).
  */
-export default function AppBrand({ variant = 'sidebar', showTag = true, className }) {
+export default function AppBrand({ variant = 'sidebar', showTag = true, compact = false, className }) {
   const isHero = variant === 'hero';
-  const logoHeight = isHero ? 52 : 32;
+  // Sidebar brand is compact enough to share its row with the collapse toggle.
+  const logoHeight = isHero ? 52 : 28;
+
+  if (compact) {
+    return (
+      <div className={cn(styles.brand, styles['brand--compact'], className)}>
+        <img
+          src={LOGO_SRC}
+          alt="Content AI Studio"
+          className={styles.logo}
+          height={logoHeight}
+          title="Content AI Studio"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className={cn(styles.brand, isHero && styles['brand--hero'], className)}>

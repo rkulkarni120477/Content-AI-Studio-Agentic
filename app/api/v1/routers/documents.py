@@ -16,13 +16,8 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, get_tenant_context
+from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError
-from app.core.tenant_context import (
-    effective_tenant_id_for_write,
-    is_platform_admin_user,
-    tenant_id_from_user,
-)
 from app.schemas.common import PaginatedResponse
 from app.schemas.document import DocumentContentResponse, DocumentListItem, DocumentRead, ParsedFileResponse
 
@@ -30,12 +25,10 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_document_or_404(db: Session, document_id: int, tenant_id=None, is_platform_admin=False):
-    """Fetch a document by ID (tenant-scoped) or raise HTTP 404."""
+def _get_document_or_404(db: Session, document_id: int):
+    """Fetch a document by ID or raise HTTP 404."""
     from promptops_app.repositories import document_repository
-    doc = document_repository.get_document_by_id(
-        db, document_id, tenant_id=tenant_id, is_platform_admin=is_platform_admin
-    )
+    doc = document_repository.get_document_by_id(db, document_id)
     if doc is None:
         raise NotFoundError("Document", document_id)
     return doc
@@ -53,14 +46,10 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[DocumentListItem]:
-    """Return documents in the library, scoped to the current tenant."""
+    """Return documents in the global library (not scoped to a course or project)."""
     from promptops_app.repositories import document_repository
 
-    tid      = tenant_id_from_user(current_user)
-    is_admin = is_platform_admin_user(current_user)
-    documents = document_repository.list_active_documents(
-        db, limit=500, tenant_id=tid, is_platform_admin=is_admin
-    )
+    documents = document_repository.list_active_documents(db, limit=500)
     total = len(documents)
     start = (page - 1) * page_size
     return PaginatedResponse.create(
@@ -147,7 +136,6 @@ async def upload_document(
         doc_tag=source_type,
         status="active",
         uploaded_by=current_user.username,
-        tenant_id=effective_tenant_id_for_write(current_user),
     )
     db.add(doc)
     db.commit()
@@ -167,11 +155,9 @@ def get_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> DocumentRead:
     """Return document metadata without content."""
-    tid, is_admin = tenant_ctx
-    return DocumentRead.model_validate(_get_document_or_404(db, document_id, tid, is_admin))
+    return DocumentRead.model_validate(_get_document_or_404(db, document_id))
 
 
 @router.get(
@@ -184,11 +170,9 @@ def get_document_content(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> DocumentContentResponse:
     """Return the full parsed text of a document."""
-    tid, is_admin = tenant_ctx
-    doc = _get_document_or_404(db, document_id, tid, is_admin)
+    doc = _get_document_or_404(db, document_id)
     return DocumentContentResponse(id=doc.id, name=doc.filename, content=doc.content or "")
 
 
@@ -201,11 +185,9 @@ def delete_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> None:
     """Soft-archive a document by marking it inactive."""
-    tid, is_admin = tenant_ctx
-    doc = _get_document_or_404(db, document_id, tid, is_admin)
+    doc = _get_document_or_404(db, document_id)
     doc.status = "archived"
     db.commit()
     _log.info("document_archived  user=%s  doc_id=%d", current_user.username, document_id)

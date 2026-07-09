@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
@@ -26,7 +26,7 @@ import {
   clearError as clearEditorError,
 } from '@features/editor/editorSlice';
 import { selectActiveCdd } from '@features/cdd/cddSlice';
-import { selectActiveBlueprint } from '@features/blueprint/blueprintSlice';
+import { selectActiveBlueprint, selectBlueprints } from '@features/blueprint/blueprintSlice';
 import { selectLatestGenerationId } from '@features/generate/generateSlice';
 import { fetchBlueprintsThunk } from '@features/blueprint/blueprintThunks';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
@@ -36,6 +36,7 @@ import {
   selectSelectedCluster,
 } from '@features/dashboard/dashboardSlice';
 import { editorService } from '@features/editor/services/editorService';
+import { blueprintService } from '@features/blueprint/services/blueprintService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { downloadBlob } from '@utils/helpers';
 import { EXPORT_TEMPLATES, WORKFLOW_EXPORTABLE } from '@utils/constants';
@@ -89,6 +90,7 @@ export default function EditorPage() {
 
   const activeCdd = useAppSelector(selectActiveCdd);
   const activeBlueprint = useAppSelector(selectActiveBlueprint);
+  const allBlueprints = useAppSelector(selectBlueprints);
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
   const selCluster = useAppSelector(selectSelectedCluster);
@@ -102,6 +104,9 @@ export default function EditorPage() {
   const [genTemplate, setGenTemplate] = useState('default');
   const [courseExportOk, setCourseExportOk] = useState(true);
   const [pendingDownload, setPendingDownload] = useState(null);
+  const [selectedModuleId, setSelectedModuleId] = useState('');
+  const [moduleExporting, setModuleExporting] = useState(false);
+  const [moduleExportError, setModuleExportError] = useState(null);
 
   const numericCourseId = Number(courseId);
 
@@ -119,11 +124,11 @@ export default function EditorPage() {
       }
     }
 
+    // Fetch across the whole course (not scoped to the currently pinned Blueprint/CDD)
+    // so lessons generated from any module show up here.
     const list = await dispatch(fetchGenerationsThunk({
       courseId: numericCourseId,
       projectId: projectId ?? undefined,
-      blueprintId: activeBlueprint?.id ?? undefined,
-      cddId: activeBlueprint?.id ? undefined : (activeCdd?.id ?? undefined),
       pageSize: 100,
     })).unwrap();
 
@@ -143,8 +148,6 @@ export default function EditorPage() {
     courseId,
     selProject?.id,
     selCourse?.project_id,
-    activeBlueprint?.id,
-    activeCdd?.id,
     latestGenerationId,
   ]);
 
@@ -259,10 +262,106 @@ export default function EditorPage() {
   }
 
   const scopeLabel = activeBlueprint
-    ? `🧩 Showing content for: ${activeBlueprint.title || 'Active Blueprint'}`
+    ? `🧩 Generate tab is pinned to: ${activeBlueprint.title || 'Active Blueprint'}`
     : activeCdd
-      ? `📘 Showing content for: ${activeCdd.title || activeCdd.course_title || 'Active CDD'}`
+      ? `📘 Generate tab is pinned to: ${activeCdd.title || activeCdd.course_title || 'Active CDD'}`
       : null;
+
+  // Course-scoped blueprints, keyed by id. A generation's blueprint_id can also
+  // point at a blueprint outside this course (cross-course override at generation
+  // time) — those get fetched individually into extraBlueprintMeta below so the
+  // dropdown can still show their real module name instead of "Other / Unlinked".
+  const blueprintMeta = useMemo(() => {
+    const map = new Map();
+    allBlueprints.forEach((bp) => map.set(bp.id, bp));
+    return map;
+  }, [allBlueprints]);
+
+  const [extraBlueprintMeta, setExtraBlueprintMeta] = useState({});
+  const fetchedBlueprintIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    const missing = [];
+    displayGens.forEach((g) => {
+      if (
+        g.blueprint_id
+        && !blueprintMeta.has(g.blueprint_id)
+        && !fetchedBlueprintIdsRef.current.has(g.blueprint_id)
+      ) {
+        missing.push(g.blueprint_id);
+      }
+    });
+    if (missing.length === 0) return;
+    missing.forEach((id) => fetchedBlueprintIdsRef.current.add(id));
+    Promise.all(missing.map((id) => blueprintService.getBlueprint(id)
+      .then((bp) => [id, bp])
+      .catch(() => [id, null])))
+      .then((pairs) => {
+        setExtraBlueprintMeta((prev) => {
+          const next = { ...prev };
+          pairs.forEach(([id, bp]) => { if (bp) next[id] = bp; });
+          return next;
+        });
+      });
+  }, [displayGens, blueprintMeta]);
+
+  const genGroups = useMemo(() => {
+    if (!displayGens.length) return [];
+    const groups = new Map();
+    displayGens.forEach((g) => {
+      const bp = g.blueprint_id
+        ? (blueprintMeta.get(g.blueprint_id) || extraBlueprintMeta[g.blueprint_id] || null)
+        : null;
+      const key = bp ? `bp-${bp.id}` : 'other';
+      if (!groups.has(key)) {
+        groups.set(key, {
+          bpId: bp?.id ?? null,
+          order: bp ? (bp.module_number ?? 999) : 1000,
+          label: bp ? (bp.title || `Module ${bp.module_number ?? '?'}`) : 'Other / Unlinked',
+          options: [],
+        });
+      }
+      groups.get(key).options.push({
+        value: String(g.id),
+        label: `${g.topic} (ID: #${g.id}) — ${g.created_at ? formatDateTime(g.created_at) : ''}`,
+      });
+    });
+    return Array.from(groups.values()).sort((a, b) => a.order - b.order);
+  }, [displayGens, blueprintMeta, extraBlueprintMeta]);
+
+  // Modules with at least one generated lesson — feeds the "Download Module Lessons" dropdown.
+  const moduleOptions = useMemo(
+    () => genGroups
+      .filter((grp) => grp.bpId != null)
+      .map((grp) => ({ value: String(grp.bpId), label: grp.label })),
+    [genGroups],
+  );
+
+  useEffect(() => {
+    if (moduleOptions.length === 0) {
+      setSelectedModuleId('');
+      return;
+    }
+    if (!moduleOptions.some((m) => m.value === selectedModuleId)) {
+      setSelectedModuleId(moduleOptions[0].value);
+    }
+  }, [moduleOptions, selectedModuleId]);
+
+  async function onExportModuleLessons(fmt) {
+    if (!selectedModuleId) return;
+    setModuleExporting(true);
+    setModuleExportError(null);
+    try {
+      const bpLabel = moduleOptions.find((m) => m.value === selectedModuleId)?.label || 'module';
+      const response = await blueprintService.exportModuleLessons(Number(selectedModuleId), fmt);
+      const filename = `${bpLabel.replace(/\s+/g, '_')}_lessons.${fmt}`;
+      downloadBlob(response.data, filename);
+    } catch (e) {
+      setModuleExportError(extractErrorMessage(e));
+    } finally {
+      setModuleExporting(false);
+    }
+  }
 
   const errorMessage = error
     ? (typeof error === 'string' ? error : extractErrorMessage(error))
@@ -346,6 +445,39 @@ export default function EditorPage() {
           subtitle="Review, edit, and refine generated blocks. Submit quality reviews, run AI evaluations, and export to Markdown, JSON, HTML, or DOCX."
         />
 
+        {moduleOptions.length > 0 && (
+          <div className={styles.moduleExportPanel}>
+            <p className={styles.moduleExportPanel__title}>
+              📦 Download all lessons from a module in one file
+            </p>
+            <Select
+              wrapperClassName={styles.moduleExportPanel__moduleSelect}
+              options={moduleOptions}
+              value={selectedModuleId}
+              onChange={(e) => setSelectedModuleId(e.target.value)}
+            />
+            {moduleExportError && (
+              <p className={styles.exportBlockErr}>⚠️ {moduleExportError}</p>
+            )}
+            <div className={styles.exportGrid2}>
+              <ExportTileButton
+                format="md"
+                label="Markdown"
+                loading={moduleExporting}
+                disabled={!selectedModuleId}
+                onClick={() => onExportModuleLessons('md')}
+              />
+              <ExportTileButton
+                format="docx"
+                label="DOCX"
+                loading={moduleExporting}
+                disabled={!selectedModuleId}
+                onClick={() => onExportModuleLessons('docx')}
+              />
+            </div>
+          </div>
+        )}
+
         <div className={styles.searchRow}>
           <label className={styles.searchRow__label} htmlFor="editor-search">
             Search blocks by content or label
@@ -389,7 +521,7 @@ export default function EditorPage() {
         {scopeLabel && (
           <div className={styles.scopeBanner}>
             <strong>{scopeLabel}</strong>
-            <span> — Switch to a different Blueprint/CDD tab to change scope.</span>
+            <span> — the file list below includes lessons from every module in this course.</span>
           </div>
         )}
 
@@ -402,10 +534,7 @@ export default function EditorPage() {
             ) : (
               <Select
                 label="Select File (Topic)"
-                options={displayGens.map((g) => ({
-                  value: String(g.id),
-                  label: `${g.topic} (ID: #${g.id}) — ${g.created_at ? formatDateTime(g.created_at) : ''}`,
-                }))}
+                groups={genGroups}
                 value={selectedGenId ? String(selectedGenId) : ''}
                 onChange={onGenChange}
               />

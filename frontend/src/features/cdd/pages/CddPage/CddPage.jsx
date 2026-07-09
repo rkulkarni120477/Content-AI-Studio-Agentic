@@ -26,6 +26,7 @@ import { downloadBlob, formatDate } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
+import PromoteOverrideButton from '@components/generation/PromoteOverrideButton/PromoteOverrideButton';
 import CddContentView from '@components/cdd/CddContentView/CddContentView';
 import { patchCddBlock } from '@utils/cddContent';
 import Button from '@components/common/Button/Button';
@@ -622,6 +623,13 @@ export default function CddPage() {
                         </div>
                       )}
 
+                      <PromoteOverrideButton
+                        sourceType="cdd"
+                        artifactId={displayCdd?.id}
+                        version={versionDetail?.version || displayCdd?.active_content?.version}
+                        generationParams={versionDetail?.generation_params
+                          || displayCdd?.active_content?.generation_params}
+                      />
                       <CddContentView
                         fullContent={previewFullContent}
                         sections={previewSections}

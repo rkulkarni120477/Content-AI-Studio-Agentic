@@ -23,9 +23,8 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission, get_tenant_context
+from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import NotFoundError, ValidationError
-from app.core.tenant_context import assert_project_in_tenant
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.schemas.generation import (
     CompletionStatusResponse,
@@ -53,7 +52,6 @@ def launch_generation(
     request_body: GenerationLaunchRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("generate.run")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> JobAcceptedResponse:
     """
     Submit a content generation job.
@@ -62,9 +60,6 @@ def launch_generation(
     Validates the prompt template, resolves the effective CDD/Blueprint,
     creates a GenerationJob row, and submits to the Celery worker.
     """
-    tid, is_admin = tenant_ctx
-    assert_project_in_tenant(db, request_body.project_id, tid, is_admin)
-
     from promptops_app.jobs import generation_jobs, job_runner
     from promptops_app.repositories import blueprint_repository, cdd_repository, job_repository
     from promptops_app.core.content_utils import get_module_completion_status, get_all_modules_completion
@@ -156,13 +151,9 @@ def list_generations(
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> PaginatedResponse[GenerationListItem]:
     """Return recent generations. Used by the Editor page to list available content."""
     from promptops_app.repositories import generation_repository
-
-    tid, is_admin = tenant_ctx
-    assert_project_in_tenant(db, project_id, tid, is_admin)
 
     generations = generation_repository.list_editor_generations(
         db,
@@ -197,17 +188,14 @@ def export_generation(
     template: str = Query(default="default"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> Response:
     from promptops_app.repositories import generation_repository
     from promptops_app.services.export_service import ExportRequest, export_content
     from app.core.exceptions import WorkflowError
 
-    tid, is_admin = tenant_ctx
     gen = generation_repository.get_generation_by_id(db, generation_id)
     if not gen:
         raise NotFoundError("Generation", generation_id)
-    assert_project_in_tenant(db, gen.project_id, tid, is_admin)
 
     blocks = generation_repository.list_blocks_for_generation(db, generation_id)
     if not blocks:
@@ -244,16 +232,13 @@ def get_generation(
     generation_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> GenerationRead:
     """Return a generation record and lightweight block list."""
     from promptops_app.repositories import generation_repository
 
-    tid, is_admin = tenant_ctx
     gen = generation_repository.get_generation_by_id(db, generation_id)
     if not gen:
         raise NotFoundError("Generation", generation_id)
-    assert_project_in_tenant(db, gen.project_id, tid, is_admin)
 
     result = GenerationRead.model_validate(gen)
     blocks = generation_repository.list_blocks_for_generation(db, generation_id)
@@ -274,17 +259,14 @@ def get_module_completion(
     generation_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CompletionStatusResponse:
     """Check if all lessons in the current blueprint are complete."""
     from promptops_app.core.shared import get_module_completion_status
     from promptops_app.repositories import generation_repository
 
-    tid, is_admin = tenant_ctx
     gen = generation_repository.get_generation_by_id(db, generation_id)
     if not gen:
         raise NotFoundError("Generation", generation_id)
-    assert_project_in_tenant(db, gen.project_id, tid, is_admin)
 
     status = get_module_completion_status(db, gen.blueprint_id)
     return CompletionStatusResponse(
@@ -309,17 +291,14 @@ def get_course_completion(
     ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-    tenant_ctx=Depends(get_tenant_context),
 ) -> CompletionStatusResponse:
     """Check if all modules in the course are complete."""
     from promptops_app.core.content_utils import get_all_modules_completion
     from promptops_app.repositories import course_repository
 
-    tid, is_admin = tenant_ctx
     course = course_repository.get_course_by_id(db, course_id)
     if not course:
         raise NotFoundError("Course", course_id)
-    assert_project_in_tenant(db, course.project_id, tid, is_admin)
 
     eff_cdd_id = cdd_id or course.active_cdd_id
     status = get_all_modules_completion(db, eff_cdd_id)

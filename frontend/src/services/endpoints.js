@@ -6,8 +6,16 @@ export const AUTH = {
   REFRESH:          '/api/v1/auth/refresh',
   CONFIG:           '/api/v1/auth/config',
   TENANT_LOGIN:     (slug) => `/api/v1/auth/tenant-login/${encodeURIComponent(slug)}`,
-  // Full-page browser redirect (not an XHR) — Microsoft OAuth start.
-  MICROSOFT_LOGIN:  '/api/v1/auth/login/microsoft',
+  MICROSOFT_LOGIN:  '/api/v1/auth/login/microsoft',  // full-page browser redirect
+};
+
+// ─── Platform Admin — Tenants (organizations) ───────────────────────────────────
+export const PLATFORM = {
+  TENANTS:        '/api/v1/platform/tenants',
+  TENANT:         (id) => `/api/v1/platform/tenants/${id}`,
+  TENANT_USAGE:   (id) => `/api/v1/platform/tenants/${id}/usage`,
+  TENANT_USERS:   (id) => `/api/v1/platform/tenants/${id}/users`,
+  TENANT_USER:    (id, userId) => `/api/v1/platform/tenants/${id}/users/${userId}`,
 };
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -117,6 +125,7 @@ export const BLUEPRINT = {
   PIN:              (id)       => `/api/v1/blueprints/${id}/pin`,
   SET_ACTIVE:       (id)       => `/api/v1/blueprints/${id}/pin`,
   EXPORT:           (id)       => `/api/v1/blueprints/${id}/export`,
+  EXPORT_LESSONS:   (id)       => `/api/v1/blueprints/${id}/export-lessons`,
   PARSE_COMPONENTS: (id)       => `/api/v1/blueprints/${id}/components`,
   COMPLETION:       (id)       => `/api/v1/blueprints/${id}/completion-status`,
 };
@@ -137,6 +146,7 @@ export const BLOCKS = {
   SEARCH:           '/api/v1/search',
   LIST:             (genId)    => `/api/v1/generations/${genId}/blocks`,
   LIST_COURSE:      (courseId) => `/api/v1/courses/${courseId}/blocks`,
+  REORDER_COURSE:   (courseId) => `/api/v1/courses/${courseId}/blocks/reorder`,
   GET:              (id)       => `/api/v1/${id}`,
   UPDATE:           (id)       => `/api/v1/${id}`,
   AUTOSAVE:         (id)       => `/api/v1/${id}/autosave`,
@@ -232,15 +242,6 @@ export const WORKSPACE = {
   GET:              '/api/v1/workspace',
   UPDATE:           '/api/v1/workspace',
   UPDATE_CONFIG:    '/api/v1/workspace/config',
-};
-
-// ─── Platform Admin — Tenants (organizations) ───────────────────────────────────
-export const PLATFORM = {
-  TENANTS:        '/api/v1/platform/tenants',
-  TENANT:         (id) => `/api/v1/platform/tenants/${id}`,
-  TENANT_USAGE:   (id) => `/api/v1/platform/tenants/${id}/usage`,
-  TENANT_USERS:   (id) => `/api/v1/platform/tenants/${id}/users`,
-  TENANT_USER:    (id, userId) => `/api/v1/platform/tenants/${id}/users/${userId}`,
 };
 
 // ─── Database Admin ───────────────────────────────────────────────────────────

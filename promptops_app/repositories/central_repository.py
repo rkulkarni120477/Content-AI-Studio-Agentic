@@ -3,7 +3,6 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.core.tenant_context import apply_tenant_filter
 from promptops_app.database import CentralRepository
 
 
@@ -21,8 +20,6 @@ def list_items(
     tag: Optional[str] = None,
     limit: int = 500,
     offset: int = 0,
-    tenant_id=None,
-    is_platform_admin=False,
 ) -> list:
     q = db.query(CentralRepository)
     if status:
@@ -45,7 +42,6 @@ def list_items(
             | CentralRepository.tags.ilike(term)
             | CentralRepository.description.ilike(term)
         )
-    q = apply_tenant_filter(q, CentralRepository, tenant_id, is_platform_admin)
     return (
         q.order_by(CentralRepository.created_at.desc())
         .offset(offset)
@@ -54,16 +50,15 @@ def list_items(
     )
 
 
-def count_items(db, *, status: Optional[str] = None, tenant_id=None, is_platform_admin=False) -> int:
+def count_items(db, *, status: Optional[str] = None) -> int:
     q = db.query(CentralRepository)
     if status:
         q = q.filter(CentralRepository.status == status)
-    return apply_tenant_filter(q, CentralRepository, tenant_id, is_platform_admin).count()
+    return q.count()
 
 
-def get_by_id(db, item_id: int, tenant_id=None, is_platform_admin=False) -> Optional[CentralRepository]:
-    q = db.query(CentralRepository).filter(CentralRepository.id == item_id)
-    return apply_tenant_filter(q, CentralRepository, tenant_id, is_platform_admin).first()
+def get_by_id(db, item_id: int) -> Optional[CentralRepository]:
+    return db.query(CentralRepository).filter(CentralRepository.id == item_id).first()
 
 
 def distinct_clients(db) -> list[str]:

@@ -62,9 +62,6 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
-    except Exception:
-        db.rollback()
-        raise
     finally:
         db.close()
 
@@ -80,9 +77,7 @@ def get_current_user(
     """
     Extract and validate the JWT from the Authorization header.
 
-    Returns the authenticated User ORM object with tenant context attached as
-    private attributes (_tenant_id, _tenant_slug, _is_platform_admin).
-
+    Returns the authenticated User ORM object.
     Raises ``AuthenticationError`` (401) if:
       - No Authorization header is present.
       - The token is expired or invalid.
@@ -91,6 +86,7 @@ def get_current_user(
     Use as a dependency:
         def my_endpoint(current_user = Depends(get_current_user)): ...
     """
+    # Avoid a circular import: import models here rather than at module level.
     from promptops_app.database import Project, TenantMembership, User
 
     if credentials is None:
@@ -105,6 +101,8 @@ def get_current_user(
     project_id: int | None = payload.get("project_id")
     is_platform_admin: bool = payload.get("is_platform_admin", False)
 
+    # Verify the user still exists and is active in the database.
+    # This catches cases where an account was deactivated after token issuance.
     user = db.query(User).filter(User.username == username).first()
 
     if user is None:
@@ -116,15 +114,15 @@ def get_current_user(
         raise AuthenticationError("User account is deactivated. Contact an Admin.")
 
     # Resolve the EFFECTIVE role for this session. A user's role is per-tenant
-    # (TenantMembership), so we re-validate membership + tenant status on every
-    # request — deactivation, role changes, and suspension take effect at once.
+    # (TenantMembership), so re-validate membership + tenant status each request
+    # — deactivation, role changes, and suspension take effect immediately.
     effective_role = user.role
     if is_platform_admin:
         effective_role = user.role or "admin"
         project_id = None
     elif project_id is not None:
         project = db.get(Project, project_id)
-        if project is None or (project.status or "active") != "active" or not project.is_active:
+        if project is None or (getattr(project, "status", "active") or "active") != "active" or not project.is_active:
             raise AuthenticationError("This organization has been suspended.")
         membership = (
             db.query(TenantMembership)
@@ -139,9 +137,9 @@ def get_current_user(
     user._project_id        = project_id
     user._is_platform_admin = is_platform_admin
     user._role              = effective_role
-    # Override the in-memory role column so the ~20 existing `current_user.role`
-    # reads reflect the per-tenant role. User.role is a vestigial default now
-    # (membership is source of truth), so an accidental flush is harmless.
+    # Override the in-memory role so existing `current_user.role` reads reflect
+    # the per-tenant role. User.role is a vestigial default (membership is the
+    # source of truth), so an accidental flush is harmless.
     user.role = effective_role
 
     return user
@@ -180,14 +178,11 @@ def require_permission(permission: str):
 
 
 def get_tenant_context(current_user=Depends(get_current_user)):
-    """
-    Resolve the caller's tenant context for project-scoped queries.
+    """Resolve (tenant_id, is_platform_admin) for project-scoped queries.
 
-    Returns (tenant_id, is_platform_admin) — tenant_id is the caller's own
-    project id (as a string), or None for a platform admin (sees all) or an
-    unassigned user (awaiting assignment).
+    tenant_id is the caller's own project id (as a string), or None for a
+    platform admin (sees all) or an unassigned user.
     """
     from app.core.tenant_context import is_platform_admin_user, tenant_id_from_user
 
     return (tenant_id_from_user(current_user), is_platform_admin_user(current_user))
-

@@ -21,7 +21,6 @@ python-dotenv>=1.0.1
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 PyJWT>=2.8.0
-msal>=1.28.0                     # Microsoft Entra ID (Azure AD) OAuth sign-in
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 requests>=2.32.0
@@ -36,12 +35,14 @@ json-repair>=0.25.0
 celery>=5.4.0
 redis>=5.0.4
 
-# ── Export (DOCX, PDF) ────────────────────────────────────────────────────────
+# ── Export (DOCX, PDF, HTML, IMSCC) ───────────────────────────────────────────
 python-docx>=1.1.0
 pypdf>=4.2.0
 openpyxl>=3.1.2
+markdown>=3.5
 
 # ── Data utilities ────────────────────────────────────────────────────────────
 pandas>=2.2.0
 
 # Streamlit removed — FastAPI + React replaces it entirely.
+msal>=1.28.0                     # Microsoft Entra ID (Azure AD) OAuth sign-in

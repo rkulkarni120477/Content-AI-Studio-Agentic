@@ -1,5 +1,9 @@
 """
 Authentication schemas — request and response models for the auth endpoints.
+
+These schemas define exactly what the login endpoint accepts and what it returns.
+The React frontend uses ``TokenResponse`` to store the JWT and user profile
+immediately after login.
 """
 
 from __future__ import annotations
@@ -9,19 +13,39 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-class LoginRequest(BaseModel):
-    """Credentials submitted to POST /api/v1/auth/login.
+# ---------------------------------------------------------------------------
+# Request schemas
+# ---------------------------------------------------------------------------
 
-    Two password paths:
-      - Platform admin: platform_admin=True, username+password (org code ignored).
-      - Tenant local user: organization_code + username + password.
-    Microsoft sign-in is a separate GET redirect flow, not this endpoint.
+class LoginRequest(BaseModel):
+    """
+    Credentials submitted to ``POST /api/v1/auth/login``.
+
+    Both fields are required.  The username is case-sensitive (matching the
+    existing User table where usernames are stored as-entered).
     """
 
-    username: str = Field(..., min_length=1, max_length=150)
-    password: str = Field(..., min_length=1, max_length=256)
-    organization_code: Optional[str] = Field(default=None, max_length=64)
-    platform_admin: bool = Field(default=False)
+    username: str = Field(
+        ...,
+        min_length=1,
+        max_length=150,
+        description="The user's login name.",
+        examples=["shubham"],
+    )
+    password: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        description="The user's plain-text password (transmitted over HTTPS only).",
+    )
+    organization_code: Optional[str] = Field(
+        default=None, max_length=64,
+        description="Tenant org code (required for tenant local login; ignored for platform admin).",
+    )
+    platform_admin: bool = Field(
+        default=False,
+        description="True to authenticate as a platform administrator (org code ignored).",
+    )
 
 
 class AuthConfigResponse(BaseModel):
@@ -33,7 +57,7 @@ class AuthConfigResponse(BaseModel):
 
 
 class TenantLoginInfoResponse(BaseModel):
-    """Public info for a given organization code (validates it + MS availability)."""
+    """Public info for a given organization code."""
 
     valid: bool
     slug: Optional[str] = None
@@ -43,34 +67,55 @@ class TenantLoginInfoResponse(BaseModel):
     error: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Response schemas
+# ---------------------------------------------------------------------------
+
 class UserProfileResponse(BaseModel):
     """
-    User profile embedded in the login response and returned by /me.
+    Basic user profile embedded in the login response and returned by /me.
 
-    project_id is None for platform admins (they can see all projects).
+    The ``permissions`` list lets the React frontend decide which tabs,
+    buttons, and actions to display without making additional API calls.
     """
 
-    id: int
-    username: str
-    role: str
-    role_display: str
-    is_active: bool
-    permissions: list[str]
-    project_id: Optional[int] = None
-    is_platform_admin: bool = False
+    id: int = Field(description="User's database ID.")
+    username: str = Field(description="User's login name.")
+    role: str = Field(description="DB role value: admin | reviewer | author")
+    role_display: str = Field(description="Human-readable role label: Admin | Lead | ID")
+    is_active: bool = Field(description="Whether the account is active.")
+    permissions: list[str] = Field(
+        description="All permission keys this user holds. Used by the frontend for UI gating."
+    )
+    project_id: Optional[int] = Field(default=None, description="Active tenant (project) id; None for platform admin.")
+    is_platform_admin: bool = Field(default=False, description="True for platform super-admins.")
 
 
 class TokenResponse(BaseModel):
-    """Returned by POST /api/v1/auth/login and POST /api/v1/auth/refresh."""
+    """
+    Returned by ``POST /api/v1/auth/login`` and ``POST /api/v1/auth/refresh``.
 
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    user: UserProfileResponse
+    The client must store ``access_token`` and send it as
+    ``Authorization: Bearer <access_token>`` on every subsequent request.
+    """
+
+    access_token: str = Field(description="Signed JWT access token.")
+    token_type: str = Field(default="bearer", description="Always 'bearer'.")
+    expires_in: int = Field(
+        description="Token validity in seconds. Refresh before this elapses."
+    )
+    user: UserProfileResponse = Field(
+        description="Authenticated user's profile and permissions."
+    )
 
 
 class WorkspaceUpdateResponse(BaseModel):
-    """Returned by PUT /api/v1/workspace and PUT /api/v1/workspace/config."""
+    """
+    Returned by ``PUT /api/v1/workspace`` and ``PUT /api/v1/workspace/config``.
 
-    access_token: str
-    token_type: str = "bearer"
+    The client must replace its stored token with this new one, which embeds
+    the updated workspace/config state in its payload.
+    """
+
+    access_token: str = Field(description="New JWT with updated workspace state embedded.")
+    token_type: str = Field(default="bearer")

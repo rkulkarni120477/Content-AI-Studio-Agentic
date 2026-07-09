@@ -1,21 +1,19 @@
 """Project Repository — Project and ProjectUserAssignment database access."""
 
-from app.core.tenant_context import apply_tenant_filter
 from promptops_app.database import Project, ProjectUserAssignment
 
 
-def list_active_projects(db, tenant_id=None, is_platform_admin=False):
-    q = (
+def list_active_projects(db):
+    return (
         db.query(Project)
         .filter(Project.is_active == True)
         .order_by(Project.name)
+        .all()
     )
-    return apply_tenant_filter(q, Project, tenant_id, is_platform_admin).all()
 
 
-def get_project_by_id(db, project_id: int, tenant_id=None, is_platform_admin=False):
-    q = db.query(Project).filter(Project.id == project_id)
-    return apply_tenant_filter(q, Project, tenant_id, is_platform_admin).first()
+def get_project_by_id(db, project_id: int):
+    return db.query(Project).filter(Project.id == project_id).first()
 
 
 def get_assigned_usernames(db, project_id: int) -> set:

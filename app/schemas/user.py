@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserCreateRequest(BaseModel):
-    """Body for POST /api/v1/users — platform admin only."""
+    """Body for POST /api/v1/users — admin only."""
 
     username: str = Field(..., min_length=1, max_length=150)
     password: str = Field(
@@ -23,7 +23,6 @@ class UserCreateRequest(BaseModel):
         description="DB role: admin | reviewer | author",
         examples=["author"],
     )
-    project_id: Optional[int] = Field(default=None, description="Project (tenant) to assign this user to.")
 
 
 class UserRoleUpdateRequest(BaseModel):

@@ -144,6 +144,20 @@ class LLMGenerationError(AppError):
     code = "LLM_GENERATION_FAILED"
 
 
+class PromptConfigurationError(AppError):
+    """
+    Raised when the resolved prompt template is misconfigured — its declared
+    required variables cannot be supplied by the generation call.
+
+    Deliberately NOT swallowed into the constant-fallback tier: a declaration
+    violation must surface to the admin who owns the template, not silently
+    change which prompt generation uses.
+    """
+
+    status_code = 500
+    code = "PROMPT_MISCONFIGURED"
+
+
 class ExportError(AppError):
     """Raised when a file export operation fails (DOCX, PDF, HTML, etc.)."""
 

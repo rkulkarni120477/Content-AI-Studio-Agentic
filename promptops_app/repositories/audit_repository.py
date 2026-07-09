@@ -26,7 +26,6 @@ def create_audit_log(
     course_id: int = None,
     metadata: dict = None,
     ip_address: str = None,
-    tenant_id: str = None,
 ) -> AuditLog:
     """Insert one audit row and return it.
 
@@ -42,7 +41,6 @@ def create_audit_log(
         course_id     = course_id,
         metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None,
         ip_address    = str(ip_address)[:45]   if ip_address   else None,
-        tenant_id     = tenant_id,
         created_at    = datetime.utcnow(),
     )
     db.add(entry)
@@ -62,11 +60,10 @@ def count_audit_logs(
     course_id: int = None,
     date_from: datetime = None,
     date_to: datetime = None,
-    tenant_id=None,
 ) -> int:
     q = _base_query(db, user_id=user_id, action=action, entity_type=entity_type,
                     project_id=project_id, course_id=course_id,
-                    date_from=date_from, date_to=date_to, tenant_id=tenant_id)
+                    date_from=date_from, date_to=date_to)
     return q.count()
 
 
@@ -82,11 +79,10 @@ def list_audit_logs(
     date_to: datetime = None,
     limit: int = 50,
     offset: int = 0,
-    tenant_id=None,
 ) -> list:
     q = _base_query(db, user_id=user_id, action=action, entity_type=entity_type,
                     project_id=project_id, course_id=course_id,
-                    date_from=date_from, date_to=date_to, tenant_id=tenant_id)
+                    date_from=date_from, date_to=date_to)
     return q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
 
 
@@ -94,7 +90,6 @@ def _base_query(
     db,
     *,
     user_id, action, entity_type, project_id, course_id, date_from, date_to,
-    tenant_id=None,
 ):
     q = db.query(AuditLog)
     if user_id:
@@ -111,32 +106,24 @@ def _base_query(
         q = q.filter(AuditLog.created_at >= date_from)
     if date_to:
         q = q.filter(AuditLog.created_at <= date_to)
-    if tenant_id:
-        q = q.filter(AuditLog.tenant_id == tenant_id)
     return q
 
 
 # ── Filter helpers ────────────────────────────────────────────────────────────
 
-def list_distinct_actors(db, tenant_id=None) -> list[str]:
-    q = db.query(AuditLog.user_id).distinct()
-    if tenant_id:
-        q = q.filter(AuditLog.tenant_id == tenant_id)
-    return sorted({r[0] for r in q.all() if r[0]})
+def list_distinct_actors(db) -> list[str]:
+    rows = db.query(AuditLog.user_id).distinct().all()
+    return sorted({r[0] for r in rows if r[0]})
 
 
-def list_distinct_actions(db, tenant_id=None) -> list[str]:
-    q = db.query(AuditLog.action).distinct()
-    if tenant_id:
-        q = q.filter(AuditLog.tenant_id == tenant_id)
-    return sorted({r[0] for r in q.all() if r[0]})
+def list_distinct_actions(db) -> list[str]:
+    rows = db.query(AuditLog.action).distinct().all()
+    return sorted({r[0] for r in rows if r[0]})
 
 
-def list_distinct_entity_types(db, tenant_id=None) -> list[str]:
-    q = db.query(AuditLog.entity_type).distinct()
-    if tenant_id:
-        q = q.filter(AuditLog.tenant_id == tenant_id)
-    return sorted({r[0] for r in q.all() if r[0]})
+def list_distinct_entity_types(db) -> list[str]:
+    rows = db.query(AuditLog.entity_type).distinct().all()
+    return sorted({r[0] for r in rows if r[0]})
 
 
 def export_to_csv_rows(
@@ -146,14 +133,13 @@ def export_to_csv_rows(
     project_id=None, course_id=None,
     date_from=None, date_to=None,
     limit: int = 5000,
-    tenant_id=None,
 ) -> list[dict]:
     """Return up to `limit` rows as plain dicts for CSV export."""
     records = list_audit_logs(
         db, user_id=user_id, action=action, entity_type=entity_type,
         project_id=project_id, course_id=course_id,
         date_from=date_from, date_to=date_to,
-        limit=limit, offset=0, tenant_id=tenant_id,
+        limit=limit, offset=0,
     )
     return [
         {

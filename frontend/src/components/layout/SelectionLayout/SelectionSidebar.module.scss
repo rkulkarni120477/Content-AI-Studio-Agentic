@@ -12,7 +12,42 @@
   padding: $space-4;
   gap: $space-3;
   overflow-y: auto;
+  transition: width $transition-base;
   @include custom-scrollbar(6px);
+}
+
+.sidebar--collapsed {
+  width: $sidebar-collapsed;
+  padding: $space-3 $space-2;
+}
+
+// Brand row: logo left, collapse chevron right; stacked + centered on the rail.
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-2;
+  flex-shrink: 0;
+}
+
+.header--collapsed {
+  flex-direction: column;
+  align-items: center;
+}
+
+.userDot {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: $color-white;
+  font-size: 0.85rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  cursor: default;
 }
 
 .navBtn {
@@ -38,18 +73,6 @@
     outline: 2px solid #a5b4fc;
     outline-offset: 2px;
   }
-
-  &--active {
-    background: rgba(99, 102, 241, 0.35);
-    border-color: rgba(165, 180, 252, 0.6);
-    color: $color-white;
-  }
-}
-
-.dashNav {
-  display: flex;
-  flex-direction: column;
-  gap: $space-2;
 }
 
 .userPill {
@@ -106,8 +129,19 @@
   strong { color: $color-white; font-weight: 700; }
 }
 
+.iconOnly {
+  padding: $space-2;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .navRow, .navRow3 {
   display: flex;
+  gap: $space-2;
+}
+
+.navCol {
+  @include flex-col;
   gap: $space-2;
 }
 
@@ -129,6 +163,10 @@
 }
 
 .expander {
+  .navCol {
+    margin-top: $space-2;
+  }
+
   &__toggle {
     width: 100%;
     text-align: left;
@@ -152,6 +190,22 @@
   padding: $space-3;
   background: rgba(0, 0, 0, 0.15);
   border-radius: $radius-md;
+
+  // Shared form controls (Input / Select / MultiSelect) ship with dark-gray
+  // labels meant for light backgrounds, which are unreadable on this dark
+  // sidebar. Lighten labels/hints here only. The MultiSelect option menu is
+  // portaled to <body>, so its white-background text is unaffected.
+  label {
+    color: #c7d2fe;
+  }
+
+  // The MultiSelect trigger ("Choose Cluster Prompts") muted its placeholder
+  // to a light gray, making it read lighter than the native Select below it.
+  // Match the Select's dark placeholder here only (scoped via the trigger's
+  // aria attribute) so other MultiSelect usages are unaffected.
+  button[aria-haspopup='listbox'] > span:first-child {
+    color: #111827;
+  }
 }
 
 .textareaLabel {

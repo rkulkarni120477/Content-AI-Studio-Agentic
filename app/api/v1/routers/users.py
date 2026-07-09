@@ -20,10 +20,6 @@ from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import DuplicateResourceError, NotFoundError
 from app.core.permissions import role_label
 from app.core.security import hash_password
-from app.core.tenant_context import (
-    is_platform_admin_user,
-    tenant_id_from_user,
-)
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.user import (
     UserCreateRequest,
@@ -37,10 +33,10 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_user_or_404(db: Session, user_id: int, tenant_id=None, is_platform_admin=False):
-    """Fetch a user by ID (tenant-scoped) or raise HTTP 404."""
+def _get_user_or_404(db: Session, user_id: int):
+    """Fetch a user by ID or raise HTTP 404."""
     from promptops_app.repositories import user_repository
-    user = user_repository.get_user_by_id(db, user_id, tenant_id=tenant_id, is_platform_admin=is_platform_admin)
+    user = user_repository.get_user_by_id(db, user_id)
     if user is None:
         raise NotFoundError("User", user_id)
     return user
@@ -65,12 +61,10 @@ def list_users(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.view")),
 ) -> PaginatedResponse[UserListItem]:
-    """List all users in the current tenant (platform admin sees all or filtered by tenant)."""
+    """List all platform users with their roles and active status."""
     from promptops_app.repositories import user_repository
 
-    tid      = tenant_id_from_user(current_user)
-    is_admin = is_platform_admin_user(current_user)
-    users = user_repository.list_all_users(db, tenant_id=tid, is_platform_admin=is_admin)
+    users = user_repository.list_all_users(db)
     total = len(users)
     start = (page - 1) * page_size
     items = []
@@ -96,18 +90,14 @@ def create_user(
     """
     Create a user account with a hashed password.
 
-    Platform admin only — user management is centralised on the Platform
-    Users page. Replicates the "Create User" form in the Analytics admin tab.
+    Replicates the "Create User" form in the Analytics admin tab.
     Password is hashed with PBKDF2-HMAC-SHA256 to match the existing scheme.
     """
-    from fastapi import HTTPException
     from promptops_app.database import User
+    from promptops_app.repositories import user_repository
 
-    if not is_platform_admin_user(current_user):
-        raise HTTPException(status_code=403, detail="Platform admin access required.")
-
-    # Usernames are globally unique (not per-tenant) — check unscoped.
-    if db.query(User).filter(User.username == request_body.username).first():
+    # Check for duplicate username.
+    if user_repository.get_user_by_username(db, request_body.username):
         raise DuplicateResourceError("User", request_body.username)
 
     user = User(
@@ -115,15 +105,13 @@ def create_user(
         password_hash=hash_password(request_body.password),
         role=request_body.role,
         is_active=True,
-        project_id=request_body.project_id,
-        is_platform_admin=False,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    _log.info("user_created  by=%s  new_user=%s  role=%s  project_id=%s",
-              current_user.username, user.username, user.role, user.project_id)
+    _log.info("user_created  by=%s  new_user=%s  role=%s",
+              current_user.username, user.username, user.role)
     return _to_user_read(user)
 
 
@@ -137,12 +125,10 @@ def list_reviewers(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> list[UserListItem]:
-    """Return users who can be assigned as block reviewers, scoped to tenant."""
+    """Return users who can be assigned as block reviewers."""
     from promptops_app.repositories import user_repository
 
-    tid      = tenant_id_from_user(current_user)
-    is_admin = is_platform_admin_user(current_user)
-    reviewers = user_repository.list_reviewers_and_admins(db, tenant_id=tid, is_platform_admin=is_admin)
+    reviewers = user_repository.list_reviewers_and_admins(db)
     items = []
     for u in reviewers:
         item = UserListItem.model_validate(u)
@@ -175,7 +161,7 @@ def get_user(
     current_user=Depends(require_permission("users.view")),
 ) -> UserRead:
     """Return user profile. Does not include password hash."""
-    return _to_user_read(_get_user_or_404(db, user_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user)))
+    return _to_user_read(_get_user_or_404(db, user_id))
 
 
 @router.put(
@@ -189,13 +175,8 @@ def update_user_role(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.edit")),
 ) -> UserRead:
-    """Change a user's platform role. Platform admin only."""
-    from fastapi import HTTPException
-
-    if not is_platform_admin_user(current_user):
-        raise HTTPException(status_code=403, detail="Platform admin access required.")
-
-    user = _get_user_or_404(db, user_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user))
+    """Change a user's platform role. Admin only."""
+    user = _get_user_or_404(db, user_id)
     old_role = user.role
     user.role = request_body.role
     db.commit()
@@ -218,17 +199,12 @@ def toggle_user(
     current_user=Depends(require_permission("users.toggle")),
 ) -> UserRead:
     """
-    Enable or disable a user account. Platform admin only.
+    Enable or disable a user account.
 
     Replicates the active/inactive toggle in the Analytics admin tab.
     Deactivated users cannot log in but their data is preserved.
     """
-    from fastapi import HTTPException
-
-    if not is_platform_admin_user(current_user):
-        raise HTTPException(status_code=403, detail="Platform admin access required.")
-
-    user = _get_user_or_404(db, user_id, tenant_id_from_user(current_user), is_platform_admin_user(current_user))
+    user = _get_user_or_404(db, user_id)
     user.is_active = request_body.is_active
     db.commit()
     db.refresh(user)

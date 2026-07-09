@@ -56,7 +56,7 @@ export default function PromptDetailsModal({
   const scopeParts = useMemo(() => {
     const parts = [];
     if (projectName) parts.push({ label: 'Project', value: projectName });
-    if (clusterName) parts.push({ label: 'Cluster', value: clusterName });
+    if (clusterName) parts.push({ label: 'Category', value: clusterName });
     if (courseName) parts.push({ label: 'Course', value: courseName });
     return parts;
   }, [projectName, clusterName, courseName]);
@@ -101,9 +101,11 @@ export default function PromptDetailsModal({
           <Button variant="secondary" fullWidth onClick={handleDownload}>
             ⬇️ Download Prompt
           </Button>
-          <Button variant="secondary" fullWidth onClick={handleEdit} disabled={!promptMeta}>
-            ✏️ Edit Prompt
-          </Button>
+          {onEditPrompt && (
+            <Button variant="secondary" fullWidth onClick={handleEdit} disabled={!promptMeta}>
+              ✏️ Edit Prompt
+            </Button>
+          )}
           <Button variant="primary" fullWidth onClick={onClose}>
             ✕ Close
           </Button>

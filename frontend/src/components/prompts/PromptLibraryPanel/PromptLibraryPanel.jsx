@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
 import { promptsService } from '@features/prompts/services/promptsService';
 import { selectPrompts, selectPromptsLoading } from '@features/prompts/promptsSlice';
+import { selectIsReviewer } from '@features/auth/authSlice';
 import { selectModelChoice } from '@features/dashboard/dashboardSlice';
 import {
   COMPONENT_LABELS,
@@ -41,9 +43,13 @@ export default function PromptLibraryPanel({
   defaultSettingsOpen = true,
 }) {
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
   const prompts = useAppSelector(selectPrompts);
   const promptsLoading = useAppSelector(selectPromptsLoading);
   const modelChoice = useAppSelector(selectModelChoice);
+  // prompts.manage is admin+reviewer only — authors get read-only tabs and
+  // the 📬 Request a Change path instead of actions that would 403.
+  const canManagePrompts = useAppSelector(selectIsReviewer);
 
   const [settingsOpen, setSettingsOpen] = useState(defaultSettingsOpen);
   const [activeTab, setActiveTab] = useState('view');
@@ -375,10 +381,15 @@ export default function PromptLibraryPanel({
     <section className={styles.section}>
       {showHeader && (
         <>
-          <h2 className={styles.section__title}>Prompt Library</h2>
+          <h2 className={styles.section__title}>Prompts</h2>
           <p className={styles.section__hint}>
-            Create, edit, version, and improve prompt assets tagged{' '}
-            <code>{component}</code>. These are available across all generation components.
+            {canManagePrompts ? (
+              <>Create, edit, version, and improve the prompt assets used by{' '}
+                <code>{component}</code> generation.</>
+            ) : (
+              <>Review the prompt assets used by <code>{component}</code> generation
+                and request changes from the prompt admins.</>
+            )}
           </p>
         </>
       )}
@@ -412,8 +423,22 @@ export default function PromptLibraryPanel({
                 <p className={styles.meta}>{metaParts.join('  ·  ')}</p>
               )}
 
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Ask the prompt admins for a new prompt or a change to this one"
+                onClick={() => {
+                  // Deep-link into the Prompt Library request form (Phase 12d).
+                  const qs = new URLSearchParams({ component });
+                  if (selectedPrompt?.id) qs.set('promptId', selectedPrompt.id);
+                  navigate(`/prompt-library/requests/new?${qs.toString()}`);
+                }}
+              >
+                📬 Request a Change
+              </Button>
+
               <div className={styles.tabs} role="tablist">
-                {PANEL_TABS.map((t) => (
+                {PANEL_TABS.filter((t) => canManagePrompts || t.id !== 'edit').map((t) => (
                   <button
                     key={t.id}
                     type="button"
@@ -609,7 +634,7 @@ export default function PromptLibraryPanel({
                                         />
                                       </div>
                                     </div>
-                                    {!v.is_active && (
+                                    {!v.is_active && canManagePrompts && (
                                       <Button
                                         variant="secondary"
                                         size="sm"
@@ -692,14 +717,21 @@ export default function PromptLibraryPanel({
                               />
                             </div>
                           </div>
-                          <Button
-                            variant="primary"
-                            size="sm"
-                            loading={saving}
-                            onClick={handleApplySuggestion}
-                          >
-                            ✅ Apply Suggestion as New Version
-                          </Button>
+                          {canManagePrompts ? (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              loading={saving}
+                              onClick={handleApplySuggestion}
+                            >
+                              ✅ Apply Suggestion as New Version
+                            </Button>
+                          ) : (
+                            <p className={styles.versionCaption}>
+                              Like this suggestion? Copy it into a 📬 Request a Change so a
+                              prompt admin can apply it.
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
