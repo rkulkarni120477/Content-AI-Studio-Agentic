@@ -1,0 +1,498 @@
+client:
+  client_id: aim
+  client_name: Aviation Institute of Maintenance
+  namespace: aim_ns
+  enabled: true
+  allowed_file_types:
+  - pdf
+  - docx
+  - doc
+  - pptx
+  - xlsx
+  - csv
+  - txt
+  - jpg
+  - jpeg
+  - png
+  - zip
+  max_file_size_mb: 250
+  namespace_prefix: aim
+  restricted_content: false
+auth:
+  client_admins:
+  - user_id: admin1@aim.edu
+    name: Client Admin One
+    enabled: true
+  - user_id: admin2@aim.edu
+    name: Client Admin Two
+    enabled: true
+  users:
+  - user_id: user1@aim.edu
+    name: Content User One
+    enabled: true
+ingestion:
+  max_concurrent_files: 10
+  dedup_enabled: true
+  quarantine_on_fail: true
+  schema_validation: true
+processing:
+  mode: local_parallel
+  max_workers: 5
+  queue_enabled: false
+  folder_scan_return_results_limit: 200
+  fast_pptx_enabled: true
+  max_pptx_slides: 200
+  pptx_extract_images: true
+  max_extracted_chars: 250000
+pipeline:
+  models:
+    embedding: amazon.titan-embed-text-v2:0
+    classification: anthropic.claude-3-haiku-20240307-v1:0
+    metadata_extraction: anthropic.claude-3-sonnet-20240229-v1:0
+    structure_extraction: anthropic.claude-3-sonnet-20240229-v1:0
+    quality_check: anthropic.claude-3-haiku-20240307-v1:0
+    vision: anthropic.claude-3-sonnet-20240229-v1:0
+  llm_temperature: 0.0
+  chunking_strategy: semantic
+  chunk_size: 512
+  chunk_overlap: 64
+  vision_enabled: true
+  llm_provider: bedrock
+  bedrock_enabled: true
+  anthropic_enabled: false
+metadata_schemas:
+  aim:
+    required_fields:
+    - name: course_name
+      type: string
+      hint: Course name inferred from folder, file name, or source content
+    - name: document_type
+      type: enum
+      values:
+      - course_calendar
+      - syllabus
+      - lesson_slide_deck
+      - project_activity
+      - project_key
+      - quiz_exam
+      - quiz_answer_key
+      - study_questions
+      - ebook_reference
+      - instructor_guide
+      - student_handout
+      - other
+    - name: topic
+      type: string
+    - name: unit_type
+      type: enum
+      values:
+      - calendar_day
+      - syllabus_section
+      - project_task
+      - quiz_question
+      - answer_key_item
+      - slide
+      - page
+      - chunk
+      - image
+    optional_fields:
+    - name: program
+      type: string
+    - name: block
+      type: string
+    - name: module_name
+      type: string
+    - name: lesson_name
+      type: string
+    - name: difficulty_level
+      type: enum
+      values:
+      - introductory
+      - intermediate
+      - advanced
+    - name: keywords
+      type: list
+    - name: visual_summary
+      type: string
+storage:
+  provider: s3
+  raw_bucket: content-ai-studio
+  processed_bucket: content-ai-studio
+  base_prefix: DIS
+  vector_index: dis-content-dev
+  retention_days: 365
+  s3:
+    region: us-east-1
+    kms_key_id: ''
+    endpoint_url: ''
+  azure:
+    account_name: ''
+    account_key_secret: AZURE_STORAGE_KEY
+    container_raw: dis-raw-aim
+    container_processed: dis-processed-aim
+  gcp:
+    project_id: ''
+    credentials_secret: GCP_SERVICE_ACCOUNT_JSON
+    bucket_raw: dis-raw-aim
+    bucket_processed: dis-processed-aim
+  local:
+    base_path: /unused/s3-only
+retrieval:
+  max_results: 20
+  result_size_cap: 50
+  restricted_content_filter: true
+
+  purpose_labels:
+    style: Style Reference Documents
+    cdd: Course Design Sources
+    blueprint: Calendar / Block Sources
+    course_generation: Lesson Source Materials
+  source_ui:
+    common_filters:
+      - purpose
+      - document_type
+      - visibility
+      - status
+      - search
+    taxonomy_filters:
+      - key: course_name
+        label: Course
+        type: select
+      - key: block
+        label: Block
+        type: select
+      - key: day
+        label: Day
+        type: select
+      - key: topic
+        label: Topic
+        type: text
+  source_type_mapping:
+    style:
+      - style_guide
+      - authoring_guide
+      - authoring_guidelines
+      - sample_lesson
+      - approved_template
+    cdd:
+      - syllabus
+      - course_outline
+      - course_calendar
+      - program_overview
+      - learning_objectives
+    blueprint:
+      - course_calendar
+      - block_schedule
+      - syllabus
+      - lesson_plan
+    course_generation:
+      - lesson_plan
+      - lesson_slide_deck
+      - slide_deck
+      - project_activity
+      - quiz_exam
+      - study_questions
+      - student_handout
+      - ebook_reference
+security:
+  require_jwt: true
+  jwt_audience: aim-dis-api
+monitoring:
+  slo_ingestion_p95_ms: 10000
+  slo_retrieval_p95_ms: 500
+embedding:
+  enabled: true
+  provider: bedrock
+  model_id: amazon.titan-embed-text-v2:0
+  dimension: 1024
+  region: us-east-1
+  max_input_chars: 50000
+document_processing:
+  profile: aviation_academic
+  enabled_document_types:
+  - course_calendar
+  - syllabus
+  - lesson_slide_deck
+  - project_activity
+  - project_key
+  - quiz_exam
+  - quiz_answer_key
+  - study_questions
+  - ebook_reference
+  - instructor_guide
+  - student_handout
+  - other
+  document_type_rules:
+  - doc_type: syllabus
+    filename_keywords:
+    - syllabus
+    text_keywords:
+    - syllabus
+    - course description
+    - course objectives
+    - grading and evaluation
+    - attendance policy
+    priority: 10
+  - doc_type: course_calendar
+    filename_keywords:
+    - calendar
+    - teacher calendar
+    - student version
+    text_keywords:
+    - course calendar
+    - week/lesson
+    - day 1
+    - day 2
+    - corresponding assignment
+    - topics covered
+    priority: 20
+  - doc_type: quiz_answer_key
+    filename_keywords:
+    - answer key
+    - exam key
+    - quiz key
+    - key
+    text_keywords:
+    - answer key
+    - correct answer
+    - rationale
+    priority: 25
+  - doc_type: quiz_exam
+    filename_keywords:
+    - quiz
+    - exam
+    - final exam
+    - test
+    text_keywords:
+    - multiple choice
+    - instructions
+    - __/1 pt
+    - student name date score
+    priority: 30
+  - doc_type: project_key
+    filename_keywords:
+    - project
+    - key
+    - instructor guide
+    text_keywords:
+    - key/instructor guide
+    - answer key
+    - instructor notes
+    - grading
+    priority: 35
+  - doc_type: project_activity
+    filename_keywords:
+    - project
+    - activity
+    - lab
+    text_keywords:
+    - procedures
+    - task 1
+    - learning outcomes
+    - equipment and tools
+    - supplies and materials
+    priority: 40
+  - doc_type: study_questions
+    filename_keywords:
+    - study questions
+    - review questions
+    text_keywords:
+    - study questions
+    - self-study tool
+    - review questions
+    priority: 50
+  - doc_type: lesson_slide_deck
+    filename_keywords:
+    - day
+    - lecture
+    - slides
+    - presentation
+    text_keywords:
+    - daily maintenance plan
+    - today’s focus
+    - today's focus
+    - debrief and q&a
+    - quiz
+    priority: 60
+  - doc_type: ebook_reference
+    filename_keywords:
+    - ebook
+    - handbook
+    - far-amt
+    - faa
+    text_keywords:
+    - federal aviation regulations
+    - handbook
+    - chapter
+    - contents
+    priority: 70
+  structure_patterns:
+    day_regex: \b(?:B\d+D(\d+)|Day\s*(\d+)|D(\d+))\b
+    block_regex: \b(?:Block|BLK)\s*0*(\d+)\b
+    week_regex: \bWeek\s*(\d+)\b
+    table_schedule_keywords:
+    - day
+    - lesson
+    - topic
+    - project
+    - quiz
+    - exam
+    - assignment
+    - reading
+    - acs code
+    activity_keywords:
+    - project
+    - activity
+    - lab
+    - hangar
+    - assignment
+    assignment_keywords:
+    - assignment
+    - reading
+    - prepare
+    - homework
+    - worksheet
+    assessment_keywords:
+    - quiz
+    - exam
+    - final
+    - assessment
+    - test
+  unit_type_map:
+    course_calendar: calendar_day
+    syllabus: syllabus_section
+    lesson_slide_deck: slide
+    project_activity: project_task
+    project_key: answer_key_item
+    quiz_exam: quiz_question
+    quiz_answer_key: answer_key_item
+    study_questions: study_question
+    ebook_reference: page
+    instructor_guide: guide_section
+    student_handout: chunk
+    other: chunk
+    lesson_pdf: page
+    slide_deck: slide
+    quiz: quiz_question
+    final_exam: quiz_question
+    project: project_task
+    hangar_activity: activity
+    study_questions: study_question
+    quiz_answer_key: answer_key_item
+    final_exam_answer_key: answer_key_item
+    project_instructor_guide: guide_section
+  fallback_doc_type: other
+  restricted_document_types:
+  - quiz_answer_key
+  - project_key
+structure_store:
+  enabled: true
+  provider: postgres
+  url: 'postgresql://dis_user:Academian%23123@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db'
+  schema_name: dis
+  auto_create_schema: true
+vector_store:
+  enabled: true
+  provider: opensearch
+  endpoint: 'https://search-ai-platform-opensearch-6fjt7fienyf2aeactjfqdms4y4.us-east-1.es.amazonaws.com'
+  index_name: dis-content-dev-aim
+  region: us-east-1
+  auth_mode: basic
+  username: 'developer'
+  password: 'Academian@2026'
+  api_key_secret: ''
+  auto_create_index: true
+
+# AIM-specific content ingestion rules.
+# Content/design team decisions should be changed here only; no Python code change needed.
+aim_content_rules:
+  default_program_id: aim
+  default_course_id: general_science_i
+  block_day_pattern: 'B(?P<block_number>\d+)D(?P<day_number>\d+)'
+
+  # Calendar is source of truth for quiz, project, hangar, and study-question mapping.
+  # Filename day is only a suggestion for these content types.
+  calendar_mapping_strategy: calendar_first_then_filename
+  calendar_mapping_required_types:
+    - quiz
+    - final_exam
+    - project
+    - hangar_activity
+    - study_questions
+
+  blueprint_source_types:
+    - course_calendar
+    - syllabus
+
+  course_generation_source_types:
+    - lesson_pdf
+    - slide_deck
+    - quiz
+    - final_exam
+    - project
+    - hangar_activity
+    - study_questions
+
+  # Change these after content team confirmation.
+  # First matching folder gets source_priority=1.
+  version_priority:
+    lesson_pdf:
+      - Final PDFs
+    slide_deck:
+      - Final Slide Deck
+    quiz:
+      - Quizzes/5-PDFs/Updated PDFs
+      - Quizzes/4-Finalized/Updated Quizzes
+    quiz_answer_key:
+      - Quizzes/5-PDFs/Updated PDFs
+      - Quizzes/4-Finalized/Updated Quizzes
+    final_exam:
+      - Quizzes/5-PDFs
+      - Quizzes/4-Finalized
+    final_exam_answer_key:
+      - Quizzes/5-PDFs
+      - Quizzes/4-Finalized
+    project:
+      - Projects/4-PDF
+      - Projects/3-Final
+    project_instructor_guide:
+      - Projects/4-PDF
+      - Projects/3-Final
+    hangar_activity:
+      - Hangar Activities
+    study_questions:
+      - Study Questions
+    course_calendar:
+      - Teaching Outline & Syllabus
+    syllabus:
+      - Teaching Outline & Syllabus
+
+  # Stored in raw/processed for traceability but excluded from blueprint/course-generation by default.
+  exclude_path_contains:
+    - Archive
+    - Archived
+    - 1-Original
+    - 2-Edited
+    - Retake
+
+  # Always protected from student-facing context retrieval.
+  restricted_filename_contains:
+    - Answer Key
+    - Instructor Guide
+    - Exam Key
+    - Quiz Key
+
+  visibility_by_content_type:
+    lesson_pdf: student
+    slide_deck: student
+    quiz: student
+    final_exam: student
+    project: student
+    hangar_activity: student
+    study_questions: student
+    course_calendar: instructor_only
+    syllabus: student
+    quiz_answer_key: instructor_only
+    final_exam_answer_key: instructor_only
+    project_instructor_guide: instructor_only
+    archive_or_working_version: internal_only

@@ -42,6 +42,8 @@ import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import FileUpload from '@components/common/FileUpload/FileUpload';
 import Loader from '@components/common/Loader/Loader';
 import ErrorState from '@components/common/ErrorState/ErrorState';
+
+import ArtifactReferenceTrace from '@features/sourceLibrary/components/ArtifactReferenceTrace/ArtifactReferenceTrace';
 import styles from './GeneratePage.module.scss';
 
 const SUPP_UPLOADS = [
@@ -650,7 +652,7 @@ export default function GeneratePage() {
                   ✅ {latestBlocks.length} block(s) generated
                 </p>
                 {latestBlocks.map((block, i) => (
-                  <details key={block.id || i} className={styles.blockCard} open={i === 0}>
+                  <details key={block.id || i} className={styles.blockCard}>
                     <summary className={styles.blockCard__header}>
                       <span className={styles.blockCard__label}>{block.block_label || `Block ${i + 1}`}</span>
                     </summary>

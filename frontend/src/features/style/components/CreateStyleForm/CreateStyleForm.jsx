@@ -2,27 +2,59 @@ import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
-import { createStyleThunk, fetchDocumentsThunk } from '@features/style/styleThunks';
-import { selectDocuments, selectStyleCreating } from '@features/style/styleSlice';
+import { useParams } from 'react-router-dom';
+import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
+import { createStyleThunk } from '@features/style/styleThunks';
+import { selectStyleCreating } from '@features/style/styleSlice';
 import { selectIsReviewer } from '@features/auth/authSlice';
 import { createStyleSchema } from '@utils/validation';
+import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
-import FileUpload from '@components/common/FileUpload/FileUpload';
 import Button from '@components/common/Button/Button';
 import styles from './CreateStyleForm.module.scss';
 
-const REF_DOCS_HINT = 'These documents define tone, guidelines, and structure for this style.';
+const REF_DOCS_HINT = 'Only processed DIS Source Library documents with purpose Style are shown here.';
 const INSTR_HINT = 'These instructions are stored with the style and injected into every generation.';
+
+function docLabel(doc) {
+  return doc?.source_file_name || doc?.title || `Source ${doc?.job_id || doc?.document_id}`;
+}
+
+function styleDocsCacheKey({ courseId, projectId }) {
+  return `cas_dis_style_ref_docs:${courseId || projectId || 'global'}`;
+}
+
+function readCachedStyleDocs(key) {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || 'null');
+    return Array.isArray(parsed?.documents) ? parsed.documents : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedStyleDocs(key, documents) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify({ documents, cached_at: new Date().toISOString() }));
+  } catch {
+    // Ignore storage quota/privacy mode issues.
+  }
+}
 
 export default function CreateStyleForm() {
   const dispatch = useAppDispatch();
-  const documents = useAppSelector(selectDocuments);
   const isCreating = useAppSelector(selectStyleCreating);
   const canModify = useAppSelector(selectIsReviewer);
+  const { courseId } = useParams();
+  const selectedProject = useAppSelector(selectSelectedProject);
+  const selectedCourse = useAppSelector(selectSelectedCourse);
 
   const [selectedLibDocIds, setSelectedLibDocIds] = useState([]);
-  const [newFiles, setNewFiles] = useState([]);
+  const [sourceDocs, setSourceDocs] = useState([]);
+  const [sourceError, setSourceError] = useState('');
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const sourceCacheKey = styleDocsCacheKey({ courseId: selectedCourse?.id || courseId, projectId: selectedProject?.id });
 
   const {
     register,
@@ -39,27 +71,58 @@ export default function CreateStyleForm() {
   });
 
   useEffect(() => {
-    dispatch(fetchDocumentsThunk());
-  }, [dispatch]);
+    let cancelled = false;
+    async function loadStyleSources() {
+      const cached = readCachedStyleDocs(sourceCacheKey);
+      if (cached.length && !cancelled) setSourceDocs(cached);
+      setSourceLoading(true);
+      setSourceError('');
+      try {
+        const params = { purpose: 'style', status: 'processed' };
+        if (selectedCourse?.id || courseId) params.course_id = selectedCourse?.id || courseId;
+        else if (selectedProject?.id) params.project_id = selectedProject.id;
+        const res = await sourceLibraryApi.listDocuments(params);
+        const list = res.documents || res.sources || [];
+        if (!cancelled) {
+          setSourceDocs(list);
+          writeCachedStyleDocs(sourceCacheKey, list);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          const cachedAgain = readCachedStyleDocs(sourceCacheKey);
+          if (cachedAgain.length) {
+            setSourceDocs(cachedAgain);
+            setSourceError('Using the last loaded style reference list while Source Library refreshes.');
+          } else {
+            setSourceError('Upload style reference documents in Source Library first.');
+          }
+        }
+      } finally {
+        if (!cancelled) setSourceLoading(false);
+      }
+    }
+    loadStyleSources();
+    const interval = window.setInterval(loadStyleSources, 30000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [selectedCourse?.id, selectedProject?.id, courseId, sourceCacheKey]);
 
   const libraryOptions = useMemo(
-    () => (documents || []).map((d) => ({
-      value: d.id,
-      label: d.name || `Document #${d.id}`,
+    () => (sourceDocs || []).map((d) => ({
+      value: d.job_id || d.document_id,
+      label: docLabel(d),
     })),
-    [documents],
+    [sourceDocs],
   );
 
   async function onSubmit(data) {
     const result = await dispatch(createStyleThunk({
       ...data,
       document_ids: selectedLibDocIds,
-      newFiles,
+      newFiles: [],
     }));
     if (!result.error) {
       reset();
       setSelectedLibDocIds([]);
-      setNewFiles([]);
     }
   }
 
@@ -83,8 +146,8 @@ export default function CreateStyleForm() {
       <header className={styles.header}>
         <h2 className={styles.header__title}>➕ Create New Style</h2>
         <p className={styles.header__intro}>
-          A Style defines writing tone, rules, and structure. It will be automatically
-          applied to CDD, Blueprint, and content generation.
+          A Style defines writing tone, rules, and structure. Upload source documents in
+          Source Library, then select the processed references here.
         </p>
       </header>
 
@@ -92,7 +155,7 @@ export default function CreateStyleForm() {
         <Input
           label="Style Name"
           required
-          placeholder="e.g. Clinical Nursing — Formal Academic"
+          placeholder="e.g. Cengage Authoring Style"
           error={errors.name?.message}
           {...register('name')}
         />
@@ -103,72 +166,37 @@ export default function CreateStyleForm() {
           {...register('description')}
         />
 
-        <div className={styles.sectionLabel}>📎 Reference Documents</div>
+        <div className={styles.sectionLabel}>📎 DIS Style Reference Documents</div>
 
         <div className={styles.fieldRow}>
           <label className={styles.fieldLabel} htmlFor="style-lib-docs">
-            Select existing documents from library
-            <span
-              className={styles.helpIcon}
-              title={REF_DOCS_HINT}
-              aria-label={REF_DOCS_HINT}
-            >
-              ?
-            </span>
+            Select processed Source Library documents
+            <span className={styles.helpIcon} title={REF_DOCS_HINT} aria-label={REF_DOCS_HINT}>?</span>
           </label>
           <MultiSelect
-            placeholder="Choose options"
+            placeholder={libraryOptions.length ? 'Choose style reference documents' : (sourceLoading ? 'Loading Source Library documents…' : 'Choose style reference documents')}
             options={libraryOptions}
             value={selectedLibDocIds}
             onChange={setSelectedLibDocIds}
-            disabled={libraryOptions.length === 0}
-            hint={libraryOptions.length === 0 ? 'No documents in the library yet.' : undefined}
+            disabled={!libraryOptions.length}
+            hint={sourceError || (!libraryOptions.length ? 'No Style-purpose documents found. Upload them in Source Library with Purpose = Style.' : undefined)}
           />
         </div>
 
-        <div className={styles.uploadBlock}>
-          <label className={styles.fieldLabel}>
-            Upload new style reference files (multiple allowed)
-          </label>
-          <div className={styles.uploadBox}>
-            <FileUpload
-              accept=".pdf,.docx,.txt"
-              multiple
-              onChange={setNewFiles}
-              label="Upload"
-              hint="200MB per file · PDF, DOCX, TXT"
-            />
-          </div>
-          {newFiles.length > 0 && (
-            <div className={styles.fileTags}>
-              {newFiles.map((f, i) => (
-                <span key={`${f.name}-${i}`} className={styles.fileTag}>{f.name}</span>
-              ))}
-            </div>
-          )}
-        </div>
+        <p className={styles.fieldHint}>Style documents are managed only in Source Library. This page links processed DIS documents and generates/refines style understanding.</p>
 
         <div className={styles.sectionLabel}>✍️ Custom Instructions</div>
 
         <div className={styles.fieldRow}>
           <label className={styles.fieldLabel} htmlFor="style-custom-instructions">
             Custom instructions / rules for this style
-            <span
-              className={styles.helpIcon}
-              title={INSTR_HINT}
-              aria-label={INSTR_HINT}
-            >
-              ?
-            </span>
+            <span className={styles.helpIcon} title={INSTR_HINT} aria-label={INSTR_HINT}>?</span>
           </label>
           <textarea
             id="style-custom-instructions"
             className={styles.textarea}
             rows={6}
-            placeholder={
-              'e.g. Always use active voice. Use Bloom\'s taxonomy levels 3–5. '
-              + 'Avoid jargon. Begin each lesson with a real-world clinical scenario.'
-            }
+            placeholder="e.g. Use concise, learner-facing language. Preserve Cengage authoring terminology. Avoid metadata-heavy output."
             {...register('custom_instructions')}
           />
           {errors.custom_instructions && (
@@ -178,13 +206,7 @@ export default function CreateStyleForm() {
 
         <div className={styles.saveRow}>
           <div />
-          <Button
-            type="submit"
-            variant="primary"
-            fullWidth
-            loading={isCreating}
-            className={styles.saveBtn}
-          >
+          <Button type="submit" variant="primary" fullWidth loading={isCreating} className={styles.saveBtn}>
             💾 Save Style
           </Button>
           <div />

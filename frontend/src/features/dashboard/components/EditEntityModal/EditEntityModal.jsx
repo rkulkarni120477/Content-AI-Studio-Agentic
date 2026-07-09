@@ -2,8 +2,16 @@ import { useEffect, useState } from 'react';
 import Modal from '@components/common/Modal/Modal';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
+import Select from '@components/common/Select/Select';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { extractErrorMessage } from '@utils/helpers';
+
+const CLIENT_OPTIONS = [
+  { value: 'cengage', label: 'Cengage' },
+  { value: 'aim', label: 'AIM' },
+  { value: 'academian', label: 'Academian' },
+  { value: 'demo', label: 'Demo' },
+];
 
 export default function EditEntityModal({
   open,
@@ -61,7 +69,7 @@ export default function EditEntityModal({
       if (entityType === 'project') {
         await dashboardService.updateProject(entity.id, {
           name: name.trim(),
-          client_name: clientName.trim() || null,
+          client_name: clientName || 'demo',
           description: description.trim() || null,
         });
       } else if (entityType === 'cluster') {
@@ -107,9 +115,10 @@ export default function EditEntityModal({
           required
         />
         {entityType === 'project' && (
-          <Input
-            label="Client Name"
-            value={clientName}
+          <Select
+            label="Client *"
+            options={CLIENT_OPTIONS}
+            value={clientName || 'demo'}
             onChange={(e) => setClientName(e.target.value)}
           />
         )}

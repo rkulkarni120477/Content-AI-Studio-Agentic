@@ -58,6 +58,8 @@ def _build_token_response(user) -> TokenResponse:
 
     token = create_access_token(user.username, user.role)
 
+    from app.core.dis_access import build_dis_profile
+
     profile = UserProfileResponse(
         id=user.id,
         username=user.username,
@@ -65,6 +67,7 @@ def _build_token_response(user) -> TokenResponse:
         role_display=role_label(user.role),
         is_active=bool(user.is_active),
         permissions=get_permissions_for_role(user.role),
+        **build_dis_profile(user),
     )
 
     return TokenResponse(
@@ -204,6 +207,8 @@ def get_me(
     UI elements without making additional API calls.  This matches the
     ``rbac_check()`` calls that were distributed across every Streamlit page.
     """
+    from app.core.dis_access import build_dis_profile
+
     return UserProfileResponse(
         id=current_user.id,
         username=current_user.username,
@@ -211,4 +216,5 @@ def get_me(
         role_display=role_label(current_user.role),
         is_active=bool(current_user.is_active),
         permissions=get_permissions_for_role(current_user.role),
+        **build_dis_profile(current_user),
     )

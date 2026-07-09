@@ -23,7 +23,6 @@ import PageContainer from '@components/layout/PageContainer/PageContainer';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
-import FileUpload from '@components/common/FileUpload/FileUpload';
 import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
@@ -45,7 +44,7 @@ import {
 } from '@utils/documentRegistry';
 import styles from './StylePage.module.scss';
 
-const TABS = ['Style Management', 'Document Registry'];
+const TABS = ['Style Management'];
 
 function documentPreviewText(preview) {
   if (!preview) return '';
@@ -103,6 +102,8 @@ export default function StylePage() {
   const [deleteStyleId, setDeleteStyleId] = useState(null);
   const [scopeStyleId, setScopeStyleId] = useState(null);
   const [scopeStyleName, setScopeStyleName] = useState('');
+  const [styleSearch, setStyleSearch] = useState('');
+  const [styleStateFilter, setStyleStateFilter] = useState('all');
 
   // Document Registry UI (Streamlit-like)
   const [docsHelpOpen, setDocsHelpOpen] = useState(true);
@@ -241,14 +242,14 @@ export default function StylePage() {
 
   async function onAppendStyleFiles() {
     if (!filesStyleId) return;
-    if (selectedLibDocIds.length === 0 && filesToUpload.length === 0) {
-      toast.error('No new files selected or uploaded.');
+    if (selectedLibDocIds.length === 0) {
+      toast.error('Select one or more processed Source Library documents.');
       return;
     }
     const styleId = filesStyleId;
     const result = await dispatch(uploadStyleDocsThunk({
       styleId,
-      files: filesToUpload,
+      files: [],
       documentIds: selectedLibDocIds,
       additionalInstructions: filesExtraInstructions,
     }));
@@ -344,6 +345,18 @@ export default function StylePage() {
   const safePage = Math.min(docPage, totalPages);
   const pageDocs = filteredDocs.slice((safePage - 1) * DOCS_PAGE_SIZE, safePage * DOCS_PAGE_SIZE);
 
+
+  const filteredStyles = [...(stylesList || [])]
+    .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
+    .filter((style) => {
+      if (styleStateFilter === 'active' && !style.is_active) return false;
+      if (styleStateFilter === 'inactive' && style.is_active) return false;
+      const q = styleSearch.trim().toLowerCase();
+      if (!q) return true;
+      return [style.name, style.description, style.understanding_preview, style.id]
+        .some((v) => String(v || '').toLowerCase().includes(q));
+    });
+
   return (
     <PageContainer title="Style Management" breadcrumbs={[{ label: 'Style' }]}>
       {selCluster?.id && clusterPromptApiReady && (
@@ -403,7 +416,20 @@ export default function StylePage() {
 
           {/* Saved Styles — Streamlit right panel */}
           <section className={`${styles.panel} ${styles.panelLibrary}`}>
-            <h2 className={styles.panel__title}>🗂️ Saved Styles</h2>
+            <h2 className={styles.panel__title}>🗂️ Generated Styles</h2>
+            <p className={styles.muted}>Recent first. Generated style bodies are copied to DIS/S3 and this list auto-loads whenever you reopen the workflow.</p>
+            <div className={styles.docFilters} style={{ marginBottom: 12 }}>
+              <Select
+                label="Filter"
+                options={[{ value: 'all', label: 'All' }, { value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]}
+                value={styleStateFilter}
+                onChange={(e) => setStyleStateFilter(e.target.value)}
+              />
+              <div className={styles.docSearch}>
+                <label className={styles.docSearch__label}>Search style</label>
+                <SearchBar value={styleSearch} onChange={setStyleSearch} placeholder="Search style name, #id, summary…" />
+              </div>
+            </div>
             {activeStyle && (
               <div className={styles.activeIndicator}>
                 <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
@@ -411,14 +437,14 @@ export default function StylePage() {
             )}
             {isLoading ? (
               <div className={styles.center}><Loader size="lg" /></div>
-            ) : stylesList.length === 0 ? (
+            ) : filteredStyles.length === 0 ? (
               <EmptyState
                 title="No styles yet"
-                message="Create your first style using the form on the left."
+                message={styleSearch ? "No generated styles match your search." : "Create your first style using the form on the left."}
               />
             ) : (
               <ul className={styles.list}>
-                {stylesList.map((style) => (
+                {filteredStyles.map((style) => (
                   <li key={style.id} className={`${styles.styleItem} ${style.is_active ? styles['styleItem--active'] : ''}`}>
                     <div className={styles.styleItem__info}>
                       <span className={styles.styleItem__name}>{style.name}</span>
@@ -455,14 +481,6 @@ export default function StylePage() {
                             disabled={generatingStyleId != null}
                           >
                             Refine
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className={styles.actionBtn}
-                            onClick={() => openAddFiles(style.id, style.name)}
-                          >
-                            + Files
                           </Button>
                           {style.is_active ? (
                             <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => dispatch(deactivateStyleThunk(style.id))}>Deactivate</Button>
@@ -516,38 +534,11 @@ export default function StylePage() {
             <div className={styles.kpi}><div className={styles.kpi__label}>🏷️ Types</div><div className={styles.kpi__value}>{registryKpis.types}</div></div>
           </section>
 
-          {/* Upload expander */}
           <section className={styles.docUpload}>
-            <button type="button" className={styles.docUpload__toggle} onClick={() => setDocsUploadOpen((v) => !v)}>
-              ⬆️ Upload New Document {docsUploadOpen ? '▾' : '▸'}
-            </button>
-            {docsUploadOpen && (
-              <div className={styles.docUpload__body}>
-                <FileUpload
-                  accept=".pdf,.docx,.txt,.xlsx"
-                  multiple
-                  onChange={setUploadedFiles}
-                  label="Drop files here or click to browse"
-                  hint="Supported: PDF, DOCX, TXT, XLSX"
-                />
-                {uploadedFiles.length > 0 && (
-                  <div className={styles.fileList}>
-                    {uploadedFiles.map((f, i) => (
-                      <span key={i} className={styles.fileTag}>{f.name}</span>
-                    ))}
-                  </div>
-                )}
-                <Select
-                  label="Document Type"
-                  options={DOCUMENT_SOURCE_TYPE_OPTIONS}
-                  value={docTag}
-                  onChange={(e) => setDocTag(e.target.value)}
-                />
-                <Button variant="primary" onClick={onUploadDocs} disabled={uploadedFiles.length === 0} loading={isUploadingDoc}>
-                  📁 Add to Database
-                </Button>
-              </div>
-            )}
+            <div className={styles.docUpload__body}>
+              Source documents are now uploaded and managed from <strong>Source Library</strong>.
+              Use Style only to select existing processed reference documents and generate/refine style understanding.
+            </div>
           </section>
 
           {/* Registry header + filters */}
@@ -719,7 +710,7 @@ export default function StylePage() {
             <Button variant="ghost" onClick={closeAddFilesModal}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={filesModalLoading || (selectedLibDocIds.length === 0 && filesToUpload.length === 0)}
+              disabled={filesModalLoading || selectedLibDocIds.length === 0}
               onClick={onAppendStyleFiles}
             >
               Append Files
@@ -732,8 +723,7 @@ export default function StylePage() {
         ) : (
           <div className={styles.addFilesPanel}>
             <p className={styles.addFilesIntro}>
-              Upload additional reference files. They will be appended to the existing file list —
-              no existing files will be removed.
+              Select processed Source Library documents to attach to this style. Uploads are managed only in Source Library.
             </p>
 
             <MultiSelect
@@ -751,16 +741,6 @@ export default function StylePage() {
               </p>
             )}
 
-            <div className={styles.addFilesBlock}>
-              <span className={styles.addFilesLabel}>Upload new reference files</span>
-              <FileUpload
-                accept=".pdf,.docx,.txt"
-                multiple
-                onChange={setFilesToUpload}
-                label="Upload"
-                hint="200MB per file · PDF, DOCX, TXT"
-              />
-            </div>
 
             <Input
               label="Additional Instructions (optional)"

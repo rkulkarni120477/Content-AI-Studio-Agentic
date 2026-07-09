@@ -20,7 +20,7 @@ export default function CddContentView({
     [fullContent, sections],
   );
 
-  const [expanded, setExpanded] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(null);
   const [drafts, setDrafts] = useState({});
   const [reasons, setReasons] = useState({});
   const [scopes, setScopes] = useState({});
@@ -28,24 +28,15 @@ export default function CddContentView({
   const [regenItem, setRegenItem] = useState(null);
 
   useEffect(() => {
-    // Preserve which sections the user has open across content updates (e.g.
-    // after a save or regenerate); only seed the default on first render.
-    setExpanded((prev) => {
-      if (prev.size > 0) return prev;
-      return uiBlocks.length > 0 ? new Set([uiBlocks[0].key]) : new Set();
-    });
+    // Keep all sections closed by default. Users open only the section they need.
+    setExpanded(null);
     setDrafts({});
     setReasons({});
     setScopes({});
   }, [fullContent, sections]);
 
   function toggle(key) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setExpanded((prev) => (prev === key ? null : key));
   }
 
   function getDraft(block) {
@@ -122,7 +113,7 @@ export default function CddContentView({
   return (
     <div className={styles.wrap}>
       {uiBlocks.map((block) => {
-        const isOpen = expanded.has(block.key);
+        const isOpen = expanded === block.key;
         const draft = getDraft(block);
         const changed = isChanged(block);
         const reason = reasons[block.key] || '';
