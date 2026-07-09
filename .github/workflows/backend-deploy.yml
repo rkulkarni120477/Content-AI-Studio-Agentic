@@ -3,7 +3,7 @@ name: Deploy Content AI Backend
 on:
   push:
     branches:
-      - sami
+      - dev
     paths:
       - "app/**"
       - "api_server.py"
@@ -37,9 +37,9 @@ jobs:
             echo "Fetching latest code..."
             git fetch origin
 
-            git checkout sami
+            git checkout dev
 
-            git pull origin sami
+            git pull origin dev
 
             echo "Building Docker images..."
             docker compose build
