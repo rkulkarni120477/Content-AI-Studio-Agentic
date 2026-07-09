@@ -1,1939 +1,354 @@
 ================================================================================
-  CONTENT AI STUDIO — TENANT SYSTEM IMPLEMENTATION PLAN
+ CONTENT AI STUDIO — TENANT SYSTEM v2
+ Microsoft Sign-In + Organization Codes  (replicating the prompt-library model)
 ================================================================================
 
-GOAL
-  Add full multi-tenancy to Content AI Studio so each organization (tenant)
-  gets its own isolated workspace: separate users, projects, styles, documents,
-  prompts, generations, and analytics. A platform admin (super-admin level) can
-  manage all tenants from a central dashboard.
+Status : IMPLEMENTED (Phases 0-6). Microsoft sign-in is wired but INERT until
+         Azure creds are added to .env (see PART F) — MICROSOFT_AUTH_ENABLED=false.
 
-CURRENT STATE (what CAS has today)
-  - JWT auth: Bearer token, payload has {sub, role, exp, iat}
-  - Roles: admin / reviewer / author (no tenant concept)
-  - User.username is globally unique — no isolation
-  - No tenant_id on ANY table
-  - Single-instance app — all users share all data
-  - FastAPI backend (app/) + Streamlit legacy (promptops_app/) sharing the same DB
-  - Alembic handles migrations (alembic.ini, migrations/)
+IMPLEMENTATION STATUS (updated)
+  [DONE] Phase 0  msal added to requirements; Azure/Microsoft config in
+                  app/core/config.py; AZURE_* keys in .env / .env.example (blank).
+  [DONE] Phase 1  Project tenant columns (slug/status/max_users/microsoft_auth_
+                  enabled/azure_*/allowed_email_domains); User.microsoft_oid/
+                  email/display_name; TenantMembership model; init_db migration +
+                  backfill (project slugs auto-generated, memberships from old
+                  project_id). Verified against live RDS.
+  [DONE] Phase 2  app/services/tenant_service.py; app/api/v1/routers/
+                  platform_tenants.py at /platform/tenants (list/create/update/
+                  usage + members list/add/edit/activate/deactivate/delete).
+                  Old platform_users.py removed.
+  [DONE] Phase 3  app/services/microsoft_auth.py (msal, stateless signed-JWT
+                  state); auth.py reworked (org-code + platform-admin login,
+                  /config, /tenant-login/{slug}, /login/microsoft, /microsoft/
+                  callback). get_current_user resolves per-tenant membership role
+                  each request. Smoke-tested end-to-end (create tenant -> add
+                  member -> org-code login -> role resolution).
+  [DONE] Phase 4  LoginPage rebuilt (org code + Microsoft button + platform-admin
+                  checkbox + username/password; handles ?token= OAuth return).
+                  AwaitingAssignmentPage removed.
+  [DONE] Phase 5  TenantsPage (dashboard + New tenant) + TenantUsersPage
+                  (members table + add/edit/activate/deactivate/delete).
+                  platformService repointed to /platform/tenants. Sidebar +
+                  ROUTES updated; old PlatformUsersPage removed.
+  [DONE] Phase 6  SelectionSidebar nav fixed (platform-admin "Tenants"/"Manage
+                  Users"); frontend builds clean; backend smoke test passes.
 
-TARGET STATE (after this implementation)
-  - Login requires: tenant_slug (org code) + username + password
-  - JWT payload: {sub, role, tenant_id, tenant_slug, is_platform_admin, exp, iat}
-  - Every data table has tenant_id FK; queries automatically scoped
-  - Platform admin (tenant_id=NULL, is_platform_admin=TRUE) manages all tenants
-  - Existing data migrated into a default "default-org" tenant
-  - Frontend login page gets org code input field
-  - Platform admin dashboard at /platform/tenants
+MORNING TO-DO (you): put real values in .env then `docker compose up -d api`:
+  MICROSOFT_AUTH_ENABLED=true, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+  AZURE_TENANT_ID, AZURE_REDIRECT_URI (registered in Azure). Then the
+  "Sign in with Microsoft" button goes live.
 
-================================================================================
-  PHASE OVERVIEW
-================================================================================
+KNOWN LEFTOVER (safe, not wired into the new UI; remove later if desired):
+  - frontend ProjectsPage + project-scope ManageUsersModal (no longer routed).
+  - projects.py POST /projects + assign/unassign-user endpoints (superseded by
+    /platform/tenants; not called by the new frontend).
 
-  Phase 1 — Database models & Alembic migration
-  Phase 2 — Auth layer (JWT + login endpoint)
-  Phase 3 — Tenant scoping utilities
-  Phase 4 — Repository / query updates
-  Phase 5 — API route updates + new platform admin routes
-  Phase 6 — Schemas (Pydantic)
-  Phase 7 — Frontend (React/Redux)
-  Phase 8 — Seed & migration script for existing data
-  Phase 9 — Streamlit compatibility shim (keep legacy app working)
+--------------------------------------------------------------------------------
+Original plan (for reference) follows.
+--------------------------------------------------------------------------------
+Source of truth for behaviour : the prompt-library project + the Word doc
+                                 "tenant based system.docx" (10 screenshots).
+Reference code : C:\Content-AI-Studio-\prompt-library\backend\prompt_library\
+                   services\microsoft_auth.py
+                   api\auth.py, api\users.py, api\platform_tenants.py
+                   services\tenant_service.py
+                   models\tenant.py, models\user.py
+                   utils\tenant_context.py, utils\request_context.py
 
-Do all phases in order. Each phase is independently testable before moving on.
-
-
-================================================================================
-  PHASE 1 — DATABASE MODELS & ALEMBIC MIGRATION
-================================================================================
-
-────────────────────────────────────────────────────────────────────────────────
-  1A. Add Tenant model to promptops_app/database.py
-────────────────────────────────────────────────────────────────────────────────
-
-Add this class BEFORE the User class in promptops_app/database.py:
-
-  class Tenant(Base):
-      __tablename__ = "tenants"
-      id         = Column(String(36), primary_key=True)        # UUID string
-      slug       = Column(String(64), unique=True, nullable=False, index=True)
-      name       = Column(String(200), nullable=False)
-      max_users  = Column(Integer, nullable=False, default=50)
-      status     = Column(String(20), nullable=False, default="active")  # active|suspended
-      created_at = Column(DateTime, default=datetime.utcnow)
-      created_by = Column(String(100))
-
-  Slug rules (enforced at app layer, not DB):
-    - lowercase letters, numbers, hyphens only
-    - must not be "platform" (reserved for platform admin login)
-    - unique across the system
-
-────────────────────────────────────────────────────────────────────────────────
-  1B. Modify User model in promptops_app/database.py
-────────────────────────────────────────────────────────────────────────────────
-
-Add two columns to the existing User class:
-
-  tenant_id         = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
-  is_platform_admin = Column(Boolean, default=False, nullable=False)
-
-  Meaning:
-    - tenant_id = NULL  +  is_platform_admin = TRUE  → platform super-admin
-    - tenant_id = <uuid> + is_platform_admin = FALSE → normal tenant user
-
-  IMPORTANT: Change the username unique constraint from globally unique to
-  unique-per-tenant. The new uniqueness is (tenant_id, username) enforced
-  at the application layer. The old `unique=True` on username must be kept
-  for backward compat with existing data (all current users will share one
-  tenant), but going forward the check is done in code before INSERT.
-
-────────────────────────────────────────────────────────────────────────────────
-  1C. Add tenant_id to all tenant-owned tables
-────────────────────────────────────────────────────────────────────────────────
-
-The following models need  tenant_id = Column(String(36), nullable=True, index=True)
-added as a plain (non-FK) column. Using nullable=True keeps existing rows valid.
-The FK relationship is optional at the DB level; enforced at app layer.
-
-  Tables to update in promptops_app/database.py:
-    - Project            → add tenant_id
-    - Style              → add tenant_id
-    - Document           → add tenant_id
-    - Prompt             → add tenant_id  (this is the CAS prompt asset, not PL)
-    - CentralRepository  → add tenant_id
-    - GenerationJob      → add tenant_id
-    - LLMUsageLog        → add tenant_id
-    - AuditLog           → add tenant_id
-
-  Tables that inherit tenant scope through their parent (NO direct tenant_id needed):
-    - Cluster       → scoped through Project.tenant_id
-    - Course        → scoped through Project.tenant_id
-    - CourseDesignDocument  → scoped through project_id → Project.tenant_id
-    - ModuleBlueprint → scoped through project_id → Project.tenant_id
-    - Generation    → scoped through project_id → Project.tenant_id
-    - Block         → scoped through Generation → Project
-    - BlockVersion, BlockComment, WorkflowEvent → through Block → Generation → Project
-    - StyleVersion, StyleDocument → through Style.tenant_id
-
-  Tables that are global / system-level (NO tenant_id):
-    - PromptVersion    → belongs to Prompt (system-level prompt assets)
-    - PromptFixing     → prompt scope locks (admin-managed, global)
-    - UserPromptPreference → per-user, scoped by user.tenant_id implicitly
-    - FeedbackSignal   → scoped through Block → Project
-    - PlagiarismReport → scoped through Block → Project
-    - JobMetric        → scoped through GenerationJob.tenant_id
-    - Review           → scoped through Generation → Project
-    - ABTestRun        → global
-    - SystemLog        → global observability
-
-────────────────────────────────────────────────────────────────────────────────
-  1D. Add column migrations to init_db() in promptops_app/database.py
-────────────────────────────────────────────────────────────────────────────────
-
-Add the following to the _column_migrations list in init_db():
-
-  # Tenant system — Phase 1
-  "ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE",
-  "ALTER TABLE projects ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE styles ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE documents ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE central_repositories ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE generation_jobs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-  "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(36)",
-
-────────────────────────────────────────────────────────────────────────────────
-  1E. Create Alembic migration file
-────────────────────────────────────────────────────────────────────────────────
-
-Run:
-  alembic revision --autogenerate -m "add_tenant_system"
-
-This will generate a file in migrations/versions/. Verify it contains:
-
-  def upgrade():
-      # Create tenants table
-      op.create_table('tenants',
-          sa.Column('id', sa.String(36), primary_key=True),
-          sa.Column('slug', sa.String(64), nullable=False),
-          sa.Column('name', sa.String(200), nullable=False),
-          sa.Column('max_users', sa.Integer, nullable=False, default=50),
-          sa.Column('status', sa.String(20), nullable=False, default='active'),
-          sa.Column('created_at', sa.DateTime),
-          sa.Column('created_by', sa.String(100)),
-      )
-      op.create_index('ix_tenants_slug', 'tenants', ['slug'], unique=True)
-
-      # Add tenant_id to users
-      op.add_column('users', sa.Column('tenant_id', sa.String(36), nullable=True))
-      op.add_column('users', sa.Column('is_platform_admin', sa.Boolean, default=False))
-      op.create_index('ix_users_tenant_id', 'users', ['tenant_id'])
-
-      # Add tenant_id to other tables
-      for table in ['projects','styles','documents','prompts',
-                    'central_repositories','generation_jobs',
-                    'llm_usage_logs','audit_logs']:
-          op.add_column(table, sa.Column('tenant_id', sa.String(36), nullable=True))
-          op.create_index(f'ix_{table}_tenant_id', table, ['tenant_id'])
-
-  def downgrade():
-      for table in ['projects','styles','documents','prompts',
-                    'central_repositories','generation_jobs',
-                    'llm_usage_logs','audit_logs']:
-          op.drop_index(f'ix_{table}_tenant_id', table_name=table)
-          op.drop_column(table, 'tenant_id')
-      op.drop_index('ix_users_tenant_id', table_name='users')
-      op.drop_column('users', 'tenant_id')
-      op.drop_column('users', 'is_platform_admin')
-      op.drop_table('tenants')
-
-Apply:
-  alembic upgrade head
+WHY THIS REWRITE: the version we built (platform admin manually creates users
+and picks a project from a dropdown; single User.project_id; username+password
+only) is the WRONG workflow. The correct workflow is:
+  - Tenants (= Projects) each have an ORGANIZATION CODE (slug).
+  - Regular users are NEVER created by the platform admin. They self-provision
+    by entering the org code + signing in with their Microsoft account.
+  - The same Microsoft account can belong to MANY tenants (one per org code),
+    with a possibly different role in each.
+  - Platform admin manages tenants (create/suspend/license) and, per tenant,
+    manages the members' roles / active status / deletion.
 
 
-================================================================================
-  PHASE 2 — AUTH LAYER
-================================================================================
+--------------------------------------------------------------------------------
+PART A — TARGET WORKFLOW
+--------------------------------------------------------------------------------
 
-────────────────────────────────────────────────────────────────────────────────
-  2A. Update JWT payload — app/core/security.py
-────────────────────────────────────────────────────────────────────────────────
+LOGIN SCREEN (one screen, replaces the current username/password-only page):
+  [ Organization code ______ ]
+  [  Sign in with Microsoft  ]      <- uses the org code above
+  --- or use username and password ---
+  [x] Platform administrator        <- checkbox
+  [ Username ______ ]
+  [ Password ______ ]
+  [ Sign In ]
 
-Change create_access_token() signature and payload:
+  Rules:
+   - "Sign in with Microsoft": requires a valid org code -> Microsoft OAuth ->
+     on return, user is found-or-created inside that tenant, then logged in and
+     dropped straight into that tenant's CLUSTERS (no project dashboard).
+   - Platform administrator checkbox TICKED: org code ignored; authenticate a
+     platform super-admin by username + password -> Tenants dashboard.
+   - Checkbox UNTICKED + username/password + org code: authenticate a tenant
+     user that has a local password (e.g. the initial tenant admin) -> that
+     tenant's clusters.
 
-  BEFORE:
-    def create_access_token(username: str, role: str, *, workspace=None, config=None) -> str:
-      payload = {"sub": username, "role": role, "iat": now, "exp": expire}
+PLATFORM ADMIN (after ticking the box + creds):
+  1. Lands on the TENANTS dashboard (screenshot image2/image8):
+        NAME | CODE | USERS (n / max) | STATUS | [Users] [Roles] [Settings]
+        + "New tenant" button (top-right).
+  2. "New tenant" (image9) creates:
+        - Organization code (slug)   e.g. "aim003"
+        - Display name                e.g. "AIM 16 Block Development"
+        - Max users (license)         e.g. 50
+        - Initial tenant admin: username + password + display name
+  3. "Users" on a tenant (image3/image6/image7): a per-tenant member table
+        USERNAME | DISPLAY NAME | ROLE | STATUS | ACTIONS
+        ACTIONS = edit role, deactivate/activate, delete.  "+ Add user".
+  4. "Edit user" (image4): change display name, role, (optional) password,
+        team, active flag. Username is read-only.
+  5. Links to go into the tenant's CLUSTERS; the rest of Content AI Studio
+        (clusters -> courses -> workspace) continues unchanged.
 
-  AFTER:
-    def create_access_token(
-        username: str,
-        role: str,
-        *,
-        tenant_id: str | None = None,
-        tenant_slug: str | None = None,
-        is_platform_admin: bool = False,
-        workspace: dict | None = None,
-        config: dict | None = None,
-    ) -> str:
-        payload = {
-            "sub":                username,
-            "role":               role,
-            "tenant_id":          tenant_id,        # None for platform admin
-            "tenant_slug":        tenant_slug,       # None for platform admin
-            "is_platform_admin":  is_platform_admin,
-            "iat":                now,
-            "exp":                expire,
-        }
+REGULAR USER:
+  1. Enters the org code their organisation gave them.
+  2. Clicks "Sign in with Microsoft", authenticates with their work account.
+  3. First time: an account is auto-created in that tenant with the tenant's
+     default new-user role. Returning: matched by Microsoft OID / email.
+  4. Lands directly in that tenant's CLUSTERS. Never sees the project/tenant
+     dashboard.
+  5. To work in a DIFFERENT tenant: sign out, enter that tenant's org code,
+     sign in with the SAME Microsoft account -> now a member there too.
 
-  The payload keys tenant_id and tenant_slug will be None for platform admins
-  and will contain real values for all tenant users.
 
-────────────────────────────────────────────────────────────────────────────────
-  2B. Update get_current_user dependency — app/core/dependencies.py
-────────────────────────────────────────────────────────────────────────────────
+--------------------------------------------------------------------------------
+PART B — TARGET DATA MODEL   (Project = Tenant)
+--------------------------------------------------------------------------------
 
-  AFTER decoding the token, extract tenant fields and attach to user object:
+PROJECT (the tenant) — add columns to promptops_app/database.py `Project`:
+  slug                    String(64)  UNIQUE, NOT NULL, indexed   <- org code
+  max_users               Integer     default 50                  <- license
+  status                  String(20)  default "active"            <- active|suspended
+                          (or reuse existing is_active; see D-Phase1)
+  microsoft_auth_enabled  Boolean     default True
+  azure_tenant_id         String(64)  nullable   (per-tenant Azure app, optional)
+  azure_client_id         String(64)  nullable
+  azure_client_secret     String(512) nullable
+  azure_new_user_role     String(32)  nullable   (role granted to self-provisioned users)
+  allowed_email_domains   String(500) nullable   ("academian.com, foo.edu")
+  display name            -> existing Project.name
 
-    payload = decode_access_token(credentials.credentials)
-    username = payload.get("sub", "")
-    tenant_id = payload.get("tenant_id")
-    is_platform_admin = payload.get("is_platform_admin", False)
+USER + MEMBERSHIP — THE KEY DECISION (see PART E, Decision 1):
+  A person can be in multiple tenants with a different role in each. Two ways:
 
-    # Lookup scoped by is_platform_admin flag
-    if is_platform_admin:
-        user = db.query(User).filter(
-            User.username == username,
-            User.is_platform_admin == True
-        ).first()
-    elif tenant_id:
-        user = db.query(User).filter(
-            User.username == username,
-            User.tenant_id == tenant_id
-        ).first()
-    else:
-        user = db.query(User).filter(User.username == username).first()
+  OPTION 1 (RECOMMENDED for Content AI Studio) — membership join table.
+    Keep ONE global User row per person (username stays globally unique, so all
+    existing code that joins by username keeps working). Add:
+      users.microsoft_oid   String(64) nullable index
+      users.email           String(255) nullable index
+      users.display_name    String(200) nullable
+      users.password_hash   already exists (nullable for Microsoft-only users)
+    New table `tenant_memberships`:
+      id, user_id FK->users.id, project_id FK->projects.id,
+      role (tenant-scoped: admin|reviewer|author), active Bool,
+      created_at, created_by
+      UNIQUE(user_id, project_id)
+    JWT carries the ACTIVE project_id for the session (chosen via org code at
+    login). Role for the session = that membership's role.
+    -> vpoal can be PROMPT MANAGER(reviewer) in academian and USER(author) in
+       aim003 as two membership rows, one user row.
 
-  Then attach the payload values to the user object for downstream use:
-    user._tenant_id = tenant_id
-    user._tenant_slug = payload.get("tenant_slug")
-    user._is_platform_admin = is_platform_admin
+  OPTION 2 (exact prompt-library replica) — one User row per (tenant, person).
+    Drop global-unique username; add composite UNIQUE(project_id, username),
+    (project_id, email), (project_id, microsoft_oid). Much larger blast radius:
+    every query/assignment/`created_by` that assumes global-unique username
+    must be re-audited. NOT recommended unless exact parity is required.
 
-  This way every route handler that gets `current_user` automatically
-  knows the tenant context without extra DB calls.
+ROLE MAPPING — prompt-library roles -> Content AI Studio roles (Decision 2):
+  prompt-library         Content AI Studio (existing RBAC, keep vocabulary)
+  -----------------      ------------------------------------------------
+  tenant_admin      ->   admin      ("Director")   manages the tenant
+  prompt_manager    ->   reviewer   ("Lead")
+  user              ->   author     ("ID")
+  platform_admin    ->   is_platform_admin flag (unchanged)
+  The Users/Edit-User UI shows these three assignable roles + platform admin
+  stays separate.
 
-────────────────────────────────────────────────────────────────────────────────
-  2C. Add tenant_id dependency — app/core/dependencies.py
-────────────────────────────────────────────────────────────────────────────────
 
-  Add a helper dependency used by all tenant-scoped routes:
+--------------------------------------------------------------------------------
+PART C — WHAT WE BUILT THAT IS NOW WRONG  (remove / change)
+--------------------------------------------------------------------------------
+[R1] Platform "create user + assign to project_id" flow:
+       - app/api/v1/routers/platform_users.py  (create_user with password;
+         project_id dropdown) -> REPLACE with tenant-scoped member management
+         (list/edit-role/activate/deactivate/delete + optional add). No more
+         "pick a project from a dropdown".
+       - frontend PlatformUsersPage + platformService createUser/updateUser
+         -> replace with Tenants dashboard + per-tenant Users page.
+[R2] "Assign user to project" by setting User.project_id:
+       - app/api/v1/routers/projects.py assign_user_to_project /
+         unassign_user_from_project (the version we just rewrote) -> REPLACE
+         with membership rows; assignment happens via Microsoft login, not a
+         checkbox. The dashboard "Manage Users" modal is removed for projects.
+       - frontend ManageUsersModal (project scope) -> remove/repoint.
+[R3] "Awaiting assignment" screen:
+       - With self-provisioning, a user who logs in via an org code is ALWAYS a
+         member of that tenant, so "awaiting assignment" cannot occur for the
+         normal path. REMOVE AwaitingAssignmentPage + its route + the login
+         redirect branch. (Keep only if Decision 3 says otherwise.)
+[R4] Login page (username/password only):
+       - frontend LoginPage.jsx -> rebuild to the PART A screen.
+[R5] Single User.project_id as the tenant link:
+       - Superseded by membership (Option 1) or per-tenant rows (Option 2).
+         project_id may remain as "last active tenant" convenience only.
+[R6] Project-as-only-tenant with NULL tenant_id treated as global:
+       - Still fine; keep the shared-content rule from v1 for Style/Doc/Prompt.
 
-    def get_tenant_id(current_user=Depends(get_current_user)) -> str | None:
-        """Return the effective tenant_id for scoping queries."""
-        return getattr(current_user, '_tenant_id', None)
+KEEP (from v1, still correct):
+   - app/core/tenant_context.py project-keyed scoping helpers.
+   - Clusters/Courses/Documents/Styles routers' tenant scoping.
+   - Suspended-tenant login rejection.
+   - Platform-admin-only guard on the tenants dashboard.
 
-    def require_tenant_context(current_user=Depends(get_current_user)) -> str:
-        """Return tenant_id or raise 403 if no tenant context."""
-        tid = getattr(current_user, '_tenant_id', None)
-        if not tid and not getattr(current_user, '_is_platform_admin', False):
-            raise PermissionDeniedError("tenant_context", user_role=current_user.role)
-        return tid  # None is OK for platform admin
 
-────────────────────────────────────────────────────────────────────────────────
-  2D. Update login endpoint — app/api/v1/routers/auth.py
-────────────────────────────────────────────────────────────────────────────────
+--------------------------------------------------------------------------------
+PART D — PHASED IMPLEMENTATION
+--------------------------------------------------------------------------------
+Each phase is independently testable. Do them in order.
 
-  BEFORE:
-    class LoginRequest:
-        username: str
-        password: str
+PHASE 0 — Dependencies & config (no behaviour change)
+  - requirements.txt: add `msal`.
+  - Rebuild the api/celery/api_server images (msal must be in the image).
+  - app/core/config.py: add fields
+      microsoft_auth_enabled: bool  (MICROSOFT_AUTH_ENABLED, default False)
+      azure_client_id/secret/tenant_id/redirect_uri  (AZURE_*)
+      azure_new_user_role (default "author")
+      local_login_enabled: bool (LOCAL_LOGIN_ENABLED, default True)
+      platform_slug const = "platform"
+  - .env / .env.example: add the AZURE_* keys (values provided by you — see F).
 
-  AFTER (update app/schemas/auth.py):
-    class LoginRequest:
-        tenant_slug: str          # org code — use "platform" for platform admin
-        username: str
-        password: str
-        platform_admin: bool = False  # shortcut: sets tenant_slug="platform"
+PHASE 1 — Data model (Project tenant columns + membership)
+  - promptops_app/database.py:
+      * Add the Project columns from PART B.
+      * (Option 1) Add User columns microsoft_oid/email/display_name.
+      * (Option 1) Add TenantMembership model + table.
+      * Extend init_db() ADD COLUMN IF NOT EXISTS block for all new columns
+        (this repo migrates schema at startup, not via Alembic).
+      * Backfill: give every existing Project a slug (e.g. slugify(name)), a
+        default max_users, status active. Existing users -> membership rows
+        from their current project_id.
+  - No API change yet; just migrate + verify the app still boots.
 
-  Update the login() route handler:
+PHASE 2 — Backend: tenant service + platform tenants API
+  - New app/services/tenant_service.py (port from prompt-library):
+      validate_slug, create_tenant(slug,name,max_users,initial_admin_*),
+      active_user_count, assert_can_add_user, tenant_usage.
+  - New app/api/v1/routers/platform_tenants.py mounted at /platform/tenants
+    (platform-admin only): list / create / update(status,max_users,azure,...) /
+    usage / per-tenant users list / edit-role / activate / deactivate / delete.
+    (Port from prompt-library platform_tenants.py + users.py, mapped to CAS
+    roles and the membership model.)
+  - Retire platform_users.py (R1) or fold it into this router.
 
-    def login(credentials: LoginRequest, db: Session = Depends(get_db)):
-        from promptops_app.database import Tenant, User
+PHASE 3 — Backend: Microsoft OAuth + org-code login
+  - New app/services/microsoft_auth.py (port from prompt-library): build_login_
+    url, exchange_code_for_claims, find_or_create_user (creates User + tenant
+    membership on first login), email-domain checks, per-tenant vs platform
+    Azure creds. Uses msal.ConfidentialClientApplication.
+  - app/api/v1/routers/auth.py:
+      * POST /auth/login: accept {organization_code, username, password,
+        platform_admin}. Platform-admin path (checkbox) = username/password vs
+        is_platform_admin users. Tenant path = org code + username/password for
+        password-holding members. Reject suspended tenants.
+      * GET  /auth/config: {microsoft_enabled, local_login_enabled, platform_slug}
+      * GET  /auth/tenant-login/{code}: validate org code, is Microsoft enabled.
+      * GET  /login/microsoft?organization_code=... : redirect to Microsoft.
+      * GET  /auth/microsoft/callback: exchange code, find_or_create_user,
+        issue JWT, redirect to frontend clusters for that tenant.
+  - JWT (app/core/security.py): carry active project_id + role + is_platform_
+    admin (already there); ensure role comes from the membership for tenant
+    users.
 
-        slug = credentials.tenant_slug.strip().lower()
-        if credentials.platform_admin:
-            slug = "platform"
+PHASE 4 — Frontend: login screen
+  - Rebuild LoginPage.jsx to PART A layout (org code, Microsoft button,
+    divider, platform-admin checkbox, username/password).
+  - authService/authThunks: add microsoftLogin(orgCode) -> hits /login/microsoft
+    (full-page redirect); loginThunk sends {organization_code, username,
+    password, platform_admin}.
+  - Handle the OAuth return (token in URL or a /auth/me bootstrap), then redirect
+    by role: platform admin -> Tenants dashboard; tenant user -> that tenant's
+    clusters.
+  - Remove AwaitingAssignmentPage + route (R3).
 
-        # Platform admin path
-        if slug == "platform":
-            user = db.query(User).filter(
-                User.username == credentials.username,
-                User.is_platform_admin == True
-            ).first()
-            tenant_id = None
-            tenant_slug = "platform"
-        else:
-            # Validate tenant
-            tenant = db.query(Tenant).filter(Tenant.slug == slug).first()
-            if not tenant:
-                raise AuthenticationError("Unknown organization code.")
-            if tenant.status != "active":
-                raise AuthenticationError("This organization has been suspended.")
-            user = db.query(User).filter(
-                User.username == credentials.username,
-                User.tenant_id == tenant.id
-            ).first()
-            tenant_id = tenant.id
-            tenant_slug = tenant.slug
+PHASE 5 — Frontend: platform admin Tenants UI
+  - New Tenants dashboard page (image2/image8): table + "New tenant".
+  - New "New tenant" form (image9).
+  - New per-tenant Users page (image3/image6/image7) with row actions +
+    "Edit user" page/modal (image4).
+  - platformService: point at /platform/tenants endpoints.
+  - Wire ROUTES + sidebar entry ("Tenants" for platform admin only).
+  - Remove/repoint the old PlatformUsersPage + project ManageUsersModal (R1,R2).
 
-        # Verify password
-        password_correct = user is not None and verify_password(
-            credentials.password, user.password_hash
-        )
-        if not password_correct:
-            raise AuthenticationError("Invalid username or password.")
-        if not user.is_active:
-            raise AuthenticationError("Account is deactivated. Contact an Admin.")
+PHASE 6 — Cleanup & hardening
+  - Remove dead code: old platform_users create/assign, project user-assignment
+    endpoints, ProjectUserAssignment usage for tenancy (keep only if still used
+    for course-level assignment), awaiting-assignment.
+  - Verify tenant isolation end-to-end (a member of tenant A cannot touch
+    tenant B via direct API calls).
+  - Update the acceptance checklist below.
 
-        # Issue token with tenant context
-        token = create_access_token(
-            user.username,
-            user.role,
-            tenant_id=tenant_id,
-            tenant_slug=tenant_slug,
-            is_platform_admin=getattr(user, 'is_platform_admin', False),
-        )
-        ...
 
-  Update _build_token_response() to pass tenant fields to create_access_token():
-    token = create_access_token(
-        user.username, user.role,
-        tenant_id=getattr(user, '_tenant_id', None),
-        tenant_slug=getattr(user, '_tenant_slug', None),
-        is_platform_admin=getattr(user, '_is_platform_admin', False),
-    )
+--------------------------------------------------------------------------------
+PART E — OPEN DECISIONS (confirm before / during coding)
+--------------------------------------------------------------------------------
+D1. USER MODEL: Option 1 (membership table, RECOMMENDED) vs Option 2 (one row
+    per tenant, exact prompt-library replica). Affects the whole of Phase 1-3.
+D2. ROLES: keep Content AI Studio's admin/reviewer/author (mapped as PART B),
+    or introduce prompt-library's user/prompt_manager/tenant_admin names? The
+    whole app's RBAC + workspace uses admin/reviewer/author today.
+D3. "Awaiting assignment": remove entirely (recommended, since self-provisioning
+    always creates a membership), or keep as a fallback for edge cases?
+D4. Tenant STATUS: add a dedicated `status` column (active|suspended) to match
+    prompt-library, or reuse existing Project.is_active as the suspend flag?
+D5. LOCAL password login for tenant users: keep it (needed for the initial
+    tenant admin created in "New tenant"), or Microsoft-only for everyone
+    except platform admin? (Plan assumes: keep, matching prompt-library.)
 
-  Update GET /me to include tenant_id, tenant_slug, is_platform_admin in response.
 
-────────────────────────────────────────────────────────────────────────────────
-  2E. Update UserProfileResponse schema — app/schemas/auth.py
-────────────────────────────────────────────────────────────────────────────────
+--------------------------------------------------------------------------------
+PART F — CONFIG / SECRETS CHECKLIST  (needed from you before Phase 3 works)
+--------------------------------------------------------------------------------
+Azure App Registration (Entra ID) — platform-wide default app:
+  AZURE_CLIENT_ID        = <app (client) id>
+  AZURE_CLIENT_SECRET    = <client secret value>
+  AZURE_TENANT_ID        = common   (multi-tenant) or a specific tenant id
+  AZURE_REDIRECT_URI     = http://localhost:8000/api/v1/auth/microsoft/callback
+                           (must be registered as a Redirect URI in Azure)
+  MICROSOFT_AUTH_ENABLED = true
+  AZURE_NEW_USER_ROLE    = author
+  LOCAL_LOGIN_ENABLED    = true
+Notes:
+  - Redirect URI in Azure must EXACTLY match AZURE_REDIRECT_URI (host+port+path).
+  - API delegated permission "User.Read" (admin consent) is enough.
+  - Per-tenant Azure apps (azure_client_id/secret on a Project) are optional and
+    override the platform default for that tenant.
+  - Nothing in Phase 3+ can be tested until these exist.
 
-  Add fields to UserProfileResponse:
-    tenant_id:          str | None = None
-    tenant_slug:        str | None = None
-    is_platform_admin:  bool = False
 
+--------------------------------------------------------------------------------
+PART G — ACCEPTANCE CHECKLIST
+--------------------------------------------------------------------------------
+[ ] Login page shows org code + Microsoft + platform-admin checkbox + user/pass.
+[ ] Platform admin (checkbox) -> Tenants dashboard with all tenants + New tenant.
+[ ] New tenant creates org code + display name + max_users + initial tenant admin.
+[ ] Per-tenant Users page lists members; edit role / activate / deactivate /
+    delete all work; license count (n/max) shown and enforced.
+[ ] Regular user: org code + Microsoft -> auto-provisioned -> lands in that
+    tenant's clusters, never the dashboard.
+[ ] Same Microsoft account + a second org code -> member of a second tenant,
+    independent role; sign-out/sign-in switches tenants.
+[ ] Suspended tenant blocks login for its members.
+[ ] Tenant isolation: member of A cannot read/write B via direct API calls.
+[ ] No leftover: create-user-with-project dropdown, awaiting-assignment screen.
 
 ================================================================================
-  PHASE 3 — TENANT SCOPING UTILITIES
-================================================================================
-
-Create a NEW file: app/core/tenant_context.py
-
-This is the most important new module. It mirrors what prompt-library has in
-prompt_library/utils/tenant_context.py, adapted for FastAPI + SQLAlchemy.
-
-────────────────────────────────────────────────────────────────────────────────
-  3A. Content of app/core/tenant_context.py
-────────────────────────────────────────────────────────────────────────────────
-
-  from __future__ import annotations
-  from sqlalchemy.orm import Query
-
-
-  def apply_tenant_filter(q: Query, model, tenant_id: str | None,
-                          is_platform_admin: bool = False) -> Query:
-      """Scope a SQLAlchemy query to a tenant.
-
-      Rules:
-        - Platform admin with no tenant_id → returns all rows (unscoped)
-        - Platform admin with tenant_id → filters to that tenant
-        - Regular user → always filters to their tenant_id
-        - If the model has no tenant_id column → returns query unchanged
-      """
-      if not hasattr(model, 'tenant_id'):
-          return q
-      if is_platform_admin and not tenant_id:
-          return q   # platform admin sees everything
-      if tenant_id:
-          return q.filter(model.tenant_id == tenant_id)
-      return q
-
-
-  def get_scoped_or_404(db, model, pk: int | str,
-                        tenant_id: str | None,
-                        is_platform_admin: bool = False):
-      """Fetch one row scoped to tenant; raises 404 if not found or cross-tenant."""
-      from app.core.exceptions import NotFoundError
-      q = db.query(model)
-      q = apply_tenant_filter(q, model, tenant_id, is_platform_admin)
-      obj = q.filter(model.id == pk).first()
-      if obj is None:
-          raise NotFoundError(model.__tablename__, pk)
-      return obj
-
-
-  def tenant_id_from_user(current_user) -> str | None:
-      """Extract tenant_id from an authenticated user object."""
-      return getattr(current_user, '_tenant_id', None)
-
-
-  def is_platform_admin_user(current_user) -> bool:
-      """Return True if the current user is a platform admin."""
-      return bool(getattr(current_user, '_is_platform_admin', False))
-
-
-  def effective_tenant_id_for_write(current_user, body_tenant_id: str | None = None) -> str:
-      """Return the tenant_id to use for a CREATE/UPDATE operation.
-
-      Platform admin:  reads tenant_id from the request body (required)
-      Regular user:    always uses their own tenant_id
-      Raises 400 if platform admin does not provide tenant_id.
-      """
-      from fastapi import HTTPException
-      if is_platform_admin_user(current_user):
-          if not body_tenant_id:
-              raise HTTPException(
-                  status_code=400,
-                  detail="tenant_id is required for platform admin operations"
-              )
-          return body_tenant_id
-      tid = tenant_id_from_user(current_user)
-      if not tid:
-          raise HTTPException(status_code=403, detail="Tenant context required")
-      return tid
-
-────────────────────────────────────────────────────────────────────────────────
-  3B. Helper dependency for all tenant routes — add to app/core/dependencies.py
-────────────────────────────────────────────────────────────────────────────────
-
-  from app.core.tenant_context import tenant_id_from_user, is_platform_admin_user
-
-  def get_tenant_context(current_user=Depends(get_current_user)):
-      """Returns (tenant_id, is_platform_admin) tuple for the current request."""
-      return (
-          tenant_id_from_user(current_user),
-          is_platform_admin_user(current_user),
-      )
-
-
-================================================================================
-  PHASE 4 — REPOSITORY / QUERY UPDATES
-================================================================================
-
-Every repository that reads/writes tenant-owned data must be updated to
-scope queries using apply_tenant_filter().
-
-────────────────────────────────────────────────────────────────────────────────
-  4A. promptops_app/repositories/project_repository.py
-────────────────────────────────────────────────────────────────────────────────
-
-  from app.core.tenant_context import apply_tenant_filter
-
-  BEFORE:
-    def list_active_projects(db):
-        return db.query(Project).filter(Project.is_active == True).all()
-
-  AFTER:
-    def list_active_projects(db, tenant_id=None, is_platform_admin=False):
-        q = db.query(Project).filter(Project.is_active == True)
-        return apply_tenant_filter(q, Project, tenant_id, is_platform_admin).all()
-
-  BEFORE:
-    def get_project_by_id(db, project_id):
-        return db.query(Project).filter(Project.id == project_id).first()
-
-  AFTER:
-    def get_project_by_id(db, project_id, tenant_id=None, is_platform_admin=False):
-        q = db.query(Project).filter(Project.id == project_id)
-        return apply_tenant_filter(q, Project, tenant_id, is_platform_admin).first()
-
-  Update _get_user_projects() in promptops_app/database.py:
-    def _get_user_projects(db, username, role, tenant_id=None):
-        if role == "admin":
-            q = db.query(Project).filter(Project.is_active == True)
-            if tenant_id:
-                q = q.filter(Project.tenant_id == tenant_id)
-            return q.order_by(Project.created_at.desc()).all()
-        ... (rest unchanged)
-
-────────────────────────────────────────────────────────────────────────────────
-  4B. Document queries — promptops_app/repositories/document_repository.py
-  (or wherever documents are queried)
-────────────────────────────────────────────────────────────────────────────────
-
-  All document list queries:
-    q = db.query(Document).filter(Document.status == "active")
-    q = apply_tenant_filter(q, Document, tenant_id, is_platform_admin)
-
-────────────────────────────────────────────────────────────────────────────────
-  4C. Style queries — promptops_app/database.py (get_styles, get_active_style)
-────────────────────────────────────────────────────────────────────────────────
-
-  def get_styles(db, tenant_id=None, is_platform_admin=False):
-      q = db.query(Style).order_by(Style.updated_at.desc())
-      return apply_tenant_filter(q, Style, tenant_id, is_platform_admin).all()
-
-  def get_active_style(db, project_id=None, course_id=None, tenant_id=None):
-      # First try course-level and project-level (unchanged)
-      # Fall back to global style scoped to tenant:
-      q = db.query(Style).filter(Style.is_active == True)
-      if tenant_id:
-          q = q.filter(Style.tenant_id == tenant_id)
-      return q.first()
-
-────────────────────────────────────────────────────────────────────────────────
-  4D. User queries — promptops_app/repositories/user_repository.py
-────────────────────────────────────────────────────────────────────────────────
-
-  def list_users(db, tenant_id=None, is_platform_admin=False):
-      q = db.query(User).filter(User.is_platform_admin == False)
-      if not is_platform_admin and tenant_id:
-          q = q.filter(User.tenant_id == tenant_id)
-      elif is_platform_admin and tenant_id:
-          q = q.filter(User.tenant_id == tenant_id)
-      return q.order_by(User.username).all()
-
-────────────────────────────────────────────────────────────────────────────────
-  4E. Prompt/CDD/Blueprint/Generation queries
-────────────────────────────────────────────────────────────────────────────────
-
-  All queries for CDD, Blueprint, Generation, Block that go through project_id
-  are already indirectly tenant-scoped because project queries are scoped.
-  However, for direct queries on these tables (by ID), add a join or sub-select:
-
-    # Getting a CDD by ID — verify it belongs to tenant's project
-    def get_cdd_by_id(db, cdd_id, tenant_id=None):
-        q = db.query(CourseDesignDocument).filter(CourseDesignDocument.id == cdd_id)
-        if tenant_id:
-            q = q.join(Project, Project.id == CourseDesignDocument.project_id)
-                  .filter(Project.tenant_id == tenant_id)
-        return q.first()
-
-  Apply same pattern to: ModuleBlueprint, Generation, Block (join back to Project)
-
-────────────────────────────────────────────────────────────────────────────────
-  4F. GenerationJob queries
-────────────────────────────────────────────────────────────────────────────────
-
-  GenerationJob has a direct tenant_id column, so:
-    q = db.query(GenerationJob)
-    q = apply_tenant_filter(q, GenerationJob, tenant_id, is_platform_admin)
-
-
-================================================================================
-  PHASE 5 — API ROUTE UPDATES + NEW PLATFORM ADMIN ROUTES
-================================================================================
-
-────────────────────────────────────────────────────────────────────────────────
-  5A. Update all existing routers to pass tenant context to repositories
-────────────────────────────────────────────────────────────────────────────────
-
-  Pattern to apply to every router that touches tenant data:
-
-  BEFORE:
-    @router.get("")
-    def list_projects(
-        db: Session = Depends(get_db),
-        current_user = Depends(get_current_user),
-    ):
-        projects = project_repository.list_active_projects(db)
-
-  AFTER:
-    @router.get("")
-    def list_projects(
-        db: Session = Depends(get_db),
-        current_user = Depends(get_current_user),
-    ):
-        tid = tenant_id_from_user(current_user)
-        is_admin = is_platform_admin_user(current_user)
-        projects = project_repository.list_active_projects(db,
-            tenant_id=tid, is_platform_admin=is_admin)
-
-  Apply this change to:
-    app/api/v1/routers/projects.py     → list_projects, get_project, create_project, etc.
-    app/api/v1/routers/courses.py      → all handlers
-    app/api/v1/routers/clusters.py     → all handlers
-    app/api/v1/routers/cdd.py          → all handlers
-    app/api/v1/routers/blueprints.py   → all handlers
-    app/api/v1/routers/generations.py  → all handlers
-    app/api/v1/routers/blocks.py       → all handlers
-    app/api/v1/routers/styles.py       → all handlers
-    app/api/v1/routers/documents.py    → all handlers
-    app/api/v1/routers/prompts.py      → all handlers
-    app/api/v1/routers/users.py        → all handlers
-    app/api/v1/routers/analytics.py    → all handlers
-
-────────────────────────────────────────────────────────────────────────────────
-  5B. Update CREATE operations to stamp tenant_id
-────────────────────────────────────────────────────────────────────────────────
-
-  On every POST that creates a tenant-owned object, set tenant_id:
-
-  BEFORE:
-    project = Project(name=..., client_name=..., description=...)
-
-  AFTER:
-    tid = effective_tenant_id_for_write(current_user)
-    project = Project(name=..., client_name=..., description=..., tenant_id=tid)
-
-  Apply to all CREATE operations for:
-    Project, Style, Document, Prompt (CAS asset), CentralRepository,
-    GenerationJob, CourseDesignDocument (via project_id's tenant),
-    ModuleBlueprint, Generation, User (when admin creates user)
-
-────────────────────────────────────────────────────────────────────────────────
-  5C. Update users.py to scope user management to tenant
-────────────────────────────────────────────────────────────────────────────────
-
-  app/api/v1/routers/users.py:
-
-  GET /api/v1/users — list users in current tenant only (or all if platform admin):
-    users = db.query(User).filter(User.is_platform_admin == False)
-    if not is_platform_admin:
-        users = users.filter(User.tenant_id == tenant_id)
-    elif tenant_id:  # platform admin filtered to one tenant
-        users = users.filter(User.tenant_id == tenant_id)
-
-  POST /api/v1/users — create user in current tenant:
-    tid = effective_tenant_id_for_write(current_user)
-    # Check license
-    count = db.query(User).filter(
-        User.tenant_id == tid, User.is_active == True
-    ).count()
-    tenant = db.get(Tenant, tid)
-    if count >= tenant.max_users:
-        raise HTTPException(403, "User license limit reached")
-    new_user = User(..., tenant_id=tid)
-
-────────────────────────────────────────────────────────────────────────────────
-  5D. New file: app/api/v1/routers/platform_tenants.py
-────────────────────────────────────────────────────────────────────────────────
-
-  This router handles all platform-admin-only operations.
-  Mount it at /api/v1/platform/tenants.
-
-  Every endpoint in this file must call require_permission("platform.manage")
-  or check is_platform_admin_user(current_user) directly.
-
-  ENDPOINTS TO IMPLEMENT:
-
-  GET  /api/v1/platform/tenants
-    List all tenants.
-    Response: [{id, slug, name, max_users, status, active_users, created_at}, ...]
-
-    def list_tenants(db, current_user):
-        _require_platform_admin(current_user)
-        tenants = db.query(Tenant).order_by(Tenant.name).all()
-        return [_tenant_dict(t, db) for t in tenants]
-
-  POST /api/v1/platform/tenants
-    Create a tenant + its initial admin user.
-    Body: {slug, name, max_users, admin_username, admin_password, admin_display_name}
-
-    def create_tenant(body, db, current_user):
-        _require_platform_admin(current_user)
-        import uuid
-        # Validate slug (lowercase, no "platform", unique)
-        slug = body.slug.strip().lower()
-        if slug == "platform":
-            raise HTTPException(400, "Reserved organization code")
-        if db.query(Tenant).filter(Tenant.slug == slug).first():
-            raise HTTPException(409, "Organization code already exists")
-        tenant = Tenant(
-            id=str(uuid.uuid4()), slug=slug, name=body.name,
-            max_users=body.max_users, status="active",
-            created_by=current_user.username
-        )
-        db.add(tenant); db.flush()
-        admin = User(
-            username=body.admin_username,
-            password_hash=hash_password(body.admin_password),
-            role="admin",
-            tenant_id=tenant.id,
-            is_active=True,
-            is_platform_admin=False,
-        )
-        db.add(admin); db.commit()
-        return _tenant_dict(tenant, db)
-
-  PUT  /api/v1/platform/tenants/{tenant_id}
-    Update name, max_users, status (active/suspended).
-    Body: {name?, max_users?, status?}
-
-    def update_tenant(tenant_id, body, db, current_user):
-        _require_platform_admin(current_user)
-        tenant = db.get(Tenant, tenant_id)
-        if not tenant: raise HTTPException(404)
-        if body.name:      tenant.name = body.name
-        if body.max_users: tenant.max_users = body.max_users
-        if body.status in ("active", "suspended"): tenant.status = body.status
-        db.commit()
-        return _tenant_dict(tenant, db)
-
-  GET  /api/v1/platform/tenants/{tenant_id}/users
-    List all users in a specific tenant.
-
-  POST /api/v1/platform/tenants/{tenant_id}/users
-    Create a user in a specific tenant.
-
-  PUT  /api/v1/platform/tenants/{tenant_id}/users/{username}
-    Update a user in a specific tenant.
-
-  DELETE /api/v1/platform/tenants/{tenant_id}/users/{username}
-    Delete a user from a specific tenant.
-
-  GET  /api/v1/platform/tenants/{tenant_id}/usage
-    Returns {active_users, max_users} for a tenant.
-
-────────────────────────────────────────────────────────────────────────────────
-  5E. Add "platform.manage" permission to app/core/permissions.py
-────────────────────────────────────────────────────────────────────────────────
-
-  Add to _PERMISSIONS dict:
-    "platform.manage": ["admin"],      # only platform admins reach this
-
-  But more practically, platform admin routes should check is_platform_admin
-  directly (not via the role string), since platform admin is a separate user type:
-
-  def _require_platform_admin(current_user):
-      from fastapi import HTTPException
-      if not getattr(current_user, '_is_platform_admin', False):
-          raise HTTPException(403, "Platform admin access required")
-
-────────────────────────────────────────────────────────────────────────────────
-  5F. Register platform router in app/api/v1/router.py
-────────────────────────────────────────────────────────────────────────────────
-
-  from app.api.v1.routers.platform_tenants import router as platform_tenants_router
-  api_router.include_router(
-      platform_tenants_router,
-      prefix="/platform/tenants",
-      tags=["Platform — Tenant Management"],
-  )
-
-
-================================================================================
-  PHASE 6 — PYDANTIC SCHEMAS
-================================================================================
-
-────────────────────────────────────────────────────────────────────────────────
-  6A. Update app/schemas/auth.py
-────────────────────────────────────────────────────────────────────────────────
-
-  class LoginRequest(BaseModel):
-      tenant_slug: str                    # NEW — org code (or "platform")
-      username: str
-      password: str
-      platform_admin: bool = False        # NEW — shortcut for platform login
-
-  class UserProfileResponse(BaseModel):
-      id: int
-      username: str
-      role: str
-      role_display: str
-      is_active: bool
-      permissions: list[str]
-      tenant_id: str | None = None        # NEW
-      tenant_slug: str | None = None      # NEW
-      is_platform_admin: bool = False     # NEW
-
-────────────────────────────────────────────────────────────────────────────────
-  6B. Create app/schemas/tenant.py
-────────────────────────────────────────────────────────────────────────────────
-
-  from pydantic import BaseModel
-
-  class TenantRead(BaseModel):
-      id: str
-      slug: str
-      name: str
-      max_users: int
-      status: str
-      active_users: int
-      created_at: datetime | None
-
-      class Config: from_attributes = True
-
-  class TenantCreateRequest(BaseModel):
-      slug: str
-      name: str
-      max_users: int = 50
-      admin_username: str
-      admin_password: str
-      admin_display_name: str = ""
-
-  class TenantUpdateRequest(BaseModel):
-      name: str | None = None
-      max_users: int | None = None
-      status: str | None = None    # "active" | "suspended"
-
-
-================================================================================
-  PHASE 7 — FRONTEND (React + Redux)
-================================================================================
-
-────────────────────────────────────────────────────────────────────────────────
-  7A. Update login form — frontend/src/pages/LoginPage.jsx (or .tsx)
-────────────────────────────────────────────────────────────────────────────────
-
-  Add an org code field ABOVE the username field:
-
-  BEFORE:
-    <input name="username" />
-    <input name="password" type="password" />
-
-  AFTER:
-    <input name="tenant_slug" placeholder="Organization Code" />
-    <input name="username" />
-    <input name="password" type="password" />
-    <label><input type="checkbox" name="platform_admin" /> Platform administrator</label>
-
-  When "Platform administrator" is checked, hide the org code field (it will
-  be set to "platform" automatically in the thunk).
-
-────────────────────────────────────────────────────────────────────────────────
-  7B. Update auth API call — frontend/src/features/auth/authAPI.js
-────────────────────────────────────────────────────────────────────────────────
-
-  BEFORE:
-    export const loginUser = ({ username, password }) =>
-        apiClient.post('/auth/login', { username, password });
-
-  AFTER:
-    export const loginUser = ({ tenant_slug, username, password, platform_admin }) =>
-        apiClient.post('/auth/login', {
-            tenant_slug: platform_admin ? "platform" : tenant_slug,
-            username,
-            password,
-            platform_admin: !!platform_admin,
-        });
-
-────────────────────────────────────────────────────────────────────────────────
-  7C. Update auth Redux slice — frontend/src/features/auth/authSlice.js
-────────────────────────────────────────────────────────────────────────────────
-
-  In the initialState, add:
-    tenant_id: null,
-    tenant_slug: null,
-    is_platform_admin: false,
-
-  In the loginUser.fulfilled reducer:
-    state.tenant_id          = action.payload.user.tenant_id;
-    state.tenant_slug        = action.payload.user.tenant_slug;
-    state.is_platform_admin  = action.payload.user.is_platform_admin;
-
-  In the logout reducer, clear these fields:
-    state.tenant_id          = null;
-    state.tenant_slug        = null;
-    state.is_platform_admin  = false;
-
-────────────────────────────────────────────────────────────────────────────────
-  7D. Expose tenant info via useAuth hook
-────────────────────────────────────────────────────────────────────────────────
-
-  frontend/src/hooks/useAuth.js:
-    const tenant_id         = useSelector(s => s.auth.tenant_id);
-    const tenant_slug       = useSelector(s => s.auth.tenant_slug);
-    const is_platform_admin = useSelector(s => s.auth.is_platform_admin);
-    return { ..., tenant_id, tenant_slug, is_platform_admin };
-
-────────────────────────────────────────────────────────────────────────────────
-  7E. Add Platform Admin UI — frontend/src/pages/platform/
-────────────────────────────────────────────────────────────────────────────────
-
-  Create these pages (visible only when is_platform_admin === true):
-
-  PlatformTenantsPage.jsx
-    - Lists all tenants from GET /api/v1/platform/tenants
-    - Columns: name, org code, status, active/max users, created at
-    - Actions: Create Tenant, Suspend/Reactivate, Edit, View Users
-
-  PlatformTenantFormPage.jsx
-    - Form for creating or editing a tenant
-    - Fields: Organization Code, Name, Max Users
-    - On create: also collect Initial Admin Username + Password
-
-  PlatformTenantUsersPage.jsx
-    - Lists users in a specific tenant from GET /api/v1/platform/tenants/{id}/users
-    - Actions: Create User, Edit, Delete, Deactivate/Activate
-
-────────────────────────────────────────────────────────────────────────────────
-  7F. Add Platform routes to router — frontend/src/app/routes.jsx
-────────────────────────────────────────────────────────────────────────────────
-
-  {
-    path: "/platform",
-    element: <PlatformAdminGuard />,   // only renders for is_platform_admin
-    children: [
-      { path: "tenants", element: <PlatformTenantsPage /> },
-      { path: "tenants/new", element: <PlatformTenantFormPage /> },
-      { path: "tenants/:tenantId/users", element: <PlatformTenantUsersPage /> },
-    ]
-  }
-
-  PlatformAdminGuard component:
-    const { is_platform_admin } = useAuth();
-    if (!is_platform_admin) return <Navigate to="/" />;
-    return <Outlet />;
-
-────────────────────────────────────────────────────────────────────────────────
-  7G. Show org code on header/sidebar
-────────────────────────────────────────────────────────────────────────────────
-
-  In the navigation header, show the current tenant:
-    { tenant_slug && <span className="tenant-badge">{tenant_slug}</span> }
-    { is_platform_admin && <span className="platform-badge">Platform Admin</span> }
-
-  Also add a "Platform" link in the nav for platform admins.
-
-
-================================================================================
-  PHASE 8 — SEED & DATA MIGRATION SCRIPT
-================================================================================
-
-Create a new file: scripts/migrate_to_tenant.py
-
-This script runs ONCE on an existing database to:
-  1. Create the "default-org" tenant
-  2. Assign all existing users to it
-  3. Assign all existing projects, styles, documents, prompts, etc. to it
-  4. Create one platform admin user
-
-────────────────────────────────────────────────────────────────────────────────
-  8A. Content of scripts/migrate_to_tenant.py
-────────────────────────────────────────────────────────────────────────────────
-
-  import uuid
-  from promptops_app.database import (
-      SessionLocal, Tenant, User, Project, Style, Document,
-      Prompt, CentralRepository, GenerationJob, LLMUsageLog, AuditLog,
-      hash_password
-  )
-
-  DEFAULT_TENANT_SLUG = "default-org"
-  DEFAULT_TENANT_NAME = "Default Organization"
-  PLATFORM_ADMIN_USERNAME = "platformadmin"
-  PLATFORM_ADMIN_PASSWORD = "ChangeMe123!"   # Must be changed immediately after run
-
-  def run():
-      with SessionLocal() as db:
-          # 1. Create default tenant (idempotent)
-          tenant = db.query(Tenant).filter(Tenant.slug == DEFAULT_TENANT_SLUG).first()
-          if not tenant:
-              tenant = Tenant(
-                  id=str(uuid.uuid4()),
-                  slug=DEFAULT_TENANT_SLUG,
-                  name=DEFAULT_TENANT_NAME,
-                  max_users=1000,
-                  status="active",
-                  created_by="migration",
-              )
-              db.add(tenant)
-              db.flush()
-              print(f"Created tenant: {DEFAULT_TENANT_SLUG} (id={tenant.id})")
-
-          tid = tenant.id
-
-          # 2. Assign existing users to the default tenant
-          users = db.query(User).filter(User.tenant_id.is_(None)).all()
-          for user in users:
-              user.tenant_id = tid
-              user.is_platform_admin = False
-          db.flush()
-          print(f"Migrated {len(users)} users to tenant '{DEFAULT_TENANT_SLUG}'")
-
-          # 3. Assign existing projects to default tenant
-          projects = db.query(Project).filter(Project.tenant_id.is_(None)).all()
-          for p in projects:
-              p.tenant_id = tid
-          db.flush()
-          print(f"Migrated {len(projects)} projects")
-
-          # 4. Assign existing styles to default tenant
-          styles = db.query(Style).filter(Style.tenant_id.is_(None)).all()
-          for s in styles:
-              s.tenant_id = tid
-          db.flush()
-          print(f"Migrated {len(styles)} styles")
-
-          # 5. Assign existing documents to default tenant
-          documents = db.query(Document).filter(Document.tenant_id.is_(None)).all()
-          for d in documents:
-              d.tenant_id = tid
-          db.flush()
-          print(f"Migrated {len(documents)} documents")
-
-          # 6. Assign existing prompts (CAS prompt assets) to default tenant
-          prompts = db.query(Prompt).filter(Prompt.tenant_id.is_(None)).all()
-          for p in prompts:
-              p.tenant_id = tid
-          db.flush()
-          print(f"Migrated {len(prompts)} prompts")
-
-          # 7. Assign central repositories to default tenant
-          repos = db.query(CentralRepository).filter(CentralRepository.tenant_id.is_(None)).all()
-          for r in repos:
-              r.tenant_id = tid
-          db.flush()
-
-          # 8. Assign generation jobs to default tenant
-          jobs = db.query(GenerationJob).filter(GenerationJob.tenant_id.is_(None)).all()
-          for j in jobs:
-              j.tenant_id = tid
-          db.flush()
-
-          # 9. Assign audit logs to default tenant
-          logs = db.query(AuditLog).filter(AuditLog.tenant_id.is_(None)).all()
-          for l in logs:
-              l.tenant_id = tid
-          db.flush()
-
-          # 10. Create platform admin user (idempotent)
-          existing_admin = db.query(User).filter(
-              User.username == PLATFORM_ADMIN_USERNAME,
-              User.is_platform_admin == True
-          ).first()
-          if not existing_admin:
-              platform_admin = User(
-                  username=PLATFORM_ADMIN_USERNAME,
-                  password_hash=hash_password(PLATFORM_ADMIN_PASSWORD),
-                  role="admin",
-                  tenant_id=None,
-                  is_platform_admin=True,
-                  is_active=True,
-              )
-              db.add(platform_admin)
-              print(f"Created platform admin: {PLATFORM_ADMIN_USERNAME}")
-              print(f"  IMPORTANT: Change password immediately after migration!")
-
-          db.commit()
-          print("Migration complete.")
-
-  if __name__ == "__main__":
-      run()
-
-Run this script AFTER applying the Alembic migration:
-  python scripts/migrate_to_tenant.py
-
-
-================================================================================
-  PHASE 9 — STREAMLIT COMPATIBILITY SHIM
-================================================================================
-
-The legacy Streamlit app (promptops_app/) must keep working. Since it uses
-session-based auth (browser cookies with JWT), not Bearer tokens, it won't
-use the new tenant login flow directly. Apply minimal changes:
-
-────────────────────────────────────────────────────────────────────────────────
-  9A. Update Streamlit login page — promptops_app/core/shared.py
-────────────────────────────────────────────────────────────────────────────────
-
-  Add an "Organization Code" input ABOVE the username/password fields.
-  Default value: "default-org" (so existing sessions work unchanged).
-
-  On login:
-    1. Look up tenant by slug
-    2. Filter user query by (username, tenant_id)
-    3. Embed tenant_id in the Streamlit session state cookie
-
-────────────────────────────────────────────────────────────────────────────────
-  9B. Pass tenant_id through Streamlit session state
-────────────────────────────────────────────────────────────────────────────────
-
-  After login, set:
-    st.session_state["tenant_id"] = tenant.id
-    st.session_state["tenant_slug"] = tenant.slug
-
-  All Streamlit page functions that query the DB must read tenant_id from
-  session state and pass it to every DB query function that now accepts it.
-
-  The simplest approach for Streamlit: add a helper in promptops_app/core/shared.py:
-    def get_session_tenant_id() -> str | None:
-        return st.session_state.get("tenant_id")
-
-  Then in each page file, replace direct queries with tenant-scoped ones:
-    # BEFORE
-    projects = _get_user_projects(db, username, role)
-    # AFTER
-    tid = get_session_tenant_id()
-    projects = _get_user_projects(db, username, role, tenant_id=tid)
-
-
-================================================================================
-  PHASE 10 — TESTING CHECKLIST
-================================================================================
-
-Run these manual tests in order to verify the implementation is working:
-
-  1. MIGRATION TEST
-     - Apply Alembic migration on a dev DB
-     - Run scripts/migrate_to_tenant.py
-     - Verify tenants table has 1 row (default-org)
-     - Verify all users have tenant_id = default-org's id
-     - Verify all projects, styles have tenant_id set
-
-  2. LOGIN TESTS
-     - Login with {tenant_slug: "default-org", username: "admin", password: "admin123"}
-       → Should succeed and return JWT with tenant_id, tenant_slug
-     - Login with {tenant_slug: "nonexistent", username: "admin", password: "admin123"}
-       → Should return 401 "Unknown organization code"
-     - Login with {tenant_slug: "platform", username: "platformadmin", password: "ChangeMe123!"}
-       → Should succeed and return JWT with is_platform_admin: true, tenant_id: null
-     - Login as tenant user with tenant_slug: "platform"
-       → Should return 401 (user not found as platform admin)
-
-  3. DATA ISOLATION TEST
-     - Create two tenants via platform admin: "tenant-a" and "tenant-b"
-     - Create a project in tenant-a
-     - Log in as tenant-b user, GET /api/v1/projects
-       → Should NOT see tenant-a's project
-     - Log in as platform admin, GET /api/v1/platform/tenants
-       → Should see both tenants
-
-  4. LICENSE TEST
-     - Set tenant.max_users = 2
-     - Create 2 active users in that tenant
-     - Try to create a 3rd user → Should return 403 "User license limit reached"
-     - Deactivate one user, then create again → Should succeed
-
-  5. SUSPENSION TEST
-     - Suspend a tenant via PUT /api/v1/platform/tenants/{id} {status: "suspended"}
-     - Try to login as a user from that tenant
-       → Should return 401 "This organization has been suspended."
-
-  6. PLATFORM ADMIN DATA TEST
-     - Login as platform admin
-     - GET /api/v1/projects (no ?tenant_id= param)
-       → Should return ALL projects from all tenants
-     - GET /api/v1/projects?tenant_id=<specific_id>
-       → Should return only that tenant's projects
-
-  7. FRONTEND TESTS
-     - Login page shows org code field
-     - After login, tenant_slug shows in header
-     - Platform admin login shows Platform Admin badge
-     - Platform admin nav shows "Tenants" link
-     - /platform/tenants page loads and lists tenants
-     - Non-platform-admin accessing /platform → redirects to /
-
-  8. STREAMLIT TESTS
-     - Open Streamlit app (port 8501)
-     - Org code field shows, prefilled with "default-org"
-     - Login works with existing credentials
-     - Projects still visible
-
-
-================================================================================
-  ORDER OF EXECUTION (EXACT SEQUENCE)
-================================================================================
-
-  Step 1:  Phase 1A-1D — Add models to promptops_app/database.py
-  Step 2:  Phase 1E    — Run alembic revision + alembic upgrade head
-  Step 3:  Phase 8     — Run scripts/migrate_to_tenant.py
-  Step 4:  Phase 2     — Update JWT + login endpoint
-  Step 5:  Phase 3     — Create app/core/tenant_context.py
-  Step 6:  Phase 4     — Update all repositories
-  Step 7:  Phase 5A-5C — Update existing routers
-  Step 8:  Phase 5D-5F — Create platform_tenants.py router
-  Step 9:  Phase 6     — Update Pydantic schemas
-  Step 10: Phase 7     — Update React frontend (login + redux + platform pages)
-  Step 11: Phase 9     — Update Streamlit shim
-  Step 12: Phase 10    — Run testing checklist
-
-  Test after each step to catch issues early.
-  Phases 2-6 can all be done before touching the frontend.
-  The Alembic migration (Step 2) must happen before any app restarts.
-
-
-================================================================================
-  FILES CHANGED — COMPLETE LIST
-================================================================================
-
-  MODIFIED:
-    promptops_app/database.py              Add Tenant model, tenant_id columns
-    app/core/security.py                   JWT payload + tenant fields
-    app/core/dependencies.py               get_current_user, tenant dependencies
-    app/api/v1/routers/auth.py             Login accepts tenant_slug
-    app/api/v1/routers/projects.py         Tenant scoping
-    app/api/v1/routers/courses.py          Tenant scoping
-    app/api/v1/routers/clusters.py         Tenant scoping
-    app/api/v1/routers/cdd.py              Tenant scoping
-    app/api/v1/routers/blueprints.py       Tenant scoping
-    app/api/v1/routers/generations.py      Tenant scoping
-    app/api/v1/routers/blocks.py           Tenant scoping
-    app/api/v1/routers/styles.py           Tenant scoping
-    app/api/v1/routers/documents.py        Tenant scoping
-    app/api/v1/routers/prompts.py          Tenant scoping
-    app/api/v1/routers/users.py            Tenant scoping + license enforcement
-    app/api/v1/routers/analytics.py        Tenant scoping
-    app/api/v1/router.py                   Register platform_tenants router
-    app/schemas/auth.py                    LoginRequest + UserProfileResponse
-    promptops_app/repositories/*           Tenant filter on all query methods
-    promptops_app/core/shared.py           Streamlit login + session tenant_id
-    frontend/src/features/auth/authSlice.js    Add tenant fields to state
-    frontend/src/features/auth/authThunks.js   Pass tenant_slug on login
-    frontend/src/features/auth/authAPI.js      Pass tenant_slug in request
-    frontend/src/app/routes.jsx                Add /platform/* routes
-    frontend/src/components/layout/Header.jsx  Show tenant badge
-    frontend/src/hooks/useAuth.js              Expose tenant fields
-    migrations/versions/<hash>_add_tenant_system.py   Alembic migration
-
-  CREATED:
-    app/core/tenant_context.py                  Scoping utility functions
-    app/api/v1/routers/platform_tenants.py      Platform admin CRUD
-    app/schemas/tenant.py                       Tenant Pydantic schemas
-    scripts/migrate_to_tenant.py                One-time data migration
-    frontend/src/pages/platform/PlatformTenantsPage.jsx
-    frontend/src/pages/platform/PlatformTenantFormPage.jsx
-    frontend/src/pages/platform/PlatformTenantUsersPage.jsx
-    frontend/src/features/platform/platformAPI.js    API calls for tenants
-
-
-================================================================================
-  KEY DESIGN DECISIONS
-================================================================================
-
-  1. NULLABLE tenant_id on all tables (not FK + NOT NULL)
-     Reason: Existing data gets tenant_id=NULL until migration runs. This prevents
-     startup crashes if migration and schema change don't happen atomically.
-     After migration, app-layer code enforces it's always set on new records.
-
-  2. JWT carries tenant_id (not fetched from DB per request)
-     Reason: Keeps auth stateless — no extra DB lookup to know the tenant.
-     Tradeoff: If a user is moved between tenants, they need to re-login.
-     This is acceptable behavior for an enterprise app.
-
-  3. Platform admin uses slug "platform" (reserved word)
-     Reason: Mirrors what prompt-library does and is already familiar.
-     The Tenant.slug validation must reject "platform" at creation time.
-
-  4. Existing data migrates to "default-org" tenant
-     Reason: Zero-downtime approach. The existing admin/author/reviewer users
-     and all their data move to one default tenant. The platform admin is a
-     separate new account (not an existing user promoted).
-
-  5. apply_tenant_filter() is the single enforcement point
-     Reason: Every query goes through this function, which means the scoping
-     logic is in one place and easy to audit. Routes don't do raw filter() calls.
-
-  6. Platform admin routes blocked from API key auth
-     Not applicable here (CAS doesn't have API keys yet), but the platform
-     admin endpoints should require Bearer JWT with is_platform_admin=True.
-
-  7. Streamlit kept as a legacy parallel path
-     Reason: Don't break the existing Streamlit app during migration.
-     The Streamlit session just needs tenant_id stored in session_state and
-     passed to the (now tenant-aware) DB query functions.
-
-================================================================================
-  CURL COMMAND REFERENCE — COMPLETE TEST SUITE
-================================================================================
-
-Base URL for all commands: http://localhost:8000
-Replace TOKEN, TENANT_ID, USER_ID, PROJECT_ID etc. with real values.
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION A — AUTH: LOGIN & TOKEN MANAGEMENT
-────────────────────────────────────────────────────────────────────────────────
-
-A1. Login as a tenant user (normal flow)
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "default-org", "username": "admin", "password": "admin123"}' | python -m json.tool
-
-  Expected: 200 with access_token, user.tenant_id, user.tenant_slug
-
-A2. Login as platform admin
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "platform", "username": "platformadmin", "password": "ChangeMe123!"}' | python -m json.tool
-
-  Expected: 200 with access_token, user.is_platform_admin=true, user.tenant_id=null
-
-A3. Login with wrong org code (should fail)
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "no-such-org", "username": "admin", "password": "admin123"}' | python -m json.tool
-
-  Expected: 401 "Unknown organization code."
-
-A4. Login with suspended tenant (should fail)
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "suspended-org", "username": "admin", "password": "admin123"}' | python -m json.tool
-
-  Expected: 401 "This organization has been suspended."
-
-A5. Login with wrong password (should fail)
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "default-org", "username": "admin", "password": "wrongpass"}' | python -m json.tool
-
-  Expected: 401 "Invalid username or password."
-
-A6. Get current user profile (includes tenant info)
-  curl -s -X GET http://localhost:8000/api/v1/auth/me \
-    -H "Authorization: Bearer TOKEN" | python -m json.tool
-
-  Expected: 200 with tenant_id, tenant_slug, is_platform_admin fields
-
-A7. Refresh token (re-issues JWT with same tenant claims)
-  curl -s -X POST http://localhost:8000/api/v1/auth/refresh \
-    -H "Authorization: Bearer TOKEN" | python -m json.tool
-
-  Expected: 200 with new access_token
-
-A8. Logout
-  curl -s -X POST http://localhost:8000/api/v1/auth/logout \
-    -H "Authorization: Bearer TOKEN" | python -m json.tool
-
-  Expected: 200 {"message": "Logged out successfully"}
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION B — PLATFORM ADMIN: TENANT MANAGEMENT
-  (All commands require platform admin token in Authorization header)
-────────────────────────────────────────────────────────────────────────────────
-
-First, get a platform admin token:
-  PLATFORM_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "platform", "username": "platformadmin", "password": "ChangeMe123!"}' \
-    | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-  echo $PLATFORM_TOKEN
-
-B1. List all tenants
-  curl -s -X GET http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: 200 array of tenants with id, slug, name, max_users, status, active_users
-
-B2. Create a new tenant (with initial admin user)
-  curl -s -X POST http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "slug": "acme-corp",
-      "name": "Acme Corporation",
-      "max_users": 25,
-      "admin_username": "acme_admin",
-      "admin_password": "Acme@secure1",
-      "admin_display_name": "Acme Admin"
-    }' | python -m json.tool
-
-  Expected: 201 with tenant id, slug, name
-
-B3. Create a second tenant (for isolation testing)
-  curl -s -X POST http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "slug": "globex-corp",
-      "name": "Globex Corporation",
-      "max_users": 10,
-      "admin_username": "globex_admin",
-      "admin_password": "Globex@secure1",
-      "admin_display_name": "Globex Admin"
-    }' | python -m json.tool
-
-  Expected: 201 with tenant id, slug, name
-
-B4. Try to create a tenant with reserved slug "platform" (should fail)
-  curl -s -X POST http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "slug": "platform",
-      "name": "Should Fail",
-      "max_users": 10,
-      "admin_username": "fail_admin",
-      "admin_password": "Fail@1234",
-      "admin_display_name": "Fail"
-    }' | python -m json.tool
-
-  Expected: 400 "Reserved organization code"
-
-B5. Try to create a duplicate slug (should fail)
-  curl -s -X POST http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "slug": "acme-corp",
-      "name": "Duplicate",
-      "max_users": 5,
-      "admin_username": "dup_admin",
-      "admin_password": "Dup@1234",
-      "admin_display_name": "Dup"
-    }' | python -m json.tool
-
-  Expected: 409 "Organization code already exists"
-
-B6. Update tenant name and max_users
-  curl -s -X PUT http://localhost:8000/api/v1/platform/tenants/TENANT_ID \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"name": "Acme Corporation Ltd", "max_users": 50}' | python -m json.tool
-
-  Expected: 200 with updated tenant
-
-B7. Suspend a tenant
-  curl -s -X PUT http://localhost:8000/api/v1/platform/tenants/TENANT_ID \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"status": "suspended"}' | python -m json.tool
-
-  Expected: 200 with status = "suspended"
-
-B8. Reactivate a suspended tenant
-  curl -s -X PUT http://localhost:8000/api/v1/platform/tenants/TENANT_ID \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"status": "active"}' | python -m json.tool
-
-  Expected: 200 with status = "active"
-
-B9. Get usage stats for a tenant
-  curl -s -X GET http://localhost:8000/api/v1/platform/tenants/TENANT_ID/usage \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: 200 with {active_users, max_users, usage_percent}
-
-B10. Try to call platform endpoint as a regular tenant user (should fail)
-  curl -s -X GET http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer TENANT_USER_TOKEN" | python -m json.tool
-
-  Expected: 403 "Platform admin access required"
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION C — PLATFORM ADMIN: USER MANAGEMENT ACROSS TENANTS
-────────────────────────────────────────────────────────────────────────────────
-
-C1. List users in a specific tenant (as platform admin)
-  curl -s -X GET "http://localhost:8000/api/v1/platform/tenants/TENANT_ID/users" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: 200 array of users scoped to that tenant
-
-C2. Create a user in a specific tenant (as platform admin)
-  curl -s -X POST "http://localhost:8000/api/v1/platform/tenants/TENANT_ID/users" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "username": "new_author",
-      "password": "Author@123",
-      "role": "author",
-      "display_name": "New Author"
-    }' | python -m json.tool
-
-  Expected: 201 with user details and tenant_id set
-
-C3. Update a user in a specific tenant (as platform admin)
-  curl -s -X PUT "http://localhost:8000/api/v1/platform/tenants/TENANT_ID/users/new_author" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"role": "reviewer"}' | python -m json.tool
-
-  Expected: 200 with updated user
-
-C4. Deactivate a user in a specific tenant (as platform admin)
-  curl -s -X PUT "http://localhost:8000/api/v1/platform/tenants/TENANT_ID/users/new_author" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"is_active": false}' | python -m json.tool
-
-  Expected: 200 with user is_active = false
-
-C5. Delete a user from a specific tenant (as platform admin)
-  curl -s -X DELETE "http://localhost:8000/api/v1/platform/tenants/TENANT_ID/users/new_author" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: 200 or 204
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION D — TENANT ADMIN: USER MANAGEMENT WITHIN OWN TENANT
-────────────────────────────────────────────────────────────────────────────────
-
-First, get an admin token for acme-corp:
-  ACME_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "acme-corp", "username": "acme_admin", "password": "Acme@secure1"}' \
-    | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-D1. List users in own tenant (scoped — sees only acme-corp users)
-  curl -s -X GET http://localhost:8000/api/v1/users \
-    -H "Authorization: Bearer $ACME_TOKEN" | python -m json.tool
-
-  Expected: 200 — only acme-corp users, NOT globex-corp users
-
-D2. Create a user in own tenant
-  curl -s -X POST http://localhost:8000/api/v1/users \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "username": "acme_author1",
-      "password": "Acme@author1",
-      "role": "author",
-      "display_name": "Acme Author One"
-    }' | python -m json.tool
-
-  Expected: 201 with tenant_id = acme-corp's tenant_id
-
-D3. Create users until license cap is hit (max_users=2 for this test)
-  First reduce max_users to 2 via platform admin:
-    curl -s -X PUT http://localhost:8000/api/v1/platform/tenants/ACME_TENANT_ID \
-      -H "Authorization: Bearer $PLATFORM_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"max_users": 2}' | python -m json.tool
-
-  Then try to create a 3rd user (acme_admin + acme_author1 = 2 already):
-  curl -s -X POST http://localhost:8000/api/v1/users \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"username": "acme_extra", "password": "Acme@extra1", "role": "author"}' | python -m json.tool
-
-  Expected: 403 "User license limit reached"
-
-D4. Deactivate a user (frees up license slot)
-  curl -s -X PUT http://localhost:8000/api/v1/users/acme_author1 \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"is_active": false}' | python -m json.tool
-
-  Expected: 200
-
-D5. Now create a user again (license slot freed)
-  curl -s -X POST http://localhost:8000/api/v1/users \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"username": "acme_extra", "password": "Acme@extra1", "role": "author"}' | python -m json.tool
-
-  Expected: 201
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION E — DATA ISOLATION: PROJECTS
-────────────────────────────────────────────────────────────────────────────────
-
-Get tokens for both tenants:
-  ACME_TOKEN=<login as acme_admin / acme-corp>
-  GLOBEX_TOKEN=<login as globex_admin / globex-corp>
-
-E1. Create a project in acme-corp
-  curl -s -X POST http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "name": "Acme Safety Training",
-      "description": "Workplace safety course",
-      "client_name": "Acme Corp"
-    }' | python -m json.tool
-
-  Expected: 201 — note the project id (ACME_PROJECT_ID)
-
-E2. Create a project in globex-corp
-  curl -s -X POST http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "name": "Globex Onboarding",
-      "description": "New employee onboarding",
-      "client_name": "Globex Corp"
-    }' | python -m json.tool
-
-  Expected: 201 — note the project id (GLOBEX_PROJECT_ID)
-
-E3. List projects as acme user (should only see Acme Safety Training)
-  curl -s -X GET http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $ACME_TOKEN" | python -m json.tool
-
-  Expected: array with only acme-corp projects — NO globex projects
-
-E4. List projects as globex user (should only see Globex Onboarding)
-  curl -s -X GET http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: array with only globex-corp projects — NO acme projects
-
-E5. Try to access acme project using globex token (cross-tenant attack)
-  curl -s -X GET http://localhost:8000/api/v1/projects/ACME_PROJECT_ID \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: 404 (not 403 — don't leak existence of the resource)
-
-E6. Platform admin sees ALL projects from all tenants
-  curl -s -X GET http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: all projects from all tenants
-
-E7. Platform admin filters projects to one tenant using query param
-  curl -s -X GET "http://localhost:8000/api/v1/projects?tenant_id=ACME_TENANT_ID" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: only acme-corp projects
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION F — DATA ISOLATION: COURSES, CLUSTERS, CDDs, BLUEPRINTS
-────────────────────────────────────────────────────────────────────────────────
-
-(Using ACME_TOKEN and ACME_PROJECT_ID from Section E)
-
-F1. Create a cluster in the acme project
-  curl -s -X POST http://localhost:8000/api/v1/projects/ACME_PROJECT_ID/clusters \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"name": "Safety Basics", "description": "Foundational safety modules"}' | python -m json.tool
-
-  Expected: 201 — note CLUSTER_ID
-
-F2. Create a course in the acme project
-  curl -s -X POST http://localhost:8000/api/v1/projects/ACME_PROJECT_ID/courses \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "name": "Fire Safety 101",
-      "description": "Basic fire safety procedures",
-      "cluster_id": CLUSTER_ID
-    }' | python -m json.tool
-
-  Expected: 201 — note COURSE_ID
-
-F3. Try to access acme course as globex user (should fail)
-  curl -s -X GET http://localhost:8000/api/v1/projects/ACME_PROJECT_ID/courses/COURSE_ID \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: 404
-
-F4. List courses in acme project as acme user
-  curl -s -X GET http://localhost:8000/api/v1/projects/ACME_PROJECT_ID/courses \
-    -H "Authorization: Bearer $ACME_TOKEN" | python -m json.tool
-
-  Expected: 200 with Fire Safety 101
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION G — DATA ISOLATION: STYLES AND DOCUMENTS
-────────────────────────────────────────────────────────────────────────────────
-
-G1. Create a style in acme-corp
-  curl -s -X POST http://localhost:8000/api/v1/styles \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "name": "Acme Corporate Style",
-      "description": "Formal tone for Acme Corp content",
-      "custom_instructions": "Use professional language. Bullet points preferred."
-    }' | python -m json.tool
-
-  Expected: 201 — note ACME_STYLE_ID
-
-G2. List styles as globex user (should NOT see Acme style)
-  curl -s -X GET http://localhost:8000/api/v1/styles \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: empty array or globex-only styles
-
-G3. Try to use acme style as globex user (cross-tenant attack)
-  curl -s -X GET http://localhost:8000/api/v1/styles/ACME_STYLE_ID \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: 404
-
-G4. Upload a document to acme-corp
-  curl -s -X POST http://localhost:8000/api/v1/documents \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -F "file=@/path/to/document.pdf" \
-    -F "doc_tag=source_material" | python -m json.tool
-
-  Expected: 201 — note ACME_DOC_ID
-
-G5. Try to access acme document as globex user (should fail)
-  curl -s -X GET http://localhost:8000/api/v1/documents/ACME_DOC_ID \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: 404
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION H — GENERATION JOBS (TENANT SCOPED)
-────────────────────────────────────────────────────────────────────────────────
-
-H1. Start a generation job in acme project (CDD generation)
-  curl -s -X POST http://localhost:8000/api/v1/projects/ACME_PROJECT_ID/courses/COURSE_ID/generate-cdd \
-    -H "Authorization: Bearer $ACME_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"document_id": ACME_DOC_ID, "style_id": ACME_STYLE_ID}' | python -m json.tool
-
-  Expected: 202 with job_id — note JOB_ID
-
-H2. Poll job status
-  curl -s -X GET http://localhost:8000/api/v1/jobs/JOB_ID \
-    -H "Authorization: Bearer $ACME_TOKEN" | python -m json.tool
-
-  Expected: 200 with status (pending/running/completed/failed) and progress %
-
-H3. Try to access acme job as globex user (should fail)
-  curl -s -X GET http://localhost:8000/api/v1/jobs/JOB_ID \
-    -H "Authorization: Bearer $GLOBEX_TOKEN" | python -m json.tool
-
-  Expected: 404
-
-H4. List all jobs as platform admin (sees all tenants)
-  curl -s -X GET http://localhost:8000/api/v1/jobs \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: jobs from all tenants
-
-H5. Platform admin filters jobs to specific tenant
-  curl -s -X GET "http://localhost:8000/api/v1/jobs?tenant_id=ACME_TENANT_ID" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: only acme-corp jobs
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION I — SUSPENSION FLOW
-────────────────────────────────────────────────────────────────────────────────
-
-I1. Suspend acme-corp
-  curl -s -X PUT http://localhost:8000/api/v1/platform/tenants/ACME_TENANT_ID \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"status": "suspended"}' | python -m json.tool
-
-  Expected: 200
-
-I2. Try to login as an acme user after suspension
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "acme-corp", "username": "acme_admin", "password": "Acme@secure1"}' | python -m json.tool
-
-  Expected: 401 "This organization has been suspended."
-
-I3. Verify platform admin can still login (unaffected by tenant suspension)
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "platform", "username": "platformadmin", "password": "ChangeMe123!"}' | python -m json.tool
-
-  Expected: 200 — platform admin is unaffected
-
-I4. Reactivate acme-corp
-  curl -s -X PUT http://localhost:8000/api/v1/platform/tenants/ACME_TENANT_ID \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"status": "active"}' | python -m json.tool
-
-  Expected: 200
-
-I5. Verify acme login works again
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug": "acme-corp", "username": "acme_admin", "password": "Acme@secure1"}' | python -m json.tool
-
-  Expected: 200 with access_token
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION J — JWT VALIDATION (DECODE AND INSPECT)
-────────────────────────────────────────────────────────────────────────────────
-
-J1. Inspect JWT payload (base64 decode the middle part)
-
-  Linux/Mac:
-    TOKEN="your.jwt.token"
-    echo $TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null | python -m json.tool
-
-  Windows PowerShell:
-    $TOKEN = "your.jwt.token"
-    $payload = $TOKEN.Split('.')[1]
-    $padding = 4 - ($payload.Length % 4)
-    if ($padding -lt 4) { $payload += '=' * $padding }
-    [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload)) | ConvertFrom-Json
-
-  Expected payload after Phase 2:
-    {
-      "sub": "acme_admin",
-      "role": "admin",
-      "tenant_id": "uuid-of-acme-tenant",
-      "tenant_slug": "acme-corp",
-      "is_platform_admin": false,
-      "iat": 1700000000,
-      "exp": 1700604800
-    }
-
-  Expected payload for platform admin:
-    {
-      "sub": "platformadmin",
-      "role": "admin",
-      "tenant_id": null,
-      "tenant_slug": null,
-      "is_platform_admin": true,
-      "iat": 1700000000,
-      "exp": 1700604800
-    }
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION K — ANALYTICS / LLM USAGE (TENANT SCOPED)
-────────────────────────────────────────────────────────────────────────────────
-
-K1. Get LLM usage for current tenant
-  curl -s -X GET http://localhost:8000/api/v1/analytics/usage \
-    -H "Authorization: Bearer $ACME_TOKEN" | python -m json.tool
-
-  Expected: only acme-corp's LLM usage logs
-
-K2. Platform admin views usage for all tenants
-  curl -s -X GET http://localhost:8000/api/v1/analytics/usage \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: LLM usage from all tenants combined
-
-K3. Platform admin filters usage to specific tenant
-  curl -s -X GET "http://localhost:8000/api/v1/analytics/usage?tenant_id=ACME_TENANT_ID" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  Expected: only acme-corp usage
-
-────────────────────────────────────────────────────────────────────────────────
-  SECTION L — FULL HAPPY PATH END-TO-END TEST
-  (Run this after implementing all phases to verify the whole flow)
-────────────────────────────────────────────────────────────────────────────────
-
-Step 1: Login as platform admin and get token
-  PLATFORM_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug":"platform","username":"platformadmin","password":"ChangeMe123!"}' \
-    | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-  echo "Platform token: $PLATFORM_TOKEN"
-
-Step 2: Create a tenant named "beta-company"
-  curl -s -X POST http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "slug":"beta-company",
-      "name":"Beta Company Inc",
-      "max_users":5,
-      "admin_username":"beta_admin",
-      "admin_password":"Beta@2024!",
-      "admin_display_name":"Beta Admin"
-    }' | python -m json.tool
-
-Step 3: Login as beta_admin
-  BETA_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug":"beta-company","username":"beta_admin","password":"Beta@2024!"}' \
-    | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-  echo "Beta token: $BETA_TOKEN"
-
-Step 4: Create a project under beta-company
-  PROJ=$(curl -s -X POST http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $BETA_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"name":"Beta Onboarding","description":"New hire training","client_name":"Beta Company"}')
-  echo $PROJ | python -m json.tool
-  PROJ_ID=$(echo $PROJ | python -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-Step 5: Create a style for beta-company
-  STYLE=$(curl -s -X POST http://localhost:8000/api/v1/styles \
-    -H "Authorization: Bearer $BETA_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"name":"Beta Casual","description":"Friendly tone","custom_instructions":"Keep it simple and friendly."}')
-  echo $STYLE | python -m json.tool
-  STYLE_ID=$(echo $STYLE | python -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-Step 6: Verify platform admin sees beta-company tenant and its project
-  curl -s -X GET http://localhost:8000/api/v1/platform/tenants \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-  curl -s -X GET http://localhost:8000/api/v1/projects \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" | python -m json.tool
-
-Step 7: Suspend beta-company and verify login fails
-  curl -s -X PUT "http://localhost:8000/api/v1/platform/tenants/BETA_TENANT_ID" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"status":"suspended"}' | python -m json.tool
-
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug":"beta-company","username":"beta_admin","password":"Beta@2024!"}' | python -m json.tool
-  # Expected: 401
-
-Step 8: Reactivate and confirm login works again
-  curl -s -X PUT "http://localhost:8000/api/v1/platform/tenants/BETA_TENANT_ID" \
-    -H "Authorization: Bearer $PLATFORM_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"status":"active"}' | python -m json.tool
-
-  curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug":"beta-company","username":"beta_admin","password":"Beta@2024!"}' | python -m json.tool
-  # Expected: 200 with token
-
-────────────────────────────────────────────────────────────────────────────────
-  QUICK REFERENCE — TOKEN EXTRACTION COMMANDS
-────────────────────────────────────────────────────────────────────────────────
-
-  # Extract token from login response (Linux/Mac):
-  TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"tenant_slug":"default-org","username":"admin","password":"admin123"}' \
-    | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-  # Extract token from login response (Windows PowerShell):
-  $response = Invoke-WebRequest -Uri "http://localhost:8000/api/v1/auth/login" `
-    -Method POST -ContentType "application/json" `
-    -Body '{"tenant_slug":"default-org","username":"admin","password":"admin123"}'
-  $TOKEN = ($response.Content | ConvertFrom-Json).access_token
-
-  # Use token in all subsequent requests:
-  -H "Authorization: Bearer $TOKEN"
-
-  # Pretty-print any JSON response:
-  | python -m json.tool
-
-  # Pretty-print with colors (if jq is installed):
-  | jq .
-
-================================================================================
-  END OF PLAN
+ END OF PLAN v2
 ================================================================================
