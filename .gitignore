@@ -1,194 +1,46 @@
-# =========================================================
-# Secrets / Environment
-# =========================================================
+# Secrets
 .env
-.env.*
-!.env.example
-!.env.template
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
-docker.env
 *.pem
-*.key
-*.crt
-*.p12
-*.pfx
-secrets/
-credentials/
-aws-credentials*
-config/secrets.*
-frontend/.env
-frontend/.env.*
-dis_backend/.env
-dis_backend/.env.*
 
-# =========================================================
-# Python / Backend
-# =========================================================
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.pyd
-*.so
 *.egg-info/
-.eggs/
-dist/
-build/
-wheels/
-pip-wheel-metadata/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-coverage.xml
-htmlcov/
-.tox/
-.nox/
-
-# Python virtual environments
 .venv/
 venv/
-env/
-ENV/
-backend/.venv/
-backend/venv/
-app/.venv/
-promptops_app/.venv/
-dis_backend/.venv/
-dis_backend/venv/
-dis_backend/env/
 
-# =========================================================
-# Node / Frontend
-# =========================================================
-node_modules/
-frontend/node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-package-lock.json
-# Keep package-lock if your team wants reproducible installs.
-# Remove the line above if you want to commit package-lock.json.
-
-# Frontend build output
-frontend/dist/
-frontend/build/
-frontend/.vite/
-frontend/.cache/
-frontend/coverage/
-
-# Vite / React cache
-.vite/
-.cache/
-
-# =========================================================
-# Local Storage / DIS / S3 Simulation
-# =========================================================
-local_s3/
-dis_backend/local_s3/
-DIS/
-raw/
-processed/
-generated/
-source_index/
-generated_index/
-uploads/
-temp_uploads/
-tmp/
-temp/
-*.tmp
-
-# =========================================================
-# Database / Dumps / Local Data
-# =========================================================
-*.db
-*.sqlite
-*.sqlite3
-*.dump
-*.bak
-backups/
-db_backups/
-exports/
-rehearsal/
-prod_data/
-
-# =========================================================
-# Logs
-# =========================================================
-logs/
-*.log
-uvicorn.log
-celery.log
-worker.log
-app.log
-dis.log
-
-# =========================================================
-# Test / Coverage Artifacts
-# =========================================================
+# Test / coverage artefacts
 .pytest_cache/
 .coverage
 coverage.xml
 htmlcov/
-test-results/
-playwright-report/
-junit.xml
 
-# =========================================================
-# Editor / IDE
-# =========================================================
+# Editor
 .vscode/
 .idea/
-*.swp
-*.swo
-*.sublime-project
-*.sublime-workspace
 
-# =========================================================
-# OS Files
-# =========================================================
+# OS
 .DS_Store
 Thumbs.db
-desktop.ini
 *:Zone.Identifier
 
-# =========================================================
-# Docker / Runtime
-# =========================================================
-*.pid
-*.seed
-*.pid.lock
-docker-compose.override.yml
-
-# =========================================================
-# Claude / Local AI Tooling
-# =========================================================
+# Claude
 CLAUDE.md
-.claude/
+docker.env
 test_copyleaks.py
+.claude/
 
-# =========================================================
-# Client / Internal Docs
-# =========================================================
+# DB dumps / rehearsal artifacts (contain prod data — never commit)
+backups/
+
+# Client requirements docs — keep out of the repo
 *.docx
-*.pptx
-*.xlsx
+
+# Internal planning/ops docs — keep local, not in the repo
 PROMPT_CONSOLIDATION_PLAN.md
 PROMPT_CONSOLIDATION_PLAN 1.md
 project_execution.md
 MIGRATION_RUNBOOK.md
 CAS_PromptInject.md
-AGENT_BASED_HANDOVER.md
-AIM_IMPLEMENTATION_NOTES.md
-S3_ONLY_SOURCE_LIBRARY_README.md
-
-# =========================================================
-# Generated packages / zips
-# =========================================================
-*.zip
-*.tar
-*.tar.gz
-*.rar

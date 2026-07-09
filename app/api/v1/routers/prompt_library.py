@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import FileResponse, Response
@@ -157,27 +156,6 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_forced(request, q)
     return _paginated_body(_enrich_prompts(db, items), total, page, limit, extra={"q": q_text})
-
-
-@router.get("/prompts/export.xlsx")
-def export_prompts_xlsx(request: Request, db: Session = Depends(get_db),
-                        user=Depends(require_permission("prompt_library.view"))):
-    """Excel download of the filtered list — same filters as GET /prompts.
-
-    Declared before ``/prompts/{pid}`` so the literal path wins routing.
-    Unpaginated by design: an export always covers the full filtered set.
-    """
-    kind = request.query_params.get("kind")
-    q = svc.browse_prompts_query(db, user.role, None, kind=kind,
-                                 include_deleted=_include_archived(request))
-    q = svc.apply_list_filters(q, dict(request.query_params))
-    rows = _enrich_prompts(db, q.all())
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d")
-    return Response(
-        content=svc.prompts_to_xlsx(rows),
-        media_type=svc.XLSX_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename="prompts-export-{stamp}.xlsx"'},
-    )
 
 
 @router.get("/meta")

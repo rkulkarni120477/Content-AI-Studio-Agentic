@@ -69,6 +69,16 @@ function errorMessage(err, fallback) {
   return String(msg || fallback).replace(/^DIS error:\s*/i, '');
 }
 
+function formatFileSize(doc = {}) {
+  const raw = doc.file_size_bytes ?? doc.size_bytes ?? doc.source_file_size_bytes ?? doc.file_size ?? doc.size;
+  const bytes = Number(raw || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
 export default function SourceLibraryPage() {
   const currentUser = useSelector(selectUser);
   const { courseId } = useParams();
@@ -617,18 +627,19 @@ export default function SourceLibraryPage() {
             <h2 className={styles.filtersTitle}>Processed Documents {loading && !documents.length ? '…' : `(${displayedDocuments.length})`}</h2>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
-                <thead><tr><th>Document</th><th>Type</th><th>Purpose</th><th>Status</th><th /></tr></thead>
+                <thead><tr><th>Document</th><th>Type</th><th>Size</th><th>Purpose</th><th>Status</th><th /></tr></thead>
                 <tbody>
                   {displayedDocuments.map((doc) => (
                     <tr key={doc.job_id || doc.document_id}>
                       <td><strong>{doc.title || doc.source_file_name}</strong><div className={styles.muted}>{doc.source_file_name}</div></td>
                       <td>{doc.document_type || '—'}</td>
+                      <td>{formatFileSize(doc)}</td>
                       <td>{doc.purpose || '—'}</td>
                       <td>{doc.status || 'processed'}</td>
                       <td><button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button></td>
                     </tr>
                   ))}
-                  {!displayedDocuments.length && <tr><td colSpan="5" className={styles.empty}>No source documents found.</td></tr>}
+                  {!displayedDocuments.length && <tr><td colSpan="6" className={styles.empty}>No source documents found.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -648,16 +659,11 @@ export default function SourceLibraryPage() {
                           <h4>Sections</h4>
                           <select
                             className={styles.select}
-                            value={sectionIndex === 0 ? '' : ((units.units[sectionIndex] || {}).unit_id || '')}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              if (!value) loadSectionByIndex(0);
-                              else loadUnit(value);
-                            }}
+                            value={String(sectionIndex)}
+                            onChange={(e) => loadSectionByIndex(Number(e.target.value || 0))}
                           >
-                            <option value="">First section</option>
-                            {units.units.slice(1).map((u, idx) => (
-                              <option key={u.unit_id} value={u.unit_id}>{u.title || `Section ${idx + 2}`}</option>
+                            {units.units.map((u, idx) => (
+                              <option key={u.unit_id || idx} value={String(idx)}>{`Section ${idx + 1}`}</option>
                             ))}
                           </select>
                         </div>
@@ -671,7 +677,7 @@ export default function SourceLibraryPage() {
                       </div>
                     ) : selectedUnit ? (
                       <div className={styles.unitDetail}>
-                        <h4>{selectedUnit.title || selectedUnit.unit_id || `Section ${sectionIndex + 1}`}</h4>
+                        <h4>{`Section ${sectionIndex + 1}`}</h4>
                         <textarea className={styles.previewText} readOnly value={selectedUnit.text || ''} />
                       </div>
                     ) : (

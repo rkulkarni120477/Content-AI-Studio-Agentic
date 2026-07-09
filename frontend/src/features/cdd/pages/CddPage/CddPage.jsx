@@ -37,7 +37,6 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
-import ArtifactReferenceTrace from '@features/sourceLibrary/components/ArtifactReferenceTrace/ArtifactReferenceTrace';
 import styles from './CddPage.module.scss';
 
 export default function CddPage() {
@@ -631,11 +630,6 @@ export default function CddPage() {
                         version={versionDetail?.version || displayCdd?.active_content?.version}
                         generationParams={versionDetail?.generation_params
                           || displayCdd?.active_content?.generation_params}
-                      />
-                      <ArtifactReferenceTrace
-                        title="Reference documents used when this CDD was created"
-                        generationParams={versionDetail?.generation_params}
-                        fallbackParams={displayCdd?.active_content?.generation_params}
                       />
                       <CddContentView
                         fullContent={previewFullContent}

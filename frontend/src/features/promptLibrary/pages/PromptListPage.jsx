@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
   deletePrompt,
-  downloadPromptsXlsx,
   duplicatePrompt,
   fetchMeta,
   fetchPrompts,
@@ -15,6 +14,7 @@ import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { exportPromptsCsv } from '../utils/csvExport';
 import { clusterOptions } from '../utils/clusters';
 import { canManagePipelinePrompts, canManagePrompts } from '../utils/permissions';
 import { CAS_CATEGORIES } from '../utils/prompt';
@@ -47,15 +47,14 @@ export default function PromptListPage() {
     // Only CAS pipeline prompts are surfaced (Phase 12b) — the freeform
     // library rows stay in the DB but leave the console display entirely.
     const params = { roots_only: '1', kind: 'pipeline' };
-    // Most specific scope wins server-side; send only one. "(No category)"
+    // Most specific scope wins server-side; send only one. "(No cluster)"
     // is a display bucket, not a lockable scope — it narrows only once a
     // course is picked.
     if (scopeCourse) params.course_id = scopeCourse;
     else if (scopeCluster && scopeCluster !== 'none') params.cluster_id = scopeCluster;
     if (q) params.q = q;
-    // Workflows = the doc's six CAS category names ("Category" now means
-    // cluster in the UI), resolved server-side to the (component_type,
-    // variant) resolution keys — the cas_category param name is internal.
+    // Categories are the doc's six CAS names, resolved server-side to the
+    // (component_type, variant) resolution keys.
     if (category.startsWith('cas:')) params.cas_category = category.slice(4);
     if (tag) params.tag = tag;
     // Workflow status = the active version's state (doc §8).
@@ -152,12 +151,17 @@ export default function PromptListPage() {
     setTag(t);
   }
 
-  async function handleExportXlsx() {
+  async function handleExportCsv() {
     if (loading || exporting) return;
     setExporting(true);
     try {
-      await downloadPromptsXlsx(buildFilterParams());
-      show('Excel export downloaded.');
+      const list = await fetchPrompts(buildFilterParams());
+      if (!list.length) {
+        show('No prompts to export for the current filters.');
+        return;
+      }
+      exportPromptsCsv(list);
+      show(`Exported ${list.length} prompt${list.length !== 1 ? 's' : ''} to CSV.`);
     } catch {
       show('Export failed. Please try again.');
     } finally {
@@ -189,10 +193,9 @@ export default function PromptListPage() {
             </svg>
           </div>
           <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">All Workflows</option>
-            {/* The doc's six CAS workflow categories — structural (component/
-                variant-backed), never freeform strings. Labeled "Workflow"
-                in the UI; "Category" is the cluster level's display name. */}
+            <option value="">All Categories</option>
+            {/* The doc's six CAS categories — structural (component/variant-
+                backed), never freeform strings. */}
             {CAS_CATEGORIES.map((c) => (
               <option key={`cas:${c}`} value={`cas:${c}`}>
                 {c}
@@ -204,9 +207,9 @@ export default function PromptListPage() {
               <select
                 value={scopeCluster}
                 onChange={(e) => setScopeCluster(e.target.value)}
-                title="Show the prompts this category uses (locks + inherited defaults)"
+                title="Show the prompts this cluster uses (locks + inherited defaults)"
               >
-                <option value="">All Categories</option>
+                <option value="">All Clusters</option>
                 {scopeClusters.map(([id, name]) => (
                   <option key={id} value={id}>
                     {name}
@@ -277,11 +280,11 @@ export default function PromptListPage() {
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            onClick={handleExportXlsx}
+            onClick={handleExportCsv}
             disabled={loading || exporting || prompts.length === 0}
-            title="Download filtered prompts as an Excel workbook (includes full prompt text)"
+            title="Download filtered prompts as CSV (includes full prompt text)"
           >
-            {exporting ? 'Exporting…' : '⬇ Export XLSX'}
+            {exporting ? 'Exporting…' : '⬇ Export CSV'}
           </button>
         </div>
       </div>

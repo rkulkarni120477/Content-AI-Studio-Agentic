@@ -361,13 +361,13 @@ export default function StylePage() {
     <PageContainer title="Style Management" breadcrumbs={[{ label: 'Style' }]}>
       {selCluster?.id && clusterPromptApiReady && (
         <div className={styles.clusterInjected} role="note">
-          <div className={styles.clusterInjected__title}>⚡ Auto-Injected Category Prompts</div>
+          <div className={styles.clusterInjected__title}>⚡ Auto-Injected Cluster Prompts</div>
           <p className={styles.clusterInjected__desc}>
-            These prompts are inherited from this category and automatically prepended
+            These prompts are inherited from this cluster and automatically prepended
             to the Style context for every course here.
           </p>
           {clusterPrompts.length === 0 ? (
-            <p className={styles.clusterEmpty}>No category prompts assigned to this category yet.</p>
+            <p className={styles.clusterEmpty}>No cluster prompts assigned to this cluster yet.</p>
           ) : (
             <ul className={styles.clusterInjected__list}>
               {clusterPrompts.map((p) => (

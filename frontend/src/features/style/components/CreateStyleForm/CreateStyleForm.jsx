@@ -14,7 +14,7 @@ import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Button from '@components/common/Button/Button';
 import styles from './CreateStyleForm.module.scss';
 
-const REF_DOCS_HINT = 'Only processed DIS Source Library documents with purpose Style are shown here.';
+const REF_DOCS_HINT = 'All processed DIS Source Library documents are shown here. Select whichever documents should guide this style.';
 const INSTR_HINT = 'These instructions are stored with the style and injected into every generation.';
 
 function docLabel(doc) {
@@ -78,7 +78,7 @@ export default function CreateStyleForm() {
       setSourceLoading(true);
       setSourceError('');
       try {
-        const params = { purpose: 'style', status: 'processed' };
+        const params = { status: 'processed' };
         if (selectedCourse?.id || courseId) params.course_id = selectedCourse?.id || courseId;
         else if (selectedProject?.id) params.project_id = selectedProject.id;
         const res = await sourceLibraryApi.listDocuments(params);
@@ -92,9 +92,9 @@ export default function CreateStyleForm() {
           const cachedAgain = readCachedStyleDocs(sourceCacheKey);
           if (cachedAgain.length) {
             setSourceDocs(cachedAgain);
-            setSourceError('Using the last loaded style reference list while Source Library refreshes.');
+            setSourceError('Using the last loaded Source Library document list while Source Library refreshes.');
           } else {
-            setSourceError('Upload style reference documents in Source Library first.');
+            setSourceError('Upload reference documents in Source Library first.');
           }
         }
       } finally {
@@ -166,7 +166,7 @@ export default function CreateStyleForm() {
           {...register('description')}
         />
 
-        <div className={styles.sectionLabel}>📎 DIS Style Reference Documents</div>
+        <div className={styles.sectionLabel}>📎 DIS Reference Documents</div>
 
         <div className={styles.fieldRow}>
           <label className={styles.fieldLabel} htmlFor="style-lib-docs">
@@ -174,7 +174,7 @@ export default function CreateStyleForm() {
             <span className={styles.helpIcon} title={REF_DOCS_HINT} aria-label={REF_DOCS_HINT}>?</span>
           </label>
           <MultiSelect
-            placeholder={libraryOptions.length ? 'Choose style reference documents' : (sourceLoading ? 'Loading Source Library documents…' : 'Choose style reference documents')}
+            placeholder={libraryOptions.length ? 'Choose reference documents' : (sourceLoading ? 'Loading Source Library documents…' : 'Choose reference documents')}
             options={libraryOptions}
             value={selectedLibDocIds}
             onChange={setSelectedLibDocIds}

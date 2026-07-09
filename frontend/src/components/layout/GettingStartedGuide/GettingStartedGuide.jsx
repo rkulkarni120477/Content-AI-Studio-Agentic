@@ -15,7 +15,7 @@ export default function GettingStartedGuide() {
         '5. Submit blocks for review via Workflow.',
       ]
     : [
-        '1. Select Project → Category → Course.',
+        '1. Select Project → Cluster → Course.',
         '2. Upload sources in Source Library and configure Style.',
         '3. Generate CDD → Blueprint → Content.',
         '4. Review and approve in Workflow.',

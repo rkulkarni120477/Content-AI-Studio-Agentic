@@ -48,7 +48,6 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
-import ArtifactReferenceTrace from '@features/sourceLibrary/components/ArtifactReferenceTrace/ArtifactReferenceTrace';
 import styles from './BlueprintPage.module.scss';
 
 const NONE_CDD = '';
@@ -828,11 +827,6 @@ export default function BlueprintPage() {
                         version={versionDetail?.version || displayBp?.active_content?.version}
                         generationParams={versionDetail?.generation_params
                           || displayBp?.active_content?.generation_params}
-                      />
-                      <ArtifactReferenceTrace
-                        title="Reference documents used when this Blueprint was created"
-                        generationParams={versionDetail?.generation_params}
-                        fallbackParams={displayBp?.active_content?.generation_params}
                       />
                       <BlueprintContentView
                         fullContent={previewFullContent}

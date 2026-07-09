@@ -38,12 +38,10 @@ import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
 import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
-import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import FileUpload from '@components/common/FileUpload/FileUpload';
 import Loader from '@components/common/Loader/Loader';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
-import ArtifactReferenceTrace from '@features/sourceLibrary/components/ArtifactReferenceTrace/ArtifactReferenceTrace';
 import styles from './GeneratePage.module.scss';
 
 const SUPP_UPLOADS = [
@@ -87,8 +85,6 @@ export default function GeneratePage() {
   const [assessmentOverride, setAssessmentOverride] = useState(false);
   const [moduleGate, setModuleGate] = useState(null);
   const [courseGate, setCourseGate] = useState(null);
-  const [libraryDocs, setLibraryDocs] = useState([]);
-  const [ctxDocNames, setCtxDocNames] = useState([]);
   const [suppFiles, setSuppFiles] = useState({ guidelines: null, checklist: null, chapter: null });
   const [suppErrors, setSuppErrors] = useState({});
   const [parsingSupp, setParsingSupp] = useState(false);
@@ -100,11 +96,6 @@ export default function GeneratePage() {
   const selectedComponent = useMemo(
     () => components.find((c) => c.value === selectedCompValue),
     [components, selectedCompValue],
-  );
-
-  const docOptions = useMemo(
-    () => libraryDocs.map((d) => ({ value: d.name || d.filename, label: d.name || d.filename })),
-    [libraryDocs],
   );
 
   const overrideCdds = useMemo(() => {
@@ -202,10 +193,6 @@ export default function GeneratePage() {
   }, [courseId]);
 
   useEffect(() => {
-    documentService.listActive().then(setLibraryDocs).catch(() => setLibraryDocs([]));
-  }, []);
-
-  useEffect(() => {
     setAssessmentOverride(false);
     async function checkGates() {
       if (!selectedComponent) {
@@ -280,7 +267,7 @@ export default function GeneratePage() {
       audience_category: audienceCategory,
       extra_instructions: extraInstructions,
       assessment_override: assessmentOverride,
-      context_document_names: ctxDocNames,
+      context_document_names: [],
       supplementary_files,
     };
 
@@ -500,20 +487,6 @@ export default function GeneratePage() {
                     </div>
                   ))}
                 </div>
-                <MultiSelect
-                  label="Additional Source Materials from Library"
-                  hint="Supplement the CDD/Blueprint with uploaded documents."
-                  options={docOptions}
-                  value={ctxDocNames}
-                  onChange={setCtxDocNames}
-                  placeholder="Choose documents"
-                />
-                {docOptions.length > 0 && (
-                  <div className={styles.ctxHint}>
-                    📎 <strong>Context DB Reference</strong> — You can also reference documents in the topic using backticks, e.g.{' '}
-                    <code>{`\`${docOptions[0].value}\``}</code>
-                  </div>
-                )}
               </details>
             )}
 
