@@ -1,0 +1,11 @@
+platform:
+  name: "DIS Platform"
+  environment: "development"
+
+auth:
+  demo_secret: "demo_secret"
+  # Platform-level users only. Do NOT put super admins in any client config.
+  super_admins:
+    - user_id: "superadmin@company.com"
+      name: "Platform Super Admin"
+      enabled: true

@@ -36,7 +36,7 @@ export const createStyleSchema = z.object({
   name:                requiredString('Style name'),
   description:         optionalString(),
   custom_instructions: optionalString(),
-  document_ids:        z.array(z.number()).optional(),
+  document_ids:        z.array(z.union([z.string(), z.number()])).optional(),
 });
 
 // ─── CDD Schemas ─────────────────────────────────────────────────────────────

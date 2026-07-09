@@ -1641,9 +1641,12 @@ def _build_unified_style_docs(db, style: "Style") -> str:
     Combine all documents linked to a style into a single unified text block.
     Passed as one context to the LLM — no file-by-file processing.
     """
+    import re as _re
     parts = []
     if style.custom_instructions and style.custom_instructions.strip():
-        parts.append(f"[CUSTOM INSTRUCTIONS]\n{style.custom_instructions.strip()}")
+        visible_instructions = _re.sub(r"<!--\s*DIS_SOURCE_DOCUMENT_IDS=.*?-->", "", style.custom_instructions, flags=_re.S).strip()
+        if visible_instructions:
+            parts.append(f"[CUSTOM INSTRUCTIONS]\n{visible_instructions}")
     for sd in style.style_documents:
         doc = sd.document
         if doc and doc.content:

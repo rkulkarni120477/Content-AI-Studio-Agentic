@@ -20,30 +20,21 @@ export default function BlueprintContentView({
     [fullContent, sections],
   );
 
-  const [expanded, setExpanded] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(null);
   const [drafts, setDrafts] = useState({});
   const [reasons, setReasons] = useState({});
   const [regenSection, setRegenSection] = useState(null);
   const [regenItem, setRegenItem] = useState(null);
 
   useEffect(() => {
-    // Preserve which sections the user has open across content updates (e.g.
-    // after a save or regenerate); only seed the default on first render.
-    setExpanded((prev) => {
-      if (prev.size > 0) return prev;
-      return uiSections.length > 0 ? new Set([uiSections[0].title]) : new Set();
-    });
+    // Keep all sections closed by default. Users open only the section they need.
+    setExpanded(null);
     setDrafts({});
     setReasons({});
   }, [uiSections]);
 
   function toggle(title) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(title)) next.delete(title);
-      else next.add(title);
-      return next;
-    });
+    setExpanded((prev) => (prev === title ? null : title));
   }
 
   function getDraft(sec) {
@@ -118,7 +109,7 @@ export default function BlueprintContentView({
   return (
     <div className={styles.wrap}>
       {uiSections.map((sec) => {
-        const isOpen = expanded.has(sec.title);
+        const isOpen = expanded === sec.title;
         const items = editable ? parseItemsFromSection(sec.content) : [];
         const sectionBusy = regenSection === sec.title;
         return (

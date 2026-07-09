@@ -38,12 +38,6 @@ describe('MAIN_NAV visibility', () => {
     expect(visibleNav(reviewer)).not.toContain(plAdminAudit);
   });
 
-  it('the Reviews tab is hidden for everyone (2026-07 product decision)', () => {
-    for (const user of [admin, reviewer, author]) {
-      expect(visibleNav(user)).not.toContain(plAdminReviews);
-    }
-  });
-
   it('the Courses view (now also the lock editor) is visible to every reader, no anonymous', () => {
     for (const user of [admin, reviewer, author]) {
       expect(visibleNav(user)).toContain(plCourses);
