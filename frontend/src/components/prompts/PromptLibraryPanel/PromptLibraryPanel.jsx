@@ -433,6 +433,7 @@ export default function PromptLibraryPanel({
                   if (selectedPrompt?.id) qs.set('promptId', selectedPrompt.id);
                   navigate(`/prompt-library/requests/new?${qs.toString()}`);
                 }}
+                className={styles.requestChangeBtn}
               >
                 📬 Request a Change
               </Button>
@@ -670,18 +671,18 @@ export default function PromptLibraryPanel({
                       />
                       <div className={styles.aiActionRow}>
                         <Button
+                          className={styles.aiActionBtn}
                           variant="secondary"
                           size="sm"
-                          fullWidth
                           loading={improving}
                           onClick={handleImprove}
                         >
                           ✨ Improve with AI
                         </Button>
                         <Button
+                          className={styles.aiActionBtn}
                           variant="secondary"
                           size="sm"
-                          fullWidth
                           onClick={handleClearSuggestion}
                           disabled={!aiSuggestion}
                           title={aiSuggestion ? 'Discard the AI suggestion preview' : 'No suggestion to clear'}

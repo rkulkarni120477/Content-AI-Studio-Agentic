@@ -651,7 +651,7 @@ export default function BlueprintPage() {
               onChange={(e) => setDocumentTitle(e.target.value)}
             />
 
-            <Button variant="secondary" fullWidth type="button" onClick={onConfirmModule}>
+            <Button variant="secondary" className={styles.requestChangeBtn} type="button" onClick={onConfirmModule}>
               Confirm Module Selection
             </Button>
 
@@ -697,7 +697,7 @@ export default function BlueprintPage() {
                 variant="secondary"
                 size="sm"
                 type="button"
-                fullWidth
+                className={styles.saveInstrBtn}
                 onClick={() => setShowSaveInstr(!showSaveInstr)}
               >
                 💾 Save Instructions
@@ -869,7 +869,7 @@ export default function BlueprintPage() {
 
                     <Button
                       variant="primary"
-                      fullWidth
+                      className={styles.activeBlueprintBtn}
                       onClick={() => onPin(displayBp.id)}
                       disabled={activeBlueprint?.id === displayBp.id}
                     >

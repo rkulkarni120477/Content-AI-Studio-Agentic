@@ -416,3 +416,8 @@
     width: 100%;
   }
 }
+
+.requestChangeBtn, .saveInstrBtn, .generateRow__main, .activeBlueprintBtn {
+  width: max-content;
+  margin-inline: auto;
+}

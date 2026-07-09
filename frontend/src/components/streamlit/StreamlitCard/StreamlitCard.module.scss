@@ -37,6 +37,10 @@
     color: #374151;
     font-weight: 500;
   }
+  &__openBtn {
+    margin-inline: auto;
+    width: max-content;
+  }
 }
 
 .actions {
