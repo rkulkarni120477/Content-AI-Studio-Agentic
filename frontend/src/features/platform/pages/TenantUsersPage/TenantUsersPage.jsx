@@ -30,8 +30,8 @@ export default function TenantUsersPage() {
   const [deleting, setDeleting] = useState(null);
   const [saving, setSaving]   = useState(false);
 
-  const [addForm, setAddForm]   = useState({ username: '', password: '', display_name: '', role: 'author' });
-  const [editForm, setEditForm] = useState({ display_name: '', role: 'author', password: '', active: true });
+  const [addForm, setAddForm]   = useState({ username: '', password: '', display_name: '', role: 'author', display_title: '' });
+  const [editForm, setEditForm] = useState({ display_name: '', role: 'author', display_title: '', password: '', active: true });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,10 +60,11 @@ export default function TenantUsersPage() {
         password: addForm.password,
         display_name: addForm.display_name.trim() || addForm.username.trim(),
         role: addForm.role,
+        display_title: addForm.display_title.trim() || undefined,
       });
       toast.success('Member added');
       setShowAdd(false);
-      setAddForm({ username: '', password: '', display_name: '', role: 'author' });
+      setAddForm({ username: '', password: '', display_name: '', role: 'author', display_title: '' });
       load();
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -74,7 +75,7 @@ export default function TenantUsersPage() {
 
   function openEdit(m) {
     setEditing(m);
-    setEditForm({ display_name: m.display_name || '', role: m.role, password: '', active: m.active });
+    setEditForm({ display_name: m.display_name || '', role: m.role, display_title: m.display_title || '', password: '', active: m.active });
   }
 
   async function handleEdit(e) {
@@ -84,6 +85,7 @@ export default function TenantUsersPage() {
       await platformService.updateMember(tenantId, editing.user_id, {
         display_name: editForm.display_name.trim() || undefined,
         role: editForm.role,
+        display_title: editForm.display_title.trim(),
         password: editForm.password || undefined,
         active: editForm.active,
       });
@@ -150,7 +152,10 @@ export default function TenantUsersPage() {
               <tr key={m.user_id}>
                 <td><code className={styles.username}>{m.username}</code></td>
                 <td>{m.display_name || '—'}</td>
-                <td><span className={styles[`role_${m.role}`] || styles.roleDefault}>{roleLabel(m.role)}</span></td>
+                <td>
+                  <span className={styles[`role_${m.role}`] || styles.roleDefault}>{roleLabel(m.role)}</span>
+                  {m.display_title && <div className={styles.customTitle}>{m.display_title}</div>}
+                </td>
                 <td>
                   <span className={m.active ? styles.statusActive : styles.statusInactive}>
                     {m.active ? '● Active' : '○ Inactive'}
@@ -179,12 +184,16 @@ export default function TenantUsersPage() {
           <Input label="Display name" value={addForm.display_name}
             onChange={(e) => setAddForm((f) => ({ ...f, display_name: e.target.value }))} />
           <label className={styles.selectLabel}>
-            Role
+            Role (permissions) *
             <select className={styles.select} value={addForm.role}
               onChange={(e) => setAddForm((f) => ({ ...f, role: e.target.value }))}>
               {ROLES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
+          <Input label="Custom title (optional)" value={addForm.display_title}
+            placeholder="e.g. Instructional Designer"
+            hint="Shown in the UI only — does not change permissions."
+            onChange={(e) => setAddForm((f) => ({ ...f, display_title: e.target.value }))} />
           <div className={styles.formActions}>
             <Button type="button" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
             <Button type="submit" variant="primary" loading={saving}>Add user</Button>
@@ -202,12 +211,16 @@ export default function TenantUsersPage() {
             <Input label="New password (leave blank to keep)" type="password"
               value={editForm.password} onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))} />
             <label className={styles.selectLabel}>
-              Role
+              Role (permissions) *
               <select className={styles.select} value={editForm.role}
                 onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}>
                 {ROLES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
+            <Input label="Custom title (optional)" value={editForm.display_title}
+              placeholder="e.g. Instructional Designer"
+              hint="Shown in the UI only — does not change permissions."
+              onChange={(e) => setEditForm((f) => ({ ...f, display_title: e.target.value }))} />
             <label className={styles.checkboxRow}>
               <input type="checkbox" checked={editForm.active}
                 onChange={(e) => setEditForm((f) => ({ ...f, active: e.target.checked }))} />

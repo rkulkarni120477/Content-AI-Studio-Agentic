@@ -80,6 +80,7 @@ def _member_read(user, membership) -> TenantMemberRead:
         display_name=user.display_name or user.username,
         role=membership.role,
         role_display=role_label(membership.role),
+        display_title=membership.display_title or None,
         active=bool(membership.active),
         email=user.email,
         auth_provider="microsoft" if user.microsoft_oid else "local",
@@ -265,6 +266,7 @@ def add_member(
 
     membership = TenantMembership(
         user_id=user.id, project_id=project_id, role=role, active=True,
+        display_title=(body.display_title or "").strip() or None,
         created_by=current_user.username,
     )
     db.add(membership)
@@ -298,6 +300,8 @@ def update_member(
         user.password_hash = hash_password(body.password)
     if body.role is not None:
         membership.role = tenant_service.normalize_role(body.role)
+    if body.display_title is not None:
+        membership.display_title = body.display_title.strip() or None
     if body.active is not None:
         if body.active and not membership.active:
             tenant_service.assert_can_add_member(db, project_id)

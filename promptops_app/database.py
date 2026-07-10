@@ -1159,6 +1159,9 @@ class TenantMembership(Base):
     user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     role       = Column(String(20), nullable=False, default="author")
+    # Cosmetic job title shown in the UI (e.g. "Instructional Designer"). Purely
+    # a display label — actual permissions always come from `role` above.
+    display_title = Column(String(100), nullable=True)
     active     = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by = Column(String(100))
@@ -1365,6 +1368,7 @@ def _run_legacy_ddl():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_oid VARCHAR(64)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        "ALTER TABLE tenant_memberships ADD COLUMN IF NOT EXISTS display_title VARCHAR(100)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug VARCHAR(64)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS max_users INTEGER DEFAULT 50",
