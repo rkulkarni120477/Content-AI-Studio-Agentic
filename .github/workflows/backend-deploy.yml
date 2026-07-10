@@ -50,14 +50,17 @@ jobs:
             echo "Cleaning unused Docker images..."
             docker image prune -f
 
-            echo "Waiting for services to start..."
-            sleep 20
+            echo "Waiting for CAS Backend..."
+            until curl -fs https://cas-api.academian.com/docs >/dev/null; do
+              echo "Waiting for CAS..."
+              sleep 5
+            done
 
-            echo "Checking CAS Backend..."
-            curl -f https://cas-api.academian.com/docs >/dev/null
-
-            echo "Checking DIS Backend..."
-            curl -f http://localhost:8010/docs >/dev/null
+            echo "Waiting for DIS Backend..."
+            until curl -fs http://localhost:8010/docs >/dev/null; do
+              echo "Waiting for DIS..."
+              sleep 5
+            done
 
             echo "Running containers..."
             docker compose ps
