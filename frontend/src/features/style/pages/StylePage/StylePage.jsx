@@ -412,92 +412,110 @@ export default function StylePage() {
           {error && (
             <ErrorState message={error} onRetry={() => dispatch(fetchStylesThunk())} />
           )}
-          <CreateStyleForm />
-
-          {/* Saved Styles — Streamlit right panel */}
-          <section className={`${styles.panel} ${styles.panelLibrary}`}>
-            <h2 className={styles.panel__title}>🗂️ Generated Styles</h2>
-            <p className={styles.muted}>Recent first. Generated style bodies are copied to DIS/S3 and this list auto-loads whenever you reopen the workflow.</p>
-            <div className={styles.docFilters} style={{ marginBottom: 12 }}>
-              <Select
-                label="Filter"
-                options={[{ value: 'all', label: 'All' }, { value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]}
-                value={styleStateFilter}
-                onChange={(e) => setStyleStateFilter(e.target.value)}
-              />
-              <div className={styles.docSearch}>
-                <label className={styles.docSearch__label}>Search style</label>
-                <SearchBar value={styleSearch} onChange={setStyleSearch} placeholder="Search style name, #id, summary…" />
-              </div>
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>➕ Create New Style</summary>
+            <div className={styles.accordion__body}>
+              <CreateStyleForm embedded />
             </div>
-            {activeStyle && (
-              <div className={styles.activeIndicator}>
-                <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
+          </details>
+
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>🗂️ Generated Styles</summary>
+            <div className={`${styles.accordion__body} ${styles.panelLibrary}`}>
+              <p className={styles.muted}>
+                Recent first. Generated style bodies are copied to DIS/S3 and this list auto-loads whenever you reopen the workflow.
+              </p>
+              <div className={styles.docFilters} style={{ marginBottom: 12 }}>
+                <Select
+                  label="Filter"
+                  options={[
+                    { value: 'all', label: 'All' },
+                    { value: 'active', label: 'Active' },
+                    { value: 'inactive', label: 'Inactive' },
+                  ]}
+                  value={styleStateFilter}
+                  onChange={(e) => setStyleStateFilter(e.target.value)}
+                />
+                <div className={styles.docSearch}>
+                  <label className={styles.docSearch__label}>Search style</label>
+                  <SearchBar
+                    value={styleSearch}
+                    onChange={setStyleSearch}
+                    placeholder="Search style name, #id, summary…"
+                  />
+                </div>
               </div>
-            )}
-            {isLoading ? (
-              <div className={styles.center}><Loader size="lg" /></div>
-            ) : filteredStyles.length === 0 ? (
-              <EmptyState
-                title="No styles yet"
-                message={styleSearch ? "No generated styles match your search." : "Create your first style using the form on the left."}
-              />
-            ) : (
-              <ul className={styles.list}>
-                {filteredStyles.map((style) => (
-                  <li key={style.id} className={`${styles.styleItem} ${style.is_active ? styles['styleItem--active'] : ''}`}>
-                    <div className={styles.styleItem__info}>
-                      <span className={styles.styleItem__name}>{style.name}</span>
-                      {style.understanding_preview && (
-                        <span className={styles.styleItem__desc}>{style.understanding_preview}</span>
-                      )}
-                      <span className={styles.styleItem__date}>{formatDate(style.created_at)}</span>
-                    </div>
-                    <div className={styles.styleItem__actions}>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className={styles.actionBtn}
-                        onClick={() => openView(style.id)}
-                      >
-                        View
-                      </Button>
-                      {canModify && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className={styles.actionBtn}
-                            onClick={() => onUnderstandStyle(style.id)}
-                            loading={generatingStyleId === style.id}
-                          >
-                            Understand
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className={styles.actionBtn}
-                            onClick={() => openRefine(style.id, style.name)}
-                            disabled={generatingStyleId != null}
-                          >
-                            Refine
-                          </Button>
-                          {style.is_active ? (
-                            <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => dispatch(deactivateStyleThunk(style.id))}>Deactivate</Button>
-                          ) : (
-                            <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => openScopePicker(style.id, style.name)}>Activate</Button>
-                          )}
-                          {isAdmin && (
-                            <Button variant="danger" size="xs" className={styles.actionBtn} onClick={() => setDeleteStyleId(style.id)}>Delete</Button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+              {activeStyle && (
+                <div className={styles.activeIndicator}>
+                  <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
+                </div>
+              )}
+              {isLoading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : filteredStyles.length === 0 ? (
+                <EmptyState
+                  title="No styles yet"
+                  message={styleSearch
+                    ? 'No generated styles match your search.'
+                    : 'Create your first style using the form above.'}
+                />
+              ) : (
+                <ul className={styles.list}>
+                  {filteredStyles.map((style) => (
+                    <li key={style.id} className={`${styles.styleItem} ${style.is_active ? styles['styleItem--active'] : ''}`}>
+                      <div className={styles.styleItem__info}>
+                        <span className={styles.styleItem__name}>{style.name}</span>
+                        {style.understanding_preview && (
+                          <span className={styles.styleItem__desc}>{style.understanding_preview}</span>
+                        )}
+                        <span className={styles.styleItem__date}>{formatDate(style.created_at)}</span>
+                      </div>
+                      <div className={styles.styleItem__actions}>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className={styles.actionBtn}
+                          onClick={() => openView(style.id)}
+                        >
+                          View
+                        </Button>
+                        {canModify && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className={styles.actionBtn}
+                              onClick={() => onUnderstandStyle(style.id)}
+                              loading={generatingStyleId === style.id}
+                            >
+                              Understand
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className={styles.actionBtn}
+                              onClick={() => openRefine(style.id, style.name)}
+                              disabled={generatingStyleId != null}
+                            >
+                              Refine
+                            </Button>
+                            {style.is_active ? (
+                              <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => dispatch(deactivateStyleThunk(style.id))}>Deactivate</Button>
+                            ) : (
+                              <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => openScopePicker(style.id, style.name)}>Activate</Button>
+                            )}
+                            {isAdmin && (
+                              <Button variant="danger" size="xs" className={styles.actionBtn} onClick={() => setDeleteStyleId(style.id)}>Delete</Button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </details>
 
           <details className={styles.accordion}>
             <summary className={styles.accordion__summary}>🎯 Style Prompts</summary>

@@ -34,6 +34,13 @@
   width: 100%;
 }
 
+.muted {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: 0;
+  line-height: 1.5;
+}
+
 .accordion {
   @include card;
   padding: 0;

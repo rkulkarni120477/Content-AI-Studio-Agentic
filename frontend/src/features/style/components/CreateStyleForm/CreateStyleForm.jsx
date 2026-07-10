@@ -42,31 +42,6 @@ function writeCachedStyleDocs(key, documents) {
   }
 }
 
-function docLabel(doc) {
-  return doc?.source_file_name || doc?.title || `Source ${doc?.job_id || doc?.document_id}`;
-}
-
-function styleDocsCacheKey({ courseId, projectId }) {
-  return `cas_dis_style_ref_docs:${courseId || projectId || 'global'}`;
-}
-
-function readCachedStyleDocs(key) {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(key) || 'null');
-    return Array.isArray(parsed?.documents) ? parsed.documents : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCachedStyleDocs(key, documents) {
-  try {
-    window.localStorage.setItem(key, JSON.stringify({ documents, cached_at: new Date().toISOString() }));
-  } catch {
-    // Ignore storage quota/privacy mode issues.
-  }
-}
-
 export default function CreateStyleForm({ embedded = false }) {
   const dispatch = useAppDispatch();
   const isCreating = useAppSelector(selectStyleCreating);
