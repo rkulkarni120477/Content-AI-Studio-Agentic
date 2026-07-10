@@ -1,12 +1,14 @@
-"""IMS Common Cartridge 1.1 package exporter.
+"""IMS Common Cartridge 1.1 / Canvas Course Export package exporter.
 
 Builds a ``.imscc`` ZIP archive containing:
   - ``imsmanifest.xml``  — organization tree (TOC) + resource manifest
-  - ``wiki_content/*.html`` — one HTML page per content block
-  - ``assessment/*.xml`` — QTI 1.2 quizzes for assessment blocks (Canvas/Moodle/Blackboard)
+  - ``course_settings/canvas_export.txt`` — marks the package as a Canvas cartridge
+    so HTML under ``wiki_content/`` imports as native Pages (not HTML files/iframes)
+  - ``course_settings/module_meta.xml`` — Canvas Modules structure
+  - ``wiki_content/*.html`` — one Canvas wiki Page per content block
+  - ``assessment/*.xml`` — QTI 1.2 quizzes for assessment blocks
 
-The package is compatible with Canvas, Moodle, and other LMS platforms
-that accept IMS CC 1.1 imports.
+Compatible with Canvas (native Pages + Modules), Moodle, and Blackboard.
 """
 
 from __future__ import annotations
@@ -29,29 +31,35 @@ _MANIFEST_NS = (
     'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
 )
 
+_CANVAS_NS = "http://canvas.instructure.com/xsd/cccv1p0"
+_CANVAS_XSD = "https://canvas.instructure.com/xsd/cccv1p0.xsd"
+_CANVAS_EXPORT_HREF = "course_settings/canvas_export.txt"
+_MODULE_META_HREF = "course_settings/module_meta.xml"
+_CANVAS_EXPORT_TEXT = "This is a Canvas export from Content AI Studio.\n"
+
+# Inline styles kept inside the Page body so Canvas RCE can render them.
 _PAGE_CSS = """
-  body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    max-width: 960px; margin: 40px auto; padding: 0 24px 48px;
-    line-height: 1.75; color: #1e293b; background: #fff;
-  }
-  h1 { color: #1e40af; font-size: 1.6rem; border-bottom: 2px solid #e2e8f0;
-       padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
-  h2, h3, h4 { color: #334155; margin-top: 1.5rem; }
-  p  { margin: 0.75rem 0; }
-  ul, ol { margin: 0.75rem 0 0.75rem 1.5rem; }
-  li { margin: 0.35rem 0; }
-  code { background: #f1f5f9; padding: 0.1rem 0.35rem; border-radius: 4px;
-         font-size: 0.9em; }
-  pre  { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
-         padding: 1rem; overflow-x: auto; }
-  blockquote { border-left: 4px solid #93c5fd; margin: 1rem 0; padding: 0.5rem 1rem;
-               background: #f8fafc; color: #475569; }
-  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-  th, td { border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; text-align: left; }
-  th { background: #f1f5f9; }
-  img { max-width: 100%; height: auto; border-radius: 8px; margin: 1rem 0; }
-  a   { color: #2563eb; }
+.cas-lesson {
+  font-family: Inter, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.75; color: #1e293b; max-width: 960px;
+}
+.cas-lesson h1 { color: #1e40af; font-size: 1.6rem; border-bottom: 2px solid #e2e8f0;
+     padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
+.cas-lesson h2, .cas-lesson h3, .cas-lesson h4 { color: #334155; margin-top: 1.5rem; }
+.cas-lesson p  { margin: 0.75rem 0; }
+.cas-lesson ul, .cas-lesson ol { margin: 0.75rem 0 0.75rem 1.5rem; }
+.cas-lesson li { margin: 0.35rem 0; }
+.cas-lesson code { background: #f1f5f9; padding: 0.1rem 0.35rem; border-radius: 4px;
+       font-size: 0.9em; }
+.cas-lesson pre  { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+       padding: 1rem; overflow-x: auto; }
+.cas-lesson blockquote { border-left: 4px solid #93c5fd; margin: 1rem 0; padding: 0.5rem 1rem;
+             background: #f8fafc; color: #475569; }
+.cas-lesson table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+.cas-lesson th, .cas-lesson td { border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; text-align: left; }
+.cas-lesson th { background: #f1f5f9; }
+.cas-lesson img { max-width: 100%; height: auto; border-radius: 8px; margin: 1rem 0; }
+.cas-lesson a   { color: #2563eb; }
 """
 
 _IMG_MD_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -63,6 +71,9 @@ _VIDEO_RE = re.compile(
     r"[^\s\)]+\.(?:mp4|webm|mov|m4v))",
     re.IGNORECASE,
 )
+_BODY_RE = re.compile(r"<body[^>]*>(.*?)</body>", re.IGNORECASE | re.DOTALL)
+_STYLE_RE = re.compile(r"<style[^>]*>(.*?)</style>", re.IGNORECASE | re.DOTALL)
+_DOCTYPE_RE = re.compile(r"<!DOCTYPE[^>]*>", re.IGNORECASE)
 
 
 class _ManifestEntry(NamedTuple):
@@ -162,53 +173,133 @@ def _rewrite_content_with_placeholders(content: str, refs: list[_MediaRef]) -> s
     return result
 
 
-def _block_html(label: str, content: str, refs: list[_MediaRef]) -> str:
-    """Build a single block HTML page with markdown rendered to proper HTML."""
+def _extract_page_body(html: str) -> str:
+    """Pull body (+ head styles) out of a full HTML document for a Canvas Page.
+
+    Canvas wiki Pages store *body* HTML in the RCE — a full ``<!DOCTYPE html>``
+    document is imported as an HTML *file* and shown in an iframe. Returning only
+    the inner content makes Canvas create a native Page.
+    """
+    text = (html or "").strip()
+    if not text:
+        return ""
+
+    styles = [m.group(1).strip() for m in _STYLE_RE.finditer(text) if m.group(1).strip()]
+    body_match = _BODY_RE.search(text)
+    if body_match:
+        body = body_match.group(1).strip()
+    elif _DOCTYPE_RE.search(text) or "<html" in text.lower():
+        body = re.sub(r"</?(?:html|head|body)[^>]*>", "", text, flags=re.IGNORECASE)
+        body = _DOCTYPE_RE.sub("", body).strip()
+        body = _STYLE_RE.sub("", body).strip()
+    else:
+        body = text
+
+    style_block = ""
+    if styles:
+        style_block = "<style>\n" + "\n".join(styles) + "\n</style>\n"
+    return f"{style_block}{body}".strip()
+
+
+def _canvas_wiki_page(title: str, body_html: str, resource_id: str) -> str:
+    """Build a Canvas wiki-page HTML file (title + meta + body).
+
+    Matches the format Canvas itself exports so the Canvas cartridge importer
+    creates a native WikiPage instead of an Attachment.
+    """
+    safe_title = escape(title or "Content")
+    return (
+        "<html>\n"
+        "<head>\n"
+        '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">\n'
+        f"<title>{safe_title}</title>\n"
+        f'<meta name="identifier" content="{escape(resource_id)}"/>\n'
+        '<meta name="editing_roles" content="teachers"/>\n'
+        '<meta name="workflow_state" content="active"/>\n'
+        "</head>\n"
+        "<body>\n"
+        f"{body_html}\n"
+        "</body>\n"
+        "</html>"
+    )
+
+
+def _block_html(label: str, content: str, refs: list[_MediaRef], resource_id: str) -> str:
+    """Build a Canvas wiki Page from markdown content."""
     rewritten = _rewrite_content_with_placeholders(content, refs)
     body_html = markdown_to_html(rewritten)
     safe_title = escape(label or "Content")
+    body = (
+        f"<style>{_PAGE_CSS}</style>\n"
+        f'<div class="cas-lesson">\n'
+        f"  <h1>{safe_title}</h1>\n"
+        f'  <div class="content">\n'
+        f"    {body_html}\n"
+        f"  </div>\n"
+        f"</div>"
+    )
+    return _canvas_wiki_page(label or "Content", body, resource_id)
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{safe_title}</title>
-  <style>{_PAGE_CSS}</style>
-</head>
-<body>
-  <h1>{safe_title}</h1>
-  <div class="content">
-    {body_html}
-  </div>
-</body>
-</html>"""
+
+def _build_module_meta(modules: list[tuple[str, list[_ManifestEntry]]]) -> str:
+    """Build course_settings/module_meta.xml for Canvas Modules."""
+    module_xml: list[str] = []
+    for mod_idx, (title, entries) in enumerate(modules, start=1):
+        if not entries:
+            continue
+        mod_id = _uid("module")
+        items_xml: list[str] = []
+        for item_idx, entry in enumerate(entries, start=1):
+            if entry.resource_type == ASSESSMENT_RESOURCE_TYPE:
+                content_type = "Quizzes::Quiz"
+            else:
+                content_type = "WikiPage"
+            items_xml.append(
+                f'    <item identifier="{entry.item_id}">\n'
+                f"      <content_type>{content_type}</content_type>\n"
+                f"      <workflow_state>active</workflow_state>\n"
+                f"      <title>{escape(entry.label)}</title>\n"
+                f"      <identifierref>{entry.resource_id}</identifierref>\n"
+                f"      <position>{item_idx}</position>\n"
+                f"      <new_tab>false</new_tab>\n"
+                f"      <indent>0</indent>\n"
+                f"    </item>"
+            )
+        module_xml.append(
+            f'  <module identifier="{mod_id}">\n'
+            f"    <title>{escape(title)}</title>\n"
+            f"    <workflow_state>active</workflow_state>\n"
+            f"    <position>{mod_idx}</position>\n"
+            f"    <require_sequential_progress>false</require_sequential_progress>\n"
+            f"    <locked>false</locked>\n"
+            f"    <items>\n"
+            f"{chr(10).join(items_xml)}\n"
+            f"    </items>\n"
+            f"  </module>"
+        )
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<modules xmlns="{_CANVAS_NS}" '
+        f'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        f'xsi:schemaLocation="{_CANVAS_NS} {_CANVAS_XSD}">\n'
+        f"{chr(10).join(module_xml)}\n"
+        "</modules>\n"
+    )
 
 
 def _build_manifest(topic: str, modules: list[tuple[str, list[_ManifestEntry]]]) -> str:
-    """Build imsmanifest.xml with a nested, multi-module organization tree.
+    """Build imsmanifest.xml with nested modules + Canvas cartridge marker.
 
-    Canvas (and most LMSs) build the Table of Contents / Modules from a *nested*
-    organization tree, not a flat list of items. The required shape is:
-
-        <organization>
-          <item>                          <!-- root wrapper, no title/ref -->
-            <item><title>Module 1</title>   <!-- module = container, no ref -->
-              <item identifierref=..>       <!-- leaf = links to a resource -->
-                <title>Page</title>
-              </item>
-            </item>
-            <item><title>Module 2</title> ... </item>
-          </item>
-        </organization>
-
-    Each entry in ``modules`` is ``(module_title, [_ManifestEntry, ...])`` and
-    becomes one module container. A flat list of leaf items directly under
-    <organization> imports the pages but produces no module/TOC in Canvas.
+    Canvas builds Modules from ``module_meta.xml`` when the package is detected
+    as a Canvas cartridge (via ``course_settings/canvas_export.txt``). The
+    organization tree is kept for other LMS platforms.
     """
     manifest_id = _uid("manifest")
     org_id = _uid("org")
     root_id = _uid("root")
+    canvas_flag_id = _uid("canvas")
+    module_meta_id = _uid("modmeta")
 
     safe_topic = escape(topic)
 
@@ -241,6 +332,20 @@ def _build_manifest(topic: str, modules: list[tuple[str, list[_ManifestEntry]]])
     )
 
     resource_xml = []
+    # Canvas cartridge marker — without this, wiki_content HTML becomes Files/iframes.
+    resource_xml.append(
+        f'    <resource identifier="{canvas_flag_id}" type="associatedcontent/imscc_xmlv1p1/learning-application-resource" '
+        f'href="{_CANVAS_EXPORT_HREF}">\n'
+        f'      <file href="{_CANVAS_EXPORT_HREF}"/>\n'
+        f"    </resource>"
+    )
+    resource_xml.append(
+        f'    <resource identifier="{module_meta_id}" type="associatedcontent/imscc_xmlv1p1/learning-application-resource" '
+        f'href="{_MODULE_META_HREF}">\n'
+        f'      <file href="{_MODULE_META_HREF}"/>\n'
+        f"    </resource>"
+    )
+
     for entry in all_entries:
         if entry.resource_type == ASSESSMENT_RESOURCE_TYPE:
             resource_xml.append(
@@ -250,9 +355,10 @@ def _build_manifest(topic: str, modules: list[tuple[str, list[_ManifestEntry]]])
                 f"    </resource>"
             )
         else:
+            # Plain webcontent — no adlcp:scormType (that forces HTML-file/iframe treatment).
             resource_xml.append(
                 f'    <resource identifier="{entry.resource_id}" type="webcontent" '
-                f'adlcp:scormType="asset" href="{entry.href}">\n'
+                f'href="{entry.href}">\n'
                 f'      <file href="{entry.href}"/>\n'
                 f"    </resource>"
             )
@@ -288,7 +394,7 @@ def build_imscc(
     base_filename: str = "course",
     modules: list[tuple[str, list[int]]] | None = None,
 ) -> BytesIO:
-    """Build an IMS Common Cartridge 1.1 package as a BytesIO ZIP stream.
+    """Build an IMS Common Cartridge / Canvas Course Export package.
 
     Parameters
     ----------
@@ -296,9 +402,8 @@ def build_imscc(
     blocks : Ordered list of tuples. Each may be
         ``(label, content)``, ``(label, content, block_type)``, or
         ``(label, content, block_type, content_html)``. When ``content_html`` is
-        present it is a complete standalone HTML document (the Canvas HTML
-        rendition generated at publish) and is packaged verbatim; otherwise the
-        markdown ``content`` is converted to HTML at export time.
+        present it is converted to a Canvas wiki Page body (full documents are
+        stripped to body content so Canvas creates a native Page, not an iframe).
     base_filename : Unused at runtime; kept for API symmetry with other exporters.
     modules : Optional list of ``(module_title, [block_index, ...])`` where each
         index is 0-based into ``blocks``. Blocks not referenced by any module are
@@ -329,15 +434,17 @@ def build_imscc(
 
             href = f"wiki_content/block_{idx}.html"
             if content_html and content_html.strip():
-                # Pre-rendered Canvas HTML — package as-is (self-contained doc).
-                zf.writestr(href, content_html.encode("utf-8"))
+                # LLM / publish HTML → extract body so Canvas creates a native Page.
+                body = _extract_page_body(content_html)
+                page = _canvas_wiki_page(display_label, body, resource_id)
+                zf.writestr(href, page.encode("utf-8"))
             else:
                 refs = _detect_media(content or "", idx)
                 for ref in refs:
                     zip_path = ref.placeholder_path.replace("../", "")
                     all_media.append((zip_path, _placeholder_svg(ref.original, ref.media_type)))
-                html = _block_html(label, content or "", refs)
-                zf.writestr(href, html.encode("utf-8"))
+                page = _block_html(label, content or "", refs, resource_id)
+                zf.writestr(href, page.encode("utf-8"))
 
             entries_by_index[zero_idx] = _ManifestEntry(
                 item_id, resource_id, display_label, href, "webcontent",
@@ -350,6 +457,11 @@ def build_imscc(
                 written_paths.add(path)
 
         grouped = _group_into_modules(topic, entries_by_index, modules)
+
+        # Canvas cartridge marker + module metadata (native Pages + Modules).
+        zf.writestr(_CANVAS_EXPORT_HREF, _CANVAS_EXPORT_TEXT.encode("utf-8"))
+        zf.writestr(_MODULE_META_HREF, _build_module_meta(grouped).encode("utf-8"))
+
         manifest = _build_manifest(topic, grouped)
         zf.writestr("imsmanifest.xml", manifest.encode("utf-8"))
 
