@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '@services/apiClient';
 import { BLOCKS, MODULES } from '@services/endpoints';
 import { WORKFLOW_STATES } from '@utils/constants';
@@ -9,13 +9,6 @@ import Modal from '@components/common/Modal/Modal';
 import toast from 'react-hot-toast';
 import styles from './PublishedTocPanel.module.scss';
 
-function moveItem(list, fromIndex, toIndex) {
-  const next = [...list];
-  const [item] = next.splice(fromIndex, 1);
-  next.splice(toIndex, 0, item);
-  return next;
-}
-
 function htmlFilename(block) {
   const base = (block.block_label || `block_${block.id}`)
     .replace(/[^\w\s-]/g, '')
@@ -25,7 +18,7 @@ function htmlFilename(block) {
 }
 
 function totalBlocks(modules, unassigned) {
-  return modules.reduce((n, m) => n + m.blocks.length, 0) + unassigned.length;
+  return modules.reduce((n, m) => n + (m.blocks?.length || 0), 0) + unassigned.length;
 }
 
 function BlockRow({
@@ -36,20 +29,9 @@ function BlockRow({
   onPreview,
   onDownload,
   onRegenerate,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
-  dragging,
 }) {
   return (
-    <li
-      className={`${styles.item} ${dragging ? styles['item--dragging'] : ''}`}
-      draggable
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDragEnd={onDragEnd}
-    >
-      <span className={styles.handle} title="Drag to move" aria-hidden="true">⠿</span>
+    <li className={styles.item}>
       <span className={styles.index}>{index}</span>
       <div className={styles.body}>
         <p className={styles.label}>{truncate(block.block_label || `Block ${block.id}`, 60)}</p>
@@ -98,27 +80,17 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
   const [modules, setModules] = useState([]);
   const [unassigned, setUnassigned] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [regenId, setRegenId] = useState(null);
   const [downloadId, setDownloadId] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [moduleDragIndex, setModuleDragIndex] = useState(null);
-  const [blockDrag, setBlockDrag] = useState(null); // { blockId, sourceKey }
-
-  const layoutRef = useRef({ modules: [], unassigned: [] });
-  layoutRef.current = { modules, unassigned };
-  const droppedRef = useRef(false);
 
   const loadLayout = useCallback(async () => {
     if (!courseId) return;
     setLoading(true);
     try {
       const res = await api.get(MODULES.LIST(courseId));
-      setModules((res.modules || []).map((m) => ({
-        ...m,
-        blocks: m.blocks || [],
-      })));
+      setModules(res.modules || []);
       setUnassigned(res.unassigned || []);
     } catch {
       setModules([]);
@@ -131,32 +103,9 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
 
   useEffect(() => { loadLayout(); }, [loadLayout]);
 
-  async function persistLayout(nextModules, nextUnassigned) {
-    setSaving(true);
-    try {
-      await api.put(MODULES.SAVE_LAYOUT(courseId), {
-        modules: nextModules.map((m) => ({
-          module_id: m.id,
-          block_ids: m.blocks.map((b) => b.id),
-        })),
-      });
-    } catch {
-      toast.error('Failed to save layout.');
-      loadLayout();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function applyLayout(nextModules, nextUnassigned) {
-    setModules(nextModules);
-    setUnassigned(nextUnassigned);
-    persistLayout(nextModules, nextUnassigned);
-  }
-
   function patchBlockInLayout(blockId, patch) {
     const patchList = (list) => list.map((b) => (b.id === blockId ? { ...b, ...patch } : b));
-    setModules((prev) => prev.map((m) => ({ ...m, blocks: patchList(m.blocks) })));
+    setModules((prev) => prev.map((m) => ({ ...m, blocks: patchList(m.blocks || []) })));
     setUnassigned((prev) => patchList(prev));
   }
 
@@ -463,16 +412,16 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           <h2 className={styles.title}>📑 Export Layout</h2>
           <p className={styles.subtitle}>
             {courseName ? (
-              <>Course: <strong>{courseName}</strong> — arrange modules and items like Canvas, then export IMS CC.</>
+              <>
+                Course: <strong>{courseName}</strong> — modules and sequence follow the CDD /
+                Blueprint. Preview or regenerate Canvas HTML, then export IMS CC.
+              </>
             ) : (
-              <>Create modules, drag items between them, and export as an IMS CC package.</>
+              <>Modules follow the Blueprint structure. Export as an IMS CC package for LMS import.</>
             )}
           </p>
         </div>
         <div className={styles.headerActions}>
-          <Button variant="secondary" onClick={handleAddModule}>
-            + Add Module
-          </Button>
           <Button variant="secondary" onClick={handleLaunchPrintWorkflow}>
             🖨️ Launch Print Workflow
           </Button>
@@ -494,8 +443,8 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
             No published blocks in <strong>{courseName || `course #${courseId}`}</strong> yet.
           </p>
           <p>
-            Publish blocks from the <strong>Workflow</strong> page, then return here to arrange
-            modules and export.
+            Publish blocks from the <strong>Workflow</strong> page after generating content from
+            the Blueprint, then return here to export.
           </p>
           {projectCourses.length > 1 && (
             <p className={styles.hintCourses}>
@@ -505,62 +454,23 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
         </div>
       ) : (
         <div className={styles.moduleList}>
-          {modules.map((mod, modIndex) => (
-            <div
-              key={mod.id}
-              className={`${styles.moduleCard} ${moduleDragIndex === modIndex ? styles['moduleCard--dragging'] : ''}`}
-              onDragOver={(e) => handleModuleDragOver(e, modIndex)}
-            >
+          {modules.map((mod) => (
+            <div key={mod.id} className={styles.moduleCard}>
               <div className={styles.moduleHeader}>
-                <span
-                  className={styles.moduleHandle}
-                  draggable
-                  onDragStart={() => handleModuleDragStart(modIndex)}
-                  onDragEnd={handleModuleDragEnd}
-                  title="Drag to reorder module"
-                >
-                  ⠿
-                </span>
                 <h3 className={styles.moduleTitle}>{mod.title}</h3>
-                <span className={styles.moduleCount}>{mod.blocks.length} item{mod.blocks.length !== 1 ? 's' : ''}</span>
-                <div className={styles.moduleActions}>
-                  <button
-                    type="button"
-                    className={styles.iconBtn}
-                    onClick={() => handleRenameModule(mod.id, mod.title)}
-                    title="Rename module"
-                    aria-label="Rename module"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.iconBtn}
-                    onClick={() => handleDeleteModule(mod.id, mod.title)}
-                    title="Delete module"
-                    aria-label="Delete module"
-                  >
-                    🗑
-                  </button>
-                </div>
+                <span className={styles.moduleCount}>
+                  {(mod.blocks || []).length} item{(mod.blocks || []).length !== 1 ? 's' : ''}
+                </span>
               </div>
-              <ol
-                className={styles.list}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleDropOnModule(e, mod.id)}
-              >
-                {mod.blocks.length === 0 ? (
-                  <li className={styles.dropHint}>Drop items here</li>
+              <ol className={styles.list}>
+                {(mod.blocks || []).length === 0 ? (
+                  <li className={styles.dropHint}>No published content for this module yet</li>
                 ) : (
-                  mod.blocks.map((block, blockIndex) => (
+                  (mod.blocks || []).map((block, blockIndex) => (
                     <BlockRow
                       key={block.id}
                       block={block}
                       index={blockIndex + 1}
-                      dragging={blockDrag?.blockId === block.id}
-                      onDragStart={() => handleBlockDragStart(block.id, `m:${mod.id}`)}
-                      onDragOver={(e) => handleBlockDragOver(e, `m:${mod.id}`, blockIndex)}
-                      onDragEnd={handleBlockDragEnd}
                       {...blockRowProps}
                     />
                   ))
@@ -569,39 +479,28 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
             </div>
           ))}
 
-          <div
-            className={styles.moduleCard}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={handleDropOnUnassigned}
-          >
-            <div className={styles.moduleHeader}>
-              <h3 className={styles.moduleTitle}>Unassigned</h3>
-              <span className={styles.moduleHint}>
-                Exported into a default &quot;Course Content&quot; module
-              </span>
-            </div>
-            <ol className={styles.list}>
-              {unassigned.length === 0 ? (
-                <li className={styles.dropHint}>Drag items here to unassign</li>
-              ) : (
-                unassigned.map((block, blockIndex) => (
+          {unassigned.length > 0 && (
+            <div className={styles.moduleCard}>
+              <div className={styles.moduleHeader}>
+                <h3 className={styles.moduleTitle}>Other published content</h3>
+                <span className={styles.moduleHint}>
+                  Not matched to a Blueprint lesson — exported after Blueprint modules
+                </span>
+              </div>
+              <ol className={styles.list}>
+                {unassigned.map((block, blockIndex) => (
                   <BlockRow
                     key={block.id}
                     block={block}
                     index={blockIndex + 1}
-                    dragging={blockDrag?.blockId === block.id}
-                    onDragStart={() => handleBlockDragStart(block.id, 'unassigned')}
-                    onDragOver={(e) => handleBlockDragOver(e, 'unassigned', blockIndex)}
-                    onDragEnd={handleBlockDragEnd}
                     {...blockRowProps}
                   />
-                ))
-              )}
-            </ol>
-          </div>
+                ))}
+              </ol>
+            </div>
+          )}
         </div>
       )}
-      {saving && <p className={styles.saving}>Saving layout…</p>}
 
       <Modal
         open={!!preview}

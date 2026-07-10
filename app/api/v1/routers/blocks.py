@@ -35,14 +35,9 @@ from app.schemas.block import (
     BlockAutosaveResponse,
     BlockCanvasHtmlResponse,
     BlockListItem,
-    CourseModuleCreateRequest,
     CourseModuleRead,
-    CourseModuleRenameRequest,
-    CourseModuleReorderRequest,
     CourseModulesResponse,
     ModuleBlock,
-    ModuleLayoutRequest,
-    ModuleLayoutResponse,
     BlockRatingRequest,
     BlockRead,
     BlockRegenerateItemRequest,
@@ -754,7 +749,7 @@ def regenerate_block_canvas_html(
 
 
 # ---------------------------------------------------------------------------
-# Course modules (Canvas-style export grouping)
+# Export layout (Blueprint / CDD driven — read-only)
 # ---------------------------------------------------------------------------
 
 def _has_html(b) -> bool:
@@ -774,134 +769,42 @@ def _module_block(b) -> ModuleBlock:
 @router.get(
     "/courses/{course_id}/modules",
     response_model=CourseModulesResponse,
-    summary="List course modules with their published blocks (Export screen)",
+    summary="List export TOC from CDD/Blueprint structure",
+    description=(
+        "Returns modules and published blocks ordered by Module Blueprint "
+        "(module_number) and blueprint component sequence. Read-only — "
+        "structure comes from CDD/Blueprint, not manual arrangement."
+    ),
 )
 def list_course_modules(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
 ) -> CourseModulesResponse:
-    """Return modules (ordered) with their published blocks, plus unassigned published blocks."""
+    """Return blueprint-ordered modules with their published/approved blocks."""
     from promptops_app.repositories import generation_repository as repo
     from promptops_app.core.constants import WorkflowState
 
-    gens = repo.list_course_generations(db, course_id=course_id)
-    gen_ids = [g.id for g in gens]
-    all_blocks = repo.list_blocks_for_gen_ids(db, gen_ids)
-    published = [b for b in all_blocks if b.workflow_state.lower() in WorkflowState.EXPORTABLE]
-
-    modules = repo.list_course_modules(db, course_id)
-    by_module: dict[int, list] = {m.id: [] for m in modules}
-    unassigned = []
-    for b in published:
-        mid = getattr(b, "module_id", None)
-        if mid in by_module:
-            by_module[mid].append(b)
-        else:
-            unassigned.append(b)
-
-    module_reads = [
-        CourseModuleRead(
-            id=m.id,
-            title=m.title,
-            position=m.position or 0,
-            blocks=[_module_block(b) for b in by_module.get(m.id, [])],
-        )
-        for m in modules
-    ]
-    return CourseModulesResponse(
-        modules=module_reads,
-        unassigned=[_module_block(b) for b in unassigned],
+    ordered, _modules_struct, module_views = repo.build_blueprint_export_layout(
+        db, course_id, workflow_state=WorkflowState.PUBLISHED,
     )
 
+    # Blocks that landed in a trailing "Course Content" bucket (no blueprint match).
+    assigned_ids = {b.id for view in module_views for b in view["blocks"]}
+    unassigned = [b for b in ordered if b.id not in assigned_ids]
 
-@router.post(
-    "/courses/{course_id}/modules",
-    response_model=CourseModuleRead,
-    summary="Create a new course module",
-)
-def create_course_module(
-    course_id: int,
-    request_body: CourseModuleCreateRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("export.course")),
-) -> CourseModuleRead:
-    from promptops_app.repositories import generation_repository as repo
-
-    module = repo.create_course_module(db, course_id, request_body.title)
-    return CourseModuleRead(id=module.id, title=module.title, position=module.position or 0, blocks=[])
-
-
-@router.put(
-    "/modules/{module_id}",
-    response_model=CourseModuleRead,
-    summary="Rename a course module",
-)
-def rename_course_module(
-    module_id: int,
-    request_body: CourseModuleRenameRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("export.course")),
-) -> CourseModuleRead:
-    from promptops_app.repositories import generation_repository as repo
-
-    module = repo.rename_course_module(db, module_id, request_body.title)
-    if module is None:
-        raise NotFoundError("Module", module_id)
-    return CourseModuleRead(id=module.id, title=module.title, position=module.position or 0, blocks=[])
-
-
-@router.delete(
-    "/modules/{module_id}",
-    summary="Delete a course module (blocks become unassigned)",
-)
-def delete_course_module(
-    module_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("export.course")),
-) -> dict:
-    from promptops_app.repositories import generation_repository as repo
-
-    ok = repo.delete_course_module(db, module_id)
-    if not ok:
-        raise NotFoundError("Module", module_id)
-    return {"deleted": True, "module_id": module_id}
-
-
-@router.put(
-    "/courses/{course_id}/modules/reorder",
-    response_model=CourseModulesResponse,
-    summary="Reorder course modules",
-)
-def reorder_course_modules(
-    course_id: int,
-    request_body: CourseModuleReorderRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("export.course")),
-) -> CourseModulesResponse:
-    from promptops_app.repositories import generation_repository as repo
-
-    repo.reorder_course_modules(db, course_id, request_body.module_ids)
-    return list_course_modules(course_id, db, current_user)
-
-
-@router.put(
-    "/courses/{course_id}/modules/layout",
-    response_model=ModuleLayoutResponse,
-    summary="Save module order + block placement in one call",
-    description="Persists module ordering and which blocks belong to each module (Export screen drag-drop).",
-)
-def save_course_module_layout(
-    course_id: int,
-    request_body: ModuleLayoutRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("export.course")),
-) -> ModuleLayoutResponse:
-    from promptops_app.repositories import generation_repository as repo
-
-    layout = [{"module_id": row.module_id, "block_ids": row.block_ids} for row in request_body.modules]
-    updated = repo.save_course_module_layout(db, course_id, layout)
-    return ModuleLayoutResponse(updated=updated)
+    return CourseModulesResponse(
+        modules=[
+            CourseModuleRead(
+                id=view["id"],
+                title=view["title"],
+                position=view["position"],
+                blocks=[_module_block(b) for b in view["blocks"]],
+            )
+            for view in module_views
+        ],
+        unassigned=[_module_block(b) for b in unassigned],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -927,63 +830,34 @@ def export_course(
     """
     Export all approved blocks for a course as a formatted document.
 
-    Replicates the full-course download in the Streamlit Editor completion banner.
-    Only blocks in 'approved' or 'published' state are included.
+    IMSCC module structure and content sequence follow the course CDD / Module
+    Blueprints (module_number + lesson/assessment component order).
     """
     from promptops_app.repositories import generation_repository
     from promptops_app.services.export_service import ExportRequest, export_content
-    from promptops_app.core.constants import WorkflowState
+    from promptops_app.repositories import course_repository
 
-    gens = generation_repository.list_course_generations(db, course_id=course_id)
-    gen_ids = [g.id for g in gens]
-    all_blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
-
-    approved_blocks = [b for b in all_blocks if b.workflow_state.lower() in WorkflowState.EXPORTABLE]
-    if workflow_state:
-        approved_blocks = [
-            b for b in approved_blocks
-            if b.workflow_state.lower() == workflow_state.lower()
-        ]
-    if not approved_blocks:
+    ordered_blocks, modules_struct, _views = generation_repository.build_blueprint_export_layout(
+        db, course_id, workflow_state=workflow_state,
+    )
+    if not ordered_blocks:
         raise WorkflowError("No approved or published blocks found for this course.")
 
-    from promptops_app.repositories import course_repository
     course = course_repository.get_course_by_id(db, course_id)
     topic = course.name if course else f"Course {course_id}"
 
-    # Flatten blocks in module layout order so IMSCC indexes align with the manifest.
-    modules_struct = None
-    course_modules = generation_repository.list_course_modules(db, course_id)
-    if course_modules:
-        module_ids = {m.id for m in course_modules}
-        ordered: list = []
-        modules_struct = []
-        for m in course_modules:
-            members = [
-                b for b in approved_blocks
-                if getattr(b, "module_id", None) == m.id
-            ]
-            members.sort(key=lambda b: (b.position or 0, b.id))
-            if members:
-                start = len(ordered)
-                ordered.extend(members)
-                modules_struct.append((m.title, list(range(start, start + len(members)))))
-        # Unassigned published blocks trail the module-grouped ones (→ "Course Content" in IMSCC).
-        unassigned = [
-            b for b in approved_blocks
-            if getattr(b, "module_id", None) not in module_ids
-        ]
-        unassigned.sort(key=lambda b: (b.position or 0, b.id))
-        ordered.extend(unassigned)
-        if ordered:
-            approved_blocks = ordered
+    # If nothing mapped to blueprints, let IMSCC use a single course-titled module.
+    if not modules_struct or (
+        len(modules_struct) == 1 and modules_struct[0][0] == "Course Content"
+    ):
+        modules_struct = None
 
     export_req = ExportRequest(
         fmt=format,
         topic=topic,
-        blocks=[(b.block_label, b.content or "") for b in approved_blocks],
-        block_types=[b.block_type or "" for b in approved_blocks],
-        block_html=[getattr(b, "content_html", None) or "" for b in approved_blocks],
+        blocks=[(b.block_label, b.content or "") for b in ordered_blocks],
+        block_types=[b.block_type or "" for b in ordered_blocks],
+        block_html=[getattr(b, "content_html", None) or "" for b in ordered_blocks],
         modules=modules_struct,
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
@@ -997,7 +871,7 @@ def export_course(
         raise WorkflowError(f"Export failed: {result.error_message}")
 
     _log.info("course_exported  user=%s  course_id=%d  format=%s  blocks=%d",
-              current_user.username, course_id, format, len(approved_blocks))
+              current_user.username, course_id, format, len(ordered_blocks))
 
     return Response(
         content=result.data, media_type=result.mime_type,

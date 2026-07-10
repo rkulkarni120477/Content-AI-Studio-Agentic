@@ -1,5 +1,6 @@
 """Generation Repository — Generation, Block, Review, FeedbackSignal, and WorkflowEvent access."""
 
+import re
 from datetime import datetime, timezone
 
 from promptops_app.database import (
@@ -215,7 +216,137 @@ def get_block_by_id(db, block_id: int):
     return db.query(Block).filter(Block.id == block_id).first()
 
 
-# ── Course modules (Canvas-style export grouping) ─────────────────────────────
+def build_blueprint_export_layout(
+    db,
+    course_id: int,
+    *,
+    workflow_state: str | None = None,
+    exportable_only: bool = True,
+) -> tuple[list[Block], list[tuple[str, list[int]]], list[dict]]:
+    """Order published/approved blocks by CDD → Blueprint → component sequence.
+
+    Returns
+    -------
+    ordered_blocks :
+        Flat list of blocks in export order.
+    modules_struct :
+        ``[(module_title, [0-based indices into ordered_blocks]), ...]`` for IMSCC.
+    module_views :
+        UI-friendly list of
+        ``{id, title, position, blocks: [Block, ...]}`` (one entry per blueprint
+        that has at least one included block), plus any leftover blocks are
+        returned separately by the caller via set difference if needed.
+    """
+    from promptops_app.core.constants import WorkflowState
+    from promptops_app.database import get_active_blueprint_version
+    from promptops_app.parsers.blueprint_parser import parse_blueprint_components
+    from promptops_app.repositories import blueprint_repository
+
+    gens = list_course_generations(db, course_id=course_id)
+    gen_ids = [g.id for g in gens]
+    all_blocks = list_blocks_for_gen_ids(db, gen_ids)
+
+    if exportable_only:
+        candidates = [
+            b for b in all_blocks
+            if (b.workflow_state or "").lower() in WorkflowState.EXPORTABLE
+        ]
+    else:
+        candidates = list(all_blocks)
+
+    if workflow_state:
+        candidates = [
+            b for b in candidates
+            if (b.workflow_state or "").lower() == workflow_state.lower()
+        ]
+
+    if not candidates:
+        return [], [], []
+
+    blocks_by_gen: dict[int, list[Block]] = {}
+    for b in candidates:
+        blocks_by_gen.setdefault(b.generation_id, []).append(b)
+    for blist in blocks_by_gen.values():
+        blist.sort(key=lambda b: (b.position or 0, b.id))
+
+    blueprints = blueprint_repository.list_blueprints_for_course(db, course_id=course_id)
+    blueprints = sorted(
+        blueprints,
+        key=lambda bp: (bp.module_number if bp.module_number is not None else 9999, bp.id),
+    )
+
+    ordered: list[Block] = []
+    modules_struct: list[tuple[str, list[int]]] = []
+    module_views: list[dict] = []
+    used_block_ids: set[int] = set()
+
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+    for bp in blueprints:
+        latest = list_latest_generations_for_blueprint(db, bp.id)
+        by_type = {(g.block_type or "").strip().lower(): g for g in latest if g.block_type}
+        by_topic = {_norm(g.topic): g for g in latest if g.topic}
+
+        ver = get_active_blueprint_version(db, bp.id)
+        components = parse_blueprint_components(ver) if ver else []
+
+        module_blocks: list[Block] = []
+        if components:
+            for comp in components:
+                value = (comp.get("value") or "").strip().lower()
+                label = _norm(comp.get("label") or "")
+                gen = by_type.get(value) or by_topic.get(label)
+                if gen is None and label:
+                    # Soft match: generation topic starts with / contains lesson label
+                    for topic_key, g in by_topic.items():
+                        if label in topic_key or topic_key in label:
+                            gen = g
+                            break
+                if gen is None:
+                    continue
+                for b in blocks_by_gen.get(gen.id, []):
+                    if b.id in used_block_ids:
+                        continue
+                    module_blocks.append(b)
+                    used_block_ids.add(b.id)
+        else:
+            # No parseable components — include all latest gens for this blueprint
+            for g in sorted(latest, key=lambda x: x.created_at or x.id):
+                for b in blocks_by_gen.get(g.id, []):
+                    if b.id in used_block_ids:
+                        continue
+                    module_blocks.append(b)
+                    used_block_ids.add(b.id)
+
+        if not module_blocks:
+            continue
+
+        title = (bp.module_title or bp.title or f"Module {bp.module_number}").strip()
+        start = len(ordered)
+        ordered.extend(module_blocks)
+        modules_struct.append((title, list(range(start, start + len(module_blocks)))))
+        module_views.append({
+            "id": bp.id,
+            "title": title,
+            "position": bp.module_number or 0,
+            "blocks": module_blocks,
+        })
+
+    leftover = [b for b in candidates if b.id not in used_block_ids]
+    leftover.sort(key=lambda b: (b.position or 0, b.id))
+    if leftover:
+        start = len(ordered)
+        ordered.extend(leftover)
+        # Only add a Course Content module when there are also blueprint modules;
+        # otherwise a single course-named module is fine (handled by IMSCC fallback).
+        if modules_struct:
+            modules_struct.append(("Course Content", list(range(start, start + len(leftover)))))
+
+    return ordered, modules_struct, module_views
+
+
+# ── Course modules (legacy manual grouping — kept for DB compat) ──────────────
 
 def _now():
     return datetime.now(timezone.utc)
