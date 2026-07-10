@@ -291,3 +291,242 @@ This repo is **mid-migration** and runs a **dual architecture**:
 > (Learned preferences) + (Run-time instructions)** — all gathered, bounded,
 > versioned, serialized into a background job, stacked into two prompt strings,
 > and sent to the LLM behind a retry/fallback layer.
+
+
+## ###################################################################
+
+ Approaches (simplest → biggest)
+
+  Quick wins (config only, do today):
+  - Raise the caps. Move max_context_chars from 30k → ~120k chars and max_source_chars from 6k → ~20k, CDD/BP summaries from
+  3k → ~8k. These are env-driven (PROMPTOPS_MAX_CONTEXT_CHARS, etc.), so no code change — just .env. This alone fixes most
+  current loss.
+  - Log when truncation happens. Right now clipping is silent. Emit a warning + store on the Generation row "context
+  truncated: dropped N chars / which docs." So you know when you lost something instead of guessing.
+
+  Medium (small code changes):
+  - Budget per-source instead of one tail-chop. Instead of concatenate-then-cut, divide the budget across docs (e.g. give
+  each doc a fair share, or protect CDD source docs + summaries first, then fill remaining with uploads). Prevents the "last
+  file disappears" problem as you add more uploads.
+  - Smart clipping, not text[:limit]. Clip on paragraph/heading boundaries and optionally keep the head and tail of a doc,
+  since conclusions/constraints often live at the end.
+
+  Bigger (real retrieval — the right long-term fix for "many files"):
+  - Add embedding-based retrieval. When you'll have lots of files in style/CDD/blueprint, don't send whole files — chunk
+  them, embed once, and at generation time pull only the chunks relevant to this lesson's topic + learning objectives. This
+  is how you keep quality high while cutting tokens, not just raising limits. This is the scalable answer to your "more
+  uploaded files later" plan.
+  - Token-based budgeting, not char-based. Count real tokens (tiktoken/model tokenizer) and pack context to a target token
+  budget per model — precise cost control instead of the rough 4-chars-per-token guess.
+
+  My recommendation
+  Do it in two phases:
+  1. Now: raise the caps via .env + add truncation logging. Near-zero risk, fixes today's silent loss immediately.
+  2. Next: as file volume grows, add embedding retrieval so you send relevant chunks instead of whole-file dumps — that's
+  what simultaneously improves quality and optimizes tokens.
+
+---
+
+## ################################################################### ##
+
+# 12. Embedding-Based Retrieval + Token Budgeting — Detailed Plan
+
+> **What this section is:** the "Bigger" approach spelled out step-by-step,
+> mapped onto the **exact files and flow this project already has**. Written in
+> plain language. No code here — just *what* to build, *where* it plugs in, and
+> *why*.
+
+## 12.1 The core idea in one picture
+
+**Today:**
+```
+upload file → store whole text in documents.content
+generate    → dump whole file into prompt → chop at 30k chars (blind tail-cut)
+```
+
+**With retrieval:**
+```
+upload file → store whole text  AND  split into chunks + embed each chunk (once)
+generate    → build a "search query" from this lesson's topic + objectives
+            → find the most relevant chunks → pack them to a token budget → prompt
+```
+
+The one-time work (chunk + embed) happens at **upload**. The smart selection
+happens at **generation**. You stop sending whole files; you send only the
+paragraphs that matter for *this specific lesson*.
+
+## 12.2 What "embedding" means (the simple version)
+
+An **embedding** is just a list of numbers (a vector, e.g. 1536 numbers) that
+represents the *meaning* of a piece of text. Two texts about the same idea
+produce vectors that are numerically close. So "find relevant text" becomes
+"find the vectors closest to my query's vector" — plain math (cosine
+similarity), **no LLM call needed for the search itself**.
+
+You call an embedding API **once per chunk at upload**, store the numbers, and
+reuse them forever. Embeddings are cheap (~1/100th the cost of generation).
+
+## 12.3 What we already have (Step 0)
+
+- **`DocumentChunk` table already exists** (`database.py:876`) with
+  `document_id`, `chunk_index`, `content`, `token_estimate`, `embedding_json`.
+  It is currently **empty scaffolding — nothing reads or writes it yet.** The
+  hardest schema decision is already made.
+- `Document.content` holds the full raw text (`database.py:121`). ✅
+- A document repository (`repositories/document_repository.py`) is the single
+  DB access point for documents. ✅
+- Style docs, CDD source docs, and blueprint docs **all live in the same
+  `documents` table** — so one chunking path covers every upload type you plan
+  to add. ✅
+
+## 12.4 Step-by-step, mapped to this project
+
+### Step 1 — Chunk documents at upload time
+Split `Document.content` into overlapping pieces:
+- **Chunk size:** ~500–800 tokens each.
+- **Overlap:** ~50–100 tokens between neighbours, so a sentence split across a
+  boundary isn't lost.
+- Split on paragraph/heading boundaries where possible (don't cut mid-sentence).
+
+Write one `DocumentChunk` row per piece: `document_id`, `chunk_index`,
+`content`, `token_estimate`.
+
+**Where:** new helper `services/chunking.py`, called from the upload path (the
+document repository create path / the upload router).
+
+### Step 2 — Embed each chunk (once)
+Right after chunking, send each chunk's text to an embedding model and store the
+returned vector as JSON in `embedding_json`.
+- **Model:** OpenAI `text-embedding-3-small` (1536 dims, cheap) is the pragmatic
+  default since OpenAI is already wired. Bedrock Titan/Cohere embeddings are the
+  AWS alternative.
+- Do this in the **Celery worker**, not the request thread — a big PDF is dozens
+  of API calls. Make it a background task like generation jobs.
+- Track state (e.g. `embed_status: pending → embedded`) so you know it's ready.
+
+**Where:** new `services/embeddings.py` (thin wrapper: text in → vector out,
+with retry/fallback mirroring `core/llm_client.py`), plus a Celery task
+`jobs/embedding_jobs.py`.
+
+### Step 3 — Build the retrieval "query" at generation time
+The query should describe what this lesson is about. All of it already exists in
+`build_context_injection`:
+- the lesson **topic**,
+- the **learning objectives**,
+- the **key concepts** (from CDD/Blueprint).
+
+Concatenate those into one query string and embed it (one embedding call per
+generation — negligible cost).
+
+**Where:** `jobs/generation_jobs.py`, Stage 1 (`~line 199`), before `context` is
+built.
+
+### Step 4 — Retrieve the relevant chunks
+Compare the query vector against the `embedding_json` of the candidate
+documents' chunks (the same set gathered today at
+`generation_jobs.py:206–237` — CDD source docs, selected library docs, style
+docs). Compute cosine similarity, sort, keep the top matches.
+
+Two ways to do the math:
+- **Simple start (JSON):** load candidate chunks, compute cosine similarity in
+  Python with numpy. Fine for hundreds/low-thousands of chunks. Zero infra
+  change.
+- **Scalable (pgvector):** you're on Postgres — install the `pgvector`
+  extension, store embeddings in a real `vector` column, and let the DB do
+  `ORDER BY embedding <=> query` fast. The `embedding_json` comment in the model
+  literally anticipates this.
+
+**Recommendation:** build with JSON + numpy first (proves the flow, no infra
+risk), switch to pgvector once it works and volumes grow. The retrieval
+function's interface stays the same.
+
+**Where:** new `services/retrieval.py` →
+`retrieve_relevant_chunks(db, query, candidate_doc_ids, token_budget)`.
+
+### Step 5 — Token-based budgeting (pack, don't chop)
+Instead of "chop the combined string at 30,000 chars," spend a **token budget**
+deliberately:
+```
+context_budget = model_context_window
+               − prompt_overhead (persona + style + CDD/BP injection + instructions)
+               − max_output_tokens (16,384 today)
+               − safety_margin
+```
+Then fill that budget with the highest-ranked chunks until full, **in priority
+order** (CDD source chunks first, then library, then supplementary), and stop.
+Each `DocumentChunk` already carries `token_estimate`, so packing is just adding
+those up. Use a real tokenizer (`tiktoken` for OpenAI) instead of the
+4-chars≈1-token guess. Keep a model → context-window map (hang it on the model
+catalog in `core/llm_client.py`).
+
+**Where:** `services/retrieval.py` for packing + `core/tokens.py` for counting.
+This **replaces** `trim_generation_context` (`content_utils.py:52`) as the thing
+that bounds context.
+
+### Step 6 — Swap it into the generation flow
+In `generation_jobs.py` Stage 1 the change is surgical:
+- **Before:** loop over docs → `make_source_context(whole file)` → concatenate →
+  `trim_generation_context` (blind chop).
+- **After:** collect candidate document IDs →
+  `retrieve_relevant_chunks(query, ids, budget)` → wrap the returned chunks with
+  `make_source_context` (**keep the `[START SOURCE: filename]` markers** so the
+  citation splitter at `content_utils.py:144` still works) → done.
+
+Everything downstream (citations, block splitting, versioning) stays identical
+because the output is still the same `[START SOURCE: ...]` format. **Retrieval
+changes *what text* goes in, not the *shape* of the prompt.**
+
+### Step 7 — Keep chunks fresh
+- When a document is **edited/re-uploaded**, delete its old chunks and
+  re-chunk + re-embed (`embed_status = stale` → re-run the task).
+- **Backfill:** a one-time script that chunks + embeds all *existing* documents
+  so old courses benefit too.
+
+## 12.5 Where each new piece lives (file map)
+
+| Piece | New/changed file | Notes |
+|---|---|---|
+| Chunking | `services/chunking.py` (new) | called on upload |
+| Embedding wrapper | `services/embeddings.py` (new) | mirror `llm_client.py` retry/fallback |
+| Embedding job | `jobs/embedding_jobs.py` (new) | Celery, runs at upload |
+| Retrieval + packing | `services/retrieval.py` (new) | cosine + token budget |
+| Token counting | `core/tokens.py` (new) | tiktoken; model→window map |
+| Wire into upload | `repositories/document_repository.py` | trigger chunk+embed task |
+| Wire into generation | `jobs/generation_jobs.py` Stage 1 | replace dump-all + `trim_generation_context` |
+| Storage | `DocumentChunk` (exists) | later: pgvector column |
+
+No frontend change needed — this is all backend. The UX is identical; the
+prompts just get smarter.
+
+## 12.6 Practical decisions (recommendations)
+
+- **Embedding model:** `text-embedding-3-small` — cheap, good enough, OpenAI
+  already wired.
+- **Storage:** start `embedding_json` + numpy; graduate to **pgvector** when a
+  course exceeds a few thousand chunks.
+- **Chunk size:** ~600 tokens, ~80 overlap.
+- **Top-K:** don't hardcode "top 10" — fill by **token budget** (Step 5), so a
+  big-context model uses more chunks and a small one fewer, automatically.
+- **Always-include vs retrieved:** keep CDD/Blueprint **summaries always fully
+  included** (they're your constraints, not retrievable trivia). Only the
+  *source/RAG material* goes through retrieval.
+
+## 12.7 Rollout plan (low risk)
+
+1. **Phase A:** add chunking + embedding at upload + backfill script. Generation
+   is unchanged — you're only populating `DocumentChunk`. Fully safe.
+2. **Phase B:** add retrieval behind a flag (e.g. `PROMPTOPS_USE_RETRIEVAL`).
+   Off = current dump-all; On = retrieval. Compare on real lessons.
+3. **Phase C:** flip the flag on by default; keep the old path as fallback for
+   docs that aren't embedded yet.
+
+## 12.8 Gotchas
+
+- **Keep the `[Source: filename]` markers** on retrieved chunks or citation
+  extraction and per-block source tagging break.
+- **Cost is one-time per chunk**, but re-uploads re-embed — dedup by content
+  hash if users re-upload the same file.
+- **Retrieval quality depends on the query** — use topic + LOs + key concepts
+  (Step 3); a query of just "Lesson 3" retrieves poorly.
+- **Don't retrieve away your constraints** — CDD/Blueprint summaries stay
+  always-in; only bulky source files go through retrieval.
