@@ -19,6 +19,7 @@ Endpoints
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.permission_catalog import PERMISSION_CATEGORIES
 from app.core.permissions import role_label
 from app.core.security import hash_password
 from app.schemas.tenant import (
@@ -35,6 +37,9 @@ from app.schemas.tenant import (
     TenantMemberRead,
     TenantMemberUpdateRequest,
     TenantRead,
+    TenantRoleCreateRequest,
+    TenantRoleRead,
+    TenantRoleUpdateRequest,
     TenantUpdateRequest,
     TenantUsageResponse,
 )
@@ -74,13 +79,16 @@ def _tenant_read(db: Session, project) -> TenantRead:
 
 
 def _member_read(user, membership) -> TenantMemberRead:
+    role_display = role_label(membership.role)
+    if membership.custom_role_id and membership.custom_role is not None:
+        role_display = membership.custom_role.name
     return TenantMemberRead(
         user_id=user.id,
         username=user.username,
         display_name=user.display_name or user.username,
         role=membership.role,
-        role_display=role_label(membership.role),
-        display_title=membership.display_title or None,
+        role_display=role_display,
+        custom_role_id=membership.custom_role_id,
         active=bool(membership.active),
         email=user.email,
         auth_provider="microsoft" if user.microsoft_oid else "local",
@@ -241,7 +249,12 @@ def add_member(
     _get_tenant_or_404(db, project_id)
     tenant_service.assert_can_add_member(db, project_id)
 
-    role = tenant_service.normalize_role(body.role)
+    custom_role = None
+    if body.custom_role_id is not None:
+        custom_role = tenant_service.get_custom_role_or_404(db, project_id, body.custom_role_id)
+        role = "custom"
+    else:
+        role = tenant_service.normalize_role(body.role)
 
     # Usernames are globally unique. Reuse an existing user if the same username
     # exists; otherwise create one. Then attach a membership for this tenant.
@@ -266,7 +279,7 @@ def add_member(
 
     membership = TenantMembership(
         user_id=user.id, project_id=project_id, role=role, active=True,
-        display_title=(body.display_title or "").strip() or None,
+        custom_role_id=(custom_role.id if custom_role else None),
         created_by=current_user.username,
     )
     db.add(membership)
@@ -298,10 +311,13 @@ def update_member(
         user.display_name = body.display_name.strip() or user.username
     if body.password:
         user.password_hash = hash_password(body.password)
-    if body.role is not None:
+    if body.custom_role_id is not None:
+        custom_role = tenant_service.get_custom_role_or_404(db, project_id, body.custom_role_id)
+        membership.custom_role_id = custom_role.id
+        membership.role = "custom"
+    elif body.role is not None:
         membership.role = tenant_service.normalize_role(body.role)
-    if body.display_title is not None:
-        membership.display_title = body.display_title.strip() or None
+        membership.custom_role_id = None
     if body.active is not None:
         if body.active and not membership.active:
             tenant_service.assert_can_add_member(db, project_id)
@@ -340,3 +356,88 @@ def delete_member(
 
     db.commit()
     _log.info("member_removed  project_id=%d  user_id=%d", project_id, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Permission catalog (shared reference for the custom-role builder UI)
+# ---------------------------------------------------------------------------
+
+@router.get("/permission-catalog", summary="Real permission catalog, grouped by category")
+def get_permission_catalog(_=Depends(_require_platform_admin)) -> list[dict]:
+    return PERMISSION_CATEGORIES
+
+
+# ---------------------------------------------------------------------------
+# Tenant custom roles
+# ---------------------------------------------------------------------------
+
+def _role_read(row: dict) -> TenantRoleRead:
+    return TenantRoleRead(**row)
+
+
+@router.get("/{project_id}/roles", response_model=list[TenantRoleRead], summary="List tenant roles (system + custom)")
+def list_roles(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> list[TenantRoleRead]:
+    _get_tenant_or_404(db, project_id)
+    return [_role_read(r) for r in tenant_service.list_tenant_roles(db, project_id)]
+
+
+@router.post("/{project_id}/roles", response_model=TenantRoleRead, status_code=201, summary="Create a custom role")
+def create_role(
+    project_id: int,
+    body: TenantRoleCreateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(_require_platform_admin),
+) -> TenantRoleRead:
+    _get_tenant_or_404(db, project_id)
+    role = tenant_service.create_custom_role(
+        db, project_id=project_id, name=body.name, description=body.description,
+        permissions=body.permissions, created_by=current_user.username,
+    )
+    db.commit()
+    db.refresh(role)
+    _log.info("tenant_role_created  by=%s  project_id=%d  key=%s",
+              current_user.username, project_id, role.key)
+    return TenantRoleRead(
+        id=role.id, key=role.key, name=role.name, description=role.description,
+        type="custom", permissions=sorted(json.loads(role.permissions)),
+    )
+
+
+@router.put("/{project_id}/roles/{role_id}", response_model=TenantRoleRead, summary="Edit a custom role")
+def update_role(
+    project_id: int,
+    role_id: int,
+    body: TenantRoleUpdateRequest,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> TenantRoleRead:
+    _get_tenant_or_404(db, project_id)
+    role = tenant_service.get_custom_role_or_404(db, project_id, role_id)
+    tenant_service.update_custom_role(
+        db, role, name=body.name, description=body.description, permissions=body.permissions,
+    )
+    db.commit()
+    db.refresh(role)
+    _log.info("tenant_role_updated  project_id=%d  role_id=%d", project_id, role_id)
+    return TenantRoleRead(
+        id=role.id, key=role.key, name=role.name, description=role.description,
+        type="custom", permissions=sorted(json.loads(role.permissions)),
+    )
+
+
+@router.delete("/{project_id}/roles/{role_id}", status_code=204, summary="Delete a custom role")
+def delete_role(
+    project_id: int,
+    role_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> None:
+    _get_tenant_or_404(db, project_id)
+    role = tenant_service.get_custom_role_or_404(db, project_id, role_id)
+    tenant_service.delete_custom_role(db, role)
+    db.commit()
+    _log.info("tenant_role_deleted  project_id=%d  role_id=%d", project_id, role_id)

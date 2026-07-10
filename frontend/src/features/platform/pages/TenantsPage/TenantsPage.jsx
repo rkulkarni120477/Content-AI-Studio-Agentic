@@ -118,6 +118,7 @@ export default function TenantsPage() {
                   </td>
                   <td className={styles.actions}>
                     <button className={styles.linkBtn} onClick={() => navigate(ROUTES.TENANT_USERS(t.id))}>Users</button>
+                    <button className={styles.linkBtn} onClick={() => navigate(ROUTES.TENANT_ROLES(t.id))}>Roles</button>
                     <button className={styles.linkBtn} onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(t.id))}>Clusters</button>
                     <button className={styles.linkBtn} onClick={() => toggleStatus(t)}>
                       {t.status === 'active' ? 'Suspend' : 'Activate'}

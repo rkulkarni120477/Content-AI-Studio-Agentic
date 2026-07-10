@@ -69,26 +69,29 @@
   tr:last-child td { border-bottom: none; }
 }
 
-.emptyCell { text-align: center; color: $color-gray-400; padding: $space-8; }
+.roleName { font-weight: 600; color: $color-gray-900; }
 
-.username {
-  background: #eef2ff;
-  color: #4338ca;
+.typeSystem {
+  background: #fef3c7;
+  color: #b45309;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
   padding: 2px 8px;
   border-radius: 6px;
-  font-size: 0.8rem;
 }
 
-.role_admin    { color: #b45309; font-weight: 700; font-size: 0.78rem; }
-.role_reviewer { color: #6d28d9; font-weight: 700; font-size: 0.78rem; }
-.role_author   { color: #047857; font-weight: 700; font-size: 0.78rem; }
-.roleDefault   { color: $color-gray-600; font-weight: 600; }
-.roleCustom    { color: #4f46e5; font-weight: 700; font-size: 0.78rem; }
+.typeCustom {
+  background: #ede9fe;
+  color: #6d28d9;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
 
-.statusActive { color: #059669; font-weight: 600; }
-.statusInactive { color: $color-gray-400; font-weight: 600; }
-
-.actionsCol { width: 160px; }
+.actionsCol { width: 100px; }
 .actions { display: flex; gap: $space-2; }
 
 .iconBtn {
@@ -104,29 +107,54 @@
 
 .form { @include flex-col; gap: $space-4; }
 
-.selectLabel {
-  @include flex-col;
-  gap: $space-2;
+.permHeading {
   font-size: $font-size-sm;
-  font-weight: 500;
-  color: $color-gray-700;
+  font-weight: 700;
+  color: $color-gray-900;
+  margin-top: $space-2;
 }
 
-.select {
-  padding: $space-3;
-  border: 1px solid $color-gray-300;
+.permGroups {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid $color-gray-200;
   border-radius: $radius-md;
-  font-size: $font-size-sm;
+  padding: $space-3 $space-4;
+  @include flex-col;
+  gap: $space-3;
 }
 
-.checkboxRow {
+.permCategory {
+  border-bottom: 1px solid $color-gray-100;
+  padding-bottom: $space-2;
+  &:last-child { border-bottom: none; padding-bottom: 0; }
+}
+
+.categoryLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-weight: 700;
+  font-size: $font-size-sm;
+  color: $color-gray-900;
+  cursor: pointer;
+  input { width: 15px; height: 15px; accent-color: #4f46e5; }
+}
+
+.permList {
+  @include flex-col;
+  gap: $space-1;
+  margin: $space-2 0 0 $space-6;
+}
+
+.permRow {
   display: flex;
   align-items: center;
   gap: $space-2;
   font-size: $font-size-sm;
   color: $color-gray-700;
   cursor: pointer;
-  input { width: 16px; height: 16px; accent-color: #4f46e5; }
+  input { width: 14px; height: 14px; accent-color: #4f46e5; }
 }
 
 .formActions {

@@ -16,6 +16,9 @@ export const PLATFORM = {
   TENANT_USAGE:   (id) => `/api/v1/platform/tenants/${id}/usage`,
   TENANT_USERS:   (id) => `/api/v1/platform/tenants/${id}/users`,
   TENANT_USER:    (id, userId) => `/api/v1/platform/tenants/${id}/users/${userId}`,
+  TENANT_ROLES:   (id) => `/api/v1/platform/tenants/${id}/roles`,
+  TENANT_ROLE:    (id, roleId) => `/api/v1/platform/tenants/${id}/roles/${roleId}`,
+  PERMISSION_CATALOG: '/api/v1/platform/tenants/permission-catalog',
 };
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
