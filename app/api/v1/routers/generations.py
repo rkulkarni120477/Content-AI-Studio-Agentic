@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
+from app.core.dis_client import dis_client
 from app.schemas.generation import (
     CompletionStatusResponse,
     GenerationLaunchRequest,
@@ -36,6 +37,24 @@ from app.schemas.generation import (
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str) -> tuple[str, list]:
+    try:
+        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user)
+        ctx = str(result.get("combined_context") or "").strip()
+        units = result.get("source_units") or result.get("sources") or []
+        if ctx:
+            return (
+                f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
+                "Use this as grounding for generated content. Follow active Style, approved CDD, active Blueprint, and selected content type first. "
+                "Do not expose internal DIS metadata.\n\n"
+                f"{ctx}\n---\n",
+                units,
+            )
+    except Exception as exc:
+        _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
+    return "", []
 
 
 @router.post(
@@ -93,6 +112,31 @@ def launch_generation(
                     "Not all modules are complete. Complete all modules before generating course-level content."
                 )
 
+    dis_context_block, dis_source_units = _dis_context_block(
+        "course-generation",
+        {
+            "purpose": "course_generation",
+            "query": " ".join(str(x or "") for x in [
+                request_body.component_label,
+                request_body.component_value,
+                request_body.component_type,
+                request_body.target_audience,
+                request_body.expert_domain,
+                request_body.audience_category,
+                request_body.extra_instructions,
+            ]),
+            "filters": {
+                "purpose": "course_generation",
+                "component_label": request_body.component_label,
+                "component_type": request_body.component_type,
+                "document_types": ["textbook_chapter", "activity", "assessment", "rubric", "lesson_plan", "slide_deck", "student_handout", "style_guide", "authoring_guide"],
+            },
+            "retrieval": {"top_k": 16, "token_budget": 16000},
+        },
+        current_user,
+        "COURSE GENERATION CONTEXT",
+    )
+
     # Build the request params dict (matches the structure used by generation_jobs.py).
     req_params = {
         "topic":               request_body.component_label,
@@ -114,7 +158,8 @@ def launch_generation(
             "metadata": {},
         },
         "supplementary_files": [f.model_dump() for f in request_body.supplementary_files],
-        "extra_instructions":  request_body.extra_instructions,
+        "extra_instructions":  (request_body.extra_instructions or "") + (dis_context_block or ""),
+        "dis_source_units":    dis_source_units,
     }
 
     job_id = job_repository.create_job(

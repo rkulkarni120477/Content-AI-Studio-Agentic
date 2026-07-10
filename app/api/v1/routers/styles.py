@@ -22,6 +22,8 @@ RBAC:
 from __future__ import annotations
 
 import logging
+import json
+import re
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -29,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import LLMGenerationError, NotFoundError
 from app.schemas.common import MessageResponse, PaginatedResponse
+from app.core.dis_client import dis_client
 from app.schemas.style import (
     StyleActivateRequest,
     StyleCreateRequest,
@@ -45,6 +48,100 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_DIS_IDS_RE = re.compile(r"<!--\s*DIS_SOURCE_DOCUMENT_IDS=(.*?)-->", re.S)
+
+
+def _split_dis_and_legacy_doc_ids(document_ids: list[str] | None) -> tuple[list[int], list[str]]:
+    legacy: list[int] = []
+    dis_ids: list[str] = []
+    for raw in document_ids or []:
+        value = str(raw).strip()
+        if not value:
+            continue
+        if value.isdigit():
+            legacy.append(int(value))
+        else:
+            dis_ids.append(value)
+    return legacy, dis_ids
+
+
+def _encode_dis_ids(ids: list[str]) -> str:
+    clean = [str(x).strip() for x in ids if str(x).strip()]
+    if not clean:
+        return ""
+    return f"<!-- DIS_SOURCE_DOCUMENT_IDS={json.dumps(clean)} -->"
+
+
+def _extract_dis_ids(style, extra_ids: list[str] | None = None) -> list[str]:
+    ids: list[str] = []
+    text = getattr(style, "custom_instructions", "") or ""
+    for match in _DIS_IDS_RE.finditer(text):
+        try:
+            parsed = json.loads(match.group(1))
+            if isinstance(parsed, list):
+                ids.extend(str(x).strip() for x in parsed if str(x).strip())
+        except Exception:
+            pass
+    ids.extend(str(x).strip() for x in (extra_ids or []) if str(x).strip())
+    # Preserve order, remove duplicates.
+    return list(dict.fromkeys(ids))
+
+
+def _visible_custom_instructions(text: str | None) -> str:
+    return _DIS_IDS_RE.sub("", text or "").strip()
+
+
+def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None) -> str:
+    ids = _extract_dis_ids(style, document_ids)
+    if not ids:
+        return ""
+    payload = {
+        "purpose": "style",
+        "document_ids": ids,
+        "filters": {"document_ids": ids, "purpose": "style"},
+        "retrieval": {"top_k": 20, "token_budget": 14000},
+        "query": "Understand instructional style, authoring standards, copyediting rules, quality standards, tone, structure, and prohibited writing patterns.",
+    }
+    try:
+        result = dis_client.retrieve_context_sync("style", payload, current_user=current_user)
+        ctx = str(result.get("combined_context") or "").strip()
+        if ctx:
+            return "Use the following processed DIS Source Library documents as the authoritative style reference context. Do not expose internal metadata.\n\n" + ctx
+    except Exception as exc:
+        _log.warning("dis_style_context_unavailable style_id=%s error=%s", getattr(style, "id", None), exc)
+    return ""
+
+
+
+def _upsert_generated_style_to_dis(style, current_user, *, active: bool | None = None, source_units: list | None = None) -> None:
+    """Save generated Style content body to DIS/S3 and keep CAS as workflow pointer.
+
+    CAS still uses its DB for permissions and active pointers, but DIS/S3 is the
+    generated-document store used by Source Library and retrieval.
+    """
+    content = str(getattr(style, "generated_summary", "") or "").strip()
+    if not content:
+        return
+    payload = {
+        "generated_doc_id": f"style_{getattr(style, 'id', '')}",
+        "generated_type": "style",
+        "title": getattr(style, "name", "Generated Style") or "Generated Style",
+        "content": content,
+        "summary": content[:500],
+        "active": bool(getattr(style, "is_active", False)) if active is None else bool(active),
+        "metadata": {
+            "description": getattr(style, "description", "") or "",
+            "style_id": getattr(style, "id", None),
+        },
+        "source_documents_used": source_units or _extract_dis_ids(style),
+        "cas_ref": {"entity": "style", "id": getattr(style, "id", None)},
+        "created_by": getattr(current_user, "username", "") or "cas-user",
+    }
+    try:
+        dis_client.generated_upsert_sync(payload, current_user=current_user)
+    except Exception as exc:
+        _log.warning("dis_generated_style_upsert_failed style_id=%s error=%s", getattr(style, "id", None), exc)
+
 def _get_style_or_404(db: Session, style_id: int, *, with_documents: bool = False):
     """Fetch a style by ID or raise HTTP 404."""
     from promptops_app.repositories import style_repository
@@ -54,8 +151,13 @@ def _get_style_or_404(db: Session, style_id: int, *, with_documents: bool = Fals
     return style
 
 
-def _style_to_read(style) -> StyleRead:
-    """Build StyleRead including linked reference documents (Streamlit view parity)."""
+def _style_to_read(style, current_user=None) -> StyleRead:
+    """Build StyleRead and expose DIS-linked reference documents cleanly.
+
+    DIS document ids are stored in a hidden HTML marker inside custom_instructions
+    for backward-compatible CAS DB storage. They are shown as reference documents,
+    while the marker is hidden from users.
+    """
     ref_docs: list[StyleReferenceDocument] = []
     for sd in getattr(style, "style_documents", None) or []:
         doc = getattr(sd, "document", None)
@@ -69,8 +171,40 @@ def _style_to_read(style) -> StyleRead:
                 file_type=doc.file_type,
             )
         )
+
+    dis_ids = _extract_dis_ids(style)
+    dis_name_map: dict[str, str] = {}
+    if dis_ids and current_user is not None:
+        try:
+            data = dis_client.documents_library_sync({"purpose": "style", "limit": 500}, current_user=current_user)
+            for item in (data.get("documents") or data.get("sources") or []):
+                key_values = [
+                    str(item.get("document_id") or ""),
+                    str(item.get("job_id") or ""),
+                    str(item.get("id") or ""),
+                ]
+                title = item.get("source_file_name") or item.get("title") or item.get("filename")
+                for key in key_values:
+                    if key:
+                        dis_name_map[key] = str(title or key)
+        except Exception as exc:
+            _log.debug("dis_reference_name_lookup_failed style_id=%s error=%s", getattr(style, "id", None), exc)
+
+    for dis_id in dis_ids:
+        ref_docs.append(
+            StyleReferenceDocument(
+                id=dis_id,
+                name=dis_name_map.get(dis_id, f"DIS Source: {dis_id}"),
+                source_type="dis_source_library",
+                file_type="dis",
+            )
+        )
+
     base = StyleRead.model_validate(style)
-    return base.model_copy(update={"reference_documents": ref_docs})
+    return base.model_copy(update={
+        "custom_instructions": _visible_custom_instructions(getattr(style, "custom_instructions", "") or ""),
+        "reference_documents": ref_docs,
+    })
 
 
 @router.get(
@@ -117,12 +251,17 @@ def create_style(
     """Create a style with optional reference documents and course activation."""
     from promptops_app.database import create_style as db_create_style, set_active_style
 
+    legacy_doc_ids, dis_doc_ids = _split_dis_and_legacy_doc_ids(request_body.document_ids or [])
+    visible_instructions = (request_body.custom_instructions or "").strip()
+    hidden_dis_marker = _encode_dis_ids(dis_doc_ids)
+    stored_instructions = "\n".join(x for x in [visible_instructions, hidden_dis_marker] if x).strip()
+
     style = db_create_style(
         db,
         request_body.name.strip(),
         (request_body.description or "").strip(),
-        (request_body.custom_instructions or "").strip(),
-        request_body.document_ids or [],
+        stored_instructions,
+        legacy_doc_ids,
         current_user.username,
     )
 
@@ -147,7 +286,7 @@ def create_style(
         len(request_body.document_ids or []),
         request_body.activate,
     )
-    return _style_to_read(_get_style_or_404(db, style.id, with_documents=True))
+    return _style_to_read(_get_style_or_404(db, style.id, with_documents=True), current_user)
 
 
 @router.get(
@@ -162,7 +301,7 @@ def get_style(
 ) -> StyleRead:
     """Return full style details including linked documents (Streamlit view panel)."""
     style = _get_style_or_404(db, style_id, with_documents=True)
-    return _style_to_read(style)
+    return _style_to_read(style, current_user)
 
 
 @router.put(
@@ -187,7 +326,7 @@ def update_style(
     db.commit()
     db.refresh(style)
     _log.info("style_updated  user=%s  style_id=%d", current_user.username, style_id)
-    return _style_to_read(style)
+    return _style_to_read(style, current_user)
 
 
 @router.delete(
@@ -341,13 +480,21 @@ def generate_style_intelligence(
 
     style = _get_style_or_404(db, style_id)
 
+    dis_context = _retrieve_dis_style_context(style, current_user, request_body.document_ids)
+    extra_parts = []
+    if dis_context:
+        extra_parts.append(dis_context)
+    if request_body.extra_instructions.strip():
+        extra_parts.append(request_body.extra_instructions.strip())
+    effective_extra = "\n\n".join(extra_parts).strip()
+
     # Use regenerate if understanding already exists, otherwise generate fresh.
     if style.generated_summary:
         result = regenerate_style_understanding(
             db,
             style,
             request_body.model_choice,
-            request_body.extra_instructions,
+            effective_extra,
             system_prompt=request_body.system_prompt_override,
         )
     else:
@@ -355,7 +502,7 @@ def generate_style_intelligence(
             db,
             style,
             request_body.model_choice,
-            request_body.extra_instructions,
+            effective_extra,
             system_prompt=request_body.system_prompt_override,
         )
 
@@ -378,6 +525,7 @@ def generate_style_intelligence(
     understanding_text = result if isinstance(result, str) else str(result)
     style.generated_summary = understanding_text
     db.commit()
+    _upsert_generated_style_to_dis(style, current_user)
 
     _log.info("style_understood  user=%s  style_id=%d  model=%s",
               current_user.username, style_id, request_body.model_choice)
@@ -417,9 +565,10 @@ def activate_style(
     )
     style = _get_style_or_404(db, style_id)
     db.refresh(style)
+    _upsert_generated_style_to_dis(style, current_user, active=True)
 
     _log.info("style_activated  user=%s  style_id=%d", current_user.username, style_id)
-    return _style_to_read(style)
+    return _style_to_read(style, current_user)
 
 
 @router.post(
@@ -437,6 +586,7 @@ def deactivate_style(
     style.is_active = False
     db.commit()
     db.refresh(style)
+    _upsert_generated_style_to_dis(style, current_user, active=False)
 
     _log.info("style_deactivated  user=%s  style_id=%d", current_user.username, style_id)
-    return _style_to_read(style)
+    return _style_to_read(style, current_user)

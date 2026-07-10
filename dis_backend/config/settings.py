@@ -1,0 +1,559 @@
+"""
+DIS – Configuration System
+All tenant config loaded from YAML files.
+Global settings from environment variables (.env).
+"""
+from __future__ import annotations
+import glob, os
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import yaml
+from pydantic import BaseModel, Field, ConfigDict
+from pydantic_settings import BaseSettings
+
+
+# ── Sub-models ────────────────────────────────────────────────────────────────
+
+class AdminUser(BaseModel):
+    user_id: str
+    name: str = ""
+    enabled: bool = True
+
+class UserConfig(BaseModel):
+    user_id: str
+    name: str = ""
+    role: str = "user"  # client_admin | user. super_admin lives only in platform.yaml
+    enabled: bool = True
+
+class PlatformConfig(BaseModel):
+    name: str = "DIS Platform"
+    environment: str = "development"
+    demo_secret: str = "demo_secret"
+    super_admins: List[AdminUser] = []
+
+    def is_super_admin(self, user_id: str) -> bool:
+        return any(u.user_id.lower() == user_id.lower() and u.enabled for u in self.super_admins)
+
+    def get_super_admin(self, user_id: str) -> Optional[AdminUser]:
+        return next((u for u in self.super_admins if u.user_id.lower() == user_id.lower() and u.enabled), None)
+
+
+class ClientConfig(BaseModel):
+    client_id: str
+    display_name: str
+    allowed_file_types: List[str] = ["pdf", "docx", "txt"]
+    max_file_size_mb: int = 50
+    namespace_prefix: str = ""
+    restricted_content: bool = False
+    admins: List[AdminUser] = []
+
+class IngestionConfig(BaseModel):
+    max_concurrent_files: int = 10
+    dedup_enabled: bool = True
+    quarantine_on_fail: bool = True
+    schema_validation: bool = True
+
+class ProcessingConfig(BaseModel):
+    # local_sequential = old safe behavior
+    # local_parallel   = process multiple files concurrently inside FastAPI background task
+    # sqs_worker       = reserved for AWS SQS worker deployment
+    mode: str = "local_parallel"
+    max_workers: int = 5
+    queue_enabled: bool = False
+    folder_scan_return_results_limit: int = 200
+
+    # v14 performance guards for large PPT/PDF files.
+    # These keep first-pass ingestion fast; full/deep extraction can be enabled later.
+    fast_pptx_enabled: bool = True
+    max_pptx_slides: int = 80
+    pptx_extract_images: bool = False
+    max_extracted_chars: int = 250000
+
+class ModelConfig(BaseModel):
+    embedding: str = "amazon.titan-embed-text-v2:0"
+    classification: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    metadata_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    structure_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    quality_check: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    vision: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+
+class PipelineConfig(BaseModel):
+    # For local/dev, keep llm_provider=mock and USE_BEDROCK=false in .env.
+    # If USE_BEDROCK=true, Bedrock is used. If USE_BEDROCK=false and ANTHROPIC_API_KEY is set, direct Anthropic is used.
+    llm_provider: str = "mock"  # mock | bedrock | anthropic
+    bedrock_enabled: bool = False
+    anthropic_enabled: bool = False
+    models: ModelConfig = ModelConfig()
+    llm_temperature: float = 0.0
+    chunking_strategy: str = "semantic"
+    chunk_size: int = 512
+    chunk_overlap: int = 64
+    vision_enabled: bool = True
+
+class MetadataField(BaseModel):
+    name: str
+    type: str = "string"          # string | enum | list | number | date | boolean
+    values: List[str] = []        # for enum type
+    hint: str = ""
+    applies_to: List[str] = []    # restrict to certain doc_types
+
+class MetadataSchema(BaseModel):
+    required_fields: List[MetadataField] = []
+    optional_fields: List[MetadataField] = []
+
+class DocumentTypeRule(BaseModel):
+    doc_type: str
+    filename_keywords: List[str] = []
+    text_keywords: List[str] = []
+    regex_patterns: List[str] = []
+    priority: int = 100
+
+class StructurePatternConfig(BaseModel):
+    day_regex: str = r"\b(?:B\d+D(\d+)|Day\s*(\d+)|D(\d+)|Session\s*(\d+))\b"
+    block_regex: str = r"\b(?:Block|BLK)\s*0*(\d+)\b"
+    week_regex: str = r"\bWeek\s*(\d+)\b"
+    table_schedule_keywords: List[str] = ["day", "lesson", "topic", "project", "quiz", "exam", "assignment"]
+    activity_keywords: List[str] = ["project", "activity", "lab", "hangar", "assignment"]
+    assignment_keywords: List[str] = ["assignment", "homework", "reading", "worksheet", "prepare"]
+    assessment_keywords: List[str] = ["quiz", "exam", "final", "assessment", "test"]
+
+class DocumentProcessingConfig(BaseModel):
+    # This is the main client profile switch. No code change is needed when a new
+    # client uses different labels/keywords; change config/clients/<client_id>.yaml.
+    profile: str = "generic_academic"
+    enabled_document_types: List[str] = [
+        "course_calendar", "syllabus", "lesson_slide_deck", "project_activity",
+        "project_key", "quiz_exam", "quiz_answer_key", "study_questions",
+        "ebook_reference", "instructor_guide", "student_handout", "other"
+    ]
+    # These document types are hidden from normal user context retrieval.
+    # Client admins and super admins can still see/retrieve them.
+    restricted_document_types: List[str] = ["quiz_answer_key", "project_key"]
+    document_type_rules: List[DocumentTypeRule] = []
+    structure_patterns: StructurePatternConfig = StructurePatternConfig()
+    unit_type_map: Dict[str, str] = {
+        "course_calendar": "calendar_day",
+        "syllabus": "syllabus_section",
+        "lesson_slide_deck": "slide",
+        "project_activity": "project_task",
+        "project_key": "answer_key_item",
+        "quiz_exam": "quiz_question",
+        "quiz_answer_key": "answer_key_item",
+        "study_questions": "study_question",
+        "ebook_reference": "page",
+        "instructor_guide": "guide_section",
+        "student_handout": "chunk",
+        "other": "chunk",
+    }
+    fallback_doc_type: str = "other"
+
+class S3Config(BaseModel):
+    region: str = "us-east-1"
+    kms_key_id: str = ""
+    endpoint_url: str = ""        # blank = real AWS
+
+class AzureConfig(BaseModel):
+    account_name: str = ""
+    account_key_secret: str = "AZURE_STORAGE_KEY"
+    container_raw: str = "dis-raw"
+    container_processed: str = "dis-processed"
+
+class GCPConfig(BaseModel):
+    project_id: str = ""
+    credentials_secret: str = "GCP_SERVICE_ACCOUNT_JSON"
+    bucket_raw: str = "dis-raw"
+    bucket_processed: str = "dis-processed"
+
+class LocalStorageConfig(BaseModel):
+    base_path: str = "/tmp/dis_storage"
+
+class StorageConfig(BaseModel):
+    provider: str = "s3"         # fixed to s3 for CAS/DIS production integration
+    raw_bucket: str = "dis-raw"
+    processed_bucket: str = "dis-processed"
+    # Optional folder/prefix inside the bucket, e.g. "DIS" for s3://bucket/DIS/...
+    base_prefix: str = ""
+    vector_index: str = "dis-index"
+    retention_days: int = 365
+    s3: S3Config = S3Config()
+    azure: AzureConfig = AzureConfig()
+    gcp: GCPConfig = GCPConfig()
+    local: LocalStorageConfig = LocalStorageConfig()
+
+class RetrievalConfig(BaseModel):
+    max_results: int = 20
+    result_size_cap: int = 50
+    # Restricted content is role-filtered using metadata/access_level.
+    restricted_content_filter: bool = True
+    # Config-driven UI and retrieval defaults used by Content AI Studio.
+    source_ui: Dict[str, Any] = {}
+    source_type_mapping: Dict[str, List[str]] = {}
+    purpose_labels: Dict[str, str] = {}
+
+class SecurityConfig(BaseModel):
+    # Backend uses JWT. mTLS is intentionally not modeled in DIS config.
+    require_jwt: bool = True
+    jwt_audience: str = "dis-api"
+
+
+class EmbeddingConfig(BaseModel):
+    # Avoid pydantic protected namespace warning for field name model_id.
+    model_config = ConfigDict(protected_namespaces=())
+
+    enabled: bool = False
+    provider: str = "bedrock"
+    model_id: str = "amazon.titan-embed-text-v2:0"
+    dimension: int = 1024
+    region: str = "us-east-1"
+    max_input_chars: int = 50000
+
+class StructureStoreConfig(BaseModel):
+    # Tenant-specific structured store. Default provider is postgres/RDS.
+    # Use this when a client wants a different structure DB later.
+    enabled: bool = False
+    provider: str = "postgres"  # postgres | dynamodb | mongodb | snowflake | custom_api
+    url: str = ""
+    schema_name: str = "dis"
+    auto_create_schema: bool = True
+
+class VectorStoreConfig(BaseModel):
+    # Tenant-specific vector store. Default provider is OpenSearch.
+    # Add provider adapters in services/adapters/vector_store.py.
+    enabled: bool = False
+    provider: str = "opensearch"  # opensearch | pinecone | qdrant | weaviate | custom_api
+    endpoint: str = ""
+    index_name: str = "dis-content-dev"
+    region: str = "us-east-1"
+    auth_mode: str = "aws_iam"  # aws_iam | basic | api_key
+    username: str = ""
+    password: str = ""
+    api_key_secret: str = ""
+    auto_create_index: bool = True
+
+
+class DeduplicationConfig(BaseModel):
+    # Client-level duplicate index. For POC this is one JSON per client/env.
+    enabled: bool = True
+    mode: str = "client_manifest_json"
+    hash_algorithm: str = "sha256"
+    manifest_s3_key: str = ""
+    manifest_backup_prefix: str = ""
+    duplicate_policy: str = "mark_duplicate_and_skip_processing"
+    allow_retry_if_previous_failed: bool = False
+
+class MonitoringConfig(BaseModel):
+    slo_ingestion_p95_ms: int = 10000
+    slo_retrieval_p95_ms: int = 500
+
+
+# ── Tenant Config ─────────────────────────────────────────────────────────────
+
+class TenantConfig(BaseModel):
+    # Free-form client-specific rules. Example: AIM file classification, version, and visibility rules.
+    # This keeps client behavior config-driven without adding new Pydantic models every time.
+    client_rules: Dict[str, Any] = {}
+
+    tenant_id: str
+    display_name: str
+    namespace: str
+    is_active: bool = True
+    # v8 simplification: one client/workspace per tenant by default.
+    # If client_id is omitted, DIS uses default_client_id; if that is omitted, tenant_id.
+    default_client_id: str = ""
+    users: List[UserConfig] = []
+    clients: List[ClientConfig] = []
+    ingestion: IngestionConfig = IngestionConfig()
+    processing: ProcessingConfig = ProcessingConfig()
+    pipeline: PipelineConfig = PipelineConfig()
+    document_processing: DocumentProcessingConfig = DocumentProcessingConfig()
+    metadata_schemas: Dict[str, MetadataSchema] = {}
+    storage: StorageConfig = StorageConfig()
+    retrieval: RetrievalConfig = RetrievalConfig()
+    security: SecurityConfig = SecurityConfig()
+    embedding: EmbeddingConfig = EmbeddingConfig()
+    # Provider-based stores. These are the only DB/vector config sections.
+    structure_store: StructureStoreConfig = StructureStoreConfig()
+    vector_store: VectorStoreConfig = VectorStoreConfig()
+    deduplication: DeduplicationConfig = DeduplicationConfig()
+    monitoring: MonitoringConfig = MonitoringConfig()
+
+    def effective_client_id(self, client_id: str = "") -> str:
+        return client_id or self.default_client_id or self.tenant_id
+
+    def get_client(self, client_id: str = "") -> Optional[ClientConfig]:
+        cid = self.effective_client_id(client_id)
+        client = next((c for c in self.clients if c.client_id == cid), None)
+        if client:
+            return client
+        # Backward-safe one-client mode: if clients are not configured, create a virtual tenant client.
+        if not self.clients and cid == self.effective_client_id(""):
+            return ClientConfig(client_id=cid, display_name=self.display_name, namespace_prefix=cid)
+        return None
+
+    def get_namespace(self, client_id: str = "") -> str:
+        client = self.get_client(client_id)
+        prefix = client.namespace_prefix if client else self.effective_client_id(client_id)
+        return f"{self.namespace}/{prefix}" if prefix else self.namespace
+
+    def get_metadata_schema(self, client_id: str = "") -> MetadataSchema:
+        cid = self.effective_client_id(client_id)
+        return self.metadata_schemas.get(cid, MetadataSchema())
+
+    def get_user(self, user_id: str) -> Optional[UserConfig]:
+        return next((u for u in self.users if u.user_id.lower() == user_id.lower() and u.enabled), None)
+
+    def get_user_role(self, user_id: str) -> str:
+        u = self.get_user(user_id)
+        return u.role if u else ""
+
+    def is_admin(self, client_id: str, user_id: str) -> bool:
+        role = self.get_user_role(user_id)
+        return role in ("super_admin", "client_admin")
+
+
+# ── Global Settings ───────────────────────────────────────────────────────────
+
+class GlobalSettings(BaseSettings):
+    app_name: str = "DIS Ingestion System"
+    app_version: str = "2.0.0"
+    environment: str = "development"
+    debug: bool = False
+    api_prefix: str = "/v1"
+    allowed_origins: List[str] = ["*"]
+
+    # Auth
+    jwt_secret: str = "CHANGE_ME_IN_PRODUCTION"
+    jwt_algorithm: str = "HS256"
+    jwt_expiry_minutes: int = 480       # 8 hours
+
+    # AWS (used when storage provider = s3 or for Bedrock)
+    aws_region: str = "us-east-1"
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_endpoint_url: str = ""          # LocalStack override
+
+    # Bedrock / Anthropic
+    use_bedrock: bool = True            # True = Bedrock, False = direct Anthropic API
+    anthropic_api_key: Optional[str] = None
+
+    # OpenSearch
+    opensearch_endpoint: str = "http://localhost:9200"
+    opensearch_username: str = "admin"
+    opensearch_password: str = "admin"
+
+    # Database (PostgreSQL)
+    db_url: str = "postgresql+asyncpg://dis:dis@localhost:5432/dis"
+
+    # Redis / DynamoDB for token tracking
+    use_dynamodb: bool = False          # False = in-memory (dev), True = DynamoDB
+    dynamodb_endpoint: str = ""         # blank = real AWS
+
+    # Studio / service-to-service auth
+    studio_api_key: Optional[str] = None
+    dis_service_token: Optional[str] = "dev-dis-token"
+
+    # Config
+    # v9: super admin/global auth is in config/platform.yaml.
+    # each client/workspace is in config/clients/<client_id>.yaml.
+    platform_config_path: str = str(Path(__file__).parent / "platform.yaml")
+    client_config_dir: str = str(Path(__file__).parent / "clients")
+    # Backward compatibility only; ignored when config/clients/*.yaml exists.
+    tenant_config_dir: str = str(Path(__file__).parent / "tenants")
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
+
+
+# ── Tenant Registry ───────────────────────────────────────────────────────────
+
+class TenantRegistry:
+    """Client registry.
+
+    v9 naming: one client/workspace = one internal tenant config.
+    Super admins live in platform.yaml; client admins/users live in config/clients/<client_id>.yaml.
+    Old config/tenants/tenant_*.yaml is still supported only if config/clients is empty.
+    """
+    def __init__(self, config_dir: str):
+        settings = get_settings()
+        self._tenants: Dict[str, TenantConfig] = {}
+        self._namespaces: Dict[str, str] = {}
+        self.platform: PlatformConfig = self._load_platform(settings.platform_config_path)
+        self._load_all(settings.client_config_dir, config_dir)
+
+    def _load_platform(self, path: str) -> PlatformConfig:
+        p = Path(path)
+        if not p.exists():
+            return PlatformConfig()
+        with p.open(encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        # accept either {platform:{...}, auth:{super_admins:[...]}} or flat
+        platform_raw = raw.get("platform", {}) if isinstance(raw, dict) else {}
+        auth_raw = raw.get("auth", {}) if isinstance(raw, dict) else {}
+        merged = {
+            "name": platform_raw.get("name", raw.get("name", "DIS Platform")),
+            "environment": platform_raw.get("environment", raw.get("environment", "development")),
+            "demo_secret": auth_raw.get("demo_secret", raw.get("demo_secret", "demo_secret")),
+            "super_admins": auth_raw.get("super_admins", raw.get("super_admins", [])),
+        }
+        return PlatformConfig(**merged)
+
+    def _client_raw_to_tenant(self, raw: Dict[str, Any]) -> TenantConfig:
+        client_meta = raw.get("client", {})
+        if not client_meta:
+            # Already in old TenantConfig shape
+            return TenantConfig(**raw)
+        client_id = client_meta.get("client_id") or raw.get("client_id")
+        if not client_id:
+            raise ValueError("Client config must contain client.client_id")
+        display_name = client_meta.get("client_name") or client_meta.get("display_name") or client_id
+        namespace = client_meta.get("namespace") or f"{client_id}_ns"
+        auth_raw = raw.get("auth", {})
+        users: List[Dict[str, Any]] = []
+        for u in auth_raw.get("client_admins", []):
+            users.append({"user_id": u["user_id"], "name": u.get("name", ""), "role": "client_admin", "enabled": u.get("enabled", True)})
+        for u in auth_raw.get("users", []):
+            users.append({"user_id": u["user_id"], "name": u.get("name", ""), "role": "user", "enabled": u.get("enabled", True)})
+        client_obj = {
+            "client_id": client_id,
+            "display_name": display_name,
+            "allowed_file_types": client_meta.get("allowed_file_types", ["pdf", "docx", "doc", "pptx", "xlsx", "csv", "txt", "jpg", "jpeg", "png", "zip"]),
+            "max_file_size_mb": client_meta.get("max_file_size_mb", 250),
+            "namespace_prefix": client_meta.get("namespace_prefix", client_id),
+            "restricted_content": client_meta.get("restricted_content", False),
+            "admins": auth_raw.get("client_admins", []),
+        }
+        converted = {
+            "tenant_id": client_id,
+            "display_name": display_name,
+            "namespace": namespace,
+            "is_active": client_meta.get("enabled", True),
+            "default_client_id": client_id,
+            "users": users,
+            "clients": [client_obj],
+        }
+        for key in ["ingestion", "processing", "pipeline", "document_processing", "metadata_schemas", "storage", "retrieval", "security", "embedding", "structure_store", "vector_store", "deduplication", "monitoring", "client_rules"]:
+            if key in raw:
+                converted[key] = raw[key]
+
+        # Client-specific rule blocks stay available at runtime through cfg.client_rules.
+        # Example: config/clients/aim.yaml -> aim_content_rules.
+        if "client_rules" not in converted:
+            converted["client_rules"] = {}
+        for rule_key in ("aim_content_rules", "content_ingestion_rules", "blueprint_rules", "course_generation_rules"):
+            if rule_key in raw:
+                converted["client_rules"][rule_key] = raw[rule_key]
+
+        # If metadata schema is stored under 'default', move it to client id for old helpers.
+        if "metadata_schemas" in converted and isinstance(converted["metadata_schemas"], dict):
+            schemas = converted["metadata_schemas"]
+            if "default" in schemas and client_id not in schemas:
+                schemas[client_id] = schemas["default"]
+        tenant = TenantConfig(**converted)
+
+        # Final product rule: DIS stores all raw files, processed payloads,
+        # clean source content, and source index JSON in S3 only. Local storage
+        # is intentionally not used for Source Library persistence.
+        tenant.storage.provider = "s3"
+
+        # One bucket can be used for both raw and processed objects, or separate
+        # buckets can be supplied. DIS_S3_BUCKET is the common/simple option.
+        common_bucket = os.environ.get("DIS_S3_BUCKET", "").strip()
+        raw_bucket = os.environ.get("DIS_RAW_BUCKET", "").strip()
+        processed_bucket = os.environ.get("DIS_PROCESSED_BUCKET", "").strip()
+        if common_bucket:
+            tenant.storage.raw_bucket = common_bucket
+            tenant.storage.processed_bucket = common_bucket
+        if raw_bucket:
+            tenant.storage.raw_bucket = raw_bucket
+        if processed_bucket:
+            tenant.storage.processed_bucket = processed_bucket
+
+        base_prefix = os.environ.get("DIS_S3_BASE_PREFIX", "").strip()
+        if base_prefix:
+            tenant.storage.base_prefix = base_prefix
+
+        region = os.environ.get("AWS_REGION", os.environ.get("DIS_AWS_REGION", "")).strip()
+        if region:
+            tenant.storage.s3.region = region
+
+        endpoint_url = os.environ.get("DIS_S3_ENDPOINT_URL", "").strip()
+        if endpoint_url:
+            tenant.storage.s3.endpoint_url = endpoint_url
+
+        kms_key = os.environ.get("DIS_S3_KMS_KEY_ID", "").strip()
+        if kms_key:
+            tenant.storage.s3.kms_key_id = kms_key
+
+        return tenant
+
+    def _load_all(self, client_config_dir: str, legacy_tenant_dir: str) -> None:
+        client_paths = sorted(glob.glob(os.path.join(client_config_dir, "*.yaml")))
+        if client_paths:
+            for path in client_paths:
+                with open(path, encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                tenant = self._client_raw_to_tenant(raw)
+                self._register(tenant)
+            return
+
+        # Legacy fallback.
+        for path in glob.glob(os.path.join(legacy_tenant_dir, "tenant_*.yaml")):
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            tenant = TenantConfig(**raw)
+            self._register(tenant)
+
+    def _register(self, tenant: TenantConfig) -> None:
+        existing = self._namespaces.get(tenant.namespace)
+        if existing and existing != tenant.tenant_id:
+            raise ValueError(f"Namespace collision: '{tenant.namespace}' already owned by '{existing}'")
+        self._tenants[tenant.tenant_id] = tenant
+        self._namespaces[tenant.namespace] = tenant.tenant_id
+
+    def get(self, tenant_id: str) -> TenantConfig:
+        cfg = self._tenants.get(tenant_id)
+        if not cfg:
+            raise KeyError(f"Unknown client: {tenant_id}")
+        if not cfg.is_active:
+            raise PermissionError(f"Client '{tenant_id}' is inactive")
+        return cfg
+
+    def first_active_client_id(self) -> str:
+        for t in self._tenants.values():
+            if t.is_active:
+                return t.tenant_id
+        raise KeyError("No active clients configured")
+
+    def all_tenants(self) -> List[TenantConfig]:
+        return list(self._tenants.values())
+
+    def reload(self, config_dir: str) -> None:
+        settings = get_settings()
+        self._tenants.clear()
+        self._namespaces.clear()
+        self.platform = self._load_platform(settings.platform_config_path)
+        self._load_all(settings.client_config_dir, settings.tenant_config_dir)
+
+
+# ── Singletons ────────────────────────────────────────────────────────────────
+
+@lru_cache()
+def get_settings() -> GlobalSettings:
+    return GlobalSettings()
+
+_registry: Optional[TenantRegistry] = None
+
+def get_tenant_registry() -> TenantRegistry:
+    global _registry
+    if _registry is None:
+        _registry = TenantRegistry(get_settings().tenant_config_dir)
+    return _registry
+
+def get_platform_config() -> PlatformConfig:
+    return get_tenant_registry().platform
+
+def get_tenant_config(tenant_id: str) -> TenantConfig:
+    return get_tenant_registry().get(tenant_id)

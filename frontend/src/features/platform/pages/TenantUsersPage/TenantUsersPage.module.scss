@@ -84,6 +84,12 @@
 .role_author   { color: #047857; font-weight: 700; font-size: 0.78rem; }
 .roleDefault   { color: $color-gray-600; font-weight: 600; }
 
+.customTitle {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+  margin-top: 2px;
+}
+
 .statusActive { color: #059669; font-weight: 600; }
 .statusInactive { color: $color-gray-400; font-weight: 600; }
 

@@ -21,6 +21,7 @@ import { flushDeferredToasts } from '@utils/deferredToast';
 import styles from './WorkspaceSidebar.module.scss';
 
 const NAV_ITEMS = [
+  { label: 'Source Library', icon: '📚', segment: 'sources' },
   { label: 'Style',     icon: '🎨', segment: 'style' },
   { label: 'CDD',       icon: '📘', segment: 'cdd' },
   { label: 'Blueprint', icon: '🧩', segment: 'blueprint' },
@@ -143,9 +144,9 @@ export default function WorkspaceSidebar() {
           type="button"
           className={styles.backBtn}
           onClick={goClusters}
-          title={collapsed ? 'Back to Categories' : undefined}
+          title={collapsed ? 'Back to Clusters' : undefined}
         >
-          {collapsed ? '🗂️' : '← Categories'}
+          {collapsed ? '🗂️' : '← Clusters'}
         </button>
         <button
           type="button"

@@ -15,15 +15,6 @@ export async function searchPrompts(params) {
   return data;
 }
 
-// Server-generated Excel export of the filtered list (same params as
-// fetchPrompts); the backend builds the workbook so the full prompt text
-// never has to round-trip through a client-side serializer.
-export async function downloadPromptsXlsx(params) {
-  const qs = new URLSearchParams(params).toString();
-  const date = new Date().toISOString().slice(0, 10);
-  await apiDownload(`/api/prompts/export.xlsx${qs ? `?${qs}` : ''}`, `prompts-export-${date}.xlsx`);
-}
-
 export async function fetchMeta() {
   const res = await apiFetch('/api/meta');
   return res.json();

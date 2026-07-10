@@ -145,6 +145,7 @@ export const ROUTES = {
   PROJECT_CLUSTERS: (projectId) => `/projects/${projectId}/clusters`,
   CLUSTER_COURSES:  (projectId, clusterId) => `/projects/${projectId}/clusters/${clusterId}/courses`,
   WORKSPACE:    (courseId) => `/workspace/${courseId}`,
+  SOURCE_LIBRARY: (courseId) => `/workspace/${courseId}/sources`,
   STYLE:        (courseId) => `/workspace/${courseId}/style`,
   CDD:          (courseId) => `/workspace/${courseId}/cdd`,
   BLUEPRINT:    (courseId) => `/workspace/${courseId}/blueprint`,

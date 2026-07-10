@@ -36,6 +36,7 @@ import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
+
 import styles from './CddPage.module.scss';
 
 export default function CddPage() {

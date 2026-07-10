@@ -554,6 +554,22 @@ class Generation(Base):
     blocks = relationship("Block", back_populates="generation", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
+class CourseModule(Base):
+    """A Canvas-style module grouping published blocks for IMSCC export.
+
+    Modules are ordered by ``position`` and each published block may belong to at
+    most one module (``blocks.module_id``). Unassigned blocks fall into a default
+    module at export time.
+    """
+    __tablename__ = "course_modules"
+    id         = Column(Integer, primary_key=True)
+    course_id  = Column(Integer, nullable=False, index=True)   # FK to courses.id
+    title      = Column(String(255), nullable=False)
+    position   = Column(Integer, default=0)                    # display order within a course
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
 class Block(Base):
     """A generated content block — the atomic unit of the approval workflow.
 
@@ -600,6 +616,11 @@ class Block(Base):
     draft_content         = Column(Text)            # in-progress draft; never overwrites content
     draft_saved_at        = Column(DateTime)        # timestamp of last autosave
     draft_saved_by        = Column(String(100))    # username who triggered last autosave
+    # ── Canvas HTML rendition (generated at publish) ──────────────────────────
+    content_html          = Column(Text)            # LMS-ready standalone HTML built from content on publish
+    content_html_at       = Column(DateTime)        # when content_html was last generated
+    # ── Export module grouping (Canvas-style modules) ─────────────────────────
+    module_id             = Column(Integer, ForeignKey("course_modules.id"), nullable=True)
     # ─────────────────────────────────────────────────────────────────────────
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
@@ -1138,6 +1159,9 @@ class TenantMembership(Base):
     user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     role       = Column(String(20), nullable=False, default="author")
+    # Cosmetic job title shown in the UI (e.g. "Instructional Designer"). Purely
+    # a display label — actual permissions always come from `role` above.
+    display_title = Column(String(100), nullable=True)
     active     = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by = Column(String(100))
@@ -1259,6 +1283,9 @@ def _run_legacy_ddl():
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_content TEXT",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_saved_at TIMESTAMP",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS draft_saved_by VARCHAR(100)",
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS content_html TEXT",
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS content_html_at TIMESTAMP",
+        "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS module_id INTEGER",
         # blocks — extended approval workflow (Phase 11)
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(100)",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(100)",
@@ -1341,6 +1368,7 @@ def _run_legacy_ddl():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_oid VARCHAR(64)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        "ALTER TABLE tenant_memberships ADD COLUMN IF NOT EXISTS display_title VARCHAR(100)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug VARCHAR(64)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS max_users INTEGER DEFAULT 50",
@@ -1710,9 +1738,12 @@ def _build_unified_style_docs(db, style: "Style") -> str:
     Combine all documents linked to a style into a single unified text block.
     Passed as one context to the LLM — no file-by-file processing.
     """
+    import re as _re
     parts = []
     if style.custom_instructions and style.custom_instructions.strip():
-        parts.append(f"[CUSTOM INSTRUCTIONS]\n{style.custom_instructions.strip()}")
+        visible_instructions = _re.sub(r"<!--\s*DIS_SOURCE_DOCUMENT_IDS=.*?-->", "", style.custom_instructions, flags=_re.S).strip()
+        if visible_instructions:
+            parts.append(f"[CUSTOM INSTRUCTIONS]\n{visible_instructions}")
     for sd in style.style_documents:
         doc = sd.document
         if doc and doc.content:

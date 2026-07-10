@@ -45,4 +45,5 @@ markdown>=3.5
 pandas>=2.2.0
 
 # Streamlit removed — FastAPI + React replaces it entirely.
+httpx>=0.27.0
 msal>=1.28.0                     # Microsoft Entra ID (Azure AD) OAuth sign-in

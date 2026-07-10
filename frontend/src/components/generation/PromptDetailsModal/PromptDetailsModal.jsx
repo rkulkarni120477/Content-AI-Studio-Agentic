@@ -56,7 +56,7 @@ export default function PromptDetailsModal({
   const scopeParts = useMemo(() => {
     const parts = [];
     if (projectName) parts.push({ label: 'Project', value: projectName });
-    if (clusterName) parts.push({ label: 'Category', value: clusterName });
+    if (clusterName) parts.push({ label: 'Cluster', value: clusterName });
     if (courseName) parts.push({ label: 'Course', value: courseName });
     return parts;
   }, [projectName, clusterName, courseName]);

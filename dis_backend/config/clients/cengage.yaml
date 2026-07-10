@@ -1,0 +1,476 @@
+client:
+  client_id: cengage
+  client_name: Cengage
+  namespace: cengage_ns
+  enabled: true
+  allowed_file_types:
+    - pdf
+    - doc
+    - docx
+    - ppt
+    - pptx
+    - xls
+    - xlsx
+    - csv
+    - txt
+    - json
+    - jpg
+    - jpeg
+    - png
+  max_file_size_mb: 750
+  namespace_prefix: cengage
+  restricted_content: true
+
+auth:
+  client_admins:
+    - user_id: admin1@cengage.com
+      name: Cengage Client Admin
+      enabled: true
+  users:
+    - user_id: reviewer1@cengage.com
+      name: Cengage Reviewer
+      enabled: true
+
+ingestion:
+  max_concurrent_files: 25
+  dedup_enabled: true
+  quarantine_on_fail: true
+  schema_validation: true
+
+processing:
+  mode: local_parallel
+  max_workers: 5
+  queue_enabled: false
+  folder_scan_return_results_limit: 500
+  fast_pptx_enabled: true
+  max_pptx_slides: 300
+  pptx_extract_images: true
+  max_extracted_chars: 500000
+
+deduplication:
+  enabled: true
+  mode: client_manifest_json
+  hash_algorithm: sha256
+  # Logical S3 key. storage.base_prefix=DIS is added automatically by ArtifactWriter.
+  manifest_s3_key: "processed/cengage_ns/cengage/development/_dedup/dedup_manifest.json"
+  manifest_backup_prefix: "processed/cengage_ns/cengage/development/_dedup/backups/"
+  duplicate_policy: mark_duplicate_and_skip_processing
+  allow_retry_if_previous_failed: false
+
+pipeline:
+  models:
+    embedding: amazon.titan-embed-text-v2:0
+    classification: anthropic.claude-3-haiku-20240307-v1:0
+    metadata_extraction: anthropic.claude-3-sonnet-20240229-v1:0
+    structure_extraction: anthropic.claude-3-sonnet-20240229-v1:0
+    quality_check: anthropic.claude-3-haiku-20240307-v1:0
+    vision: anthropic.claude-3-sonnet-20240229-v1:0
+  llm_temperature: 0.0
+  chunking_strategy: cengage_publishing_structure
+  chunk_size: 700
+  chunk_overlap: 100
+  vision_enabled: true
+  llm_provider: bedrock
+  bedrock_enabled: true
+  anthropic_enabled: false
+
+metadata_schemas:
+  cengage:
+    required_fields:
+      - name: client_id
+        type: string
+      - name: source_file_name
+        type: string
+      - name: document_type
+        type: enum
+        values:
+          - textbook_pdf
+          - chapter_manuscript
+          - appendix_manuscript
+          - cdd_layout_pdf
+          - mudd_layout_pdf
+          - transition_guide
+          - authoring_guidelines
+          - art_guidelines
+          - art_manuscript
+          - ppt_template
+          - csv_manifest
+          - other
+      - name: file_sha256
+        type: string
+      - name: content_hash
+        type: string
+      - name: access_level
+        type: enum
+        values:
+          - public
+          - internal
+          - instructor_only
+          - restricted
+    optional_fields:
+      - name: product_title
+        type: string
+        hint: Book/product title, e.g. MKTG14 Principles of Marketing
+      - name: product_code
+        type: string
+        hint: Product/source code parsed from filename when available
+      - name: isbn_13
+        type: string
+      - name: edition
+        type: string
+      - name: copyright_year
+        type: string
+      - name: authors
+        type: list
+      - name: discipline
+        type: string
+      - name: part_number
+        type: string
+      - name: part_title
+        type: string
+      - name: chapter_number
+        type: string
+      - name: chapter_title
+        type: string
+      - name: section_number
+        type: string
+      - name: section_title
+        type: string
+      - name: learning_objective_id
+        type: string
+      - name: learning_objective_text
+        type: string
+      - name: a_head
+        type: string
+      - name: b_head
+        type: string
+      - name: key_terms
+        type: list
+      - name: figure_numbers
+        type: list
+      - name: table_numbers
+        type: list
+      - name: photo_numbers
+        type: list
+      - name: art_callouts
+        type: list
+      - name: insert_placeholders
+        type: list
+      - name: track_changes_present
+        type: boolean
+      - name: comments_present
+        type: boolean
+      - name: transition_from_edition
+        type: string
+      - name: transition_to_edition
+        type: string
+      - name: mindtap_asset_type
+        type: string
+      - name: permission_required
+        type: boolean
+      - name: source_credit
+        type: string
+      - name: visual_summary
+        type: string
+
+storage:
+  provider: s3
+  raw_bucket: content-ai-studio
+  processed_bucket: content-ai-studio
+  base_prefix: DIS
+  vector_index: dis-content-dev-cengage
+  retention_days: 365
+  s3:
+    region: us-east-1
+    kms_key_id: ''
+    endpoint_url: ''
+  azure:
+    account_name: ''
+    account_key_secret: AZURE_STORAGE_KEY
+    container_raw: dis-raw-cengage
+    container_processed: dis-processed-cengage
+  gcp:
+    project_id: ''
+    credentials_secret: GCP_SERVICE_ACCOUNT_JSON
+    bucket_raw: dis-raw-cengage
+    bucket_processed: dis-processed-cengage
+  local:
+    base_path: /unused/s3-only
+
+retrieval:
+  max_results: 20
+  result_size_cap: 50
+  restricted_content_filter: true
+
+  purpose_labels:
+    style: Style Reference Documents
+    cdd: Syllabus / Course Design Sources
+    blueprint: Syllabus / Chapter Sources
+    course_generation: Textbook / Activity Sources
+  source_ui:
+    common_filters:
+      - purpose
+      - document_type
+      - visibility
+      - status
+      - search
+    taxonomy_filters:
+      - key: course_name
+        label: Course / Product
+        type: select
+      - key: chapter
+        label: Chapter
+        type: select
+      - key: module
+        label: Module / Section
+        type: select
+      - key: learning_objective
+        label: Learning Objective
+        type: text
+  source_type_mapping:
+    style:
+      - style_guide
+      - authoring_guide
+      - authoring_guidelines
+      - art_guidelines
+      - sample_chapter
+      - ppt_template
+    cdd:
+      - syllabus
+      - course_outline
+      - cdd_layout_pdf
+      - learning_objectives
+      - transition_guide
+    blueprint:
+      - syllabus
+      - chapter_outline
+      - module_map
+      - mudd_layout_pdf
+      - cdd_layout_pdf
+    course_generation:
+      - textbook_pdf
+      - textbook_chapter
+      - chapter_manuscript
+      - appendix_manuscript
+      - assessment
+      - rubric
+      - activity
+      - art_manuscript
+
+security:
+  require_jwt: true
+  jwt_audience: cengage-dis-api
+
+monitoring:
+  slo_ingestion_p95_ms: 15000
+  slo_retrieval_p95_ms: 800
+
+embedding:
+  enabled: true
+  provider: bedrock
+  model_id: amazon.titan-embed-text-v2:0
+  dimension: 1024
+  region: us-east-1
+  max_input_chars: 50000
+
+document_processing:
+  profile: cengage_publishing
+  enabled_document_types:
+    - textbook_pdf
+    - chapter_manuscript
+    - appendix_manuscript
+    - cdd_layout_pdf
+    - mudd_layout_pdf
+    - transition_guide
+    - authoring_guidelines
+    - art_guidelines
+    - art_manuscript
+    - ppt_template
+    - csv_manifest
+    - other
+  restricted_document_types:
+    - answer_key
+    - test_bank
+    - assessment_solution
+    - instructor_only
+    - internal_guidelines
+    - permissions_document
+  document_type_rules:
+    - doc_type: textbook_pdf
+      filename_keywords:
+        - lores
+        - textbook
+        - p01
+      text_keywords:
+        - principles of marketing
+        - brief contents
+        - learning outcomes
+        - isbn
+      priority: 10
+    - doc_type: cdd_layout_pdf
+      filename_keywords:
+        - cdd
+      text_keywords:
+        - style tags
+        - dimensions
+        - layout
+      priority: 15
+    - doc_type: mudd_layout_pdf
+      filename_keywords:
+        - mudd
+      text_keywords:
+        - style tags
+        - dimensions
+        - layout
+      priority: 16
+    - doc_type: transition_guide
+      filename_keywords:
+        - transition guide
+      text_keywords:
+        - from 13e
+        - to 14e
+        - new edition components
+        - exercise changes
+      priority: 20
+    - doc_type: authoring_guidelines
+      filename_keywords:
+        - authoring guidelines
+        - apply it
+        - case study
+      text_keywords:
+        - apply its
+        - bloom
+        - distractors
+        - feedback
+        - case studies
+      priority: 25
+    - doc_type: art_guidelines
+      filename_keywords:
+        - art changes
+        - create an art manuscript
+        - art manuscript
+      text_keywords:
+        - line art
+        - photos
+        - screen captures
+        - permissions
+        - captioning
+      priority: 30
+    - doc_type: ppt_template
+      filename_keywords:
+        - template
+        - ppt
+        - powerpoint
+      text_keywords:
+        - powerpoint presentation
+        - cengage learning
+        - all rights reserved
+      priority: 35
+    - doc_type: csv_manifest
+      filename_keywords:
+        - interior
+      regex_patterns:
+        - ".*\\.csv$"
+      text_keywords:
+        - chapter
+        - page
+        - section
+      priority: 40
+    - doc_type: appendix_manuscript
+      filename_keywords:
+        - appendix
+      text_keywords:
+        - marketing analytics appendix
+        - learning outcomes
+      priority: 45
+    - doc_type: chapter_manuscript
+      filename_keywords:
+        - ch01
+        - ch02
+        - ch03
+        - ch04
+        - ch05
+        - ch06
+        - ch07
+        - ch08
+        - ch09
+        - ch10
+        - ch11
+        - ch12
+        - ch13
+        - ch14
+        - ch15
+        - ch16
+        - ch17
+        - ch18
+        - ch19
+      text_keywords:
+        - chapter
+        - learning outcomes
+        - a-head
+        - marginal term
+        - insert
+      priority: 50
+  structure_patterns:
+    day_regex: "\\b(?:Day\\s*(\\d+)|Session\\s*(\\d+))\\b"
+    block_regex: "\\b(?:Part|Unit)\\s*0*(\\d+)\\b"
+    week_regex: "\\bWeek\\s*(\\d+)\\b"
+    table_schedule_keywords:
+      - chapter
+      - learning outcome
+      - objective
+      - a-head
+      - b-head
+      - figure
+      - table
+      - photo
+      - box
+      - appendix
+    activity_keywords:
+      - assignment
+      - apply it
+      - case study
+      - exercise
+    assignment_keywords:
+      - assignment
+      - question
+      - feedback
+      - distractor
+    assessment_keywords:
+      - quiz
+      - exam
+      - test bank
+      - answer key
+  unit_type_map:
+    textbook_pdf: chapter_section
+    chapter_manuscript: manuscript_section
+    appendix_manuscript: appendix_section
+    cdd_layout_pdf: layout_page
+    mudd_layout_pdf: layout_page
+    transition_guide: transition_change
+    authoring_guidelines: guideline_section
+    art_guidelines: art_instruction
+    art_manuscript: art_item
+    ppt_template: slide
+    csv_manifest: csv_row
+    other: chunk
+  fallback_doc_type: other
+
+structure_store:
+  enabled: true
+  provider: postgres
+  url: "postgresql://dis_user:Academian%23123@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db"
+  schema_name: dis
+  auto_create_schema: true
+
+vector_store:
+  enabled: true
+  provider: opensearch
+  endpoint: "https://search-ai-platform-opensearch-6fjt7fienyf2aeactjfqdms4y4.us-east-1.es.amazonaws.com"
+  index_name: dis-content-dev-cengage
+  region: us-east-1
+  auth_mode: basic
+  username: "developer"
+  password: "Academian@2026"
+  api_key_secret: ""
+  auto_create_index: true

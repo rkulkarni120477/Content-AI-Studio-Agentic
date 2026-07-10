@@ -195,6 +195,19 @@ class AppSettings(BaseSettings):
         gt=0,
     )
 
+    # ── DIS / Source Library integration ─────────────────────────────────────
+    dis_enabled: bool = Field(default=True, alias="DIS_ENABLED")
+    dis_api_base_url: str = Field(default="http://localhost:8010/v1", alias="DIS_API_BASE_URL")
+    dis_api_timeout_seconds: int = Field(default=300, alias="DIS_API_TIMEOUT_SECONDS", gt=0)
+    dis_service_token: str = Field(default="dev-dis-token", alias="DIS_SERVICE_TOKEN")
+    dis_default_tenant_id: str = Field(default="aim", alias="DIS_DEFAULT_TENANT_ID")
+    dis_default_client_id: str = Field(default="", alias="DIS_DEFAULT_CLIENT_ID")
+    dis_available_clients: str = Field(default="aim,cengage", alias="DIS_AVAILABLE_CLIENTS")
+    dis_super_admin_usernames: str = Field(default="", alias="DIS_SUPER_ADMIN_USERNAMES")
+    dis_super_admin_roles: str = Field(default="", alias="DIS_SUPER_ADMIN_ROLES")
+    dis_user_client_map: str = Field(default="", alias="DIS_USER_CLIENT_MAP")
+    dis_access_config_path: str = Field(default="", alias="DIS_ACCESS_CONFIG_PATH")
+
     # ── Validators ────────────────────────────────────────────────────────────
 
     @field_validator("log_level", mode="before")

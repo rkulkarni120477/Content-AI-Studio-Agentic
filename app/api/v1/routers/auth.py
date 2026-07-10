@@ -51,6 +51,8 @@ def _build_token_response(user) -> TokenResponse:
     is_platform_admin = getattr(user, "_is_platform_admin", False)
     role = getattr(user, "_role", None) or user.role
 
+    from app.core.dis_access import build_dis_profile
+
     token = create_access_token(
         user.username,
         role,
@@ -66,6 +68,7 @@ def _build_token_response(user) -> TokenResponse:
         permissions=get_permissions_for_role(role),
         project_id=project_id,
         is_platform_admin=is_platform_admin,
+        **build_dis_profile(user),
     )
     return TokenResponse(
         access_token=token,
@@ -253,8 +256,31 @@ def refresh_token(current_user=Depends(get_current_user)) -> TokenResponse:
     return _build_token_response(current_user)
 
 
-@router.get("/me", response_model=UserProfileResponse, summary="Get authenticated user's profile")
-def get_me(current_user=Depends(get_current_user)) -> UserProfileResponse:
+@router.get(
+    "/me",
+    response_model=UserProfileResponse,
+    summary="Get the authenticated user's profile and permissions",
+    description=(
+        "Returns the current user's id, username, role, and full permissions list. "
+        "The React frontend calls this on startup to determine which tabs and "
+        "actions to display based on the user's role."
+    ),
+    responses={
+        401: {"description": "Token is missing or invalid."},
+    },
+)
+def get_me(
+    current_user=Depends(get_current_user),
+) -> UserProfileResponse:
+    """
+    Return the authenticated user's profile.
+
+    The ``permissions`` list in the response lets the React frontend gate
+    UI elements without making additional API calls.  This matches the
+    ``rbac_check()`` calls that were distributed across every Streamlit page.
+    """
+    from app.core.dis_access import build_dis_profile
+
     role = getattr(current_user, "_role", None) or current_user.role
     return UserProfileResponse(
         id=current_user.id,
@@ -265,4 +291,5 @@ def get_me(current_user=Depends(get_current_user)) -> UserProfileResponse:
         permissions=get_permissions_for_role(role),
         project_id=getattr(current_user, "_project_id", None),
         is_platform_admin=getattr(current_user, "_is_platform_admin", False),
+        **build_dis_profile(current_user),
     )

@@ -42,7 +42,7 @@ export default function PromptListTable({ prompts, isAdmin, onCopy, onDelete, on
       <div className="list-header list-row-grid">
         <div className="list-expand-col" aria-hidden />
         <div>Title / Description</div>
-        <div>Workflow</div>
+        <div>Category</div>
         <div>Tags</div>
         <div>Status</div>
         <div className="list-actions-col">Actions</div>

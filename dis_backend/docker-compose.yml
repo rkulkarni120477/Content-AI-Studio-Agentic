@@ -1,0 +1,44 @@
+version: "3.9"
+# LOCAL DEVELOPMENT ONLY
+# Start: docker-compose up
+# This gives you Postgres + OpenSearch + LocalStack (fake S3/DynamoDB)
+# DIS API runs separately: uvicorn main:app --reload --port 8000
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: dis
+      POSTGRES_USER: dis
+      POSTGRES_PASSWORD: dis
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - os_data:/usr/share/opensearch/data
+
+  localstack:
+    image: localstack/localstack:3.4
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,sqs,dynamodb,secretsmanager
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - ls_data:/var/lib/localstack
+      - ./deploy/localstack_init.sh:/etc/localstack/init/ready.d/init.sh
+
+volumes:
+  pg_data:
+  os_data:
+  ls_data:

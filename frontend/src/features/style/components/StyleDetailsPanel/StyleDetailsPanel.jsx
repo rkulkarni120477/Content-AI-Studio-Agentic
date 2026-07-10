@@ -55,7 +55,7 @@ export default function StyleDetailsPanel({
             className={styles.textarea}
             rows={4}
             readOnly
-            value={style.custom_instructions}
+            value={style.custom_instructions || ''}
           />
         ) : (
           <p className={styles.empty}>No custom instructions.</p>
@@ -73,7 +73,7 @@ export default function StyleDetailsPanel({
                 <button
                   type="button"
                   className={styles.refLink}
-                  onClick={() => onPreviewDocument?.(doc.id)}
+                  onClick={() => String(doc.source_type || '').startsWith('dis') ? null : onPreviewDocument?.(doc.id)}
                 >
                   📄 {doc.name}
                 </button>

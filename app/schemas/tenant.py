@@ -55,6 +55,9 @@ class TenantMemberRead(BaseModel):
     display_name: Optional[str] = None
     role: str
     role_display: str = ""
+    # Cosmetic job title for this tenant (e.g. "Instructional Designer").
+    # Purely a display label — permissions always come from `role` above.
+    display_title: Optional[str] = None
     active: bool = True
     email: Optional[str] = None
     auth_provider: str = "local"   # "microsoft" | "local"
@@ -65,11 +68,13 @@ class TenantMemberCreateRequest(BaseModel):
     password: str = Field(..., min_length=6, max_length=256)
     display_name: Optional[str] = Field(default=None, max_length=200)
     role: str = Field(default="author", description="admin | reviewer | author")
+    display_title: Optional[str] = Field(default=None, max_length=100, description="Cosmetic job title, e.g. 'Instructional Designer'.")
 
 
 class TenantMemberUpdateRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=200)
     role: Optional[str] = Field(default=None, description="admin | reviewer | author")
+    display_title: Optional[str] = Field(default=None, max_length=100, description="Cosmetic job title, e.g. 'Instructional Designer'.")
     password: Optional[str] = Field(default=None, min_length=6, max_length=256)
     active: Optional[bool] = None
 

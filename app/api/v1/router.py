@@ -47,6 +47,7 @@ from app.api.v1.routers.platform_tenants import router as platform_tenants_route
 from app.api.v1.routers.projects import router as projects_router
 from app.api.v1.routers.prompt_library import router as prompt_library_router
 from app.api.v1.routers.prompts import router as prompts_router
+from app.api.v1.routers.source_library import router as source_library_router
 from app.api.v1.routers.styles import router as styles_router
 from app.api.v1.routers.users import router as users_router
 from app.api.v1.routers.workflow import router as workflow_router
@@ -75,6 +76,7 @@ api_v1_router.include_router(users_router,     prefix="/users",      tags=["User
 # ── Content infrastructure ────────────────────────────────────────────────────
 api_v1_router.include_router(styles_router,    prefix="/styles",     tags=["Styles"])
 api_v1_router.include_router(documents_router, prefix="/documents",  tags=["Documents"])
+api_v1_router.include_router(source_library_router, prefix="/source-library", tags=["Source Library"])
 
 # ── Content pipeline ──────────────────────────────────────────────────────────
 api_v1_router.include_router(cdd_router,        prefix="/cdd",        tags=["CDD — Course Design Document"])
