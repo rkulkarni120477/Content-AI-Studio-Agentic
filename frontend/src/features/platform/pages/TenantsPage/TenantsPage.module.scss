@@ -1,51 +1,144 @@
-.page {
-  padding: $space-6 $space-8;
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.topbar {
+.layout {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: $space-8;
+  min-height: 100vh;
+  background: #ffffff;
 }
 
-.signout {
-  background: none;
-  border: 1px solid $color-gray-300;
-  border-radius: $radius-md;
-  padding: $space-2 $space-4;
-  font-size: $font-size-sm;
-  color: $color-gray-600;
-  cursor: pointer;
+.sidebar {
+  @include flex-col;
+  width: $sidebar-width;
+  min-height: 100vh;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  background: #1e1b4b;
+  border-right: 1px solid rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+  flex-shrink: 0;
+  padding: $space-4;
+  gap: $space-3;
+  overflow-y: auto;
+  @include custom-scrollbar(6px);
+}
 
-  &:hover { background: $color-gray-50; }
+.userPill {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.25);
+  border-radius: $radius-lg;
+  padding: $space-3;
+
+  &__label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #a5b4fc;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  &__name {
+    font-weight: 700;
+    color: #e0e7ff;
+    font-size: $font-size-sm;
+    margin-bottom: 6px;
+  }
+
+  &__role {
+    display: inline-block;
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: $radius-full;
+  }
+}
+
+.navLabel {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a5b4fc;
+  margin-top: $space-2;
+}
+
+.navBtn {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-radius: $radius-md;
+  color: #e0e7ff;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  padding: $space-2 $space-3;
+  cursor: pointer;
+  text-align: left;
+  transition: background $transition-fast;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: $color-white;
+  }
+}
+
+.navBtnActive {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(165, 180, 252, 0.55);
+  color: $color-white;
+}
+
+.sidebarSpacer {
+  flex: 1;
+}
+
+.signOut {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(165, 180, 252, 0.3);
+  border-radius: $radius-md;
+  color: #e0e7ff;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  padding: $space-2 $space-3;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: $color-white;
+  }
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: $space-8 $space-10;
+  min-width: 0;
+
+  @include max-lg {
+    padding: $space-6;
+  }
 }
 
 .headerRow {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: $space-6;
+  gap: $space-4;
+  margin-bottom: $space-4;
+  flex-wrap: wrap;
 }
 
-.title { font-size: 1.6rem; font-weight: 700; color: $color-gray-900; margin: 0; }
-.subtitle { color: $color-gray-500; font-size: $font-size-sm; margin: $space-1 0 0; }
-
-.empty {
+.center {
+  @include flex-center;
   padding: $space-10;
-  text-align: center;
-  color: $color-gray-500;
-  background: #fff;
-  border: 1px solid $color-gray-200;
-  border-radius: $radius-lg;
 }
 
 .card {
-  background: #fff;
-  border: 1px solid $color-gray-200;
-  border-radius: $radius-lg;
+  @include card;
+  padding: 0;
   overflow: hidden;
 }
 
@@ -57,22 +150,33 @@
     text-align: left;
     font-size: $font-size-xs;
     letter-spacing: 0.05em;
+    text-transform: uppercase;
     color: $color-gray-500;
-    font-weight: 600;
-    padding: $space-4 $space-5;
+    font-weight: $font-weight-semibold;
+    padding: $space-3 $space-4;
+    background: $color-gray-50;
     border-bottom: 1px solid $color-gray-200;
   }
+
   td {
-    padding: $space-4 $space-5;
+    padding: $space-3 $space-4;
     border-bottom: 1px solid $color-gray-100;
     font-size: $font-size-sm;
     color: $color-gray-700;
     vertical-align: middle;
   }
+
   tr:last-child td { border-bottom: none; }
+
+  tbody tr:hover td {
+    background: #f8fafc;
+  }
 }
 
-.name { font-weight: 600; color: $color-gray-900; }
+.name {
+  font-weight: $font-weight-semibold;
+  color: $color-gray-900;
+}
 
 .code {
   background: #eef2ff;
@@ -82,30 +186,46 @@
   font-size: 0.8rem;
 }
 
-.statusActive { color: #059669; font-weight: 600; }
-.statusSuspended { color: #b45309; font-weight: 600; }
-
-.actionsCol { width: 260px; }
-.actions { display: flex; gap: $space-3; }
-
-.linkBtn {
-  background: none;
-  border: none;
-  color: #4f46e5;
-  font-weight: 600;
+.statusActive {
+  color: #059669;
+  font-weight: $font-weight-semibold;
   font-size: $font-size-sm;
-  cursor: pointer;
-  padding: 0;
-
-  &:hover { text-decoration: underline; }
+  white-space: nowrap;
 }
 
-.modalSub { color: $color-gray-500; font-size: $font-size-sm; margin: 0 0 $space-4; }
+.statusSuspended {
+  color: #b45309;
+  font-weight: $font-weight-semibold;
+  font-size: $font-size-sm;
+  white-space: nowrap;
+}
 
-.form { @include flex-col; gap: $space-4; }
+.actionsCol {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: $space-2;
+  white-space: nowrap;
+}
+
+.modalSub {
+  color: $color-gray-500;
+  font-size: $font-size-sm;
+  margin: 0 0 $space-4;
+}
+
+.form {
+  @include flex-col;
+  gap: $space-4;
+}
 
 .sectionLabel {
-  font-weight: 700;
+  font-weight: $font-weight-bold;
   color: $color-gray-800;
   font-size: $font-size-sm;
   margin-top: $space-2;

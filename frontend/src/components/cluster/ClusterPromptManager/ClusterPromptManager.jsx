@@ -274,7 +274,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
                 placeholder="Apply the following guidelines: {style_context}"
               />
             </label>
-            <Button type="submit" variant="primary" loading={createLoading}>
+            <Button type="submit" className={styles.createPromptBtn} variant="primary" loading={createLoading}>
               💾 Create Category Prompt
             </Button>
           </form>

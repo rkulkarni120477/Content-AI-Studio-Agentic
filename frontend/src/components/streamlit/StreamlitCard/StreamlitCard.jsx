@@ -18,37 +18,34 @@ export default function StreamlitCard({
   const desc = description?.length > 90 ? `${description.slice(0, 90)}…` : description;
 
   return (
-    <div className={styles.wrap}>
-      <div className={styles.card}>
-        <div className={styles.card__title}>{title}</div>
-        {clientLine && <div className={styles.card__client}>Client: {clientLine}</div>}
-        {desc && <div className={styles.card__desc}>{desc}</div>}
-        {footerLine && <div className={styles.card__footer}>{footerLine}</div>}
+    <article className={styles.card}>
+      <div className={styles.card__body}>
+        <h3 className={styles.card__title}>{title}</h3>
+        {clientLine && <p className={styles.card__client}>Client: {clientLine}</p>}
+        {desc && <p className={styles.card__desc}>{desc}</p>}
+        {footerLine && <p className={styles.card__meta}>{footerLine}</p>}
       </div>
 
-      <Button variant="primary" size="sm" fullWidth onClick={onOpen}>
-        {openLabel}
-      </Button>
-
-      {(canEdit || canDelete || canManageUsers) && (
-        <div className={styles.actions}>
-          {canEdit && (
-            <Button variant="secondary" size="sm" fullWidth onClick={onEdit}>
-              ✏️ Edit
-            </Button>
-          )}
-          {canManageUsers && (
-            <Button variant="secondary" size="sm" fullWidth onClick={onManageUsers}>
-              👥 Users
-            </Button>
-          )}
-          {canDelete && (
-            <Button variant="danger" size="sm" fullWidth onClick={onDelete}>
-              🗑️ Delete
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
+      <div className={styles.card__actions}>
+        <Button variant="primary" size="sm" onClick={onOpen}>
+          {openLabel}
+        </Button>
+        {canEdit && (
+          <Button variant="secondary" size="sm" onClick={onEdit}>
+            ✏️ Edit
+          </Button>
+        )}
+        {canManageUsers && (
+          <Button variant="secondary" size="sm" onClick={onManageUsers}>
+            👥 Users
+          </Button>
+        )}
+        {canDelete && (
+          <Button variant="danger" size="sm" onClick={onDelete}>
+            🗑️ Delete
+          </Button>
+        )}
+      </div>
+    </article>
   );
 }

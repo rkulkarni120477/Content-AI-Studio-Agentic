@@ -118,6 +118,22 @@ services:
 
     restart: unless-stopped
 
+  dis_backend:
+    build:
+      context: ./dis_backend
+
+    container_name: ${DIS_CONTAINER_NAME}
+
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+    env_file:
+      - ./dis_backend/.env
+
+    ports:
+      - "${DIS_PORT}:8000"
+
+    restart: unless-stopped
+
 
 volumes:
   redis_local_data:

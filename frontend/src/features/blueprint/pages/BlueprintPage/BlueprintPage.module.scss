@@ -5,13 +5,53 @@
 }
 
 .layout {
-  display: grid;
-  grid-template-columns: 0.4fr 0.6fr;
-  gap: $space-6;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+  width: 100%;
+}
 
-  @include max-lg {
-    grid-template-columns: 1fr;
+.accordion {
+  @include card;
+  padding: 0;
+  overflow: hidden;
+
+  &__summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: $space-3;
+    padding: $space-4 $space-5;
+    cursor: pointer;
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    list-style: none;
+    user-select: none;
+
+    &::-webkit-details-marker { display: none; }
+
+    &::after {
+      content: '›';
+      flex-shrink: 0;
+      font-weight: 700;
+      color: $color-gray-500;
+      transition: transform 0.15s ease;
+    }
+  }
+
+  &[open] > .accordion__summary {
+    border-bottom: 1px solid $color-gray-100;
+
+    &::after {
+      transform: rotate(90deg);
+    }
+  }
+
+  &__body {
+    @include flex-col;
+    gap: $space-4;
+    padding: $space-5;
   }
 }
 
@@ -403,16 +443,20 @@
 }
 
 .generateRow {
-  display: grid;
-  grid-template-columns: 0.65fr 0.35fr;
-  gap: $space-4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $space-3;
   margin-top: $space-4;
 
-  @include max-md {
-    grid-template-columns: 1fr;
-  }
-
   &__main {
-    width: 100%;
+    width: max-content !important;
+    max-width: 100%;
+    flex: 0 0 auto;
   }
+}
+
+.requestChangeBtn, .saveInstrBtn, .activeBlueprintBtn {
+  width: max-content;
+  margin-inline: auto;
 }

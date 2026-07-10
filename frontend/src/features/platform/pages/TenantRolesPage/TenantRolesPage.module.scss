@@ -1,0 +1,165 @@
+.page {
+  padding: $space-6 $space-8;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.headerRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: $space-6;
+  gap: $space-4;
+}
+
+.title { font-size: 1.5rem; font-weight: 700; color: $color-gray-900; margin: 0; }
+.subtitle { color: $color-gray-500; font-size: $font-size-sm; margin: $space-1 0 0; }
+
+.code {
+  background: #eef2ff;
+  color: #4338ca;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: $space-4;
+}
+
+.linkBtn {
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-weight: 600;
+  font-size: $font-size-sm;
+  cursor: pointer;
+  &:hover { text-decoration: underline; }
+}
+
+.card {
+  background: #fff;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  overflow: hidden;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+
+  th {
+    text-align: left;
+    font-size: $font-size-xs;
+    letter-spacing: 0.05em;
+    color: $color-gray-500;
+    font-weight: 600;
+    padding: $space-4 $space-5;
+    border-bottom: 1px solid $color-gray-200;
+  }
+  td {
+    padding: $space-4 $space-5;
+    border-bottom: 1px solid $color-gray-100;
+    font-size: $font-size-sm;
+    color: $color-gray-700;
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+}
+
+.roleName { font-weight: 600; color: $color-gray-900; }
+
+.typeSystem {
+  background: #fef3c7;
+  color: #b45309;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.typeCustom {
+  background: #ede9fe;
+  color: #6d28d9;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.actionsCol { width: 100px; }
+.actions { display: flex; gap: $space-2; }
+
+.iconBtn {
+  border: 1px solid $color-gray-200;
+  background: #fff;
+  border-radius: $radius-md;
+  padding: $space-1 $space-3;
+  cursor: pointer;
+  font-size: 0.9rem;
+  &:hover { background: $color-gray-50; }
+  &.danger:hover { background: #fee2e2; border-color: #fca5a5; }
+}
+
+.form { @include flex-col; gap: $space-4; }
+
+.permHeading {
+  font-size: $font-size-sm;
+  font-weight: 700;
+  color: $color-gray-900;
+  margin-top: $space-2;
+}
+
+.permGroups {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  padding: $space-3 $space-4;
+  @include flex-col;
+  gap: $space-3;
+}
+
+.permCategory {
+  border-bottom: 1px solid $color-gray-100;
+  padding-bottom: $space-2;
+  &:last-child { border-bottom: none; padding-bottom: 0; }
+}
+
+.categoryLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-weight: 700;
+  font-size: $font-size-sm;
+  color: $color-gray-900;
+  cursor: pointer;
+  input { width: 15px; height: 15px; accent-color: #4f46e5; }
+}
+
+.permList {
+  @include flex-col;
+  gap: $space-1;
+  margin: $space-2 0 0 $space-6;
+}
+
+.permRow {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+  color: $color-gray-700;
+  cursor: pointer;
+  input { width: 14px; height: 14px; accent-color: #4f46e5; }
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: $space-3;
+  margin-top: $space-2;
+}

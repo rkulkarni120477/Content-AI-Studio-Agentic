@@ -293,18 +293,18 @@ def get_audit_trail_filters(
     current_user=Depends(require_permission("system.analytics")),
 ) -> AuditTrailFiltersResponse:
     """Dropdown values for the Audit Trail tab (Streamlit parity)."""
-    from app.core.permissions import rbac_check
+    from app.core.permissions import effective_rbac_check
     from promptops_app.repositories import analytics_repository
     from promptops_app.services.audit_service import (
         get_actors, get_all_actions, get_entity_types,
     )
 
     actors = get_actors(db)
-    if not rbac_check(current_user.role, "analytics.view_all"):
+    if not effective_rbac_check(current_user, "analytics.view_all"):
         actors = [current_user.username]
 
     projects = []
-    if rbac_check(current_user.role, "analytics.view_all"):
+    if effective_rbac_check(current_user, "analytics.view_all"):
         projects = [
             {"id": p.id, "name": p.name}
             for p in analytics_repository.list_active_projects_for_analytics(db)
@@ -320,10 +320,10 @@ def get_audit_trail_filters(
 
 def _resolve_audit_trail_query(query: AuditTrailQuery, current_user) -> tuple[dict, AuditTrailQuery]:
     """Apply role scoping and parse dates for audit trail queries."""
-    from app.core.permissions import rbac_check
+    from app.core.permissions import effective_rbac_check
 
     actor = query.actor
-    if not rbac_check(current_user.role, "analytics.view_all"):
+    if not effective_rbac_check(current_user, "analytics.view_all"):
         actor = current_user.username
 
     parsed_from = _parse_audit_date(query.date_from)

@@ -1,46 +1,62 @@
-.wrap {
-  @include flex-col;
-  gap: $space-2;
-  margin-bottom: $space-2;
-}
-
 .card {
+  @include flex-col;
+  height: 100%;
   background: $color-white;
-  border: 1.5px solid #d1d5db;
-  border-radius: 12px;
-  padding: 1.2rem;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-xl;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+  transition: border-color $transition-fast, box-shadow $transition-fast;
+
+  &:hover {
+    border-color: #c7d2fe;
+    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.08);
+  }
+
+  &__body {
+    @include flex-col;
+    gap: $space-1;
+    flex: 1;
+    padding: $space-4 $space-4 $space-3;
+  }
 
   &__title {
-    font-weight: 700;
-    font-size: 1.05rem;
-    color: #111827;
-    margin-bottom: 4px;
+    margin: 0;
+    font-weight: $font-weight-bold;
+    font-size: 1rem;
+    color: $color-gray-900;
+    line-height: 1.35;
+    word-break: break-word;
   }
 
   &__client {
-    font-size: 0.75rem;
-    color: #4f46e5;
-    font-weight: 600;
-    margin-bottom: 4px;
+    margin: 0;
+    font-size: $font-size-xs;
+    color: $color-primary;
+    font-weight: $font-weight-semibold;
   }
 
   &__desc {
-    font-size: 0.82rem;
-    color: #1f2937;
-    line-height: 1.5;
-    margin-bottom: 8px;
+    margin: 0;
+    font-size: $font-size-sm;
+    color: $color-gray-600;
+    line-height: 1.45;
   }
 
-  &__footer {
-    font-size: 0.72rem;
-    color: #374151;
-    font-weight: 500;
+  &__meta {
+    margin: $space-1 0 0;
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    font-weight: $font-weight-medium;
   }
-}
 
-.actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-  gap: $space-2;
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $space-2;
+    padding: $space-3 $space-4;
+    border-top: 1px solid $color-gray-100;
+    background: #fafbff;
+  }
 }

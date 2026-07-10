@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.config import PLATFORM_SLUG, settings
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import AuthenticationError
-from app.core.permissions import get_permissions_for_role, role_label
+from app.core.permissions import effective_permissions, role_label
 from app.core.security import create_access_token, verify_password
 from app.schemas.auth import (
     AuthConfigResponse,
@@ -65,7 +65,7 @@ def _build_token_response(user) -> TokenResponse:
         role=role,
         role_display=role_label(role),
         is_active=bool(user.is_active),
-        permissions=get_permissions_for_role(role),
+        permissions=effective_permissions(user),
         project_id=project_id,
         is_platform_admin=is_platform_admin,
         **build_dis_profile(user),
@@ -177,9 +177,15 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)) -> TokenResp
     if membership is None or not membership.active:
         raise AuthenticationError("You are not an active member of this organization.")
 
+    from app.services.tenant_service import resolve_membership_effective
+
+    effective_role, effective_perms, custom_role_id = resolve_membership_effective(db, membership)
+
     user._project_id = project.id
     user._is_platform_admin = False
-    user._role = membership.role
+    user._role = effective_role
+    if custom_role_id is not None:
+        user._custom_permissions = frozenset(effective_perms)
     user.project_id = project.id
     db.commit()
 
@@ -230,9 +236,15 @@ def microsoft_callback(
         db.rollback()
         return RedirectResponse(_frontend("login", error=str(exc)), status_code=302)
 
+    from app.services.tenant_service import resolve_membership_effective
+
+    effective_role, effective_perms, custom_role_id = resolve_membership_effective(db, membership)
+
     user._project_id = membership.project_id
     user._is_platform_admin = False
-    user._role = membership.role
+    user._role = effective_role
+    if custom_role_id is not None:
+        user._custom_permissions = frozenset(effective_perms)
     token = _build_token_response(user).access_token
 
     _log.info("ms_login_success  username=%s  project_id=%s  role=%s",
@@ -288,7 +300,7 @@ def get_me(
         role=role,
         role_display=role_label(role),
         is_active=bool(current_user.is_active),
-        permissions=get_permissions_for_role(role),
+        permissions=effective_permissions(current_user),
         project_id=getattr(current_user, "_project_id", None),
         is_platform_admin=getattr(current_user, "_is_platform_admin", False),
         **build_dis_profile(current_user),

@@ -112,6 +112,205 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
     setUnassigned((prev) => patchList(prev));
   }
 
+  // ── Module actions ──────────────────────────────────────────────────────────
+
+  async function handleAddModule() {
+    const title = window.prompt('Module title:', 'New Module');
+    if (!title?.trim()) return;
+    try {
+      const created = await api.post(MODULES.CREATE(courseId), { title: title.trim() });
+      setModules((prev) => [...prev, { ...created, blocks: [] }]);
+      toast.success('Module created.');
+    } catch {
+      toast.error('Failed to create module.');
+    }
+  }
+
+  async function handleRenameModule(moduleId, currentTitle) {
+    const title = window.prompt('Rename module:', currentTitle);
+    if (!title?.trim() || title.trim() === currentTitle) return;
+    try {
+      await api.put(MODULES.RENAME(moduleId), { title: title.trim() });
+      setModules((prev) => prev.map((m) => (
+        m.id === moduleId ? { ...m, title: title.trim() } : m
+      )));
+      toast.success('Module renamed.');
+    } catch {
+      toast.error('Failed to rename module.');
+    }
+  }
+
+  async function handleDeleteModule(moduleId, title) {
+    if (!window.confirm(`Delete module "${title}"? Its items will move to Unassigned.`)) return;
+    try {
+      await api.delete(MODULES.DELETE(moduleId));
+      const mod = modules.find((m) => m.id === moduleId);
+      const freed = mod?.blocks || [];
+      const nextModules = modules.filter((m) => m.id !== moduleId);
+      const nextUnassigned = [...unassigned, ...freed];
+      applyLayout(nextModules, nextUnassigned);
+      toast.success('Module deleted.');
+    } catch {
+      toast.error('Failed to delete module.');
+    }
+  }
+
+  function handleModuleDragStart(index) {
+    setModuleDragIndex(index);
+  }
+
+  function handleModuleDragOver(e, index) {
+    e.preventDefault();
+    if (moduleDragIndex === null || moduleDragIndex === index) return;
+    setModules((prev) => moveItem(prev, moduleDragIndex, index));
+    setModuleDragIndex(index);
+  }
+
+  function handleModuleDragEnd() {
+    if (moduleDragIndex !== null) {
+      persistLayout(layoutRef.current.modules, layoutRef.current.unassigned);
+    }
+    setModuleDragIndex(null);
+  }
+
+  // ── Block drag between modules ──────────────────────────────────────────────
+
+  function findBlockLocation(blockId) {
+    for (const m of modules) {
+      const idx = m.blocks.findIndex((b) => b.id === blockId);
+      if (idx >= 0) return { key: `m:${m.id}`, moduleId: m.id, index: idx };
+    }
+    const idx = unassigned.findIndex((b) => b.id === blockId);
+    if (idx >= 0) return { key: 'unassigned', moduleId: null, index: idx };
+    return null;
+  }
+
+  function removeBlockFromLayout(blockId, mods, unas) {
+    const nextMods = mods.map((m) => ({
+      ...m,
+      blocks: m.blocks.filter((b) => b.id !== blockId),
+    }));
+    const nextUnas = unas.filter((b) => b.id !== blockId);
+    return { nextMods, nextUnas, block: findBlockIn(mods, unas, blockId) };
+  }
+
+  function findBlockIn(mods, unas, blockId) {
+    for (const m of mods) {
+      const b = m.blocks.find((x) => x.id === blockId);
+      if (b) return b;
+    }
+    return unas.find((b) => b.id === blockId);
+  }
+
+  function insertBlock(mods, unas, block, targetKey, targetIndex) {
+    const nextMods = mods.map((m) => ({ ...m, blocks: [...m.blocks] }));
+    let nextUnas = [...unas];
+    if (targetKey === 'unassigned') {
+      nextUnas.splice(targetIndex, 0, block);
+      return { nextMods, nextUnas };
+    }
+    const moduleId = Number(targetKey.replace('m:', ''));
+    const mod = nextMods.find((m) => m.id === moduleId);
+    if (mod) mod.blocks.splice(targetIndex, 0, block);
+    return { nextMods, nextUnas };
+  }
+
+  function handleBlockDragStart(blockId, sourceKey) {
+    droppedRef.current = false;
+    setBlockDrag({ blockId, sourceKey });
+  }
+
+  function handleBlockDragOver(e, targetKey, targetIndex) {
+    e.preventDefault();
+    if (!blockDrag) return;
+    const { blockId, sourceKey } = blockDrag;
+    if (sourceKey === targetKey) {
+      // Reorder within same list
+      const loc = findBlockLocation(blockId);
+      if (!loc || loc.index === targetIndex) return;
+      if (targetKey === 'unassigned') {
+        setUnassigned((prev) => moveItem(prev, loc.index, targetIndex));
+      } else {
+        const moduleId = Number(targetKey.replace('m:', ''));
+        setModules((prev) => prev.map((m) => (
+          m.id === moduleId ? { ...m, blocks: moveItem(m.blocks, loc.index, targetIndex) } : m
+        )));
+      }
+      setBlockDrag({ blockId, sourceKey: targetKey });
+      return;
+    }
+    // Move across lists
+    const { nextMods, nextUnas, block } = removeBlockFromLayout(
+      blockId, layoutRef.current.modules, layoutRef.current.unassigned,
+    );
+    if (!block) return;
+    const inserted = insertBlock(nextMods, nextUnas, block, targetKey, targetIndex);
+    setModules(inserted.nextMods);
+    setUnassigned(inserted.nextUnas);
+    setBlockDrag({ blockId, sourceKey: targetKey });
+  }
+
+  function handleBlockDragEnd() {
+    // If a container drop already persisted the computed layout, don't overwrite
+    // it with the (possibly stale) ref state here.
+    if (!droppedRef.current && blockDrag) {
+      persistLayout(layoutRef.current.modules, layoutRef.current.unassigned);
+    }
+    droppedRef.current = false;
+    setBlockDrag(null);
+  }
+
+  function commitDropTo(blockId, targetKey) {
+    const cur = layoutRef.current;
+    // If the block is already in the target list (moved live via dragover),
+    // just persist the current arrangement as-is to preserve its position.
+    const inTarget =
+      targetKey === 'unassigned'
+        ? cur.unassigned.some((b) => b.id === blockId)
+        : cur.modules.some((m) => `m:${m.id}` === targetKey && m.blocks.some((b) => b.id === blockId));
+
+    if (inTarget) {
+      applyLayout(cur.modules, cur.unassigned);
+      return;
+    }
+
+    const { nextMods, nextUnas, block } = removeBlockFromLayout(blockId, cur.modules, cur.unassigned);
+    if (!block) return;
+    const targetIndex =
+      targetKey === 'unassigned'
+        ? nextUnas.length
+        : (nextMods.find((m) => `m:${m.id}` === targetKey)?.blocks.length ?? 0);
+    const inserted = insertBlock(nextMods, nextUnas, block, targetKey, targetIndex);
+    applyLayout(inserted.nextMods, inserted.nextUnas);
+  }
+
+  function handleDropOnModule(e, moduleId) {
+    e.preventDefault();
+    if (!blockDrag) return;
+    droppedRef.current = true;
+    commitDropTo(blockDrag.blockId, `m:${moduleId}`);
+    setBlockDrag(null);
+  }
+
+  function handleDropOnUnassigned(e) {
+    e.preventDefault();
+    if (!blockDrag) return;
+    droppedRef.current = true;
+    commitDropTo(blockDrag.blockId, 'unassigned');
+    setBlockDrag(null);
+  }
+
+  // ── HTML actions ────────────────────────────────────────────────────────────
+
+  function handleLaunchPrintWorkflow() {
+    const url = import.meta.env.VITE_PRINT_WORKFLOW_URL;
+    if (url) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    toast.error('Print workflow URL is not configured. Set VITE_PRINT_WORKFLOW_URL.');
+  }
+
   async function handleExportImscc() {
     if (!totalBlocks(modules, unassigned)) return;
     setExporting(true);
@@ -230,6 +429,9 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           </p>
         </div>
         <div className={styles.headerActions}>
+          <Button variant="secondary" onClick={handleLaunchPrintWorkflow}>
+            🖨️ Launch Print Workflow
+          </Button>
           <Button
             variant="primary"
             disabled={exporting || !blockCount}

@@ -4,6 +4,14 @@
   margin-top: $space-6;
 }
 
+.panelEmbedded {
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
 .hint {
   font-size: $font-size-sm;
   color: $color-gray-600;
@@ -25,17 +33,15 @@
 }
 
 .selectorRow {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: $space-3;
-  align-items: start;
+  align-items: flex-end;
   margin-bottom: $space-4;
 
-  @include max-md {
-    grid-template-columns: 1fr;
-  }
-
   &__main {
+    flex: 1 1 220px;
+    max-width: 420px;
     min-width: 0;
   }
 }

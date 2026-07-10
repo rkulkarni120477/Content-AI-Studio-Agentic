@@ -22,6 +22,10 @@ import { HEADER_ACTIONS, MAIN_NAV } from '@features/promptLibrary/utils/nav';
 import styles from './SelectionSidebar.module.scss';
 
 const LMS_PLATFORM_OPTIONS = ['Canvas', 'Moodle', 'TalentLMS', 'Docebo'];
+const WORKFLOW_OPTIONS = [
+  { value: 'print', label: 'Print' },
+  { value: 'digital', label: 'Digital' },
+];
 const CLIENT_OPTIONS = [
   { value: 'cengage', label: 'Cengage' },
   { value: 'aim', label: 'AIM' },
@@ -82,7 +86,13 @@ export default function SelectionSidebar({
     toggleCollapsed();
     openForm(true);
   }
-  const [form, setForm] = useState({ name: '', client: 'cengage', description: '', lms_platform: '' });
+  const [form, setForm] = useState({
+    name: '',
+    client: 'cengage',
+    description: '',
+    lms_platform: '',
+    workflow: '',
+  });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
@@ -104,7 +114,13 @@ export default function SelectionSidebar({
   }
 
   function resetForm() {
-    setForm({ name: '', client: 'cengage', description: '', lms_platform: '' });
+    setForm({
+      name: '',
+      client: 'cengage',
+      description: '',
+      lms_platform: '',
+      workflow: '',
+    });
     setCopyPromptIds([]);
   }
 
@@ -129,13 +145,20 @@ export default function SelectionSidebar({
       if (form.lms_platform) {
         payload.lms_platform = form.lms_platform;
       }
+      if (form.workflow) {
+        payload.workflow = form.workflow;
+      }
       await onCreateCluster(payload);
       setShowNewCluster(false);
     } else if (variant === 'course' && onCreateCourse) {
-      await onCreateCourse({
+      const payload = {
         name: form.name.trim(),
         description: form.description.trim() || null,
-      });
+      };
+      if (form.workflow) {
+        payload.workflow = form.workflow;
+      }
+      await onCreateCourse(payload);
       setShowNewCourse(false);
     }
     resetForm();
@@ -317,6 +340,13 @@ export default function SelectionSidebar({
                 value={form.lms_platform}
                 onChange={(e) => setForm((f) => ({ ...f, lms_platform: e.target.value }))}
               />
+              <Select
+                label="Choose workflow"
+                placeholder="Choose options"
+                options={WORKFLOW_OPTIONS}
+                value={form.workflow}
+                onChange={(e) => setForm((f) => ({ ...f, workflow: e.target.value }))}
+              />
               <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Category</Button>
             </form>
           )}
@@ -383,6 +413,13 @@ export default function SelectionSidebar({
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
               </label>
+              <Select
+                label="Choose workflow"
+                placeholder="Choose options"
+                options={WORKFLOW_OPTIONS}
+                value={form.workflow}
+                onChange={(e) => setForm((f) => ({ ...f, workflow: e.target.value }))}
+              />
               <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Course</Button>
             </form>
           )}

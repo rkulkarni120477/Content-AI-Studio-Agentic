@@ -20,6 +20,7 @@ import {
   listComponentPrompts,
   unbindFixing,
 } from '../api/flow';
+import CompactSelect from '../components/CompactSelect';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts } from '../utils/permissions';
@@ -267,6 +268,14 @@ export default function CoursePromptsPage() {
   // auto-migrated "General"), so ambiguous names get their project appended.
   const clusters = useMemo(() => clusterOptions(groups), [groups]);
 
+  const clusterSelectOptions = useMemo(
+    () => [
+      { value: '', label: 'All categories' },
+      ...clusters.map(([id, name]) => ({ value: String(id), label: name })),
+    ],
+    [clusters],
+  );
+
   const visible = selCluster
     ? groups.filter((g) => (selCluster === 'none'
         ? g.cluster_id == null
@@ -285,16 +294,16 @@ export default function CoursePromptsPage() {
           its project, or globally — locks show a 🔒 badge, and the most specific one
           wins. Non-admins can only lock prompts whose active version is approved.
         </p>
-        <div className="field" style={{ maxWidth: 320 }}>
-          <label>Cluster</label>
-          <select value={selCluster} onChange={(e) => setSelCluster(e.target.value)}>
-            <option value="">All clusters</option>
-            {clusters.map(([id, name]) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
+        <div className="field field--compact">
+          <label htmlFor="course-cluster-filter">Category</label>
+          <CompactSelect
+            id="course-cluster-filter"
+            fitContent
+            aria-label="Filter by category"
+            value={selCluster}
+            onChange={setSelCluster}
+            options={clusterSelectOptions}
+          />
         </div>
       </div>
 
@@ -306,24 +315,12 @@ export default function CoursePromptsPage() {
       {visible.map((g) => {
         const open = !!expanded[g.course_id];
         return (
-          <div key={g.course_id} className="page-card" style={{ marginBottom: 10 }}>
+          <div key={g.course_id} className="page-card course-group-card">
             <button
               type="button"
+              className="course-group-toggle"
               onClick={() => setExpanded((prev) => ({ ...prev, [g.course_id]: !open }))}
               aria-expanded={open}
-              style={{
-                display: 'flex',
-                alignItems: 'baseline',
-                gap: 10,
-                width: '100%',
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                cursor: 'pointer',
-                textAlign: 'left',
-                font: 'inherit',
-                color: 'inherit',
-              }}
             >
               <span style={{ fontWeight: 700 }}>{open ? '−' : '+'}</span>
               <span style={{ fontWeight: 700 }}>{g.course_name}</span>
@@ -333,7 +330,7 @@ export default function CoursePromptsPage() {
               </span>
             </button>
             {open && (
-              <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+              <div className="course-group-body">
                 {g.prompts.map((slot) => (
                   <SlotRow
                     key={slotKey(g, slot)}

@@ -42,7 +42,7 @@ function writeCachedStyleDocs(key, documents) {
   }
 }
 
-export default function CreateStyleForm() {
+export default function CreateStyleForm({ embedded = false }) {
   const dispatch = useAppDispatch();
   const isCreating = useAppSelector(selectStyleCreating);
   const canModify = useAppSelector(selectIsReviewer);
@@ -128,7 +128,7 @@ export default function CreateStyleForm() {
 
   if (!canModify) {
     return (
-      <section className={styles.panel}>
+      <section className={embedded ? styles.panelEmbedded : styles.panel}>
         <div className={styles.restricted}>
           <div className={styles.restricted__icon} aria-hidden="true">🔒</div>
           <div className={styles.restricted__title}>Style Creation Restricted</div>
@@ -142,14 +142,22 @@ export default function CreateStyleForm() {
   }
 
   return (
-    <section className={styles.panel}>
-      <header className={styles.header}>
-        <h2 className={styles.header__title}>➕ Create New Style</h2>
+    <section className={embedded ? styles.panelEmbedded : styles.panel}>
+      {!embedded && (
+        <header className={styles.header}>
+          <h2 className={styles.header__title}>➕ Create New Style</h2>
+          <p className={styles.header__intro}>
+            A Style defines writing tone, rules, and structure. It will be automatically
+            applied to CDD, Blueprint, and content generation.
+          </p>
+        </header>
+      )}
+      {embedded && (
         <p className={styles.header__intro}>
           A Style defines writing tone, rules, and structure. Upload source documents in
           Source Library, then select the processed references here.
         </p>
-      </header>
+      )}
 
       <form onSubmit={handleSubmit(onSubmit)} className={styles.form}>
         <Input
@@ -205,11 +213,9 @@ export default function CreateStyleForm() {
         </div>
 
         <div className={styles.saveRow}>
-          <div />
-          <Button type="submit" variant="primary" fullWidth loading={isCreating} className={styles.saveBtn}>
+          <Button type="submit" variant="primary" size="md" loading={isCreating} className={styles.saveBtn}>
             💾 Save Style
           </Button>
-          <div />
         </div>
       </form>
     </section>

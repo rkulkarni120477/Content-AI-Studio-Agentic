@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
-from app.core.permissions import rbac_check
+from app.core.permissions import effective_rbac_check
 from app.core.security import decode_access_token
 
 _log = logging.getLogger(__name__)
@@ -131,7 +131,12 @@ def get_current_user(
         )
         if membership is None or not membership.active:
             raise AuthenticationError("Your membership in this organization is inactive.")
-        effective_role = membership.role
+
+        from app.services.tenant_service import resolve_membership_effective
+
+        effective_role, effective_permissions, custom_role_id = resolve_membership_effective(db, membership)
+        if custom_role_id is not None:
+            user._custom_permissions = frozenset(effective_permissions)
 
     # Attach context so route handlers can read it without extra DB calls.
     user._project_id        = project_id
@@ -166,7 +171,7 @@ def require_permission(permission: str):
     """
     def _check(current_user=Depends(get_current_user)):
         """Verify the authenticated user holds the required permission."""
-        if not rbac_check(current_user.role, permission):
+        if not effective_rbac_check(current_user, permission):
             _log.warning(
                 "permission_denied  user=%s  role=%s  permission=%s",
                 current_user.username, current_user.role, permission,
