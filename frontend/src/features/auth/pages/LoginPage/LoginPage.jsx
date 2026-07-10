@@ -5,22 +5,26 @@ import { loginThunk, fetchMeThunk } from '@features/auth/authThunks';
 import { authService } from '@features/auth/services/authService';
 import {
   selectIsAuthenticated,
+  selectIsAuthChecked,
   selectAuthLoading,
   selectAuthError,
   selectIsPlatformAdmin,
   selectProjectId,
   clearError,
   setToken,
+  forceLogout,
 } from '@features/auth/authSlice';
 import { ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
 import AppBrand from '@components/common/AppBrand/AppBrand';
+import Loader from '@components/common/Loader/Loader';
 import styles from './LoginPage.module.scss';
 
 export default function LoginPage() {
   const dispatch        = useAppDispatch();
   const navigate        = useNavigate();
   const isAuth          = useAppSelector(selectIsAuthenticated);
+  const isAuthChecked   = useAppSelector(selectIsAuthChecked);
   const isLoading       = useAppSelector(selectAuthLoading);
   const serverError     = useAppSelector(selectAuthError);
   const isPlatformAdmin = useAppSelector(selectIsPlatformAdmin);
@@ -55,12 +59,21 @@ export default function LoginPage() {
     }
   }, [dispatch]);
 
+  // An authenticated user has a real destination only if they are a platform
+  // admin (→ tenant dashboard) or belong to a project (→ their clusters). A
+  // non-admin with no project has nowhere to go: /dashboard is platform-admin
+  // only and bounces them straight back to /login, so navigating there creates
+  // an infinite redirect loop (white screen + flickering loader). Such a user
+  // must stay put and be told their account has no workspace.
+  const hasDestination = isPlatformAdmin || Boolean(projectId);
+  const stranded       = isAuth && !hasDestination;
+
   // Redirect once authenticated — by role, never by stale history.
   useEffect(() => {
     if (!isAuth) return;
     if (isPlatformAdmin) navigate(ROUTES.DASHBOARD, { replace: true });
     else if (projectId)  navigate(ROUTES.PROJECT_CLUSTERS(projectId), { replace: true });
-    else                 navigate(ROUTES.DASHBOARD, { replace: true });
+    // else: authenticated but no workspace assigned — stay here (see `stranded`).
   }, [isAuth, isPlatformAdmin, projectId, navigate]);
 
   useEffect(() => () => { dispatch(clearError()); }, [dispatch]);
@@ -75,6 +88,11 @@ export default function LoginPage() {
     window.location.href = authService.microsoftLoginUrl(orgCode.trim().toLowerCase());
   }
 
+  // Clear a stranded (no-workspace) session so the login form returns.
+  function handleSignOut() {
+    dispatch(forceLogout());
+  }
+
   function handlePasswordLogin(e) {
     e.preventDefault();
     setUrlError(null);
@@ -87,6 +105,39 @@ export default function LoginPage() {
   }
 
   const error = urlError || serverError;
+
+  // Hold the paint until the boot-time auth check settles, and while an already
+  // authenticated user with a real destination is being redirected away —
+  // otherwise the form flashes. A `stranded` user is authenticated but has
+  // nowhere to route to, so fall through and show them the message below.
+  if (!isAuthChecked || (isAuth && !stranded)) {
+    return <Loader size="xl" overlay />;
+  }
+
+  if (stranded) {
+    return (
+      <div className={styles.page}>
+        <aside className={styles.sidebar}>
+          <div className={styles.brandRow}>
+            <AppBrand />
+          </div>
+          <p className={styles.sidebar__label}>No workspace assigned</p>
+          <div className={styles.error} role="alert">
+            Your account isn’t a member of any organization yet. Ask an administrator
+            to add you to a workspace, then sign in again.
+          </div>
+          <Button type="button" variant="secondary" size="lg" fullWidth onClick={handleSignOut}>
+            Sign out
+          </Button>
+        </aside>
+        <main className={styles.main}>
+          <div className={styles.hero}>
+            <AppBrand variant="hero" showTag={false} className={styles.hero__brand} />
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.page}>

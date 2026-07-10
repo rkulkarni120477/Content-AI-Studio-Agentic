@@ -26,24 +26,24 @@ export default function StreamlitCard({
         {footerLine && <div className={styles.card__footer}>{footerLine}</div>}
       </div>
 
-      <Button variant="primary" size="sm" fullWidth onClick={onOpen}>
+      <Button variant="primary" size="sm" className={styles.card__openBtn} onClick={onOpen}>
         {openLabel}
       </Button>
 
       {(canEdit || canDelete || canManageUsers) && (
         <div className={styles.actions}>
           {canEdit && (
-            <Button variant="secondary" size="sm" fullWidth onClick={onEdit}>
+            <Button variant="secondary" size="sm" onClick={onEdit}>
               ✏️ Edit
             </Button>
           )}
           {canManageUsers && (
-            <Button variant="secondary" size="sm" fullWidth onClick={onManageUsers}>
+            <Button variant="secondary" size="sm" onClick={onManageUsers}>
               👥 Users
             </Button>
           )}
           {canDelete && (
-            <Button variant="danger" size="sm" fullWidth onClick={onDelete}>
+            <Button variant="danger" size="sm" onClick={onDelete}>
               🗑️ Delete
             </Button>
           )}

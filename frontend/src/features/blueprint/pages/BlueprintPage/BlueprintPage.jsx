@@ -599,331 +599,337 @@ export default function BlueprintPage() {
         </div>
 
         <div className={styles.layout}>
-          <section className={styles.panel}>
-            <h2 className={styles.panel__title}>➕ Create New Blueprint</h2>
+          <details className={styles.accordion} open>
+            <summary className={styles.accordion__summary}>➕ Create New Blueprint</summary>
+            <div className={styles.accordion__body}>
+              <Select
+                label="📘 Source CDD"
+                options={cddOptions}
+                value={linkedCddId != null ? String(linkedCddId) : NONE_CDD}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setLinkedCddId(v ? Number(v) : null);
+                  setModuleSelKey('');
+                  setModuleConfirmed(false);
+                }}
+              />
 
-            <Select
-              label="📘 Source CDD"
-              options={cddOptions}
-              value={linkedCddId != null ? String(linkedCddId) : NONE_CDD}
-              onChange={(e) => {
-                const v = e.target.value;
-                setLinkedCddId(v ? Number(v) : null);
-                setModuleSelKey('');
-                setModuleConfirmed(false);
-              }}
-            />
-
-            {moduleOptions.length > 0 ? (
-              <>
-                <div className={styles.moduleLabel}>Select Module / Course-End Item</div>
-                <Select
-                  label=""
-                  options={moduleOptions.map((o) => ({
-                    value: String(o.key),
-                    label: o.label,
-                  }))}
-                  value={moduleSelKey || String(moduleOptions[0].key)}
-                  onChange={(e) => {
-                    setModuleSelKey(e.target.value);
-                    setModuleConfirmed(false);
-                  }}
-                />
-                {moduleConfirmed ? (
-                  <div className={styles.confirmOk}>✅ Module selection confirmed.</div>
-                ) : (
-                  moduleStatusBanner()
-                )}
-              </>
-            ) : (
-              <p className={styles.configPanel__item}>
-                ℹ️ Module number will be 1 (no module structure detected in CDD).
-              </p>
-            )}
-
-            <Input
-              label="Blueprint Title (optional)"
-              placeholder={
-                selectedModuleOpt
-                  ? `e.g. Module ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
-                  : 'e.g. Module 1 — Patient Assessment Blueprint'
-              }
-              value={documentTitle}
-              onChange={(e) => setDocumentTitle(e.target.value)}
-            />
-
-            <Button variant="secondary" fullWidth type="button" onClick={onConfirmModule}>
-              Confirm Module Selection
-            </Button>
-
-            <div className={styles.extraSection}>
-              <label className={styles.extraSection__label}>
-                💬 Additional Instructions <span className={styles.optional}>(optional)</span>
-              </label>
-              {savedInstrs.length > 0 && (
-                <div className={styles.instrLoad}>
+              {moduleOptions.length > 0 ? (
+                <>
+                  <div className={styles.moduleLabel}>Select Module / Course-End Item</div>
                   <Select
                     label=""
-                    options={[
-                      { value: '— Start fresh —', label: '— Start fresh —' },
-                      ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
-                    ]}
-                    value={loadInstrSel}
-                    onChange={(e) => setLoadInstrSel(e.target.value)}
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    type="button"
-                    onClick={() => {
-                      if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
-                      else {
-                        const rec = savedInstrs.find((r) => r.name === loadInstrSel);
-                        if (rec) setExtraInstructions(rec.content);
-                      }
+                    options={moduleOptions.map((o) => ({
+                      value: String(o.key),
+                      label: o.label,
+                    }))}
+                    value={moduleSelKey || String(moduleOptions[0].key)}
+                    onChange={(e) => {
+                      setModuleSelKey(e.target.value);
+                      setModuleConfirmed(false);
                     }}
-                  >
-                    📥 Load
-                  </Button>
-                </div>
-              )}
-              <textarea
-                className={styles.textarea}
-                rows={4}
-                placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson."
-                value={extraInstructions}
-                onChange={(e) => setExtraInstructions(e.target.value)}
-              />
-              <Button
-                variant="secondary"
-                size="sm"
-                type="button"
-                fullWidth
-                onClick={() => setShowSaveInstr(!showSaveInstr)}
-              >
-                💾 Save Instructions
-              </Button>
-              {showSaveInstr && (
-                <div className={styles.saveInstrPanel}>
-                  <Input
-                    placeholder="e.g. Simulation-based lessons"
-                    value={saveInstrName}
-                    onChange={(e) => setSaveInstrName(e.target.value)}
                   />
-                  <label className={styles.checkLabel}>
-                    <input
-                      type="checkbox"
-                      checked={saveInstrNewVer}
-                      onChange={(e) => setSaveInstrNewVer(e.target.checked)}
+                  {moduleConfirmed ? (
+                    <div className={styles.confirmOk}>✅ Module selection confirmed.</div>
+                  ) : (
+                    moduleStatusBanner()
+                  )}
+                </>
+              ) : (
+                <p className={styles.configPanel__item}>
+                  ℹ️ Module number will be 1 (no module structure detected in CDD).
+                </p>
+              )}
+
+              <Input
+                label="Blueprint Title (optional)"
+                placeholder={
+                  selectedModuleOpt
+                    ? `e.g. Module ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
+                    : 'e.g. Module 1 — Patient Assessment Blueprint'
+                }
+                value={documentTitle}
+                onChange={(e) => setDocumentTitle(e.target.value)}
+              />
+
+              <Button variant="secondary" className={styles.requestChangeBtn} type="button" onClick={onConfirmModule}>
+                Confirm Module Selection
+              </Button>
+
+              <div className={styles.extraSection}>
+                <label className={styles.extraSection__label}>
+                  💬 Additional Instructions <span className={styles.optional}>(optional)</span>
+                </label>
+                {savedInstrs.length > 0 && (
+                  <div className={styles.instrLoad}>
+                    <Select
+                      label=""
+                      options={[
+                        { value: '— Start fresh —', label: '— Start fresh —' },
+                        ...savedInstrs.map((r) => ({ value: r.name, label: r.name })),
+                      ]}
+                      value={loadInstrSel}
+                      onChange={(e) => setLoadInstrSel(e.target.value)}
                     />
-                    New version
-                  </label>
-                  <Button variant="primary" size="sm" type="button" onClick={handleSaveInstructions}>
-                    Confirm
-                  </Button>
-                </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      type="button"
+                      onClick={() => {
+                        if (loadInstrSel === '— Start fresh —') setExtraInstructions('');
+                        else {
+                          const rec = savedInstrs.find((r) => r.name === loadInstrSel);
+                          if (rec) setExtraInstructions(rec.content);
+                        }
+                      }}
+                    >
+                      📥 Load
+                    </Button>
+                  </div>
+                )}
+                <textarea
+                  className={styles.textarea}
+                  rows={4}
+                  placeholder="e.g. Focus on simulation-based lessons. Add a career spotlight per lesson."
+                  value={extraInstructions}
+                  onChange={(e) => setExtraInstructions(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  type="button"
+                  className={styles.saveInstrBtn}
+                  onClick={() => setShowSaveInstr(!showSaveInstr)}
+                >
+                  💾 Save Instructions
+                </Button>
+                {showSaveInstr && (
+                  <div className={styles.saveInstrPanel}>
+                    <Input
+                      placeholder="e.g. Simulation-based lessons"
+                      value={saveInstrName}
+                      onChange={(e) => setSaveInstrName(e.target.value)}
+                    />
+                    <label className={styles.checkLabel}>
+                      <input
+                        type="checkbox"
+                        checked={saveInstrNewVer}
+                        onChange={(e) => setSaveInstrNewVer(e.target.checked)}
+                      />
+                      New version
+                    </label>
+                    <Button variant="primary" size="sm" type="button" onClick={handleSaveInstructions}>
+                      Confirm
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {error && (
+                <ErrorState message={error} onRetry={() => dispatch(fetchBlueprintsThunk(courseId))} />
               )}
             </div>
+          </details>
 
-            {error && (
-              <ErrorState message={error} onRetry={() => dispatch(fetchBlueprintsThunk(courseId))} />
-            )}
-          </section>
-
-          <section className={styles.panel}>
-            <h2 className={styles.panel__title}>📂 Your Module Blueprints</h2>
-
-            {isLoading ? (
-              <div className={styles.center}><Loader size="lg" /></div>
-            ) : blueprints.length === 0 ? (
-              <EmptyState
-                title="No Blueprints yet"
-                message="Create your first Blueprint using the form on the left."
-              />
-            ) : (
-              <>
-                <Select
-                  label="Select Blueprint to View/Edit"
-                  options={blueprints.map((bp) => ({
-                    value: String(bp.id),
-                    label: `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
-                  }))}
-                  value={viewBpId != null ? String(viewBpId) : ''}
-                  onChange={(e) => {
-                    const id = Number(e.target.value);
-                    setViewBpId(id);
-                    setSelectedBpId(id);
-                    if (id) dispatch(fetchBlueprintVersionsThunk(id));
-                  }}
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>📂 Your Module Blueprints</summary>
+            <div className={styles.accordion__body}>
+              {isLoading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : blueprints.length === 0 ? (
+                <EmptyState
+                  title="No Blueprints yet"
+                  message="Create your first Blueprint using the form above."
                 />
+              ) : (
+                <>
+                  <Select
+                    label="Select Blueprint to View/Edit"
+                    options={blueprints.map((bp) => ({
+                      value: String(bp.id),
+                      label: `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                    }))}
+                    value={viewBpId != null ? String(viewBpId) : ''}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      setViewBpId(id);
+                      setSelectedBpId(id);
+                      if (id) dispatch(fetchBlueprintVersionsThunk(id));
+                    }}
+                  />
 
-                {displayBp && (
-                  <>
-                    <div className={styles.metrics}>
-                      <div className={styles.metric}>
-                        <span className={styles.metric__label}>Active Version</span>
-                        <span className={styles.metric__value}>{displayBp.active_version || '—'}</span>
-                      </div>
-                      <div className={styles.metric}>
-                        <span className={styles.metric__label}>State</span>
-                        <span className={styles.metric__value}>
-                          {(displayBp.workflow_state || 'draft').replace(/^\w/, (c) => c.toUpperCase())}
-                        </span>
-                      </div>
-                      <div className={styles.metric}>
-                        <span className={styles.metric__label}>Total Versions</span>
-                        <span className={styles.metric__value}>{versions.length}</span>
-                      </div>
-                    </div>
-
-                    {displayBp.cdd_id && (() => {
-                      const bpCdd = cdds.find((c) => c.id === displayBp.cdd_id);
-                      if (!bpCdd) return null;
-                      return (
-                        <div className={styles.cddLink}>
-                          🔗 Linked to CDD: <strong>{bpCdd.title || bpCdd.course_title}</strong>
-                          {' '}({bpCdd.active_version || 'v1'})
+                  {displayBp && (
+                    <>
+                      <div className={styles.metrics}>
+                        <div className={styles.metric}>
+                          <span className={styles.metric__label}>Active Version</span>
+                          <span className={styles.metric__value}>{displayBp.active_version || '—'}</span>
                         </div>
-                      );
-                    })()}
+                        <div className={styles.metric}>
+                          <span className={styles.metric__label}>State</span>
+                          <span className={styles.metric__value}>
+                            {(displayBp.workflow_state || 'draft').replace(/^\w/, (c) => c.toUpperCase())}
+                          </span>
+                        </div>
+                        <div className={styles.metric}>
+                          <span className={styles.metric__label}>Total Versions</span>
+                          <span className={styles.metric__value}>{versions.length}</span>
+                        </div>
+                      </div>
 
-                    {versions.length > 0 && (
-                      <div className={styles.versionRow}>
-                        <Select
-                          label="View Version"
-                          options={versions.map((v) => ({
-                            value: v.version,
-                            label: `${v.version}${v.is_active ? ' (active)' : ''}`,
-                          }))}
-                          value={viewVersion || displayBp.active_version || ''}
-                          onChange={(e) => setViewVersion(e.target.value)}
-                        />
-                        {viewVersion && viewVersion !== displayBp.active_version && (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => dispatch(activateBlueprintVersionThunk({
-                              blueprintId: displayBp.id,
-                              version: viewVersion,
+                      {displayBp.cdd_id && (() => {
+                        const bpCdd = cdds.find((c) => c.id === displayBp.cdd_id);
+                        if (!bpCdd) return null;
+                        return (
+                          <div className={styles.cddLink}>
+                            🔗 Linked to CDD: <strong>{bpCdd.title || bpCdd.course_title}</strong>
+                            {' '}({bpCdd.active_version || 'v1'})
+                          </div>
+                        );
+                      })()}
+
+                      {versions.length > 0 && (
+                        <div className={styles.versionRow}>
+                          <Select
+                            label="View Version"
+                            options={versions.map((v) => ({
+                              value: v.version,
+                              label: `${v.version}${v.is_active ? ' (active)' : ''}`,
                             }))}
-                          >
-                            Set as Active Version
-                          </Button>
+                            value={viewVersion || displayBp.active_version || ''}
+                            onChange={(e) => setViewVersion(e.target.value)}
+                          />
+                          {viewVersion && viewVersion !== displayBp.active_version && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => dispatch(activateBlueprintVersionThunk({
+                                blueprintId: displayBp.id,
+                                version: viewVersion,
+                              }))}
+                            >
+                              Set as Active Version
+                            </Button>
+                          )}
+                        </div>
+                      )}
+
+                      <div className={styles.activeContent}>
+                        <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
+                        {viewMode && (
+                          <p className={styles.configPanel__item}>
+                            Mode: <strong>{viewMode === 'teacher' ? 'Teacher' : 'Student'}</strong>
+                          </p>
+                        )}
+
+                        <PromoteOverrideButton
+                          sourceType="blueprint"
+                          artifactId={displayBp?.id}
+                          version={versionDetail?.version || displayBp?.active_content?.version}
+                          generationParams={versionDetail?.generation_params
+                            || displayBp?.active_content?.generation_params}
+                        />
+                        <BlueprintContentView
+                          fullContent={previewFullContent}
+                          sections={previewSections}
+                          editable
+                          saving={savingSection}
+                          onSaveSection={onSaveBlueprintSection}
+                          onRegenerateSection={onRegenerateBlueprintSection}
+                          onRegenerateItem={onRegenerateBlueprintItem}
+                        />
+
+                        <button
+                          type="button"
+                          className={styles.saveVersionToggle}
+                          onClick={() => setShowSaveVersion((v) => !v)}
+                        >
+                          🚀 Save as New Version {showSaveVersion ? '▾' : '▸'}
+                        </button>
+                        {showSaveVersion && (
+                          <div className={styles.saveVersion}>
+                            <form className={styles.form} onSubmit={versionForm.handleSubmit(onCommitVersion)}>
+                              <Input
+                                label="New Version Tag"
+                                placeholder={`v${versions.length + 1}`}
+                                {...versionForm.register('tag')}
+                              />
+                              <Input
+                                label="Change Reason"
+                                required
+                                placeholder="What changed?"
+                                error={versionForm.formState.errors.reason?.message}
+                                {...versionForm.register('reason')}
+                              />
+                              <Button type="submit" variant="primary" size="sm">
+                                💾 Commit New Blueprint Version
+                              </Button>
+                            </form>
+                          </div>
                         )}
                       </div>
-                    )}
 
-                    <div className={styles.activeContent}>
-                      <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
-                      {viewMode && (
-                        <p className={styles.configPanel__item}>
-                          Mode: <strong>{viewMode === 'teacher' ? 'Teacher' : 'Student'}</strong>
-                        </p>
-                      )}
-
-                      <PromoteOverrideButton
-                        sourceType="blueprint"
-                        artifactId={displayBp?.id}
-                        version={versionDetail?.version || displayBp?.active_content?.version}
-                        generationParams={versionDetail?.generation_params
-                          || displayBp?.active_content?.generation_params}
-                      />
-                      <BlueprintContentView
-                        fullContent={previewFullContent}
-                        sections={previewSections}
-                        editable
-                        saving={savingSection}
-                        onSaveSection={onSaveBlueprintSection}
-                        onRegenerateSection={onRegenerateBlueprintSection}
-                        onRegenerateItem={onRegenerateBlueprintItem}
-                      />
-
-                      <button
-                        type="button"
-                        className={styles.saveVersionToggle}
-                        onClick={() => setShowSaveVersion((v) => !v)}
+                      <Button
+                        variant="primary"
+                        className={styles.activeBlueprintBtn}
+                        onClick={() => onPin(displayBp.id)}
+                        disabled={activeBlueprint?.id === displayBp.id}
                       >
-                        🚀 Save as New Version {showSaveVersion ? '▾' : '▸'}
-                      </button>
-                      {showSaveVersion && (
-                        <div className={styles.saveVersion}>
-                          <form className={styles.form} onSubmit={versionForm.handleSubmit(onCommitVersion)}>
-                            <Input
-                              label="New Version Tag"
-                              placeholder={`v${versions.length + 1}`}
-                              {...versionForm.register('tag')}
-                            />
-                            <Input
-                              label="Change Reason"
-                              required
-                              placeholder="What changed?"
-                              error={versionForm.formState.errors.reason?.message}
-                              {...versionForm.register('reason')}
-                            />
-                            <Button type="submit" variant="primary" size="sm">
-                              💾 Commit New Blueprint Version
-                            </Button>
-                          </form>
+                        📌 Set as Active Blueprint for Generation
+                      </Button>
+
+                      <div className={styles.downloadBlock}>
+                        <p className={styles.downloadBlock__title}>📥 Download Blueprint</p>
+                        <div className={styles.downloadBlock__row}>
+                          <Button variant="secondary" fullWidth onClick={() => onExport('docx')}>
+                            ⬇️ Word (.docx)
+                          </Button>
+                          <Button variant="secondary" fullWidth onClick={handleDownloadPrompt}>
+                            ⬇️ Download Prompt Used (.doc)
+                          </Button>
                         </div>
-                      )}
-                    </div>
-
-                    <Button
-                      variant="primary"
-                      fullWidth
-                      onClick={() => onPin(displayBp.id)}
-                      disabled={activeBlueprint?.id === displayBp.id}
-                    >
-                      📌 Set as Active Blueprint for Generation
-                    </Button>
-
-                    <div className={styles.downloadBlock}>
-                      <p className={styles.downloadBlock__title}>📥 Download Blueprint</p>
-                      <div className={styles.downloadBlock__row}>
-                        <Button variant="secondary" fullWidth onClick={() => onExport('docx')}>
-                          ⬇️ Word (.docx)
-                        </Button>
-                        <Button variant="secondary" fullWidth onClick={handleDownloadPrompt}>
-                          ⬇️ Download Prompt Used (.doc)
-                        </Button>
                       </div>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </section>
-        </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </details>
 
-        <hr className={styles.divider} />
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>🎯 Blueprint Prompts</summary>
+            <div className={styles.accordion__body}>
+              <InlinePromptControls
+                component="blueprint"
+                embedded
+                extraInstructions={extraInstructions}
+                showExtraInstructions={false}
+                onPromptsChange={setPromptConfig}
+                headerHint="📝 Select the source CDD and module above, then configure the prompt and generate your Blueprint below."
+              />
 
-        <InlinePromptControls
-          component="blueprint"
-          extraInstructions={extraInstructions}
-          showExtraInstructions={false}
-          onPromptsChange={setPromptConfig}
-          headerHint="📝 Select the source CDD and module on the left, then configure the prompt and generate your Blueprint below."
-        />
+              {activeStyle && (
+                <div className={styles.styleBanner}>
+                  🎨 <strong>Style &quot;{activeStyle.name}&quot;</strong> will be applied to this Blueprint.
+                </div>
+              )}
 
-        {activeStyle && (
-          <div className={styles.styleBanner}>
-            🎨 <strong>Style &quot;{activeStyle.name}&quot;</strong> will be applied to this Blueprint.
-          </div>
-        )}
-
-        <div className={styles.generateRow}>
-          <Button
-            variant="primary"
-            size="lg"
-            className={styles.generateRow__main}
-            loading={isGenerating}
-            onClick={onGenerate}
-          >
-            {isGenerating ? 'Generating Blueprint…' : '🤖 Generate Blueprint with AI'}
-          </Button>
-          <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
-            ⬇️ Download Prompt
-          </Button>
+              <div className={styles.generateRow}>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className={styles.generateRow__main}
+                  loading={isGenerating}
+                  onClick={onGenerate}
+                >
+                  {isGenerating ? 'Generating Blueprint…' : '🤖 Generate Blueprint with AI'}
+                </Button>
+                <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
+                  ⬇️ Download Prompt
+                </Button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </PageContainer>
