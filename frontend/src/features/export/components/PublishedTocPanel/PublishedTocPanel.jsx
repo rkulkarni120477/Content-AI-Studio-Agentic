@@ -24,7 +24,7 @@ function totalBlocks(modules, unassigned) {
 function BlockRow({
   block,
   index,
-  regenId,
+  regenerating,
   downloadId,
   onPreview,
   onDownload,
@@ -64,12 +64,12 @@ function BlockRow({
         <button
           type="button"
           className={styles.iconBtn}
-          disabled={regenId === block.id}
+          disabled={regenerating}
           onClick={() => onRegenerate(block)}
-          title={regenId === block.id ? 'Generating HTML…' : 'Regenerate Canvas HTML'}
+          title={regenerating ? 'Generating HTML…' : 'Regenerate Canvas HTML'}
           aria-label="Regenerate Canvas HTML"
         >
-          {regenId === block.id ? '⏳' : '↻'}
+          {regenerating ? '⏳' : '↻'}
         </button>
       </div>
     </li>
@@ -81,9 +81,12 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
   const [unassigned, setUnassigned] = useState([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [regenId, setRegenId] = useState(null);
+  /** Block IDs currently regenerating — each request is independent. */
+  const [regenIds, setRegenIds] = useState(() => new Set());
   const [downloadId, setDownloadId] = useState(null);
   const [preview, setPreview] = useState(null);
+
+  const isRegenerating = useCallback((blockId) => regenIds.has(blockId), [regenIds]);
 
   const loadLayout = useCallback(async () => {
     if (!courseId) return;
@@ -144,7 +147,8 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
   }
 
   async function handleRegenerateHtml(block) {
-    setRegenId(block.id);
+    if (regenIds.has(block.id)) return;
+    setRegenIds((prev) => new Set(prev).add(block.id));
     try {
       const res = await api.post(BLOCKS.CANVAS_HTML_REGEN(block.id));
       toast.success(`HTML regenerated for “${truncate(block.block_label || `Block ${block.id}`, 40)}”.`);
@@ -161,7 +165,11 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
     } catch (err) {
       toast.error(err?.message || 'HTML regeneration failed.');
     } finally {
-      setRegenId(null);
+      setRegenIds((prev) => {
+        const next = new Set(prev);
+        next.delete(block.id);
+        return next;
+      });
     }
   }
 
@@ -199,7 +207,6 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
   }
 
   const blockRowProps = {
-    regenId,
     downloadId,
     onPreview: handlePreviewHtml,
     onDownload: handleDownloadHtml,
@@ -269,6 +276,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
                       key={block.id}
                       block={block}
                       index={blockIndex + 1}
+                      regenerating={isRegenerating(block.id)}
                       {...blockRowProps}
                     />
                   ))
@@ -291,6 +299,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
                     key={block.id}
                     block={block}
                     index={blockIndex + 1}
+                    regenerating={isRegenerating(block.id)}
                     {...blockRowProps}
                   />
                 ))}
@@ -316,10 +325,10 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
               <span className={styles.previewFooterActions}>
                 <Button
                   variant="secondary"
-                  disabled={regenId === preview.block?.id}
+                  disabled={isRegenerating(preview.block?.id)}
                   onClick={() => handleRegenerateHtml(preview.block)}
                 >
-                  {regenId === preview.block?.id ? 'Generating…' : '↻ Regenerate'}
+                  {isRegenerating(preview.block?.id) ? 'Generating…' : '↻ Regenerate'}
                 </Button>
                 <Button variant="primary" onClick={() => setPreview(null)}>Close</Button>
               </span>
