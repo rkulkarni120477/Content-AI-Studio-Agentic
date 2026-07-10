@@ -70,7 +70,7 @@ def generate_style_understanding(
     If *system_prompt* is provided it overrides the DB/file/inline fallback chain.
     """
     unified_docs = _build_unified_style_docs(db, style)
-    if not unified_docs.strip():
+    if not unified_docs.strip() and not (extra_instructions or "").strip():
         _log.warning(
             "style_service.generate SKIPPED  style_id=%r  reason=no_documents",
             style.id,
@@ -88,9 +88,9 @@ def generate_style_understanding(
     user_p = (
         "Here are the documents and instructions that define this instructional style. "
         "Read them fully and produce the Style Understanding output.\n\n"
-        f"{unified_docs}"
+        + (f"{unified_docs}" if unified_docs.strip() else "")
         + (
-            f"\n\n[ADDITIONAL VALIDATION INSTRUCTIONS]\n{extra_instructions}"
+            f"\n\n[DIS SOURCE CONTEXT / ADDITIONAL INSTRUCTIONS]\n{extra_instructions}"
             if extra_instructions
             else ""
         )

@@ -38,6 +38,33 @@ class LoginRequest(BaseModel):
         max_length=256,
         description="The user's plain-text password (transmitted over HTTPS only).",
     )
+    organization_code: Optional[str] = Field(
+        default=None, max_length=64,
+        description="Tenant org code (required for tenant local login; ignored for platform admin).",
+    )
+    platform_admin: bool = Field(
+        default=False,
+        description="True to authenticate as a platform administrator (org code ignored).",
+    )
+
+
+class AuthConfigResponse(BaseModel):
+    """Public sign-in options for the login screen."""
+
+    microsoft_enabled: bool = False
+    local_login_enabled: bool = True
+    platform_slug: str = "platform"
+
+
+class TenantLoginInfoResponse(BaseModel):
+    """Public info for a given organization code."""
+
+    valid: bool
+    slug: Optional[str] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    microsoft_enabled: bool = False
+    error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +87,16 @@ class UserProfileResponse(BaseModel):
     permissions: list[str] = Field(
         description="All permission keys this user holds. Used by the frontend for UI gating."
     )
+    project_id: Optional[int] = Field(default=None, description="Active tenant (project) id; None for platform admin.")
+    is_platform_admin: bool = Field(default=False, description="True for platform super-admins.")
+    # DIS / Source Library access is resolved by CAS from username/role/config.
+    # Super admins can switch clients in the Source Library UI; client users are
+    # automatically locked to their mapped client.
+    client_id: str | None = Field(default=None, description="Resolved default DIS client/workspace id.")
+    tenant_id: str | None = Field(default=None, description="Resolved DIS tenant id.")
+    dis_role: str | None = Field(default=None, description="Resolved DIS role: super_admin | client_admin | user.")
+    is_dis_super_admin: bool = Field(default=False, description="Whether this user can switch DIS clients.")
+    available_clients: list[str] = Field(default_factory=list, description="Clients visible to this user in Source Library.")
 
 
 class TokenResponse(BaseModel):

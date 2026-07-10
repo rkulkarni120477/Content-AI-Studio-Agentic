@@ -33,7 +33,16 @@ from app.core.exceptions import LLMGenerationError, NotFoundError, WorkflowError
 from app.schemas.block import (
     BlockAutosaveRequest,
     BlockAutosaveResponse,
+    BlockCanvasHtmlResponse,
     BlockListItem,
+    CourseModuleCreateRequest,
+    CourseModuleRead,
+    CourseModuleRenameRequest,
+    CourseModuleReorderRequest,
+    CourseModulesResponse,
+    ModuleBlock,
+    ModuleLayoutRequest,
+    ModuleLayoutResponse,
     BlockRatingRequest,
     BlockRead,
     BlockRegenerateItemRequest,
@@ -170,6 +179,7 @@ def list_course_blocks(
             content_preview=(b.content or "")[:300],
             workflow_state=b.workflow_state, position=b.position or 0, rating=b.rating,
             generation_id=b.generation_id,
+            has_html=bool(getattr(b, "content_html", None) and b.content_html.strip()),
         )
         for b in all_blocks[start: start + page_size]
     ]
@@ -661,6 +671,240 @@ def rate_block(
 
 
 # ---------------------------------------------------------------------------
+# Canvas HTML rendition (preview / regenerate)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{block_id}/canvas-html",
+    response_model=BlockCanvasHtmlResponse,
+    summary="Get a block's Canvas-ready HTML rendition (preview)",
+    description="Returns the LMS-ready HTML generated at publish, used by the IMSCC export.",
+)
+def get_block_canvas_html(
+    block_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> BlockCanvasHtmlResponse:
+    """Return the stored Canvas HTML for a block (for preview in the Export screen)."""
+    block = _get_block_or_404(db, block_id)
+    html = getattr(block, "content_html", None)
+    return BlockCanvasHtmlResponse(
+        block_id=block.id,
+        block_label=block.block_label or f"Block {block.id}",
+        has_html=bool(html and html.strip()),
+        content_html=html,
+        content_html_at=getattr(block, "content_html_at", None),
+    )
+
+
+@router.post(
+    "/{block_id}/canvas-html/regenerate",
+    response_model=BlockCanvasHtmlResponse,
+    summary="Regenerate a block's Canvas-ready HTML rendition",
+    description="Re-runs the Canvas HTML Lesson Generator on the block's content and stores the result.",
+)
+def regenerate_block_canvas_html(
+    block_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> BlockCanvasHtmlResponse:
+    """Regenerate and persist the Canvas HTML for a single block."""
+    from datetime import datetime, timezone
+
+    from promptops_app.services.canvas_html_service import generate_canvas_html
+    from promptops_app.services.usage_service import UsageLogContext
+
+    block = _get_block_or_404(db, block_id)
+
+    if not (block.content or "").strip():
+        raise WorkflowError("Block has no content to convert to HTML.")
+
+    gen = block.generation
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=getattr(gen, "project_id", None) if gen else None,
+        course_id=getattr(gen, "course_id", None) if gen else None,
+        entity_type="canvas_html",
+        entity_id=str(block.id),
+    )
+    html = generate_canvas_html(
+        label=block.block_label or "",
+        content=block.content or "",
+        block_type=block.block_type or "",
+        usage_ctx=usage_ctx,
+    )
+    if not html:
+        raise LLMGenerationError("Canvas HTML generation failed. Please try again.")
+
+    block.content_html = html
+    block.content_html_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(block)
+
+    _log.info("block_canvas_html_regenerated  user=%s  block_id=%d",
+              current_user.username, block_id)
+
+    return BlockCanvasHtmlResponse(
+        block_id=block.id,
+        block_label=block.block_label or f"Block {block.id}",
+        has_html=True,
+        content_html=block.content_html,
+        content_html_at=block.content_html_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Course modules (Canvas-style export grouping)
+# ---------------------------------------------------------------------------
+
+def _has_html(b) -> bool:
+    return bool(getattr(b, "content_html", None) and b.content_html.strip())
+
+
+def _module_block(b) -> ModuleBlock:
+    return ModuleBlock(
+        id=b.id,
+        block_label=b.block_label or f"Block {b.id}",
+        position=b.position or 0,
+        workflow_state=b.workflow_state,
+        has_html=_has_html(b),
+    )
+
+
+@router.get(
+    "/courses/{course_id}/modules",
+    response_model=CourseModulesResponse,
+    summary="List course modules with their published blocks (Export screen)",
+)
+def list_course_modules(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> CourseModulesResponse:
+    """Return modules (ordered) with their published blocks, plus unassigned published blocks."""
+    from promptops_app.repositories import generation_repository as repo
+    from promptops_app.core.constants import WorkflowState
+
+    gens = repo.list_course_generations(db, course_id=course_id)
+    gen_ids = [g.id for g in gens]
+    all_blocks = repo.list_blocks_for_gen_ids(db, gen_ids)
+    published = [b for b in all_blocks if b.workflow_state.lower() in WorkflowState.EXPORTABLE]
+
+    modules = repo.list_course_modules(db, course_id)
+    by_module: dict[int, list] = {m.id: [] for m in modules}
+    unassigned = []
+    for b in published:
+        mid = getattr(b, "module_id", None)
+        if mid in by_module:
+            by_module[mid].append(b)
+        else:
+            unassigned.append(b)
+
+    module_reads = [
+        CourseModuleRead(
+            id=m.id,
+            title=m.title,
+            position=m.position or 0,
+            blocks=[_module_block(b) for b in by_module.get(m.id, [])],
+        )
+        for m in modules
+    ]
+    return CourseModulesResponse(
+        modules=module_reads,
+        unassigned=[_module_block(b) for b in unassigned],
+    )
+
+
+@router.post(
+    "/courses/{course_id}/modules",
+    response_model=CourseModuleRead,
+    summary="Create a new course module",
+)
+def create_course_module(
+    course_id: int,
+    request_body: CourseModuleCreateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> CourseModuleRead:
+    from promptops_app.repositories import generation_repository as repo
+
+    module = repo.create_course_module(db, course_id, request_body.title)
+    return CourseModuleRead(id=module.id, title=module.title, position=module.position or 0, blocks=[])
+
+
+@router.put(
+    "/modules/{module_id}",
+    response_model=CourseModuleRead,
+    summary="Rename a course module",
+)
+def rename_course_module(
+    module_id: int,
+    request_body: CourseModuleRenameRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> CourseModuleRead:
+    from promptops_app.repositories import generation_repository as repo
+
+    module = repo.rename_course_module(db, module_id, request_body.title)
+    if module is None:
+        raise NotFoundError("Module", module_id)
+    return CourseModuleRead(id=module.id, title=module.title, position=module.position or 0, blocks=[])
+
+
+@router.delete(
+    "/modules/{module_id}",
+    summary="Delete a course module (blocks become unassigned)",
+)
+def delete_course_module(
+    module_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> dict:
+    from promptops_app.repositories import generation_repository as repo
+
+    ok = repo.delete_course_module(db, module_id)
+    if not ok:
+        raise NotFoundError("Module", module_id)
+    return {"deleted": True, "module_id": module_id}
+
+
+@router.put(
+    "/courses/{course_id}/modules/reorder",
+    response_model=CourseModulesResponse,
+    summary="Reorder course modules",
+)
+def reorder_course_modules(
+    course_id: int,
+    request_body: CourseModuleReorderRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> CourseModulesResponse:
+    from promptops_app.repositories import generation_repository as repo
+
+    repo.reorder_course_modules(db, course_id, request_body.module_ids)
+    return list_course_modules(course_id, db, current_user)
+
+
+@router.put(
+    "/courses/{course_id}/modules/layout",
+    response_model=ModuleLayoutResponse,
+    summary="Save module order + block placement in one call",
+    description="Persists module ordering and which blocks belong to each module (Export screen drag-drop).",
+)
+def save_course_module_layout(
+    course_id: int,
+    request_body: ModuleLayoutRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("export.course")),
+) -> ModuleLayoutResponse:
+    from promptops_app.repositories import generation_repository as repo
+
+    layout = [{"module_id": row.module_id, "block_ids": row.block_ids} for row in request_body.modules]
+    updated = repo.save_course_module_layout(db, course_id, layout)
+    return ModuleLayoutResponse(updated=updated)
+
+
+# ---------------------------------------------------------------------------
 # Full course export
 # ---------------------------------------------------------------------------
 
@@ -707,11 +951,40 @@ def export_course(
     course = course_repository.get_course_by_id(db, course_id)
     topic = course.name if course else f"Course {course_id}"
 
+    # Flatten blocks in module layout order so IMSCC indexes align with the manifest.
+    modules_struct = None
+    course_modules = generation_repository.list_course_modules(db, course_id)
+    if course_modules:
+        module_ids = {m.id for m in course_modules}
+        ordered: list = []
+        modules_struct = []
+        for m in course_modules:
+            members = [
+                b for b in approved_blocks
+                if getattr(b, "module_id", None) == m.id
+            ]
+            members.sort(key=lambda b: (b.position or 0, b.id))
+            if members:
+                start = len(ordered)
+                ordered.extend(members)
+                modules_struct.append((m.title, list(range(start, start + len(members)))))
+        # Unassigned published blocks trail the module-grouped ones (→ "Course Content" in IMSCC).
+        unassigned = [
+            b for b in approved_blocks
+            if getattr(b, "module_id", None) not in module_ids
+        ]
+        unassigned.sort(key=lambda b: (b.position or 0, b.id))
+        ordered.extend(unassigned)
+        if ordered:
+            approved_blocks = ordered
+
     export_req = ExportRequest(
         fmt=format,
         topic=topic,
         blocks=[(b.block_label, b.content or "") for b in approved_blocks],
         block_types=[b.block_type or "" for b in approved_blocks],
+        block_html=[getattr(b, "content_html", None) or "" for b in approved_blocks],
+        modules=modules_struct,
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
         entity_type="full_course",

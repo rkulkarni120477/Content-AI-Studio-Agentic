@@ -1,6 +1,15 @@
 """Generation Repository — Generation, Block, Review, FeedbackSignal, and WorkflowEvent access."""
 
-from promptops_app.database import Block, FeedbackSignal, Generation, Review, WorkflowEvent
+from datetime import datetime, timezone
+
+from promptops_app.database import (
+    Block,
+    CourseModule,
+    FeedbackSignal,
+    Generation,
+    Review,
+    WorkflowEvent,
+)
 
 
 # ── Generation ────────────────────────────────────────────────────────────────
@@ -204,6 +213,157 @@ def reorder_course_blocks(db, course_id: int, block_ids: list[int]) -> list[Bloc
 
 def get_block_by_id(db, block_id: int):
     return db.query(Block).filter(Block.id == block_id).first()
+
+
+# ── Course modules (Canvas-style export grouping) ─────────────────────────────
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def list_course_modules(db, course_id: int) -> list[CourseModule]:
+    """Return modules for a course ordered by display position."""
+    return (
+        db.query(CourseModule)
+        .filter(CourseModule.course_id == course_id)
+        .order_by(CourseModule.position.asc(), CourseModule.id.asc())
+        .all()
+    )
+
+
+def get_module_by_id(db, module_id: int) -> CourseModule | None:
+    return db.query(CourseModule).filter(CourseModule.id == module_id).first()
+
+
+def create_course_module(db, course_id: int, title: str) -> CourseModule:
+    """Append a new module to the end of the course's module list."""
+    existing = list_course_modules(db, course_id)
+    next_pos = (max((m.position or 0) for m in existing) + 1) if existing else 1
+    module = CourseModule(
+        course_id=course_id,
+        title=(title or "Untitled Module").strip()[:255],
+        position=next_pos,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db.add(module)
+    db.commit()
+    db.refresh(module)
+    return module
+
+
+def rename_course_module(db, module_id: int, title: str) -> CourseModule | None:
+    module = get_module_by_id(db, module_id)
+    if module is None:
+        return None
+    module.title = (title or "Untitled Module").strip()[:255]
+    module.updated_at = _now()
+    db.commit()
+    db.refresh(module)
+    return module
+
+
+def delete_course_module(db, module_id: int) -> bool:
+    """Delete a module; its blocks become unassigned (module_id -> NULL)."""
+    module = get_module_by_id(db, module_id)
+    if module is None:
+        return False
+    db.query(Block).filter(Block.module_id == module_id).update(
+        {Block.module_id: None}, synchronize_session=False,
+    )
+    db.delete(module)
+    db.commit()
+    return True
+
+
+def reorder_course_modules(db, course_id: int, module_ids: list[int]) -> list[CourseModule]:
+    """Persist a new display order for a course's modules (1-based positions)."""
+    if not module_ids:
+        return []
+    modules = (
+        db.query(CourseModule)
+        .filter(CourseModule.id.in_(module_ids), CourseModule.course_id == course_id)
+        .all()
+    )
+    module_map = {m.id: m for m in modules}
+    ordered: list[CourseModule] = []
+    for idx, module_id in enumerate(module_ids, start=1):
+        module = module_map.get(module_id)
+        if module is None:
+            continue
+        module.position = idx
+        module.updated_at = _now()
+        ordered.append(module)
+    db.commit()
+    for module in ordered:
+        db.refresh(module)
+    return ordered
+
+
+def save_course_module_layout(
+    db,
+    course_id: int,
+    layout: list[dict],
+) -> int:
+    """Persist module order + block placement in one operation.
+
+    ``layout`` is an ordered list of ``{"module_id": int, "block_ids": [int]}``.
+    Modules are repositioned by list order; each block is assigned to its module
+    and given a global 1-based ``position`` following the flattened order so the
+    within-module ordering is preserved. Blocks omitted from every module are
+    unassigned (``module_id`` -> NULL) but keep their existing position.
+
+    Returns the number of blocks updated.
+    """
+    gens = list_course_generations(db, course_id=course_id)
+    gen_ids = {g.id for g in gens}
+    if not gen_ids:
+        return 0
+
+    valid_module_ids = {
+        m.id for m in db.query(CourseModule).filter(
+            CourseModule.course_id == course_id,
+        ).all()
+    }
+
+    # Reposition modules by their order in the layout.
+    module_order = [row["module_id"] for row in layout if row.get("module_id") in valid_module_ids]
+    reorder_course_modules(db, course_id, module_order)
+
+    # Clear existing assignments so blocks dropped into "unassigned" are cleared.
+    db.query(Block).filter(Block.generation_id.in_(gen_ids)).update(
+        {Block.module_id: None}, synchronize_session=False,
+    )
+
+    # Assign blocks to modules with a global running position.
+    updated = 0
+    running = 0
+    assigned_ids: set[int] = set()
+    for row in layout:
+        module_id = row.get("module_id")
+        if module_id not in valid_module_ids:
+            continue
+        block_ids = row.get("block_ids") or []
+        if not block_ids:
+            continue
+        blocks = (
+            db.query(Block)
+            .filter(Block.id.in_(block_ids), Block.generation_id.in_(gen_ids))
+            .all()
+        )
+        block_map = {b.id: b for b in blocks}
+        for block_id in block_ids:
+            block = block_map.get(block_id)
+            if block is None:
+                continue
+            running += 1
+            block.module_id = module_id
+            block.position = running
+            assigned_ids.add(block.id)
+            updated += 1
+
+    db.commit()
+    return updated
 
 
 def list_workflow_blocks_scoped(

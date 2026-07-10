@@ -21,6 +21,7 @@ import { flushDeferredToasts } from '@utils/deferredToast';
 import styles from './WorkspaceSidebar.module.scss';
 
 const NAV_ITEMS = [
+  { label: 'Source Library', icon: '📚', segment: 'sources' },
   { label: 'Style',     icon: '🎨', segment: 'style' },
   { label: 'CDD',       icon: '📘', segment: 'cdd' },
   { label: 'Blueprint', icon: '🧩', segment: 'blueprint' },

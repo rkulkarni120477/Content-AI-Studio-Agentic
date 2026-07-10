@@ -205,7 +205,43 @@ def publish_block(
     log_event(db, "block_published", actor,
               f"Block #{block.id} published", {"block_id": block.id})
     _audit(db, actor, "published", block)
+
+    # Best-effort: generate the Canvas-ready HTML rendition used by the IMSCC
+    # exporter. A failure here must never undo a successful publish.
+    _generate_canvas_html(db, block, actor)
     return True, None
+
+
+def _generate_canvas_html(db, block: Block, actor: str) -> None:
+    """Generate and persist ``block.content_html`` from the block's markdown.
+
+    Runs after publish and swallows all errors — publishing must succeed even if
+    the LLM rendition cannot be produced.
+    """
+    try:
+        from promptops_app.services.canvas_html_service import generate_canvas_html
+        from promptops_app.services.usage_service import UsageLogContext
+
+        gen = block.generation
+        usage_ctx = UsageLogContext(
+            user_name=actor,
+            project_id=getattr(gen, "project_id", None) if gen else None,
+            course_id=getattr(gen, "course_id", None) if gen else None,
+            entity_type="canvas_html",
+            entity_id=str(block.id),
+        )
+        html = generate_canvas_html(
+            label=block.block_label or "",
+            content=block.content or "",
+            block_type=block.block_type or "",
+            usage_ctx=usage_ctx,
+        )
+        if html:
+            block.content_html = html
+            block.content_html_at = _now()
+            db.commit()
+    except Exception:  # pragma: no cover - defensive
+        db.rollback()
 
 
 def archive_block(

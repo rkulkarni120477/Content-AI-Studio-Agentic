@@ -21,6 +21,12 @@ import { promptLabel } from '@features/clusterPrompt/clusterPromptUtils';
 import styles from './SelectionSidebar.module.scss';
 
 const LMS_PLATFORM_OPTIONS = ['Canvas', 'Moodle', 'TalentLMS', 'Docebo'];
+const CLIENT_OPTIONS = [
+  { value: 'cengage', label: 'Cengage' },
+  { value: 'aim', label: 'AIM' },
+  { value: 'academian', label: 'Academian' },
+  { value: 'demo', label: 'Demo' },
+];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]:    '#7c3aed',
@@ -66,7 +72,7 @@ export default function SelectionSidebar({
     toggleCollapsed();
     openForm(true);
   }
-  const [form, setForm] = useState({ name: '', client: '', description: '', lms_platform: '' });
+  const [form, setForm] = useState({ name: '', client: 'cengage', description: '', lms_platform: '' });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
@@ -88,7 +94,7 @@ export default function SelectionSidebar({
   }
 
   function resetForm() {
-    setForm({ name: '', client: '', description: '', lms_platform: '' });
+    setForm({ name: '', client: 'cengage', description: '', lms_platform: '' });
     setCopyPromptIds([]);
   }
 
@@ -98,7 +104,7 @@ export default function SelectionSidebar({
     if (variant === 'project' && onCreateProject) {
       await onCreateProject({
         name: form.name.trim(),
-        client_name: form.client.trim() || null,
+        client_name: form.client || 'demo',
         description: form.description.trim() || null,
       });
       setShowNewProject(false);
@@ -223,7 +229,12 @@ export default function SelectionSidebar({
           {showNewProject && (
             <form className={styles.form} onSubmit={submitCreate}>
               <Input label="Project Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
-              <Input label="Client Name" value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} />
+              <Select
+                label="Client *"
+                options={CLIENT_OPTIONS}
+                value={form.client}
+                onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))}
+              />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea

@@ -4,6 +4,18 @@ export const AUTH = {
   LOGOUT:           '/api/v1/auth/logout',
   ME:               '/api/v1/auth/me',
   REFRESH:          '/api/v1/auth/refresh',
+  CONFIG:           '/api/v1/auth/config',
+  TENANT_LOGIN:     (slug) => `/api/v1/auth/tenant-login/${encodeURIComponent(slug)}`,
+  MICROSOFT_LOGIN:  '/api/v1/auth/login/microsoft',  // full-page browser redirect
+};
+
+// ─── Platform Admin — Tenants (organizations) ───────────────────────────────────
+export const PLATFORM = {
+  TENANTS:        '/api/v1/platform/tenants',
+  TENANT:         (id) => `/api/v1/platform/tenants/${id}`,
+  TENANT_USAGE:   (id) => `/api/v1/platform/tenants/${id}/usage`,
+  TENANT_USERS:   (id) => `/api/v1/platform/tenants/${id}/users`,
+  TENANT_USER:    (id, userId) => `/api/v1/platform/tenants/${id}/users/${userId}`,
 };
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -82,6 +94,26 @@ export const DOCUMENTS = {
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
 };
 
+// ─── Source Library / DIS ─────────────────────────────────────────────────────
+export const SOURCE_LIBRARY = {
+  ME:               '/api/v1/source-library/me',
+  UI_CONFIG:        '/api/v1/source-library/ui-config',
+  DOCUMENTS:        '/api/v1/source-library/documents',
+  STRUCTURE:        (jobId) => `/api/v1/source-library/documents/${jobId}/structure`,
+  OVERVIEW:         (jobId) => `/api/v1/source-library/documents/${jobId}/overview`,
+  PAGES:            (jobId) => `/api/v1/source-library/documents/${jobId}/content/pages`,
+  UNITS:            (jobId) => `/api/v1/source-library/documents/${jobId}/content/units`,
+  UNIT_DETAIL:      (jobId, unitId) => `/api/v1/source-library/documents/${jobId}/content/units/${unitId}`,
+  SEARCH:           (jobId) => `/api/v1/source-library/documents/${jobId}/search`,
+  UPLOAD:           '/api/v1/source-library/documents/upload',
+  FOLDER_SCAN:      '/api/v1/source-library/folder-scan',
+  RETRIEVE:         (purpose) => `/api/v1/source-library/retrieve/${purpose}`,
+  ACCESS_CONFIG:    '/api/v1/source-library/admin/access-config',
+  GENERATED:        '/api/v1/source-library/generated-documents',
+  GENERATED_GET:    (id) => `/api/v1/source-library/generated-documents/${id}`,
+  GENERATED_ACTIVATE: (id) => `/api/v1/source-library/generated-documents/${id}/activate`,
+};
+
 // ─── CDD ──────────────────────────────────────────────────────────────────────
 export const CDD = {
   LIST:             () => `/api/v1/cdd`,
@@ -149,6 +181,18 @@ export const BLOCKS = {
   VALIDATE_COURSE:  (courseId) => `/api/v1/courses/${courseId}/validate`,
   EXPORT_COURSE:    (courseId) => `/api/v1/courses/${courseId}/export`,
   RATING:           (id)       => `/api/v1/${id}/rating`,
+  CANVAS_HTML:          (id)   => `/api/v1/${id}/canvas-html`,
+  CANVAS_HTML_REGEN:    (id)   => `/api/v1/${id}/canvas-html/regenerate`,
+};
+
+// ─── Export Modules (Canvas-style grouping) ────────────────────────────────────
+export const MODULES = {
+  LIST:             (courseId) => `/api/v1/courses/${courseId}/modules`,
+  CREATE:           (courseId) => `/api/v1/courses/${courseId}/modules`,
+  RENAME:           (moduleId) => `/api/v1/modules/${moduleId}`,
+  DELETE:           (moduleId) => `/api/v1/modules/${moduleId}`,
+  REORDER:          (courseId) => `/api/v1/courses/${courseId}/modules/reorder`,
+  SAVE_LAYOUT:      (courseId) => `/api/v1/courses/${courseId}/modules/layout`,
 };
 
 // ─── Workflow ─────────────────────────────────────────────────────────────────

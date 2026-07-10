@@ -47,6 +47,7 @@ import Select from '@components/common/Select/Select';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
+
 import styles from './BlueprintPage.module.scss';
 
 const NONE_CDD = '';

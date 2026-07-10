@@ -65,10 +65,29 @@ from app.schemas.cdd import (
 )
 from app.schemas.common import PaginatedResponse
 from app.api.v1.cdd_response import build_cdd_read
+from app.core.dis_client import dis_client
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str) -> tuple[str, list]:
+    try:
+        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user)
+        ctx = str(result.get("combined_context") or "").strip()
+        units = result.get("source_units") or result.get("sources") or []
+        if ctx:
+            return (
+                f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
+                "Use this as supporting source context only. Follow CAS style, structure, and user instructions first. "
+                "Do not expose internal DIS metadata.\n\n"
+                f"{ctx}\n---\n",
+                units,
+            )
+    except Exception as exc:
+        _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
+    return "", []
 
 
 # ---------------------------------------------------------------------------
@@ -212,12 +231,36 @@ def generate_cdd(
         request_body.course_title, request_body.model_choice,
     )
 
+    dis_context_block, dis_source_units = _dis_context_block(
+        "cdd",
+        {
+            "purpose": "cdd",
+            "query": " ".join(str(x or "") for x in [
+                request_body.course_title,
+                request_body.document_title,
+                request_body.target_audience,
+                request_body.expert_domain,
+                request_body.audience_category,
+                request_body.extra_instructions,
+            ]),
+            "filters": {
+                "purpose": "cdd",
+                "document_types": ["syllabus", "course_outline", "learning_objectives", "style_guide", "authoring_guide"],
+            },
+            "retrieval": {"top_k": 12, "token_budget": 12000},
+        },
+        current_user,
+        "CDD CONTEXT",
+    )
+
     # ── Step 1: Build prompts ──────────────────────────────────────────────────
     # Use the custom override if the user edited the prompt in the UI,
     # otherwise build from the prompt library (falls back to inline constants).
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        if dis_context_block:
+            user_prompt = f"{user_prompt}\n\n{dis_context_block}"
         # Persist the override with the artifact (PL↔CAS sync review, plan
         # Phase 11): a prompt authored inline in CAS must stay recoverable —
         # before this it drove the LLM call and was discarded.
@@ -235,6 +278,8 @@ def generate_cdd(
                 style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
 
         extra_block = request_body.extra_instructions or ""
+        if dis_context_block:
+            extra_block = f"{extra_block}\n\n{dis_context_block}".strip()
         if style_context:
             extra_block = f"**ACTIVE STYLE — Apply throughout:**\n{style_context}\n\n{extra_block}"
 
@@ -345,6 +390,7 @@ def generate_cdd(
         "expert_domain":            request_body.expert_domain,
         "estimated_duration_hours": request_body.estimated_duration_hours,
         "extra_instructions":       request_body.extra_instructions,
+        "dis_source_units":         dis_source_units,
         # Prompt provenance: which registry template (name+version) produced
         # this version, or the full override text when the user edited the
         # prompt inline — the artifact is reproducible either way.
@@ -363,6 +409,30 @@ def generate_cdd(
     )
     db.add(version_record)
     db.commit()
+
+    # Copy generated CDD body to DIS/S3. CAS DB keeps workflow pointers and versions;
+    # DIS is the generated-document store for retrieval and cross-workflow reuse.
+    try:
+        dis_client.generated_upsert_sync({
+            "generated_doc_id": f"cdd_{new_cdd.id}",
+            "generated_type": "cdd",
+            "title": document_title,
+            "content": raw_output,
+            "summary": raw_output[:500],
+            "active": True,
+            "metadata": {
+                "course_title": request_body.course_title,
+                "target_audience": request_body.target_audience,
+                "expert_domain": request_body.expert_domain,
+                "course_id": request_body.course_id,
+                "project_id": request_body.project_id,
+            },
+            "source_documents_used": dis_source_units,
+            "cas_ref": {"entity": "cdd", "id": new_cdd.id},
+            "created_by": current_user.username,
+        }, current_user=current_user)
+    except Exception as exc:
+        _log.warning("dis_generated_cdd_upsert_failed cdd_id=%s error=%s", new_cdd.id, exc)
 
     # ── Step 5: Auto-pin the new CDD to the course ────────────────────────────
     set_active_cdd(db, request_body.course_id, new_cdd.id)
