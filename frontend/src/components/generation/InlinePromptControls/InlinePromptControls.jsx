@@ -54,6 +54,7 @@ export default function InlinePromptControls({
   showExtraInstructions = false,
   onPromptsChange,
   headerHint,
+  embedded = false,
 }) {
   const dispatch = useAppDispatch();
   const prompts = useAppSelector(selectPrompts);
@@ -327,10 +328,12 @@ export default function InlinePromptControls({
   ];
 
   return (
-    <section className={styles.panel}>
+    <section className={embedded ? styles.panelEmbedded : styles.panel}>
       {headerHint && <p className={styles.hint}>{headerHint}</p>}
 
-      <h3 className={styles.panel__header}>🎯 {compLabel} Prompts</h3>
+      {!embedded && (
+        <h3 className={styles.panel__header}>🎯 {compLabel} Prompts</h3>
+      )}
 
       {promptsLoading || loadingDetail ? (
         <div className={styles.center}><Loader /></div>
