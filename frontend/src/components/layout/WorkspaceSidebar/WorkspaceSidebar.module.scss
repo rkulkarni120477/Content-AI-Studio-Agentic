@@ -123,6 +123,8 @@
   font-weight: 600;
   padding: $space-2 4px;
   cursor: pointer;
+  text-align: center;
+  line-height: 1.3;
 
   &:hover {
     background: rgba(255, 255, 255, 0.16);

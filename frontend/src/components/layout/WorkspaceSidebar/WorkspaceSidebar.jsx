@@ -138,15 +138,15 @@ export default function WorkspaceSidebar() {
           onClick={goProjects}
           title={collapsed ? 'Back to Projects' : undefined}
         >
-          {collapsed ? '🏠' : '← Projects'}
+          {collapsed ? '🏠' : <>←<br />Projects</>}
         </button>
         <button
           type="button"
           className={styles.backBtn}
           onClick={goClusters}
-          title={collapsed ? 'Back to Clusters' : undefined}
+          title={collapsed ? 'Back to Categories' : undefined}
         >
-          {collapsed ? '🗂️' : '← Clusters'}
+          {collapsed ? '🗂️' : <>←<br />Categories</>}
         </button>
         <button
           type="button"
@@ -154,7 +154,7 @@ export default function WorkspaceSidebar() {
           onClick={goCourses}
           title={collapsed ? 'Back to Courses' : undefined}
         >
-          {collapsed ? '📖' : '← Courses'}
+          {collapsed ? '📖' : <>←<br />Courses</>}
         </button>
       </div>
 
