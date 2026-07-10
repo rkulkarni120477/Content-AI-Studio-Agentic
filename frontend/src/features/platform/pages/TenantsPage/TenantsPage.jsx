@@ -125,7 +125,7 @@ export default function TenantsPage() {
         <SectionBadge
           icon="🏢"
           title="Organization Directory"
-          subtitle="Create tenants, manage user seats, and open Category or Users for each organization."
+          subtitle="Create tenants, manage user seats, and open Roles, Category, or Users for each organization."
         />
 
         {loading ? (
@@ -164,6 +164,9 @@ export default function TenantsPage() {
                     <td className={styles.actions}>
                       <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.TENANT_USERS(t.id))}>
                         Users
+                      </Button>
+                      <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.TENANT_ROLES(t.id))}>
+                        Roles
                       </Button>
                       <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(t.id))}>
                         Category

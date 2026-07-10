@@ -214,3 +214,25 @@ def get_permissions_for_role(role: str) -> list[str]:
         for permission in _PERMISSIONS
         if rbac_check(role, permission)
     )
+
+
+def effective_rbac_check(user, permission: str) -> bool:
+    """Like rbac_check, but honors a custom tenant role's permission set.
+
+    If `user` carries `_custom_permissions` (set by get_current_user for
+    members on a custom tenant role — see app/services/tenant_service.py),
+    that explicit set is authoritative. Otherwise falls back to the static
+    system-role catalog exactly as before.
+    """
+    custom = getattr(user, "_custom_permissions", None)
+    if custom is not None:
+        return permission in custom
+    return rbac_check(user.role, permission)
+
+
+def effective_permissions(user) -> list[str]:
+    """Sorted list of permission keys the user effectively holds."""
+    custom = getattr(user, "_custom_permissions", None)
+    if custom is not None:
+        return sorted(custom)
+    return get_permissions_for_role(user.role)

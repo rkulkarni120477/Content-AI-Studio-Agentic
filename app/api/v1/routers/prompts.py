@@ -28,7 +28,7 @@ from app.core.exceptions import (
     ValidationError,
     WorkflowError,
 )
-from app.core.permissions import rbac_check
+from app.core.permissions import effective_rbac_check
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.prompt import (
     CoursePromptGroup,
@@ -482,7 +482,7 @@ def set_fixing(
             f"be bound to the '{request_body.component}' phase."
         )
 
-    if not rbac_check(current_user.role, "prompt.pipeline.edit"):
+    if not effective_rbac_check(current_user, "prompt.pipeline.edit"):
         active = prompt_repository.get_active_version(db, target.id)
         if active is None or active.workflow_state not in ("approved", "active"):
             # Binding a not-yet-approved prompt requires the pipeline-edit tier.
@@ -613,11 +613,17 @@ _FILE_BACKED_SLOTS = frozenset(_COURSE_VIEW_SLOTS) - {("generate", "interactive"
     ),
 )
 def prompts_by_course(
-    project_id: int | None = Query(default=None, description="Limit to one project."),
+    project_id: int | None = Query(default=None, description="Limit to one project. Platform admins only — tenant users are always scoped to their own tenant."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.view")),
 ) -> PromptsByCourseResponse:
     from promptops_app.database import Cluster, Course, Project, Prompt, PromptFixing
+
+    # Tenant isolation: non-platform-admin users only ever see their own
+    # tenant's courses, regardless of what project_id (if any) they pass.
+    # Platform admins may optionally filter to one project, or see all.
+    if not getattr(current_user, "_is_platform_admin", False):
+        project_id = getattr(current_user, "_project_id", None)
 
     course_q = (
         db.query(Course, Cluster.name, Project.name)
@@ -627,6 +633,12 @@ def prompts_by_course(
     )
     if project_id is not None:
         course_q = course_q.filter(Course.project_id == project_id)
+    else:
+        # No tenant context at all (e.g. platform admin who hasn't chosen a
+        # project) and not a platform admin — return nothing rather than
+        # leaking every tenant's courses.
+        if not getattr(current_user, "_is_platform_admin", False):
+            course_q = course_q.filter(False)
     course_rows = course_q.all()
 
     # Whole tables up front — fixings and defaults are tiny; resolution runs
@@ -820,7 +832,7 @@ def update_prompt(
     """
     prompt = _get_prompt_or_404(db, prompt_id)
     if request_body.component_type is not None or request_body.variant is not None:
-        if not rbac_check(current_user.role, "prompt.pipeline.edit"):
+        if not effective_rbac_check(current_user, "prompt.pipeline.edit"):
             raise PermissionDeniedError("prompt.pipeline.edit", user_role=current_user.role)
         if prompt.is_default:
             raise ValidationError(
@@ -893,7 +905,7 @@ def create_prompt_version(
 
     write = (
         prompt_repository.deploy_new_version
-        if rbac_check(current_user.role, "prompt.pipeline.edit")
+        if effective_rbac_check(current_user, "prompt.pipeline.edit")
         else prompt_repository.commit_draft_version
     )
     version = write(

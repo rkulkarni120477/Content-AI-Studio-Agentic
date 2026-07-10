@@ -157,6 +157,7 @@ export const ROUTES = {
   PROMPT_LIBRARY: '/prompt-library',
   TENANTS:        '/dashboard',
   TENANT_USERS:   (tenantId) => `/tenants/${tenantId}/users`,
+  TENANT_ROLES:   (tenantId) => `/tenants/${tenantId}/roles`,
 };
 
 // ─── Local Storage Keys ───────────────────────────────────────────────────────

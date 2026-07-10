@@ -16,18 +16,25 @@ import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/Selec
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import styles from './TenantUsersPage.module.scss';
 
-const ROLES_OPTS = [
-  { value: 'admin', label: 'Tenant Admin' },
-  { value: 'reviewer', label: 'Prompt Manager' },
-  { value: 'author', label: 'User' },
-];
-const roleLabel = (r) => ROLES_OPTS.find((o) => o.value === r)?.label || r;
-
 const ROLE_COLORS = {
   [ROLES.ADMIN]: '#7c3aed',
   [ROLES.REVIEWER]: '#0f766e',
   [ROLES.AUTHOR]: '#4338ca',
 };
+
+// Dropdown option values are encoded as "system:admin" or "custom:7" so a
+// single <select> can pick from both system and tenant-defined roles.
+const systemOptionValue = (key) => `system:${key}`;
+const customOptionValue = (id) => `custom:${id}`;
+
+function roleToOptionValue(member) {
+  return member.custom_role_id != null ? customOptionValue(member.custom_role_id) : systemOptionValue(member.role);
+}
+
+function optionValueToPayload(value) {
+  const [kind, id] = value.split(':');
+  return kind === 'custom' ? { custom_role_id: Number(id) } : { role: id };
+}
 
 export default function TenantUsersPage() {
   const { tenantId } = useParams();
@@ -36,14 +43,15 @@ export default function TenantUsersPage() {
 
   const [tenant, setTenant] = useState(null);
   const [members, setMembers] = useState([]);
+  const [roles, setRoles]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const [addForm, setAddForm] = useState({ username: '', password: '', display_name: '', role: 'author' });
-  const [editForm, setEditForm] = useState({ display_name: '', role: 'author', password: '', active: true });
+  const [addForm, setAddForm]   = useState({ username: '', password: '', display_name: '', roleOption: '' });
+  const [editForm, setEditForm] = useState({ display_name: '', roleOption: '', password: '', active: true });
 
   const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
   const signedInRoleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
@@ -51,12 +59,15 @@ export default function TenantUsersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [tenants, memberList] = await Promise.all([
+      const [tenants, memberList, roleList] = await Promise.all([
         platformService.listTenants(),
         platformService.listMembers(tenantId),
+        platformService.listRoles(tenantId),
       ]);
       setTenant(tenants.find((t) => String(t.id) === String(tenantId)) || null);
       setMembers(memberList);
+      setRoles(roleList);
+      setAddForm((f) => ({ ...f, roleOption: f.roleOption || systemOptionValue('author') }));
     } catch (e) {
       toast.error(extractErrorMessage(e));
     } finally {
@@ -74,11 +85,11 @@ export default function TenantUsersPage() {
         username: addForm.username.trim(),
         password: addForm.password,
         display_name: addForm.display_name.trim() || addForm.username.trim(),
-        role: addForm.role,
+        ...optionValueToPayload(addForm.roleOption),
       });
       toast.success('Member added');
       setShowAdd(false);
-      setAddForm({ username: '', password: '', display_name: '', role: 'author' });
+      setAddForm({ username: '', password: '', display_name: '', roleOption: systemOptionValue('author') });
       load();
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -89,7 +100,7 @@ export default function TenantUsersPage() {
 
   function openEdit(m) {
     setEditing(m);
-    setEditForm({ display_name: m.display_name || '', role: m.role, password: '', active: m.active });
+    setEditForm({ display_name: m.display_name || '', roleOption: roleToOptionValue(m), password: '', active: m.active });
   }
 
   async function handleEdit(e) {
@@ -98,9 +109,9 @@ export default function TenantUsersPage() {
     try {
       await platformService.updateMember(tenantId, editing.user_id, {
         display_name: editForm.display_name.trim() || undefined,
-        role: editForm.role,
         password: editForm.password || undefined,
         active: editForm.active,
+        ...optionValueToPayload(editForm.roleOption),
       });
       toast.success('Member updated');
       setEditing(null);
@@ -153,6 +164,9 @@ export default function TenantUsersPage() {
         <button type="button" className={`${styles.navBtn} ${styles.navBtnActive}`}>
           👥 Users
         </button>
+        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.TENANT_ROLES(tenantId))}>
+          🛡️ Roles
+        </button>
         <button
           type="button"
           className={styles.navBtn}
@@ -182,6 +196,9 @@ export default function TenantUsersPage() {
                 }
               />
               <div className={styles.headerActions}>
+                <Button variant="secondary" onClick={() => navigate(ROUTES.TENANT_ROLES(tenantId))}>
+                  Roles
+                </Button>
                 <Button variant="secondary" onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(tenantId))}>
                   Category
                 </Button>
@@ -221,8 +238,8 @@ export default function TenantUsersPage() {
                         <td><code className={styles.username}>{m.username}</code></td>
                         <td>{m.display_name || '—'}</td>
                         <td>
-                          <span className={styles[`role_${m.role}`] || styles.roleDefault}>
-                            {roleLabel(m.role)}
+                          <span className={m.custom_role_id ? styles.roleCustom : (styles[`role_${m.role}`] || styles.roleDefault)}>
+                            {m.role_display}
                           </span>
                         </td>
                         <td>
@@ -269,13 +286,17 @@ export default function TenantUsersPage() {
             onChange={(e) => setAddForm((f) => ({ ...f, display_name: e.target.value }))}
           />
           <label className={styles.selectLabel}>
-            Role
-            <select
-              className={styles.select}
-              value={addForm.role}
-              onChange={(e) => setAddForm((f) => ({ ...f, role: e.target.value }))}
-            >
-              {ROLES_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            Role (permissions) *
+            <select className={styles.select} value={addForm.roleOption}
+              onChange={(e) => setAddForm((f) => ({ ...f, roleOption: e.target.value }))}>
+              {roles.map((r) => (
+                <option
+                  key={r.id ?? r.key}
+                  value={r.type === 'custom' ? customOptionValue(r.id) : systemOptionValue(r.key)}
+                >
+                  {r.name}
+                </option>
+              ))}
             </select>
           </label>
           <div className={styles.formActions}>
@@ -301,13 +322,17 @@ export default function TenantUsersPage() {
               onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
             />
             <label className={styles.selectLabel}>
-              Role
-              <select
-                className={styles.select}
-                value={editForm.role}
-                onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}
-              >
-                {ROLES_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              Role (permissions) *
+              <select className={styles.select} value={editForm.roleOption}
+                onChange={(e) => setEditForm((f) => ({ ...f, roleOption: e.target.value }))}>
+                {roles.map((r) => (
+                  <option
+                    key={r.id ?? r.key}
+                    value={r.type === 'custom' ? customOptionValue(r.id) : systemOptionValue(r.key)}
+                  >
+                    {r.name}
+                  </option>
+                ))}
               </select>
             </label>
             <label className={styles.checkboxRow}>
