@@ -6,13 +6,14 @@
 // section-specific lookalike. Page content keeps the feature's scoped
 // `.pl-root` styles.
 import { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { fetchClustersThunk } from '@features/dashboard/dashboardThunks';
 import { selectSelectedProject } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionSidebar from '@components/layout/SelectionLayout/SelectionSidebar';
+import { ROUTES } from '@utils/constants';
 import { cn, extractErrorMessage } from '@utils/helpers';
 import { ToastProvider } from '../../context/ToastContext';
 import PageView from './PageView';
@@ -21,6 +22,7 @@ import '../../styles/promptLibrary.scss';
 
 export default function PromptLibraryLayout() {
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
   // Carried over from the Category screen; null on a hard refresh / deep
   // link, in which case the sidebar simply omits the project-scoped bits.
   const selProj = useAppSelector(selectSelectedProject);
@@ -46,7 +48,10 @@ export default function PromptLibraryLayout() {
       <SelectionSidebar
         variant="cluster"
         projectName={selProj?.name}
+        projectId={selProj?.id}
         onCreateCluster={selProj ? handleCreateCluster : undefined}
+        // Return into the CAS Category/Course flow for the project we came from.
+        onBackClusters={selProj ? () => navigate(ROUTES.PROJECT_CLUSTERS(selProj.id)) : undefined}
         createLoading={createLoading}
       />
 

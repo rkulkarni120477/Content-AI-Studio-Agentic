@@ -181,7 +181,7 @@ export default function SelectionSidebar({
       )}
 
       {variant === 'cluster' && (
-        <div className={styles.navRow}>
+        <div className={collapsed ? styles.navCol : (onBackClusters ? styles.navRow3 : styles.navRow)}>
           <button
             type="button"
             className={cn(styles.navBtn, collapsed && styles.iconOnly)}
@@ -190,6 +190,19 @@ export default function SelectionSidebar({
           >
             {collapsed ? '🏠' : '← Projects'}
           </button>
+          {/* Prompt Library hosts this sidebar too; give it a way back into the
+              project's Category/Course drill-down (ClustersPage never passes
+              onBackClusters, so it stays hidden there). */}
+          {onBackClusters && (
+            <button
+              type="button"
+              className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+              onClick={goClusters}
+              title={collapsed ? 'Back to Categories' : undefined}
+            >
+              {collapsed ? '🗂️' : '← Categories'}
+            </button>
+          )}
         </div>
       )}
 
