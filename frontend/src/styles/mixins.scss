@@ -87,9 +87,9 @@
   justify-content: center;
   gap: $space-2;
   font-family: $font-family-base;
-  font-weight: $font-weight-medium;
+  font-weight: $font-weight-semibold;
   font-size: $font-size-sm;
-  line-height: 1;
+  line-height: 1.25;
   border: 1px solid transparent;
   border-radius: $radius-lg;
   cursor: pointer;
@@ -97,6 +97,10 @@
   text-decoration: none;
   white-space: nowrap;
   user-select: none;
+  width: max-content;
+  max-width: 100%;
+  min-height: 2.25rem;
+  box-sizing: border-box;
 
   &:disabled {
     opacity: 0.5;

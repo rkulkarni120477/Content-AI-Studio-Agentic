@@ -6,28 +6,34 @@
 
   // ─── Sizes ────────────────────────────────────────────────────────────────
   &--xs {
-    padding: $space-1 $space-2;
+    padding: 0.35rem 0.7rem;
     font-size: $font-size-xs;
+    min-height: 1.875rem;
+    gap: 0.35rem;
   }
 
   &--sm {
-    padding: $space-1 $space-3;
-    font-size: $font-size-xs;
+    padding: 0.5rem 0.9rem;
+    font-size: $font-size-sm;
+    min-height: 2.125rem;
   }
 
   &--md {
-    padding: $space-2 $space-4;
+    padding: 0.625rem 1.15rem;
     font-size: $font-size-sm;
+    min-height: 2.5rem;
   }
 
   &--lg {
-    padding: $space-3 $space-6;
+    padding: 0.75rem 1.5rem;
     font-size: $font-size-base;
+    min-height: 2.875rem;
   }
 
   &--xl {
-    padding: $space-4 $space-8;
+    padding: 0.9rem 1.75rem;
     font-size: $font-size-md;
+    min-height: 3.25rem;
   }
 
   // ─── Variants ─────────────────────────────────────────────────────────────
@@ -130,6 +136,7 @@
   // ─── Modifiers ────────────────────────────────────────────────────────────
   &--full {
     width: 100%;
+    max-width: 100%;
   }
 
   &--loading {
@@ -160,6 +167,6 @@
   }
 
   &__label {
-    line-height: 1;
+    line-height: 1.25;
   }
 }

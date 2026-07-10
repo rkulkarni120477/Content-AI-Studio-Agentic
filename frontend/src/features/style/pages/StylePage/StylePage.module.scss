@@ -28,16 +28,65 @@
 }
 
 .layout {
-  display: grid;
-  grid-template-columns: minmax(300px, 42%) 1fr;
-  gap: $space-6;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+  width: 100%;
+}
 
-  @include max-lg { grid-template-columns: 1fr; }
+.muted {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.accordion {
+  @include card;
+  padding: 0;
+  overflow: hidden;
+
+  &__summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: $space-3;
+    padding: $space-4 $space-5;
+    cursor: pointer;
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-900;
+    list-style: none;
+    user-select: none;
+
+    &::-webkit-details-marker { display: none; }
+
+    &::after {
+      content: '›';
+      flex-shrink: 0;
+      font-weight: 700;
+      color: $color-gray-500;
+      transition: transform 0.15s ease;
+    }
+  }
+
+  &[open] > .accordion__summary {
+    border-bottom: 1px solid $color-gray-100;
+
+    &::after {
+      transform: rotate(90deg);
+    }
+  }
+
+  &__body {
+    @include flex-col;
+    gap: $space-4;
+    padding: $space-5;
+  }
 }
 
 .panelFull {
-  grid-column: 1 / -1;
+  width: 100%;
 }
 
 .hintText {
@@ -65,12 +114,7 @@
 }
 
 .panelLibrary {
-  max-height: 100vh;
-  overflow: hidden;
-
-  @include max-lg {
-    max-height: min(70vh, 640px);
-  }
+  min-height: 0;
 }
 
 .form {
@@ -704,7 +748,6 @@
 .fileTag { @include badge($color-primary-soft, $color-primary); }
 
 .readOnlyBanner {
-  grid-column: 1 / -1;
   background: #f9fafb;
   border: 1px solid $color-gray-200;
   border-radius: $radius-lg;

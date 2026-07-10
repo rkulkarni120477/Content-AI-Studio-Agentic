@@ -10,6 +10,7 @@ import {
 } from '../api/prompts';
 import { fetchPromptsByCourse } from '../api/flow';
 import { plCourses } from '../paths';
+import CompactSelect from '../components/CompactSelect';
 import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
@@ -96,6 +97,14 @@ export default function PromptListPage() {
   // with their project name — see utils/clusters.js.
   const scopeClusters = useMemo(() => clusterOptions(scopeGroups), [scopeGroups]);
 
+  const clusterFilterOptions = useMemo(
+    () => [
+      { value: '', label: 'All Clusters' },
+      ...scopeClusters.map(([id, name]) => ({ value: String(id), label: name })),
+    ],
+    [scopeClusters],
+  );
+
   const scopeCourses = useMemo(() => {
     if (!scopeCluster) return [];
     return scopeGroups
@@ -104,6 +113,14 @@ export default function PromptListPage() {
         : String(g.cluster_id) === String(scopeCluster)))
       .map((g) => [g.course_id, g.course_name]);
   }, [scopeGroups, scopeCluster]);
+
+  const courseFilterOptions = useMemo(
+    () => [
+      { value: '', label: 'All Courses' },
+      ...scopeCourses.map(([id, name]) => ({ value: String(id), label: name })),
+    ],
+    [scopeCourses],
+  );
 
   useEffect(() => {
     setScopeCourse('');
@@ -178,7 +195,7 @@ export default function PromptListPage() {
   return (
     <>
       <div className="library-toolbar">
-        <div className="toolbar">
+        <div className="toolbar toolbar--filters">
           <div className="search-wrap">
             <input
               type="text"
@@ -204,31 +221,23 @@ export default function PromptListPage() {
           </select>
           {canPipeline && (
             <>
-              <select
-                value={scopeCluster}
-                onChange={(e) => setScopeCluster(e.target.value)}
+              <CompactSelect
+                fitContent
+                aria-label="Filter by cluster"
                 title="Show the prompts this cluster uses (locks + inherited defaults)"
-              >
-                <option value="">All Clusters</option>
-                {scopeClusters.map(([id, name]) => (
-                  <option key={id} value={id}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={scopeCourse}
-                onChange={(e) => setScopeCourse(e.target.value)}
-                disabled={!scopeCluster}
+                value={scopeCluster}
+                onChange={setScopeCluster}
+                options={clusterFilterOptions}
+              />
+              <CompactSelect
+                fitContent
+                aria-label="Filter by course"
                 title="Narrow to one course's effective prompt set"
-              >
-                <option value="">All Courses</option>
-                {scopeCourses.map(([id, name]) => (
-                  <option key={id} value={id}>
-                    {name}
-                  </option>
-                ))}
-              </select>
+                value={scopeCourse}
+                onChange={setScopeCourse}
+                options={courseFilterOptions}
+                disabled={!scopeCluster}
+              />
             </>
           )}
           <select value={tag} onChange={(e) => setTag(e.target.value)}>
@@ -261,7 +270,9 @@ export default function PromptListPage() {
             />
             🗄 Archived
           </label>
-          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+        </div>
+        <div className="toolbar toolbar--meta">
+          <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort prompts">
             <option value="updated">Recently Updated</option>
             <option value="created">Recently Created</option>
             <option value="title">A → Z</option>

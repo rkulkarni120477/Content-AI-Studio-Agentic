@@ -42,7 +42,7 @@ export default function ExportPage() {
         <SectionBadge
           icon="📦"
           title="Course Export"
-          subtitle="Reorder the published table of contents and export an IMS Common Cartridge package for Canvas, Moodle, or Blackboard."
+          subtitle="Export published content as an IMS Common Cartridge package. Module structure and sequence follow the course CDD and Blueprints."
         />
         <PublishedTocPanel
           courseId={activeCourseId}

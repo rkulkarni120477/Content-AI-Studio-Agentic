@@ -7,6 +7,11 @@
   gap: $space-4;
 }
 
+.panelEmbedded {
+  @include flex-col;
+  gap: $space-4;
+}
+
 .header {
   @include flex-col;
   gap: $space-1;
@@ -126,22 +131,16 @@
 }
 
 .saveRow {
-  display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  gap: $space-2;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   margin-top: $space-2;
-
-  @include max-sm {
-    grid-template-columns: 1fr;
-  }
 }
 
 .saveBtn {
-  grid-column: 2;
-
-  @include max-sm {
-    grid-column: 1;
-  }
+  width: max-content;
+  max-width: 100%;
+  flex: 0 0 auto;
 }
 
 .fieldError {
