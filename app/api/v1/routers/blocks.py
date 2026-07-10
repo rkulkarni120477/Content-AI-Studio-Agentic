@@ -680,13 +680,24 @@ def get_block_canvas_html(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
 ) -> BlockCanvasHtmlResponse:
-    """Return the stored Canvas HTML for a block (for preview in the Export screen)."""
+    """Return Canvas HTML for a block (preview). Rebuilds from markdown when present."""
+    from promptops_app.services.canvas_html_layout import lock_single_column_html
+    from promptops_app.services.canvas_html_service import build_canvas_html_from_markdown
+
     block = _get_block_or_404(db, block_id)
-    html = getattr(block, "content_html", None)
+    html = None
+    if (block.content or "").strip():
+        html = build_canvas_html_from_markdown(block.block_label or "", block.content or "")
+    else:
+        html = getattr(block, "content_html", None)
+        if html and html.strip():
+            html = lock_single_column_html(html)
     return BlockCanvasHtmlResponse(
         block_id=block.id,
         block_label=block.block_label or f"Block {block.id}",
-        has_html=bool(html and html.strip()),
+        has_html=bool(html and html.strip()) or bool(
+            getattr(block, "content_html", None) and block.content_html.strip()
+        ) or bool((block.content or "").strip()),
         content_html=html,
         content_html_at=getattr(block, "content_html_at", None),
     )
@@ -753,6 +764,9 @@ def regenerate_block_canvas_html(
 # ---------------------------------------------------------------------------
 
 def _has_html(b) -> bool:
+    # Preview/export rebuild from markdown, so any non-empty content is usable.
+    if (getattr(b, "content", None) or "").strip():
+        return True
     return bool(getattr(b, "content_html", None) and b.content_html.strip())
 
 

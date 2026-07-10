@@ -1,20 +1,20 @@
 """Canvas HTML Lesson Generator.
 
-Converts a block's markdown content into a production-quality, responsive,
-Canvas-LMS-compatible standalone HTML lesson using the LLM. The rendition is
-generated when a block is published and stored on ``Block.content_html`` so the
-IMSCC exporter can package the LMS-ready HTML instead of converting markdown at
-export time.
+Builds a production-quality, Canvas-LMS-compatible HTML lesson from a block's
+markdown. Uses a deterministic markdown→HTML path (full content preserved) plus
+a locked single-column layout — not an LLM rewrite, which often truncates text
+and emits multi-column tables that Canvas breaks.
 
 The public entry point ``generate_canvas_html`` never raises — it returns the
-HTML string on success or ``None`` on any failure, so publishing a block is
-never blocked by an LLM error.
+HTML string on success or ``None`` on empty input / conversion failure, so
+publishing a block is never blocked.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from html import escape
 from typing import TYPE_CHECKING, Optional
 
 _log = logging.getLogger(__name__)
@@ -23,109 +23,159 @@ if TYPE_CHECKING:
     from promptops_app.services.usage_service import UsageLogContext
 
 
-CANVAS_HTML_SYSTEM_PROMPT = """You are an expert Frontend Engineer, UX Designer, Instructional Designer, and LMS Content Developer.
+# Production / media-spec lines → learner-facing placeholder callouts.
+_MEDIA_LINE_RE = re.compile(
+    r"^(?P<prefix>\s*(?:[-*+]|\d+[.)])?\s*)"
+    r"(?P<body>"
+    r"(?:\[(?:image|img|visual|video|animation|audio|interactive)[^\]]*\])|"
+    r"(?:(?:image|img|visual|video|animation|audio|interactive|infographic|illustration)"
+    r"\s*(?:placeholder|spec|description)?\s*[:—-].+)|"
+    r"(?:📷|▶|✨).+"
+    r")\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
-Your task is to convert the provided Markdown lesson into a production-quality, responsive HTML lesson suitable for Canvas LMS and other modern Learning Management Systems.
-
-PRIMARY GOAL
-Generate HTML that is:
-- Professional
-- Modern
-- Minimal
-- Responsive
-- Accessible (WCAG AA)
-- Canvas LMS compatible
-- Mobile friendly
-- Easy to maintain
-- Component-based
-
-DESIGN PRINCIPLES
-- Card-based layout
-- White background with soft gray surfaces
-- Blue accent theme (#2563EB)
-- Rounded corners and subtle shadows
-- Modern typography (Inter, Segoe UI fallback)
-- Responsive design
-
-LESSON STRUCTURE
-1. Lesson Header
-2. Learning Objectives
-3. Introduction
-4. Topic Cards
-5. Visual Placeholder
-6. Interactive Placeholder
-7. Knowledge Check
-8. Summary
-9. Footer
-
-VISUAL PLACEHOLDERS
-Replace all visual/media notes with learner-friendly placeholders:
-- Visual Placeholder
-- Video Placeholder
-- Animation Placeholder
-
-INTERACTIVE PLACEHOLDERS
-Replace technical interaction specifications with reusable activity cards:
-- Multiple Choice
-- Scenario
-- Drag and Drop
-- Reflection
-
-ACCESSIBILITY
-- Semantic HTML5
-- Proper heading hierarchy
-- Keyboard accessible
-- WCAG AA compliant
-- Responsive
-
-CODE STANDARDS
-- HTML5
-- Internal CSS
-- Minimal vanilla JavaScript
-- No frameworks
-- Canvas-compatible
-
-CONTENT RULES
-Preserve instructional content.
-Remove AI metadata, source references, blueprint references, CDD references, and prompt artifacts.
-Convert instructional notes into learner-friendly placeholders.
-
-OUTPUT
-Generate a premium, production-ready standalone HTML lesson suitable for packaging into a Canvas IMSCC course.
-Return ONLY the raw HTML document beginning with <!DOCTYPE html>. Do not wrap it in Markdown code fences and do not add any commentary before or after the HTML."""
+_PLACEHOLDER_CLASS = {
+    "video": "placeholder",
+    "animation": "placeholder",
+    "audio": "placeholder",
+    "interactive": "placeholder",
+}
 
 
-_FENCE_RE = re.compile(r"^\s*```(?:html)?\s*\n(.*?)\n?```\s*$", re.DOTALL | re.IGNORECASE)
+def _placeholder_label(text: str) -> str:
+    lower = text.lower()
+    if "video" in lower or text.strip().startswith("▶"):
+        return "▶ Video"
+    if "animation" in lower or "✨" in text:
+        return "✨ Animation"
+    if "audio" in lower:
+        return "🔊 Audio"
+    if "interactive" in lower:
+        return "✨ Interactive"
+    return "📷 Visual"
 
 
-def _strip_code_fence(text: str) -> str:
-    """Remove a surrounding ```html ... ``` fence if the model added one."""
-    match = _FENCE_RE.match(text)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
+def _rewrite_media_specs(markdown: str) -> str:
+    """Turn media/production spec lines into HTML placeholder markers in markdown."""
+
+    def repl(match: re.Match) -> str:
+        body = match.group("body").strip()
+        # Strip wrapping [spec] brackets for cleaner placeholder text.
+        body = re.sub(r"^\[|\]$", "", body).strip()
+        label = _placeholder_label(body)
+        # Keep description after the first colon/dash when present.
+        desc = re.sub(
+            r"^(?:image|img|visual|video|animation|audio|interactive|infographic|illustration)"
+            r"\s*(?:placeholder|spec|description)?\s*[:—-]\s*",
+            "",
+            body,
+            flags=re.IGNORECASE,
+        ).strip() or body
+        desc = re.sub(r"^[📷▶✨🔊]\s*", "", desc).strip()
+        safe = escape(f"{label}: {desc}")
+        return f'\n\n<div class="placeholder">{safe}</div>\n\n'
+
+    return _MEDIA_LINE_RE.sub(repl, markdown or "")
 
 
-def _looks_like_html(text: str) -> bool:
-    lowered = text.lower()
-    return "<html" in lowered or "<!doctype html" in lowered or "<body" in lowered
-
-
-def _build_user_prompt(label: str, block_type: str, content: str) -> str:
-    header_bits = []
-    if label:
-        header_bits.append(f"Lesson title: {label}")
-    if block_type:
-        header_bits.append(f"Content type: {block_type}")
-    header = "\n".join(header_bits)
-    return (
-        f"{header}\n\n"
-        "Convert the following Markdown lesson into a single standalone HTML document "
-        "following all rules in the system prompt.\n\n"
-        "--- BEGIN MARKDOWN LESSON ---\n"
-        f"{content}\n"
-        "--- END MARKDOWN LESSON ---"
+def _wrap_activity_sections(html: str) -> str:
+    """Lightly mark common activity headings for card styling."""
+    # Wrap blocks that start with common check headings — best-effort, non-destructive.
+    pattern = re.compile(
+        r"(<h[2-4][^>]*>\s*(?:Check Your Understanding|Try This|Knowledge Check|"
+        r"Career Exploration|Multiple Choice|Quick Check|Reflection)\s*</h[2-4]>)"
+        r"(.*?)(?=<h[1-4]\b|$)",
+        re.IGNORECASE | re.DOTALL,
     )
+
+    def repl(match: re.Match) -> str:
+        return (
+            f'<div class="check">\n{match.group(1)}\n{match.group(2).strip()}\n</div>\n'
+        )
+
+    return pattern.sub(repl, html)
+
+
+def _wrap_objectives(html: str) -> str:
+    pattern = re.compile(
+        r"(<h[2-4][^>]*>\s*Learning Objectives\s*</h[2-4]>)"
+        r"(.*?)(?=<h[1-4]\b|$)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def repl(match: re.Match) -> str:
+        return (
+            f'<div class="objectives">\n{match.group(1)}\n{match.group(2).strip()}\n</div>\n'
+        )
+
+    return pattern.sub(repl, html)
+
+
+def _plain_heading_text(html_inner: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html_inner or "")).strip()
+
+
+def _normalize_title(text: str) -> str:
+    """Normalize titles for duplicate detection (Canvas page title vs body headings)."""
+    t = (text or "").strip().lower()
+    t = re.sub(r"^lesson[_\s-]?\d+\s*[-:–—]\s*", "", t)
+    t = re.sub(r"^lesson\s+\d+\s*[-:–—]\s*", "", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.strip(" -:–—")
+
+
+def _titles_match(a: str, b: str) -> bool:
+    na, nb = _normalize_title(a), _normalize_title(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
+
+
+def _strip_duplicate_page_titles(body_html: str, label: str) -> str:
+    """Remove leading H1/H2 that repeat the Canvas page title.
+
+    Canvas already renders the wiki Page title above the body, so repeating it
+    in the HTML looks like a double (or triple) heading.
+    """
+    html = (body_html or "").lstrip()
+    label = (label or "").strip()
+
+    # Always drop a leading H1 — Canvas owns the page title slot.
+    leading_h1 = re.match(r"<h1[^>]*>(.*?)</h1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
+    if leading_h1:
+        html = html[leading_h1.end() :].lstrip()
+
+    # Drop following H1/H2 when they restate the same lesson title.
+    for _ in range(3):
+        m = re.match(r"<h([12])[^>]*>(.*?)</h\1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            break
+        heading = _plain_heading_text(m.group(2))
+        if label and _titles_match(heading, label):
+            html = html[m.end() :].lstrip()
+            continue
+        break
+
+    return html
+
+
+def build_canvas_html_from_markdown(label: str, content: str) -> str:
+    """Convert full markdown into a locked single-column Canvas HTML document.
+
+    Does not inject a page H1 — Canvas Pages already show the wiki title.
+    """
+    from promptops_app.exporters.markdown_html import markdown_to_html
+    from promptops_app.services.canvas_html_layout import lock_single_column_html
+
+    rewritten = _rewrite_media_specs(content or "")
+    body_html = markdown_to_html(rewritten)
+    body_html = _strip_duplicate_page_titles(body_html, label or "")
+    body_html = _wrap_objectives(body_html)
+    body_html = _wrap_activity_sections(body_html)
+
+    fragment = f'<div class="cas-lesson">\n{body_html}\n</div>'
+    return lock_single_column_html(fragment)
 
 
 def generate_canvas_html(
@@ -137,39 +187,17 @@ def generate_canvas_html(
 ) -> Optional[str]:
     """Generate a Canvas-ready standalone HTML lesson from markdown content.
 
-    Returns the HTML string on success, or ``None`` on empty input or any LLM
-    failure. Never raises.
+    Preserves the full lesson text (no LLM summarization). ``model_choice`` and
+    ``usage_ctx`` are accepted for API compatibility but unused.
     """
+    del model_choice, usage_ctx, block_type  # API compatibility
     text = (content or "").strip()
     if not text:
         return None
 
     try:
-        from promptops_app.core.models import DEFAULT_MODEL_NAME
-        from promptops_app.services.llm_service import generate_with_metadata
-
-        chosen_model = model_choice or DEFAULT_MODEL_NAME
-        user_prompt = _build_user_prompt(label or "", block_type or "", text)
-
-        result = generate_with_metadata(
-            chosen_model,
-            CANVAS_HTML_SYSTEM_PROMPT,
-            user_prompt,
-            usage_ctx=usage_ctx,
-        )
-
-        if result.is_error or not (result.text or "").strip():
-            _log.warning(
-                "canvas_html_generation_failed label=%r type=%r error=%s",
-                label, block_type, result.error_type,
-            )
-            return None
-
-        html = _strip_code_fence(result.text)
-        if not _looks_like_html(html):
-            _log.warning(
-                "canvas_html_generation_non_html label=%r type=%r", label, block_type,
-            )
+        html = build_canvas_html_from_markdown(label or "", text)
+        if not html or not html.strip():
             return None
         return html
     except Exception:  # pragma: no cover - defensive; publish must not break

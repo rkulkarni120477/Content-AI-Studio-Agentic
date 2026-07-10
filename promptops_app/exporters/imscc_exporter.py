@@ -433,17 +433,31 @@ def build_imscc(
                     continue
 
             href = f"wiki_content/block_{idx}.html"
-            if content_html and content_html.strip():
-                # LLM / publish HTML → extract body so Canvas creates a native Page.
-                body = _extract_page_body(content_html)
-                page = _canvas_wiki_page(display_label, body, resource_id)
-                zf.writestr(href, page.encode("utf-8"))
-            else:
+            if (content or "").strip():
+                # Always rebuild from full markdown so export never ships
+                # truncated LLM HTML. Layout is locked single-column.
+                from promptops_app.services.canvas_html_service import (
+                    build_canvas_html_from_markdown,
+                )
+                from promptops_app.services.canvas_html_layout import lock_page_body_fragment
+
                 refs = _detect_media(content or "", idx)
                 for ref in refs:
                     zip_path = ref.placeholder_path.replace("../", "")
                     all_media.append((zip_path, _placeholder_svg(ref.original, ref.media_type)))
-                page = _block_html(label, content or "", refs, resource_id)
+                rewritten = _rewrite_content_with_placeholders(content or "", refs)
+                full_html = build_canvas_html_from_markdown(display_label, rewritten)
+                body = lock_page_body_fragment(full_html)
+                page = _canvas_wiki_page(display_label, body, resource_id)
+                zf.writestr(href, page.encode("utf-8"))
+            elif content_html and content_html.strip():
+                from promptops_app.services.canvas_html_layout import lock_page_body_fragment
+
+                body = lock_page_body_fragment(content_html)
+                page = _canvas_wiki_page(display_label, body, resource_id)
+                zf.writestr(href, page.encode("utf-8"))
+            else:
+                page = _block_html(label, content or "", [], resource_id)
                 zf.writestr(href, page.encode("utf-8"))
 
             entries_by_index[zero_idx] = _ManifestEntry(
