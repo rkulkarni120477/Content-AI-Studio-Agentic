@@ -55,6 +55,7 @@ class TenantMemberRead(BaseModel):
     display_name: Optional[str] = None
     role: str
     role_display: str = ""
+    custom_role_id: Optional[int] = None
     active: bool = True
     email: Optional[str] = None
     auth_provider: str = "local"   # "microsoft" | "local"
@@ -64,15 +65,38 @@ class TenantMemberCreateRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=150)
     password: str = Field(..., min_length=6, max_length=256)
     display_name: Optional[str] = Field(default=None, max_length=200)
-    role: str = Field(default="author", description="admin | reviewer | author")
+    role: Optional[str] = Field(default=None, description="admin | reviewer | author — omit when custom_role_id is set")
+    custom_role_id: Optional[int] = Field(default=None, description="Assign a tenant custom role instead of a system role")
 
 
 class TenantMemberUpdateRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=200)
-    role: Optional[str] = Field(default=None, description="admin | reviewer | author")
+    role: Optional[str] = Field(default=None, description="admin | reviewer | author — omit when custom_role_id is set")
+    custom_role_id: Optional[int] = Field(default=None, description="Assign a tenant custom role instead of a system role")
     password: Optional[str] = Field(default=None, min_length=6, max_length=256)
     active: Optional[bool] = None
 
 
 class TenantCreateResponse(TenantRead):
     initial_admin_username: Optional[str] = None
+
+
+class TenantRoleRead(BaseModel):
+    id: Optional[int] = None          # None for system roles (not DB rows)
+    key: str
+    name: str
+    description: Optional[str] = None
+    type: str                          # "system" | "custom"
+    permissions: list[str] = Field(default_factory=list)
+
+
+class TenantRoleCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=255)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class TenantRoleUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=255)
+    permissions: Optional[list[str]] = None

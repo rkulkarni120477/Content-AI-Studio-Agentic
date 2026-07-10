@@ -11,12 +11,14 @@ Studio's roles (admin | reviewer | author).
 
 from __future__ import annotations
 
+import json
 import re
 
 from sqlalchemy.orm import Session
 
 from app.core.config import PLATFORM_SLUG
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.permissions import get_permissions_for_role
 
 # Tenant-scoped roles a member can hold (maps to prompt-library
 # tenant_admin/prompt_manager/user). Platform admin is a separate flag.
@@ -136,3 +138,158 @@ def create_tenant(
     ))
     db.flush()
     return project, admin_user
+
+
+# ---------------------------------------------------------------------------
+# Custom roles — per-tenant, DB-defined permission bundles.
+#
+# System roles (admin/reviewer/author) are NOT rows in tenant_roles; they stay
+# the static catalog in app/core/permissions.py. This section only handles
+# platform-admin-authored custom roles scoped to one tenant each.
+# ---------------------------------------------------------------------------
+
+SYSTEM_ROLE_LABELS = {
+    "admin":    "Tenant Admin",
+    "reviewer": "Prompt Manager",
+    "author":   "User",
+}
+
+_KEY_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_role_key(name: str) -> str:
+    key = _KEY_RE.sub("_", (name or "").strip().lower()).strip("_")
+    return key or "role"
+
+
+def resolve_membership_effective(db: Session, membership) -> tuple[str, list[str], int | None]:
+    """Returns (role_for_token, permissions_list, custom_role_id) for a membership.
+
+    If the membership points at a custom role, permissions come from that
+    role's stored permission list and the token role becomes the "custom"
+    sentinel. Otherwise this is just the existing system-role lookup.
+    """
+    if membership.custom_role_id:
+        from promptops_app.database import TenantRole
+
+        custom = db.get(TenantRole, membership.custom_role_id)
+        if custom is not None:
+            return "custom", sorted(json.loads(custom.permissions or "[]")), custom.id
+    return membership.role, get_permissions_for_role(membership.role), None
+
+
+def list_tenant_roles(db: Session, project_id: int) -> list[dict]:
+    """Return system roles (synthesized) + custom roles (DB rows) for a tenant."""
+    from promptops_app.database import TenantMembership, TenantRole
+
+    system_rows = [
+        {
+            "id": None,
+            "key": role_key,
+            "name": label,
+            "description": f"System role: {role_key}",
+            "type": "system",
+            "permissions": get_permissions_for_role(role_key),
+        }
+        for role_key, label in SYSTEM_ROLE_LABELS.items()
+    ]
+
+    custom_rows = (
+        db.query(TenantRole)
+        .filter(TenantRole.project_id == project_id)
+        .order_by(TenantRole.name)
+        .all()
+    )
+    custom_out = [
+        {
+            "id": r.id,
+            "key": r.key,
+            "name": r.name,
+            "description": r.description,
+            "type": "custom",
+            "permissions": json.loads(r.permissions or "[]"),
+        }
+        for r in custom_rows
+    ]
+    return system_rows + custom_out
+
+
+def validate_permission_keys(keys: list[str]) -> list[str]:
+    """Raise ValidationError if any permission key isn't in the real catalog."""
+    from app.core.permissions import _PERMISSIONS  # noqa: SLF001 — intentional catalog access
+
+    unknown = sorted(set(keys) - set(_PERMISSIONS.keys()))
+    if unknown:
+        raise ValidationError(f"Unknown permission key(s): {', '.join(unknown)}")
+    return sorted(set(keys))
+
+
+def create_custom_role(db: Session, *, project_id: int, name: str, description: str | None,
+                        permissions: list[str], created_by: str):
+    from promptops_app.database import TenantRole
+
+    name = (name or "").strip()
+    if not name:
+        raise ValidationError("Role name is required.")
+    perms = validate_permission_keys(permissions or [])
+
+    key = base_key = slugify_role_key(name)
+    suffix = 2
+    while db.query(TenantRole).filter(TenantRole.project_id == project_id, TenantRole.key == key).first():
+        key = f"{base_key}_{suffix}"
+        suffix += 1
+
+    role = TenantRole(
+        project_id=project_id,
+        key=key,
+        name=name,
+        description=(description or "").strip() or None,
+        permissions=json.dumps(perms),
+        created_by=created_by,
+    )
+    db.add(role)
+    db.flush()
+    return role
+
+
+def get_custom_role_or_404(db: Session, project_id: int, role_id: int):
+    from promptops_app.database import TenantRole
+
+    role = (
+        db.query(TenantRole)
+        .filter(TenantRole.id == role_id, TenantRole.project_id == project_id)
+        .first()
+    )
+    if role is None:
+        raise NotFoundError("Role", role_id)
+    return role
+
+
+def update_custom_role(db: Session, role, *, name: str | None, description: str | None,
+                        permissions: list[str] | None):
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValidationError("Role name is required.")
+        role.name = name
+    if description is not None:
+        role.description = description.strip() or None
+    if permissions is not None:
+        role.permissions = json.dumps(validate_permission_keys(permissions))
+    db.flush()
+    return role
+
+
+def delete_custom_role(db: Session, role) -> None:
+    from promptops_app.database import TenantMembership
+
+    in_use = (
+        db.query(TenantMembership)
+        .filter(TenantMembership.custom_role_id == role.id)
+        .count()
+    )
+    if in_use:
+        raise ValidationError(
+            f"This role is assigned to {in_use} member(s). Reassign them before deleting it."
+        )
+    db.delete(role)

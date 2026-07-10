@@ -1144,12 +1144,37 @@ class CourseUserAssignment(Base):
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class TenantRole(Base):
+    """A custom, tenant-defined role with an arbitrary set of permission keys.
+
+    System roles (admin/reviewer/author) are NOT rows here — they stay as the
+    static catalog in app/core/permissions.py. This table only holds
+    platform-admin-authored custom roles, scoped to one tenant (project) each.
+    """
+    __tablename__ = "tenant_roles"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_tenant_role_project_key"),
+    )
+    id          = Column(Integer, primary_key=True)
+    project_id  = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    key         = Column(String(50), nullable=False)
+    name        = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=True)
+    # JSON array of permission-key strings (e.g. '["cdd.generate", "prompts.view"]').
+    permissions = Column(Text, nullable=False, default="[]")
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    created_by  = Column(String(100))
+    project     = relationship("Project")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 class TenantMembership(Base):
     """Membership of a User in a Project (tenant), with a per-tenant role.
 
     A person may belong to several tenants (via several org codes) with a
     different role in each. One global User row, many memberships.
-    role: admin | reviewer | author (tenant_admin/prompt_manager/user).
+    role: admin | reviewer | author (tenant_admin/prompt_manager/user), or the
+    sentinel "custom" when custom_role_id points to a TenantRole.
     """
     __tablename__ = "tenant_memberships"
     __table_args__ = (
@@ -1159,11 +1184,16 @@ class TenantMembership(Base):
     user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     role       = Column(String(20), nullable=False, default="author")
+    # When set, this membership's effective role/permissions come from the
+    # referenced TenantRole instead of the `role` string above (which is then
+    # set to the "custom" sentinel).
+    custom_role_id = Column(Integer, ForeignKey("tenant_roles.id", ondelete="SET NULL"), nullable=True)
     active     = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by = Column(String(100))
     user       = relationship("User", back_populates="memberships")
     project    = relationship("Project", back_populates="memberships")
+    custom_role = relationship("TenantRole")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -1365,6 +1395,7 @@ def _run_legacy_ddl():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_oid VARCHAR(64)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        "ALTER TABLE tenant_memberships ADD COLUMN IF NOT EXISTS custom_role_id INTEGER",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug VARCHAR(64)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS max_users INTEGER DEFAULT 50",

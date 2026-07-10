@@ -18,6 +18,7 @@ const lazy$ = (factory) => {
 const LoginPage     = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
 const TenantsPage     = lazy(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
 const TenantUsersPage = lazy(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
+const TenantRolesPage = lazy(() => import('@features/platform/pages/TenantRolesPage/TenantRolesPage'));
 const ClustersPage  = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
 const CoursesPage   = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
 const CddPage       = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
@@ -60,6 +61,14 @@ export const router = createBrowserRouter([
         element: (
           <ProtectedRoute platformAdminOnly>
             {wrap(<TenantUsersPage />)}
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: '/tenants/:tenantId/roles',
+        element: (
+          <ProtectedRoute platformAdminOnly>
+            {wrap(<TenantRolesPage />)}
           </ProtectedRoute>
         ),
       },
