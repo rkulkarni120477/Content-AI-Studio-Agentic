@@ -188,14 +188,9 @@ export const BLOCKS = {
   CANVAS_HTML_REGEN:    (id)   => `/api/v1/${id}/canvas-html/regenerate`,
 };
 
-// ─── Export Modules (Canvas-style grouping) ────────────────────────────────────
+// ─── Export Layout (Blueprint-driven TOC) ─────────────────────────────────────
 export const MODULES = {
-  LIST:             (courseId) => `/api/v1/courses/${courseId}/modules`,
-  CREATE:           (courseId) => `/api/v1/courses/${courseId}/modules`,
-  RENAME:           (moduleId) => `/api/v1/modules/${moduleId}`,
-  DELETE:           (moduleId) => `/api/v1/modules/${moduleId}`,
-  REORDER:          (courseId) => `/api/v1/courses/${courseId}/modules/reorder`,
-  SAVE_LAYOUT:      (courseId) => `/api/v1/courses/${courseId}/modules/layout`,
+  LIST: (courseId) => `/api/v1/courses/${courseId}/modules`,
 };
 
 // ─── Workflow ─────────────────────────────────────────────────────────────────

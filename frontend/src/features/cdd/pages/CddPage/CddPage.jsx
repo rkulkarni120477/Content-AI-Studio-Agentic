@@ -671,14 +671,14 @@ export default function CddPage() {
               <div className={styles.generateRow}>
                 <Button
                   variant="primary"
-                  size="lg"
+                  size="md"
                   className={styles.generateRow__main}
                   loading={isGenerating}
                   onClick={onGenerate}
                 >
                   {isGenerating ? 'Generating CDD…' : '🤖 Generate CDD with AI'}
                 </Button>
-                <Button variant="secondary" size="lg" onClick={handleDownloadPrompt}>
+                <Button variant="secondary" size="md" onClick={handleDownloadPrompt}>
                   ⬇️ Download Prompt
                 </Button>
               </div>
