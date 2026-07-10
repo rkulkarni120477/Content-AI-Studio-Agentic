@@ -213,11 +213,9 @@ export default function CreateStyleForm({ embedded = false }) {
         </div>
 
         <div className={styles.saveRow}>
-          <div />
-          <Button type="submit" variant="primary" fullWidth loading={isCreating} className={styles.saveBtn}>
+          <Button type="submit" variant="primary" size="md" loading={isCreating} className={styles.saveBtn}>
             💾 Save Style
           </Button>
-          <div />
         </div>
       </form>
     </section>

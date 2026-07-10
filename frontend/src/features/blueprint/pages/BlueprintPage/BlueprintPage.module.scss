@@ -443,21 +443,20 @@
 }
 
 .generateRow {
-  display: grid;
-  grid-template-columns: 0.65fr 0.35fr;
-  gap: $space-4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $space-3;
   margin-top: $space-4;
 
-  @include max-md {
-    grid-template-columns: 1fr;
-  }
-
   &__main {
-    width: 100%;
+    width: max-content !important;
+    max-width: 100%;
+    flex: 0 0 auto;
   }
 }
 
-.requestChangeBtn, .saveInstrBtn, .generateRow__main, .activeBlueprintBtn {
+.requestChangeBtn, .saveInstrBtn, .activeBlueprintBtn {
   width: max-content;
   margin-inline: auto;
 }

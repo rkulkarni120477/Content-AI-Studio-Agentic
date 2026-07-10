@@ -350,6 +350,15 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
 
   // ── HTML actions ────────────────────────────────────────────────────────────
 
+  function handleLaunchPrintWorkflow() {
+    const url = import.meta.env.VITE_PRINT_WORKFLOW_URL;
+    if (url) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    toast.error('Print workflow URL is not configured. Set VITE_PRINT_WORKFLOW_URL.');
+  }
+
   async function handleExportImscc() {
     if (!totalBlocks(modules, unassigned)) return;
     setExporting(true);
@@ -463,6 +472,9 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
         <div className={styles.headerActions}>
           <Button variant="secondary" onClick={handleAddModule}>
             + Add Module
+          </Button>
+          <Button variant="secondary" onClick={handleLaunchPrintWorkflow}>
+            🖨️ Launch Print Workflow
           </Button>
           <Button
             variant="primary"
