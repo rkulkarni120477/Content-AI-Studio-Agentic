@@ -28,6 +28,7 @@ from app.schemas.project import (
     ProjectUpdateRequest,
     ProjectUserAssignRequest,
     ProjectUserListItem,
+    normalize_client_id,
 )
 
 _log = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ def create_project(
 
     project = Project(
         name=request_body.name,
-        client_name=request_body.client_name,
+        client_name=normalize_client_id(request_body.client_name) or "demo",
         description=request_body.description,
     )
     db.add(project)
@@ -132,7 +133,7 @@ def update_project(
     if request_body.name is not None:
         project.name = request_body.name
     if request_body.client_name is not None:
-        project.client_name = request_body.client_name
+        project.client_name = normalize_client_id(request_body.client_name) or project.client_name
     if request_body.description is not None:
         project.description = request_body.description
 

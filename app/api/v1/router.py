@@ -43,9 +43,11 @@ from app.api.v1.routers.documents import router as documents_router
 from app.api.v1.routers.generations import router as generations_router
 from app.api.v1.routers.health import router as health_router
 from app.api.v1.routers.jobs import router as jobs_router
+from app.api.v1.routers.platform_tenants import router as platform_tenants_router
 from app.api.v1.routers.projects import router as projects_router
 from app.api.v1.routers.prompt_library import router as prompt_library_router
 from app.api.v1.routers.prompts import router as prompts_router
+from app.api.v1.routers.source_library import router as source_library_router
 from app.api.v1.routers.styles import router as styles_router
 from app.api.v1.routers.users import router as users_router
 from app.api.v1.routers.workflow import router as workflow_router
@@ -74,6 +76,7 @@ api_v1_router.include_router(users_router,     prefix="/users",      tags=["User
 # ── Content infrastructure ────────────────────────────────────────────────────
 api_v1_router.include_router(styles_router,    prefix="/styles",     tags=["Styles"])
 api_v1_router.include_router(documents_router, prefix="/documents",  tags=["Documents"])
+api_v1_router.include_router(source_library_router, prefix="/source-library", tags=["Source Library"])
 
 # ── Content pipeline ──────────────────────────────────────────────────────────
 api_v1_router.include_router(cdd_router,        prefix="/cdd",        tags=["CDD — Course Design Document"])
@@ -96,3 +99,10 @@ api_v1_router.include_router(analytics_router, prefix="/analytics",  tags=["Anal
 
 # ── System administration ─────────────────────────────────────────────────────
 api_v1_router.include_router(admin_router,     prefix="/admin",      tags=["Admin"])
+
+# ── Platform — tenant (organization) management (platform super-admin only) ───
+api_v1_router.include_router(
+    platform_tenants_router,
+    prefix="/platform/tenants",
+    tags=["Platform — Tenant Management"],
+)

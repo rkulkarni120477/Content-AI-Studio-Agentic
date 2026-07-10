@@ -8,6 +8,8 @@ const initialState = {
   isLoading:    false,
   isAuthChecked: false,
   error:        null,
+  project_id:        null,
+  is_platform_admin: false,
 };
 
 const authSlice = createSlice({
@@ -21,6 +23,9 @@ const authSlice = createSlice({
       state.user    = null;
       state.token   = null;
       state.error   = null;
+      state.project_id        = null;
+      state.is_platform_admin = false;
+      state.isAuthChecked     = true;
       tokenStorage.remove();
     },
     setToken(state, { payload }) {
@@ -38,6 +43,8 @@ const authSlice = createSlice({
       state.isLoading = false;
       state.token     = payload.access_token;
       state.user      = payload.user;
+      state.project_id        = payload.user.project_id        ?? null;
+      state.is_platform_admin = payload.user.is_platform_admin ?? false;
       tokenStorage.set(payload.access_token);
     });
     builder.addCase(loginThunk.rejected, (state, { payload }) => {
@@ -49,6 +56,8 @@ const authSlice = createSlice({
     builder.addCase(logoutThunk.fulfilled, (state) => {
       state.user  = null;
       state.token = null;
+      state.project_id        = null;
+      state.is_platform_admin = false;
       tokenStorage.remove();
     });
 
@@ -60,6 +69,8 @@ const authSlice = createSlice({
       state.isLoading     = false;
       state.isAuthChecked = true;
       state.user          = payload;
+      state.project_id        = payload.project_id        ?? null;
+      state.is_platform_admin = payload.is_platform_admin ?? false;
     });
     builder.addCase(fetchMeThunk.rejected, (state) => {
       state.isLoading     = false;
@@ -84,3 +95,5 @@ export const selectAuthError     = (s) => s.auth.error;
 export const selectUserRole      = (s) => s.auth.user?.role;
 export const selectIsAdmin       = (s) => s.auth.user?.role === 'admin';
 export const selectIsReviewer    = (s) => ['admin', 'reviewer'].includes(s.auth.user?.role);
+export const selectProjectId       = (s) => s.auth.project_id;
+export const selectIsPlatformAdmin = (s) => s.auth.is_platform_admin;

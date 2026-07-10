@@ -1,9 +1,7 @@
 name: Deploy Content AI Studio Dev
 
 on:
-  push:
-    branches:
-      - dev
+  workflow_dispatch:
 
 permissions:
   id-token: write

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppDispatch } from '@app/hooks';
 import { setSelectedProject, setSelectedCluster, setSelectedCourse } from '@features/dashboard/dashboardSlice';
 import { useAuth } from '@hooks/useAuth';
@@ -22,6 +22,12 @@ import { HEADER_ACTIONS, MAIN_NAV } from '@features/promptLibrary/utils/nav';
 import styles from './SelectionSidebar.module.scss';
 
 const LMS_PLATFORM_OPTIONS = ['Canvas', 'Moodle', 'TalentLMS', 'Docebo'];
+const CLIENT_OPTIONS = [
+  { value: 'cengage', label: 'Cengage' },
+  { value: 'aim', label: 'AIM' },
+  { value: 'academian', label: 'Academian' },
+  { value: 'demo', label: 'Demo' },
+];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]:    '#7c3aed',
@@ -43,6 +49,7 @@ export default function SelectionSidebar({
   const dispatch = useAppDispatch();
   const { user, role, logout, isAdmin, hasPermission } = useAuth();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   function goDashboard() {
     dispatch(setSelectedProject(null));
@@ -66,13 +73,16 @@ export default function SelectionSidebar({
   const [showPrompts, setShowPrompts] = useState(true);
   // The PL visibility rules read user.role; useAuth exposes role separately.
   const promptNavItems = [...MAIN_NAV, ...HEADER_ACTIONS].filter((i) => i.visible({ role }));
+  // Prompt Library pages host this same sidebar, so the group doubles as the
+  // section's nav — highlight the destination we're currently on.
+  const isPromptItemActive = (item) => (item.end ? pathname === item.to : pathname.startsWith(item.to));
 
   // Collapsed-rail ➕: expand the sidebar and open the create form in one click.
   function expandWith(openForm) {
     toggleCollapsed();
     openForm(true);
   }
-  const [form, setForm] = useState({ name: '', client: '', description: '', lms_platform: '' });
+  const [form, setForm] = useState({ name: '', client: 'cengage', description: '', lms_platform: '' });
   const [copyPromptIds, setCopyPromptIds] = useState([]);
   const [promptOptions, setPromptOptions] = useState([]);
   const clusterPromptApiReady = isClusterPromptApiAvailable();
@@ -94,7 +104,7 @@ export default function SelectionSidebar({
   }
 
   function resetForm() {
-    setForm({ name: '', client: '', description: '', lms_platform: '' });
+    setForm({ name: '', client: 'cengage', description: '', lms_platform: '' });
     setCopyPromptIds([]);
   }
 
@@ -104,7 +114,7 @@ export default function SelectionSidebar({
     if (variant === 'project' && onCreateProject) {
       await onCreateProject({
         name: form.name.trim(),
-        client_name: form.client.trim() || null,
+        client_name: form.client || 'demo',
         description: form.description.trim() || null,
       });
       setShowNewProject(false);
@@ -171,7 +181,7 @@ export default function SelectionSidebar({
       )}
 
       {variant === 'cluster' && (
-        <div className={styles.navRow}>
+        <div className={collapsed ? styles.navCol : (onBackClusters ? styles.navRow3 : styles.navRow)}>
           <button
             type="button"
             className={cn(styles.navBtn, collapsed && styles.iconOnly)}
@@ -180,6 +190,19 @@ export default function SelectionSidebar({
           >
             {collapsed ? '🏠' : '← Projects'}
           </button>
+          {/* Prompt Library hosts this sidebar too; give it a way back into the
+              project's Category/Course drill-down (ClustersPage never passes
+              onBackClusters, so it stays hidden there). */}
+          {onBackClusters && (
+            <button
+              type="button"
+              className={cn(styles.navBtn, collapsed && styles.iconOnly)}
+              onClick={goClusters}
+              title={collapsed ? 'Back to Categories' : undefined}
+            >
+              {collapsed ? '🗂️' : '← Categories'}
+            </button>
+          )}
         </div>
       )}
 
@@ -229,7 +252,12 @@ export default function SelectionSidebar({
           {showNewProject && (
             <form className={styles.form} onSubmit={submitCreate}>
               <Input label="Project Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
-              <Input label="Client Name" value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} />
+              <Select
+                label="Client *"
+                options={CLIENT_OPTIONS}
+                value={form.client}
+                onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))}
+              />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea
@@ -247,7 +275,7 @@ export default function SelectionSidebar({
         </div>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && collapsed && (
+      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && onCreateCluster && collapsed && (
         <button
           type="button"
           className={cn(styles.navBtn, styles.iconOnly)}
@@ -258,7 +286,7 @@ export default function SelectionSidebar({
         </button>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && !collapsed && (
+      {(hasPermission('course.create') || isAdmin) && variant === 'cluster' && onCreateCluster && !collapsed && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCluster((v) => !v)}>
             ➕ New Category {showNewCluster ? '▾' : '▸'}
@@ -321,7 +349,7 @@ export default function SelectionSidebar({
                 <button
                   key={item.to}
                   type="button"
-                  className={styles.navBtn}
+                  className={cn(styles.navBtn, isPromptItemActive(item) && styles.navBtnActive)}
                   onClick={() => navigate(item.to)}
                 >
                   {item.icon} {item.label}

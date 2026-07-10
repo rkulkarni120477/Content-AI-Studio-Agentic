@@ -3,11 +3,12 @@ name: Deploy Content AI Backend
 on:
   push:
     branches:
-      - sami
+      - dev
     paths:
       - "app/**"
       - "api_server.py"
       - "promptops_app/**"
+      - "dis_backend/**"
       - "Dockerfile"
       - "docker-compose.yml"
       - "requirements.txt"
@@ -37,24 +38,32 @@ jobs:
             echo "Fetching latest code..."
             git fetch origin
 
-            git checkout sami
+            echo "Switching to dev branch..."
+            git checkout dev
 
-            git pull origin sami
+            echo "Syncing with remote..."
+            git reset --hard origin/dev
 
-            echo "Building Docker images..."
-            docker compose build
+            echo "Building and starting all backend services..."
+            docker compose up -d --build --remove-orphans
 
-            echo "Starting containers..."
-            docker compose up -d
-
-            echo "Removing unused Docker images..."
+            echo "Cleaning unused Docker images..."
             docker image prune -f
 
-            echo "Waiting for API to start..."
-            sleep 20
+            echo "Waiting for CAS Backend..."
+            until curl -fs https://cas-api.academian.com/docs >/dev/null; do
+              echo "Waiting for CAS..."
+              sleep 5
+            done
 
-            echo "Checking backend health..."
-            curl -I https://cas-api.academian.com/docs
+            echo "Waiting for DIS Backend..."
+            until curl -fs http://localhost:8010/docs >/dev/null; do
+              echo "Waiting for DIS..."
+              sleep 5
+            done
+
+            echo "Running containers..."
+            docker compose ps
 
             echo "===================================="
             echo "Backend Deployment Successful"

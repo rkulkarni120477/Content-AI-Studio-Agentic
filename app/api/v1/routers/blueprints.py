@@ -57,9 +57,28 @@ from app.schemas.blueprint import (
     BlueprintVersionRead,
 )
 from app.schemas.common import PaginatedResponse
+from app.core.dis_client import dis_client
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str) -> tuple[str, list]:
+    try:
+        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user)
+        ctx = str(result.get("combined_context") or "").strip()
+        units = result.get("source_units") or result.get("sources") or []
+        if ctx:
+            return (
+                f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
+                "Use this as source grounding only. Follow approved CDD, active style, selected module, and requested mode first. "
+                "Do not expose internal DIS metadata.\n\n"
+                f"{ctx}\n---\n",
+                units,
+            )
+    except Exception as exc:
+        _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
+    return "", []
 
 
 def _get_blueprint_or_404(db: Session, blueprint_id: int):
@@ -160,6 +179,28 @@ def generate_blueprint(
                     f"assessments defined for this module):**\n{module_section}"
                 )
 
+    dis_context_block, dis_source_units = _dis_context_block(
+        "blueprint",
+        {
+            "purpose": "blueprint",
+            "query": " ".join(str(x or "") for x in [
+                request_body.selected_module,
+                "",
+                request_body.extra_instructions,
+                cdd_context,
+                "teacher" if request_body.teacher_mode else "student",
+            ]),
+            "filters": {
+                "purpose": "blueprint",
+                "selected_module": request_body.selected_module,
+                "document_types": ["syllabus", "course_calendar", "chapter_outline", "module_map", "course_outline"],
+            },
+            "retrieval": {"top_k": 12, "token_budget": 12000},
+        },
+        current_user,
+        "BLUEPRINT CONTEXT",
+    )
+
     # Build prompt.
     style_context = ""
     if request_body.style_id:
@@ -168,12 +209,16 @@ def generate_blueprint(
             style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
 
     extra_block = request_body.extra_instructions or ""
+    if dis_context_block:
+        extra_block = f"{extra_block}\n\n{dis_context_block}".strip()
     if style_context:
         extra_block = f"**ACTIVE STYLE:**\n{style_context}\n\n{extra_block}"
 
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        if dis_context_block:
+            user_prompt = f"{user_prompt}\n\n{dis_context_block}"
         # Persist the override with the artifact (PL↔CAS sync review, plan
         # Phase 11) — inline-authored prompt text must stay recoverable.
         prompt_provenance = {
@@ -280,6 +325,7 @@ def generate_blueprint(
         "cdd_title": cdd_title,
         "module_number": module_number,
         "extra_instructions": request_body.extra_instructions or "",
+        "dis_source_units": dis_source_units,
         "mode": "teacher" if request_body.teacher_mode else "student",
         # Prompt provenance — registry template (name+version), the full
         # inline-override text, or builtin_fallback (see the build above).
@@ -298,6 +344,29 @@ def generate_blueprint(
     )
     db.add(version_record)
     db.commit()
+
+    # Copy generated Blueprint body to DIS/S3 for retrieval and listing.
+    try:
+        dis_client.generated_upsert_sync({
+            "generated_doc_id": f"blueprint_{new_bp.id}",
+            "generated_type": "blueprint",
+            "title": bp_title,
+            "content": raw_output,
+            "summary": raw_output[:500],
+            "active": True,
+            "metadata": {
+                "selected_module": request_body.selected_module,
+                "module_number": module_number,
+                "course_id": request_body.course_id,
+                "project_id": request_body.project_id,
+                "cdd_id": cdd_id,
+            },
+            "source_documents_used": dis_source_units,
+            "cas_ref": {"entity": "blueprint", "id": new_bp.id},
+            "created_by": current_user.username,
+        }, current_user=current_user)
+    except Exception as exc:
+        _log.warning("dis_generated_blueprint_upsert_failed blueprint_id=%s error=%s", new_bp.id, exc)
 
     # Auto-pin.
     set_active_blueprint(db, request_body.course_id, new_bp.id)

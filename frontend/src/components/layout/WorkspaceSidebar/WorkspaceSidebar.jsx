@@ -21,6 +21,7 @@ import { flushDeferredToasts } from '@utils/deferredToast';
 import styles from './WorkspaceSidebar.module.scss';
 
 const NAV_ITEMS = [
+  { label: 'Source Library', icon: '📚', segment: 'sources' },
   { label: 'Style',     icon: '🎨', segment: 'style' },
   { label: 'CDD',       icon: '📘', segment: 'cdd' },
   { label: 'Blueprint', icon: '🧩', segment: 'blueprint' },
@@ -137,7 +138,7 @@ export default function WorkspaceSidebar() {
           onClick={goProjects}
           title={collapsed ? 'Back to Projects' : undefined}
         >
-          {collapsed ? '🏠' : '← Projects'}
+          {collapsed ? '🏠' : <>←<br />Projects</>}
         </button>
         <button
           type="button"
@@ -145,7 +146,7 @@ export default function WorkspaceSidebar() {
           onClick={goClusters}
           title={collapsed ? 'Back to Categories' : undefined}
         >
-          {collapsed ? '🗂️' : '← Categories'}
+          {collapsed ? '🗂️' : <>←<br />Categories</>}
         </button>
         <button
           type="button"
@@ -153,7 +154,7 @@ export default function WorkspaceSidebar() {
           onClick={goCourses}
           title={collapsed ? 'Back to Courses' : undefined}
         >
-          {collapsed ? '📖' : '← Courses'}
+          {collapsed ? '📖' : <>←<br />Courses</>}
         </button>
       </div>
 
