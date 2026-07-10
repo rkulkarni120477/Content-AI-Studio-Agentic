@@ -1,7 +1,6 @@
 import {
   canManagePipelinePrompts,
   canReadAllRequests,
-  canReadAllReviews,
   canReadAudit,
   canReadLibrary,
 } from './permissions';
@@ -10,7 +9,6 @@ import {
   plCourses,
   plRequests,
   plAdminRequests,
-  plAdminReviews,
   plAdminAudit,
   plPromptNew,
   PL_BASE,
@@ -29,7 +27,8 @@ export const MAIN_NAV = [
   // Regular users see their own requests; managers get the full admin queue below.
   { to: plRequests, label: 'Requests', icon: '📬', visible: (u) => canReadLibrary(u) && !canReadAllRequests(u) },
   { to: plAdminRequests, label: 'Requests', icon: '📬', visible: (u) => canReadAllRequests(u) },
-  { to: plAdminReviews, label: 'Reviews', icon: '⭐', visible: (u) => canReadAllReviews(u) },
+  // Reviews tab hidden from the sidebar (2026-07 product decision); the
+  // page stays routable by URL for reviewers.
   { to: plAdminAudit, label: 'Audit Log', icon: '📜', visible: (u) => canReadAudit(u) },
 ];
 
