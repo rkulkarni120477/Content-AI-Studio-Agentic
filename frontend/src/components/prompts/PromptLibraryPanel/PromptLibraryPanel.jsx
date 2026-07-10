@@ -41,6 +41,7 @@ export default function PromptLibraryPanel({
   component = 'style',
   showHeader = true,
   defaultSettingsOpen = true,
+  embedded = false,
 }) {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
@@ -378,8 +379,8 @@ export default function PromptLibraryPanel({
   ].filter(Boolean) : [];
 
   return (
-    <section className={styles.section}>
-      {showHeader && (
+    <section className={embedded ? styles.sectionEmbedded : styles.section}>
+      {showHeader && !embedded && (
         <>
           <h2 className={styles.section__title}>Prompts</h2>
           <p className={styles.section__hint}>

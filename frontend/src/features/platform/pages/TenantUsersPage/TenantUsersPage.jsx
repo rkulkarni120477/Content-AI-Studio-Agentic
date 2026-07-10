@@ -1,37 +1,52 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import toast from 'react-hot-toast';
+import toast, { Toaster } from 'react-hot-toast';
 import { platformService } from '@features/platform/services/platformService';
-import { ROUTES } from '@utils/constants';
+import { useAuth } from '@hooks/useAuth';
+import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
+import EmptyState from '@components/common/EmptyState/EmptyState';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
+import AppBrand from '@components/common/AppBrand/AppBrand';
+import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/SelectionPageHeader';
+import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import styles from './TenantUsersPage.module.scss';
 
-const ROLES = [
-  { value: 'admin',    label: 'Tenant Admin' },
+const ROLES_OPTS = [
+  { value: 'admin', label: 'Tenant Admin' },
   { value: 'reviewer', label: 'Prompt Manager' },
-  { value: 'author',   label: 'User' },
+  { value: 'author', label: 'User' },
 ];
-const roleLabel = (r) => ROLES.find((o) => o.value === r)?.label || r;
+const roleLabel = (r) => ROLES_OPTS.find((o) => o.value === r)?.label || r;
+
+const ROLE_COLORS = {
+  [ROLES.ADMIN]: '#7c3aed',
+  [ROLES.REVIEWER]: '#0f766e',
+  [ROLES.AUTHOR]: '#4338ca',
+};
 
 export default function TenantUsersPage() {
   const { tenantId } = useParams();
   const navigate = useNavigate();
+  const { logout, user, role } = useAuth();
 
-  const [tenant, setTenant]   = useState(null);
+  const [tenant, setTenant] = useState(null);
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
-  const [saving, setSaving]   = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const [addForm, setAddForm]   = useState({ username: '', password: '', display_name: '', role: 'author' });
+  const [addForm, setAddForm] = useState({ username: '', password: '', display_name: '', role: 'author' });
   const [editForm, setEditForm] = useState({ display_name: '', role: 'author', password: '', active: true });
+
+  const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
+  const signedInRoleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,105 +132,195 @@ export default function TenantUsersPage() {
     }
   }
 
-  if (loading) return <div className={styles.page}><Loader size="lg" /></div>;
+  function handleSignOut() {
+    logout();
+    navigate(ROUTES.LOGIN, { replace: true });
+  }
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>{tenant?.name || 'Tenant'}</h1>
-          <p className={styles.subtitle}>
-            Organization code: <code className={styles.code}>{tenant?.slug}</code>
-            {tenant && <> · {tenant.active_users} / {tenant.max_users} users</>}
-          </p>
+    <div className={styles.layout}>
+      <aside className={styles.sidebar} aria-label="Platform navigation">
+        <AppBrand />
+        <div className={styles.userPill}>
+          <div className={styles.userPill__label}>Signed in as</div>
+          <div className={styles.userPill__name}>{user?.username || '—'}</div>
+          <span className={styles.userPill__role} style={{ background: roleColor }}>{signedInRoleLabel}</span>
         </div>
-        <div className={styles.headerActions}>
-          <button className={styles.linkBtn} onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(tenantId))}>Clusters</button>
-          <button className={styles.linkBtn} onClick={() => navigate(ROUTES.TENANTS)}>← Tenants</button>
-          <Button variant="primary" onClick={() => setShowAdd(true)}>+ Add user</Button>
-        </div>
-      </div>
+        <div className={styles.navLabel}>Platform</div>
+        <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.TENANTS)}>
+          ← Tenants
+        </button>
+        <button type="button" className={`${styles.navBtn} ${styles.navBtnActive}`}>
+          👥 Users
+        </button>
+        <button
+          type="button"
+          className={styles.navBtn}
+          onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(tenantId))}
+        >
+          🗂️ Category
+        </button>
+        <div className={styles.sidebarSpacer} />
+        <button type="button" className={styles.signOut} onClick={handleSignOut}>
+          🚪 Sign Out
+        </button>
+      </aside>
 
-      <div className={styles.card}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>USERNAME</th><th>DISPLAY NAME</th><th>ROLE</th><th>STATUS</th><th className={styles.actionsCol}>ACTIONS</th>
-            </tr>
-          </thead>
-          <tbody>
+      <main className={styles.main}>
+        {loading ? (
+          <div className={styles.center}><Loader size="lg" /></div>
+        ) : (
+          <>
+            <div className={styles.headerRow}>
+              <SelectionPageHeader
+                eyebrow="Tenant Users"
+                title={tenant?.name || 'Tenant'}
+                subtitle={
+                  tenant
+                    ? `Organization code: ${tenant.slug} · ${tenant.active_users} / ${tenant.max_users} users`
+                    : 'Manage members for this organization.'
+                }
+              />
+              <div className={styles.headerActions}>
+                <Button variant="secondary" onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(tenantId))}>
+                  Category
+                </Button>
+                <Button variant="primary" onClick={() => setShowAdd(true)}>+ Add User</Button>
+              </div>
+            </div>
+
+            <SectionBadge
+              icon="👥"
+              title="Member Directory"
+              subtitle="Add users, assign roles, and activate or deactivate accounts for this tenant."
+            />
+
             {members.length === 0 ? (
-              <tr><td colSpan={5} className={styles.emptyCell}>No members yet.</td></tr>
-            ) : members.map((m) => (
-              <tr key={m.user_id}>
-                <td><code className={styles.username}>{m.username}</code></td>
-                <td>{m.display_name || '—'}</td>
-                <td><span className={styles[`role_${m.role}`] || styles.roleDefault}>{roleLabel(m.role)}</span></td>
-                <td>
-                  <span className={m.active ? styles.statusActive : styles.statusInactive}>
-                    {m.active ? '● Active' : '○ Inactive'}
-                  </span>
-                </td>
-                <td className={styles.actions}>
-                  <button className={styles.iconBtn} title="Edit" onClick={() => openEdit(m)}>✎</button>
-                  <button className={styles.iconBtn} title={m.active ? 'Deactivate' : 'Activate'} onClick={() => toggleActive(m)}>
-                    {m.active ? '⏸' : '▶'}
-                  </button>
-                  <button className={`${styles.iconBtn} ${styles.danger}`} title="Delete" onClick={() => setDeleting(m)}>🗑</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+              <EmptyState
+                icon="👥"
+                title="No members yet"
+                message="Add the first user for this organization."
+                action={() => setShowAdd(true)}
+                actionLabel="+ Add User"
+              />
+            ) : (
+              <div className={styles.card}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Display Name</th>
+                      <th>Role</th>
+                      <th>Status</th>
+                      <th className={styles.actionsCol}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {members.map((m) => (
+                      <tr key={m.user_id}>
+                        <td><code className={styles.username}>{m.username}</code></td>
+                        <td>{m.display_name || '—'}</td>
+                        <td>
+                          <span className={styles[`role_${m.role}`] || styles.roleDefault}>
+                            {roleLabel(m.role)}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={m.active ? styles.statusActive : styles.statusInactive}>
+                            {m.active ? '● Active' : '○ Inactive'}
+                          </span>
+                        </td>
+                        <td className={styles.actions}>
+                          <Button variant="ghost" size="xs" onClick={() => openEdit(m)}>Edit</Button>
+                          <Button variant="secondary" size="xs" onClick={() => toggleActive(m)}>
+                            {m.active ? 'Deactivate' : 'Activate'}
+                          </Button>
+                          <Button variant="danger" size="xs" onClick={() => setDeleting(m)}>Remove</Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </main>
 
-      {/* Add member */}
-      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add user" size="sm" footer={null}>
+      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add User" size="sm" footer={null}>
         <form onSubmit={handleAdd} className={styles.form}>
-          <Input label="Username *" value={addForm.username}
-            onChange={(e) => setAddForm((f) => ({ ...f, username: e.target.value }))} required />
-          <Input label="Password *" type="password" minLength={6} value={addForm.password}
-            onChange={(e) => setAddForm((f) => ({ ...f, password: e.target.value }))} required />
-          <Input label="Display name" value={addForm.display_name}
-            onChange={(e) => setAddForm((f) => ({ ...f, display_name: e.target.value }))} />
+          <Input
+            label="Username *"
+            value={addForm.username}
+            onChange={(e) => setAddForm((f) => ({ ...f, username: e.target.value }))}
+            required
+          />
+          <Input
+            label="Password *"
+            type="password"
+            minLength={6}
+            value={addForm.password}
+            onChange={(e) => setAddForm((f) => ({ ...f, password: e.target.value }))}
+            required
+          />
+          <Input
+            label="Display name"
+            value={addForm.display_name}
+            onChange={(e) => setAddForm((f) => ({ ...f, display_name: e.target.value }))}
+          />
           <label className={styles.selectLabel}>
             Role
-            <select className={styles.select} value={addForm.role}
-              onChange={(e) => setAddForm((f) => ({ ...f, role: e.target.value }))}>
-              {ROLES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <select
+              className={styles.select}
+              value={addForm.role}
+              onChange={(e) => setAddForm((f) => ({ ...f, role: e.target.value }))}
+            >
+              {ROLES_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
           <div className={styles.formActions}>
             <Button type="button" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
-            <Button type="submit" variant="primary" loading={saving}>Add user</Button>
+            <Button type="submit" variant="primary" loading={saving}>Add User</Button>
           </div>
         </form>
       </Modal>
 
-      {/* Edit member */}
-      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit user" size="sm" footer={null}>
+      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit User" size="sm" footer={null}>
         {editing && (
           <form onSubmit={handleEdit} className={styles.form}>
             <Input label="Username" value={editing.username} disabled />
-            <Input label="Display name" value={editForm.display_name}
-              onChange={(e) => setEditForm((f) => ({ ...f, display_name: e.target.value }))} />
-            <Input label="New password (leave blank to keep)" type="password"
-              value={editForm.password} onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))} />
+            <Input
+              label="Display name"
+              value={editForm.display_name}
+              onChange={(e) => setEditForm((f) => ({ ...f, display_name: e.target.value }))}
+            />
+            <Input
+              label="New password (leave blank to keep)"
+              type="password"
+              value={editForm.password}
+              onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
+            />
             <label className={styles.selectLabel}>
               Role
-              <select className={styles.select} value={editForm.role}
-                onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}>
-                {ROLES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              <select
+                className={styles.select}
+                value={editForm.role}
+                onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}
+              >
+                {ROLES_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
             <label className={styles.checkboxRow}>
-              <input type="checkbox" checked={editForm.active}
-                onChange={(e) => setEditForm((f) => ({ ...f, active: e.target.checked }))} />
+              <input
+                type="checkbox"
+                checked={editForm.active}
+                onChange={(e) => setEditForm((f) => ({ ...f, active: e.target.checked }))}
+              />
               Active
             </label>
             <div className={styles.formActions}>
               <Button type="button" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
-              <Button type="submit" variant="primary" loading={saving}>Save changes</Button>
+              <Button type="submit" variant="primary" loading={saving}>Save Changes</Button>
             </div>
           </form>
         )}
@@ -225,9 +330,10 @@ export default function TenantUsersPage() {
         open={Boolean(deleting)}
         onClose={() => setDeleting(null)}
         onConfirm={confirmDelete}
-        title="Remove member"
+        title="Remove Member"
         message={`Remove "${deleting?.username}" from this tenant?`}
       />
+      <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
     </div>
   );
 }

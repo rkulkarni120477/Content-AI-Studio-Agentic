@@ -5,17 +5,21 @@
   &__summary {
     cursor: pointer;
     font-weight: $font-weight-medium;
-    color: $color-gray-700;
+    color: #e0e7ff;
     padding: $space-2 0;
     list-style: none;
 
     &::-webkit-details-marker { display: none; }
+
+    &:hover {
+      color: $color-white;
+    }
   }
 
   &__list {
     margin: $space-2 0 0 $space-4;
     padding: 0;
-    color: $color-gray-600;
+    color: #c7d2fe;
     line-height: 1.5;
 
     li { margin-bottom: $space-1; }
