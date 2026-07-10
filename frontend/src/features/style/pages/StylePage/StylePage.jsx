@@ -399,91 +399,101 @@ export default function StylePage() {
           {error && (
             <ErrorState message={error} onRetry={() => dispatch(fetchStylesThunk())} />
           )}
-          <CreateStyleForm />
 
-          {/* Saved Styles — Streamlit right panel */}
-          <section className={`${styles.panel} ${styles.panelLibrary}`}>
-            <h2 className={styles.panel__title}>🗂️ Saved Styles</h2>
-            {activeStyle && (
-              <div className={styles.activeIndicator}>
-                <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
-              </div>
-            )}
-            {isLoading ? (
-              <div className={styles.center}><Loader size="lg" /></div>
-            ) : stylesList.length === 0 ? (
-              <EmptyState
-                title="No styles yet"
-                message="Create your first style using the form on the left."
-              />
-            ) : (
-              <ul className={styles.list}>
-                {stylesList.map((style) => (
-                  <li key={style.id} className={`${styles.styleItem} ${style.is_active ? styles['styleItem--active'] : ''}`}>
-                    <div className={styles.styleItem__info}>
-                      <span className={styles.styleItem__name}>{style.name}</span>
-                      {style.understanding_preview && (
-                        <span className={styles.styleItem__desc}>{style.understanding_preview}</span>
-                      )}
-                      <span className={styles.styleItem__date}>{formatDate(style.created_at)}</span>
-                    </div>
-                    <div className={styles.styleItem__actions}>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className={styles.actionBtn}
-                        onClick={() => openView(style.id)}
-                      >
-                        View
-                      </Button>
-                      {canModify && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className={styles.actionBtn}
-                            onClick={() => onUnderstandStyle(style.id)}
-                            loading={generatingStyleId === style.id}
-                          >
-                            Understand
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className={styles.actionBtn}
-                            onClick={() => openRefine(style.id, style.name)}
-                            disabled={generatingStyleId != null}
-                          >
-                            Refine
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className={styles.actionBtn}
-                            onClick={() => openAddFiles(style.id, style.name)}
-                          >
-                            + Files
-                          </Button>
-                          {style.is_active ? (
-                            <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => dispatch(deactivateStyleThunk(style.id))}>Deactivate</Button>
-                          ) : (
-                            <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => openScopePicker(style.id, style.name)}>Activate</Button>
-                          )}
-                          {isAdmin && (
-                            <Button variant="danger" size="xs" className={styles.actionBtn} onClick={() => setDeleteStyleId(style.id)}>Delete</Button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>➕ Create New Style</summary>
+            <div className={styles.accordion__body}>
+              <CreateStyleForm embedded />
+            </div>
+          </details>
 
-          <div className={styles.panelFull}>
-            <PromptLibraryPanel component="style" />
-          </div>
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>🗂️ Saved Styles</summary>
+            <div className={`${styles.accordion__body} ${styles.panelLibrary}`}>
+              {activeStyle && (
+                <div className={styles.activeIndicator}>
+                  <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
+                </div>
+              )}
+              {isLoading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : stylesList.length === 0 ? (
+                <EmptyState
+                  title="No styles yet"
+                  message="Create your first style using the form above."
+                />
+              ) : (
+                <ul className={styles.list}>
+                  {stylesList.map((style) => (
+                    <li key={style.id} className={`${styles.styleItem} ${style.is_active ? styles['styleItem--active'] : ''}`}>
+                      <div className={styles.styleItem__info}>
+                        <span className={styles.styleItem__name}>{style.name}</span>
+                        {style.understanding_preview && (
+                          <span className={styles.styleItem__desc}>{style.understanding_preview}</span>
+                        )}
+                        <span className={styles.styleItem__date}>{formatDate(style.created_at)}</span>
+                      </div>
+                      <div className={styles.styleItem__actions}>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className={styles.actionBtn}
+                          onClick={() => openView(style.id)}
+                        >
+                          View
+                        </Button>
+                        {canModify && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className={styles.actionBtn}
+                              onClick={() => onUnderstandStyle(style.id)}
+                              loading={generatingStyleId === style.id}
+                            >
+                              Understand
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className={styles.actionBtn}
+                              onClick={() => openRefine(style.id, style.name)}
+                              disabled={generatingStyleId != null}
+                            >
+                              Refine
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className={styles.actionBtn}
+                              onClick={() => openAddFiles(style.id, style.name)}
+                            >
+                              + Files
+                            </Button>
+                            {style.is_active ? (
+                              <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => dispatch(deactivateStyleThunk(style.id))}>Deactivate</Button>
+                            ) : (
+                              <Button variant="primary" size="xs" className={styles.actionBtn} onClick={() => openScopePicker(style.id, style.name)}>Activate</Button>
+                            )}
+                            {isAdmin && (
+                              <Button variant="danger" size="xs" className={styles.actionBtn} onClick={() => setDeleteStyleId(style.id)}>Delete</Button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </details>
+
+          <details className={styles.accordion}>
+            <summary className={styles.accordion__summary}>🎯 Style Prompts</summary>
+            <div className={styles.accordion__body}>
+              <PromptLibraryPanel component="style" embedded showHeader={false} />
+            </div>
+          </details>
         </div>
       )}
 

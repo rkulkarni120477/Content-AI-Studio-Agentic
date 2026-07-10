@@ -19,7 +19,8 @@
   &__summary {
     display: flex;
     align-items: center;
-    gap: $space-2;
+    justify-content: space-between;
+    gap: $space-3;
     padding: $space-4 $space-5;
     cursor: pointer;
     font-size: $font-size-md;
@@ -30,9 +31,9 @@
 
     &::-webkit-details-marker { display: none; }
 
-    &::before {
+    &::after {
       content: '›';
-      display: inline-block;
+      flex-shrink: 0;
       font-weight: 700;
       color: $color-gray-500;
       transition: transform 0.15s ease;
@@ -42,7 +43,7 @@
   &[open] > .accordion__summary {
     border-bottom: 1px solid $color-gray-100;
 
-    &::before {
+    &::after {
       transform: rotate(90deg);
     }
   }

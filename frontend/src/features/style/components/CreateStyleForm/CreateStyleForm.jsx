@@ -15,7 +15,7 @@ import styles from './CreateStyleForm.module.scss';
 const REF_DOCS_HINT = 'These documents define tone, guidelines, and structure for this style.';
 const INSTR_HINT = 'These instructions are stored with the style and injected into every generation.';
 
-export default function CreateStyleForm() {
+export default function CreateStyleForm({ embedded = false }) {
   const dispatch = useAppDispatch();
   const documents = useAppSelector(selectDocuments);
   const isCreating = useAppSelector(selectStyleCreating);
@@ -65,7 +65,7 @@ export default function CreateStyleForm() {
 
   if (!canModify) {
     return (
-      <section className={styles.panel}>
+      <section className={embedded ? styles.panelEmbedded : styles.panel}>
         <div className={styles.restricted}>
           <div className={styles.restricted__icon} aria-hidden="true">🔒</div>
           <div className={styles.restricted__title}>Style Creation Restricted</div>
@@ -79,14 +79,22 @@ export default function CreateStyleForm() {
   }
 
   return (
-    <section className={styles.panel}>
-      <header className={styles.header}>
-        <h2 className={styles.header__title}>➕ Create New Style</h2>
+    <section className={embedded ? styles.panelEmbedded : styles.panel}>
+      {!embedded && (
+        <header className={styles.header}>
+          <h2 className={styles.header__title}>➕ Create New Style</h2>
+          <p className={styles.header__intro}>
+            A Style defines writing tone, rules, and structure. It will be automatically
+            applied to CDD, Blueprint, and content generation.
+          </p>
+        </header>
+      )}
+      {embedded && (
         <p className={styles.header__intro}>
           A Style defines writing tone, rules, and structure. It will be automatically
           applied to CDD, Blueprint, and content generation.
         </p>
-      </header>
+      )}
 
       <form onSubmit={handleSubmit(onSubmit)} className={styles.form}>
         <Input
