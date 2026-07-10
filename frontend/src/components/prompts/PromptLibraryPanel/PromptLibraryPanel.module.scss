@@ -57,6 +57,11 @@
   strong { color: $color-gray-800; }
 }
 
+.requestChangeBtn, .aiActionBtn {
+  width: max-content;
+  margin-inline: auto;
+}
+
 .tabs {
   display: flex;
   flex-wrap: wrap;

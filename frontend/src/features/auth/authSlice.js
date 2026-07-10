@@ -25,6 +25,7 @@ const authSlice = createSlice({
       state.error   = null;
       state.project_id        = null;
       state.is_platform_admin = false;
+      state.isAuthChecked     = true;
       tokenStorage.remove();
     },
     setToken(state, { payload }) {

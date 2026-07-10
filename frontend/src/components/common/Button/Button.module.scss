@@ -76,13 +76,20 @@
   }
 
   &--danger {
-    background: $color-danger;
+    // Delete / destructive buttons use a neutral slate-grey (project-wide).
+    // Softer tone that still reads clearly against the white page background.
+    background: #94a3b8;
     color: $color-white;
-    border-color: $color-danger;
+    border-color: #94a3b8;
 
     &:hover:not(:disabled) {
-      background: color.adjust($color-danger, $lightness: -10%);
-      border-color: color.adjust($color-danger, $lightness: -10%);
+      background: #7c8ba1;
+      border-color: #7c8ba1;
+    }
+
+    &:active:not(:disabled) {
+      background: #64748b;
+      border-color: #64748b;
     }
   }
 
