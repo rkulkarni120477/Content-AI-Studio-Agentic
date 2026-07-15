@@ -49,7 +49,10 @@ class ContentClassificationAgent(BasePipelineAgent):
                 ctx.guard.record_usage(inp + out, 'content_classification')
                 parsed = safe_json(resp)
                 candidate = parsed.get('doc_type')
-                if candidate in (doc_processing.enabled_document_types or []):
+                # Never let the LLM (or its failure fallback, which returns
+                # {"doc_type":"other"}) downgrade a confident deterministic
+                # inference to the catch-all. Only override with a specific type.
+                if candidate in (doc_processing.enabled_document_types or []) and candidate != 'other':
                     state['doc_type'] = candidate
                 state['classification'] = parsed.get('classification', state.get('classification', 'internal'))
             except TokenLimitError as exc:

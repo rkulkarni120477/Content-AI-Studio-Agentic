@@ -43,7 +43,21 @@ class ContentUnitCreationAgent(BasePipelineAgent):
             for day in calendar.get('days', []):
                 day_no = day.get('day_number') or len(units) + 1
                 text = day.get('source_text') or day.get('topic') or ''
-                units.append({'content_unit_id': f"{state['job_id']}:calendar_day_{day_no}", 'unit_type': ctx.cfg.document_processing.unit_type_map.get('course_calendar', 'calendar_day'), 'unit_number': int(day_no), 'title': day.get('lesson_title') or f'Day {day_no}', 'text': text, 'visual_summary': '', 'keywords': keywords(text), 'topics': keywords((day.get('topic') or '') + ' ' + text, limit=12), 'metadata': {'day_number': day_no, 'block': calendar.get('block'), **state.get('doc_metadata', {})}, 'assets': []})
+                # Carry structured calendar fields into unit metadata so they are
+                # searchable/filterable in the vector store and usable to tag other
+                # ingested content (quiz/project/lesson) back to a block+day. Only
+                # keys present on the day survive, so non-AIM calendars are unaffected.
+                # These units are persisted to BOTH the vector store (OpenSearch) and
+                # the structure store (RDS) downstream; metadata_json in RDS preserves
+                # these same fields. See services/aim_calendar.py "Storage scope".
+                cal_meta = {k: day[k] for k in (
+                    'block_id', 'block_number', 'subject_unit', 'subject_day',
+                    'day_type', 'acs_codes', 'acs_codes_raw', 'handbook_refs',
+                    'projects', 'project_acs_codes', 'quiz', 'supplemental_resources',
+                    'test_prep_activities', 'hangar_activities',
+                ) if k in day}
+                unit_keywords = list(dict.fromkeys(keywords(text) + list(day.get('acs_codes') or [])))
+                units.append({'content_unit_id': f"{state['job_id']}:calendar_day_{day_no}", 'unit_type': ctx.cfg.document_processing.unit_type_map.get('course_calendar', 'calendar_day'), 'unit_number': int(day_no), 'title': day.get('lesson_title') or f'Day {day_no}', 'text': text, 'visual_summary': '', 'keywords': unit_keywords, 'topics': keywords((day.get('topic') or '') + ' ' + text, limit=12), 'metadata': {'day_number': day_no, 'block': calendar.get('block'), **cal_meta, **state.get('doc_metadata', {})}, 'assets': []})
         else:
             slide_texts = state.get('slide_texts', []) or []
             visual_map = {v.get('unit_number'): v.get('visual_summary') for v in state.get('visual_units', []) or []}

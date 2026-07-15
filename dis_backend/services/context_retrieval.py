@@ -208,6 +208,10 @@ class ContextRetrievalService:
                     "title": src.get("title"),
                     "source_file_name": src.get("source_file_name"),
                     "source_file_type": src.get("source_file_type"),
+                    # UI hint only: whether the original file can be downloaded via
+                    # /context/sources/{job_id}/download-url. We expose the boolean,
+                    # never the raw S3 key (that stays internal per the whitelist rule).
+                    "has_original": bool(src.get("raw_key")),
                     "document_type": src.get("document_type"),
                     "purpose": src.get("purpose"),
                     "visibility": src.get("visibility"),
@@ -323,6 +327,31 @@ class ContextRetrievalService:
             "content_units": doc.get("content_units") or [],
         }
 
+    def resolve_source_raw_ref(self, client_id: str, job_id: str) -> Dict[str, Any]:
+        """Resolve the original-uploaded-file reference for one source.
+
+        Returns the logical S3 key (``raw_key``) plus filename/type/url so the
+        API layer can mint a short-lived presigned download URL without ever
+        exposing the raw key. Enforces the same restricted/visibility rules as
+        retrieval, so a normal user cannot pull an instructor-only original.
+        ``raw_key`` is empty for sources ingested before deep-link capture
+        (re-ingest to populate it).
+        """
+        index = read_source_index(self.tenant_cfg, client_id)
+        record = next((r for r in index.get("sources", []) if str(r.get("job_id")) == str(job_id)), None)
+        if not record:
+            raise FileNotFoundError(f"No source found for job_id '{job_id}'")
+        visibility = str(record.get("visibility") or "").strip().lower()
+        restricted = bool(record.get("restricted")) or visibility in {"instructor", "instructor_only", "internal", "internal_only", "restricted_admin", "admin_only"}
+        if self.tenant_cfg.retrieval.restricted_content_filter and self.role == "user" and restricted:
+            raise PermissionError("This source is restricted; a normal user cannot download the original file.")
+        return {
+            "raw_key": record.get("raw_key") or "",
+            "raw_storage_url": record.get("raw_storage_url") or "",
+            "source_file_name": record.get("source_file_name"),
+            "source_file_type": record.get("source_file_type"),
+        }
+
     def _load_payload_by_job(self, client_id: str, job_id: str) -> Dict[str, Any]:
         prefix = f"{self._base_prefix(client_id)}/{job_id}/studio_payload/payload.json"
         return self.writer.read_json(prefix)
@@ -392,6 +421,10 @@ class ContextRetrievalService:
                         "source_file": {
                             "name": rec.get("source_file_name"),
                             "type": rec.get("source_file_type"),
+                            # Original-file references for source citation/deep-link.
+                            "raw_url": rec.get("raw_storage_url"),
+                            "raw_key": rec.get("raw_key"),
+                            "relative_path": rec.get("source_relative_path"),
                         },
                         "metadata": {
                             "title": rec.get("title"),
@@ -399,6 +432,10 @@ class ContextRetrievalService:
                             "doc_type": rec.get("document_type"),
                             "purpose": rec.get("purpose"),
                             "visibility": rec.get("visibility"),
+                            # Security-critical: propagate restriction flags so the
+                            # retrieval gate can hide restricted sources from students.
+                            "restricted": rec.get("restricted"),
+                            "access_level": rec.get("access_level"),
                             "status": rec.get("status"),
                             "course_name": rec.get("course_name"),
                             "block": rec.get("block"),
@@ -578,11 +615,11 @@ class ContextRetrievalService:
         include_restricted = bool(filters.get("include_restricted", False))
         if self.tenant_cfg.retrieval.restricted_content_filter and not include_restricted:
             # Applies for all normal retrieval, not only role=user. Admin can opt in with include_restricted=true.
-            if bool(meta_all.get("restricted")) or meta_all.get("access_level") == "admin_only" or meta_all.get("visibility") in {"instructor_only", "internal_only", "restricted_admin"}:
+            if bool(meta_all.get("restricted")) or meta_all.get("access_level") == "admin_only" or meta_all.get("visibility") in {"instructor", "instructor_only", "internal", "internal_only", "restricted_admin", "admin_only"}:
                 return False
         if self.tenant_cfg.retrieval.restricted_content_filter and self.role == "user":
             # Users can never force restricted context in normal API.
-            if bool(meta_all.get("restricted")) or meta_all.get("access_level") == "admin_only" or meta_all.get("visibility") in {"instructor_only", "internal_only", "restricted_admin"}:
+            if bool(meta_all.get("restricted")) or meta_all.get("access_level") == "admin_only" or meta_all.get("visibility") in {"instructor", "instructor_only", "internal", "internal_only", "restricted_admin", "admin_only"}:
                 return False
 
         if course_name:
@@ -645,10 +682,16 @@ class ContextRetrievalService:
                 raw = (hits + title_hits*2 + keyword_hits*1.5 + visual_hits*1.2) / denom
                 score = min(1.0, raw / 3.0)
                 if score >= min_score or not query_terms:
+                    src = payload.get("source_file", {}) or {}
                     enriched = {**unit}
                     enriched["job_id"] = payload.get("job_id")
-                    enriched["source_file_name"] = payload.get("source_file", {}).get("name")
-                    enriched["source_file_type"] = payload.get("source_file", {}).get("type")
+                    enriched["source_file_name"] = src.get("name")
+                    enriched["source_file_type"] = src.get("type")
+                    # Original-file reference so callers can cite/deep-link the
+                    # source document in S3, not just name it. Empty for older
+                    # sources indexed before these fields were carried through.
+                    enriched["source_file_url"] = src.get("raw_url") or ""
+                    enriched["source_relative_path"] = src.get("relative_path") or ""
                     enriched["score"] = round(score, 4)
                     enriched["matched_on"] = []
                     if title_hits: enriched["matched_on"].append("title")
@@ -696,7 +739,12 @@ class ContextRetrievalService:
         for payload in self._iter_payloads(client_id, {}):
             for unit in payload.get("content_units", []):
                 if unit.get("content_unit_id") in wanted:
-                    enriched = {**unit, "job_id": payload.get("job_id"), "source_file_name": payload.get("source_file", {}).get("name")}
+                    src = payload.get("source_file", {}) or {}
+                    enriched = {**unit, "job_id": payload.get("job_id"),
+                                "source_file_name": src.get("name"),
+                                "source_file_type": src.get("type"),
+                                "source_file_url": src.get("raw_url") or "",
+                                "source_relative_path": src.get("relative_path") or ""}
                     out.append(enriched)
         combined = "\n\n---\n\n".join(self._format_unit(u, include_visual_summary) for u in out)
         return {"source_units": out, "combined_context": combined, "returned_units": len(out)}
