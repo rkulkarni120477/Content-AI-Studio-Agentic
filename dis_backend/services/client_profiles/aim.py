@@ -20,7 +20,7 @@ DEFAULT_AIM_RULES: Dict[str, Any] = {
     "default_program_id": "aim",
     "block_day_pattern": r"B(?P<block_number>\d+)D(?P<day_number>\d+)",
     "version_priority": {
-        "lesson_pdf": ["Final PDFs"],
+        "lesson_pdf": ["Finalized PDFs", "Final PDFs"],
         "slide_deck": ["Final Slide Deck"],
         "quiz": ["Quizzes/5-PDFs/Updated PDFs", "Quizzes/4-Finalized/Updated Quizzes"],
         "quiz_answer_key": ["Quizzes/5-PDFs/Updated PDFs", "Quizzes/4-Finalized/Updated Quizzes"],
@@ -157,15 +157,27 @@ class AIMClientProfile(BaseClientProfile):
         low_name = name.lower()
         low_rel = rel.lower()
         ext = Path(name).suffix.lower().lstrip(".")
-        if "answer key" in low_name or "exam key" in low_name or "quiz key" in low_name:
+        # Quiz context also covers the compact AIM naming (e.g. "B2Q1.docx",
+        # "B2Q1.Key.docx") and the Quizzes/ folder, not just the word "quiz".
+        is_quiz_ctx = ("quiz" in low_name or "quizzes/" in low_rel
+                       or re.search(r"\bb\d*q\d+", low_name) is not None)
+        # Answer-key detection must catch both the verbose "... Answer Key.pdf"
+        # form and the compact "...Key.docx"/"B2Q1.Key.docx" form. A leading
+        # separator (space/dot/dash/underscore) before "key" avoids matching
+        # words that merely contain the letters (e.g. "turnbuckle", "monkey").
+        is_key = ("answer key" in low_name or "exam key" in low_name or "quiz key" in low_name
+                  or re.search(r"[ ._-]key\b", low_name) is not None)
+        if is_key:
             if "final exam" in low_name:
                 return "final_exam_answer_key"
-            return "quiz_answer_key" if "quiz" in low_name or "quizzes" in low_rel else "project_instructor_guide"
+            if "instructor guide" in low_name:
+                return "project_instructor_guide"
+            return "quiz_answer_key" if is_quiz_ctx else "project_instructor_guide"
         if "instructor guide" in low_name:
             return "project_instructor_guide"
-        if "final exam" in low_name or re.search(r"\btest\b", low_name):
+        if "final exam" in low_name:
             return "final_exam"
-        if "quiz" in low_name or doc_type == "quiz_exam":
+        if is_quiz_ctx or doc_type == "quiz_exam":
             return "quiz"
         if "project" in low_name or "projects/" in low_rel:
             return "project"
@@ -177,10 +189,17 @@ class AIMClientProfile(BaseClientProfile):
             return "course_calendar"
         if "syllabus" in low_name or doc_type == "syllabus":
             return "syllabus"
-        if "final pdf" in low_rel and ext == "pdf":
+        # "Finalized PDFs" is AIM's folder of PDF lesson decks; the older rule
+        # only matched "Final PDFs", so these were falling through to "other".
+        if ("final pdf" in low_rel or "finalized pdf" in low_rel) and ext == "pdf":
             return "lesson_pdf"
         if "final slide" in low_rel or ext in {"ppt", "pptx"} or doc_type == "lesson_slide_deck":
             return "slide_deck"
+        # Weak, last-resort heuristic: a stray "test" in the name is treated as an
+        # exam only if nothing above matched, so procedure names like
+        # "Round-Out Test" classify by their folder (hangar activity) first.
+        if re.search(r"\btest\b", low_name):
+            return "final_exam"
         return doc_type or "other"
 
     def _extract_block_day(self, text: str, raw_text: str) -> tuple[Optional[int], Optional[int]]:
@@ -259,6 +278,9 @@ class AIMClientProfile(BaseClientProfile):
 
     def _quiz_number(self, name: str) -> Optional[int]:
         m = re.search(r"\bQuiz\s*0*(\d+)\b", name or "", re.I)
+        if not m:
+            # Compact AIM form, e.g. "B2Q1", "B2Q10.Key".
+            m = re.search(r"\bB\d*Q\s*0*(\d+)\b", name or "", re.I)
         return int(m.group(1)) if m else None
 
     def _project_number(self, name: str) -> str:

@@ -42,7 +42,7 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
         doc_processing = ctx.cfg.document_processing
         state['specialized_structure_type'] = 'none'
         if doc_type == 'course_calendar':
-            state['calendar_structure'] = extract_calendar_structure(filename, text, tables, doc_processing)
+            state['calendar_structure'] = self._extract_calendar(state, filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'course_calendar'
             state.setdefault('doc_metadata', {})['block'] = state['calendar_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns)
             state.setdefault('doc_metadata', {})['calendar_days_detected'] = len(state['calendar_structure'].get('days', []))
@@ -57,6 +57,24 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
             state['project_structure'] = extract_project_structure(filename, text, doc_processing)
             state['specialized_structure_type'] = state['project_structure'].get('structure_type', doc_type)
         return ctx.step_done(state, 'specialized_structure_extraction')
+
+    def _extract_calendar(self, state, filename, text, tables, doc_processing):
+        """Use the AIM column-aware parser for AIM teacher-calendar workbooks;
+        fall back to the generic row-based extractor for everything else."""
+        raw_bytes = state.get('raw_bytes') or b''
+        is_excel = str(filename).lower().endswith(('.xlsx', '.xls'))
+        if raw_bytes and is_excel:
+            try:
+                from services.aim_calendar import (
+                    looks_like_aim_teacher_calendar,
+                    build_calendar_structure,
+                )
+                if looks_like_aim_teacher_calendar(raw_bytes):
+                    block_hint = (state.get('doc_metadata') or {}).get('block')
+                    return build_calendar_structure(raw_bytes, filename, block_hint)
+            except Exception:
+                pass  # any parsing issue -> safe generic fallback below
+        return extract_calendar_structure(filename, text, tables, doc_processing)
 
         # =============================================================================
         # STEP: content_unit_creation

@@ -156,6 +156,12 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
         "document_type": document_type,
         "purpose": purpose,
         "visibility": normalize_visibility(meta.get("visibility") or "instructor"),
+        # Security-critical: carry restriction flags into the compact index so the
+        # retrieval gate can hide answer keys / instructor guides / calendars from
+        # students. Without these, gating fell back to a visibility string the gate
+        # did not recognize and restricted content leaked into retrieval.
+        "restricted": bool(meta.get("restricted")),
+        "access_level": meta.get("access_level") or ("admin_only" if meta.get("restricted") else ""),
         "status": meta.get("status") or "processed",
         "size_bytes": source.get("size_bytes") or payload.get("file_size_bytes") or meta.get("file_size_bytes"),
         "page_count": payload.get("page_count") or meta.get("page_count"),
@@ -186,12 +192,24 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "document_type": document_type,
         "purpose": purpose,
         "visibility": normalize_visibility(meta.get("visibility") or "instructor"),
+        # Security-critical: carry restriction flags into the compact index so the
+        # retrieval gate can hide answer keys / instructor guides / calendars from
+        # students. Without these, gating fell back to a visibility string the gate
+        # did not recognize and restricted content leaked into retrieval.
+        "restricted": bool(meta.get("restricted")),
+        "access_level": meta.get("access_level") or ("admin_only" if meta.get("restricted") else ""),
         "status": meta.get("status") or "processed",
         "size_bytes": source.get("size_bytes") or payload.get("file_size_bytes") or meta.get("file_size_bytes"),
         "page_count": payload.get("page_count") or meta.get("page_count"),
         "total_units": len(payload.get("content_units") or []),
         "payload_key": payload_key,
         "content_key": content_key,
+        # Reference back to the original uploaded file in S3, so retrieval can
+        # cite/deep-link the source (not just its filename). These come straight
+        # from the payload's source_file block written at ingestion.
+        "raw_storage_url": source.get("raw_url") or "",
+        "raw_key": source.get("raw_key") or "",
+        "source_relative_path": source.get("relative_path") or "",
         "created_at": payload.get("created_at") or now,
         "updated_at": now,
         # Optional simple filter values only. No internal metadata dump.
