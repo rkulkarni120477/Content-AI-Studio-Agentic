@@ -172,8 +172,79 @@ def launch_generation(
 
     job_runner.submit(generation_jobs.run_generation_job, job_id)
 
-    _log.info("generation_launched  user=%s  job_id=%s  component=%s  prompt=%s",
-              current_user.username, job_id, request_body.component_label, request_body.prompt_name)
+    # Log-only, read-only lookups to report exactly where the CDD/blueprint/
+    # style used for this generation came from. Does not affect req_params,
+    # job creation, or the response — purely observability.
+    from promptops_app.database import Course, Project, get_active_style
+
+    cdd_source = "explicit" if request_body.cdd_id else "course_active"
+    bp_source = "explicit" if request_body.blueprint_id else "course_active"
+
+    active_style = get_active_style(db, project_id=request_body.project_id, course_id=request_body.course_id)
+    style_source = None
+    if active_style:
+        course_obj = db.get(Course, request_body.course_id) if request_body.course_id else None
+        if course_obj and course_obj.active_style_id == active_style.id:
+            style_source = "course"
+        else:
+            proj_obj = db.get(Project, request_body.project_id) if request_body.project_id else None
+            style_source = "project" if proj_obj and proj_obj.active_style_id == active_style.id else "global_default"
+
+    _log.info("generation_launched", extra={
+        "event": "generation_launched",
+        "user": current_user.username,
+        "job_id": str(job_id),
+        "project_id": request_body.project_id,
+        "course_id": request_body.course_id,
+        "component_label": request_body.component_label,
+        "component_value": request_body.component_value,
+        "component_type": request_body.component_type,
+        "prompt_name": request_body.prompt_name,
+        "model_choice": request_body.model_choice,
+        "cdd_id": eff_cdd_id,
+        "cdd_source": cdd_source,
+        "blueprint_id": eff_bp_id,
+        "blueprint_source": bp_source,
+        "style_id": active_style.id if active_style else None,
+        "style_name": active_style.name if active_style else None,
+        "style_source": style_source,
+        "target_audience": request_body.target_audience,
+        "expert_domain": request_body.expert_domain,
+        "audience_category": request_body.audience_category,
+        "context_document_names": request_body.context_document_names,
+        "supplementary_files": [f.model_dump() for f in request_body.supplementary_files],
+        "extra_instructions": request_body.extra_instructions,
+        "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
+    })
+
+    # Mirror the same info into the queryable Audit Trail (Analytics tab), so
+    # "what went into this generation" is visible there too, not only in the
+    # JSON log file. log_audit_event fails safe — never breaks this endpoint.
+    from promptops_app.services.audit_service import log_audit_event
+
+    log_audit_event(
+        db, current_user.username, "generation.launched",
+        entity_type="generation", entity_id=job_id,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        metadata={
+            "component_label": request_body.component_label,
+            "component_value": request_body.component_value,
+            "component_type": request_body.component_type,
+            "prompt_name": request_body.prompt_name,
+            "model_choice": request_body.model_choice,
+            "cdd_id": eff_cdd_id, "cdd_source": cdd_source,
+            "blueprint_id": eff_bp_id, "blueprint_source": bp_source,
+            "style_id": active_style.id if active_style else None,
+            "style_name": active_style.name if active_style else None,
+            "style_source": style_source,
+            "target_audience": request_body.target_audience,
+            "expert_domain": request_body.expert_domain,
+            "audience_category": request_body.audience_category,
+            "context_document_names": request_body.context_document_names,
+            "extra_instructions": request_body.extra_instructions,
+            "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
+        },
+    )
 
     return JobAcceptedResponse(
         job_id=str(job_id),

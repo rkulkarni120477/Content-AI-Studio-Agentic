@@ -83,3 +83,6 @@ MIGRATION_RUNBOOK.md
 CAS_PromptInject.md
 CONTEXT_FLOW_AND_ARCHITECTURE.md
 Embd_based_retieval.md
+logs/
+.graphify_python
+graphify-out/

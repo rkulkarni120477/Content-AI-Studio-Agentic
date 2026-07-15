@@ -378,7 +378,19 @@ def generate_blueprint(
     log_audit_event(db, current_user.username, "blueprint.created",
                     entity_type="blueprint", entity_id=new_bp.id,
                     project_id=request_body.project_id, course_id=request_body.course_id,
-                    metadata={"title": bp_title})
+                    metadata={
+                        "title": bp_title,
+                        "model_choice": request_body.model_choice,
+                        "selected_module": request_body.selected_module,
+                        "cdd_id": cdd_id, "cdd_title": cdd_title,
+                        "mode": "teacher" if request_body.teacher_mode else "student",
+                        "extra_instructions": request_body.extra_instructions,
+                        "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
+                        "input_mode": "full",
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "output": raw_output,
+                    })
 
     _log.info("blueprint_generate_complete  user=%s  bp_id=%d  components=%d",
               current_user.username, new_bp.id, len(component_list))

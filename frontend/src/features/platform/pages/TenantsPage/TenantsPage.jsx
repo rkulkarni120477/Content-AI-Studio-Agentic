@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import { platformService } from '@features/platform/services/platformService';
+import { analyticsService } from '@features/analytics/services/analyticsService';
 import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatTimestamp } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Modal from '@components/common/Modal/Modal';
@@ -26,6 +27,10 @@ const ROLE_COLORS = {
   [ROLES.AUTHOR]: '#4338ca',
 };
 
+// These can be multi-KB blobs — shown via the "View Content" modal instead of
+// the inline key/value grid, so the grid stays scannable.
+const CONTENT_KEYS = ['system_prompt', 'user_prompt', 'output'];
+
 export default function TenantsPage() {
   const navigate = useNavigate();
   const { logout, user, role } = useAuth();
@@ -35,6 +40,12 @@ export default function TenantsPage() {
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+
+  const [view, setView] = useState('tenants'); // 'tenants' | 'audit'
+  const [auditItems, setAuditItems] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [expandedAuditId, setExpandedAuditId] = useState(null);
+  const [viewContentEvent, setViewContentEvent] = useState(null);
 
   const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
   const roleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
@@ -88,6 +99,28 @@ export default function TenantsPage() {
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
+  async function openAuditLog() {
+    setView('audit');
+    setAuditLoading(true);
+    try {
+      const res = await analyticsService.getAuditTrail({ page: 1, page_size: 25 });
+      setAuditItems(res?.items || []);
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
+  function toggleAuditDetail(id) {
+    setExpandedAuditId((cur) => (cur === id ? null : id));
+  }
+
+  function tenantName(projectId) {
+    if (!projectId) return '—';
+    return tenants.find((t) => t.id === projectId)?.name || `#${projectId}`;
+  }
+
   function handleSignOut() {
     logout();
     navigate(ROUTES.LOGIN, { replace: true });
@@ -103,8 +136,19 @@ export default function TenantsPage() {
           <span className={styles.userPill__role} style={{ background: roleColor }}>{roleLabel}</span>
         </div>
         <div className={styles.navLabel}>Platform</div>
-        <button type="button" className={`${styles.navBtn} ${styles.navBtnActive}`}>
+        <button
+          type="button"
+          className={`${styles.navBtn} ${view === 'tenants' ? styles.navBtnActive : ''}`}
+          onClick={() => setView('tenants')}
+        >
           🏢 Tenants
+        </button>
+        <button
+          type="button"
+          className={`${styles.navBtn} ${view === 'audit' ? styles.navBtnActive : ''}`}
+          onClick={openAuditLog}
+        >
+          📜 Audit Log
         </button>
         <div className={styles.sidebarSpacer} />
         <button type="button" className={styles.signOut} onClick={handleSignOut}>
@@ -113,73 +157,151 @@ export default function TenantsPage() {
       </aside>
 
       <main className={styles.main}>
-        <div className={styles.headerRow}>
-          <SelectionPageHeader
-            eyebrow="Platform Admin"
-            title="Tenants"
-            subtitle="Manage organizations, licenses, and status."
-          />
-          <Button variant="primary" onClick={() => setShowNew(true)}>+ New Tenant</Button>
-        </div>
+        {view === 'tenants' ? (
+          <>
+            <div className={styles.headerRow}>
+              <SelectionPageHeader
+                eyebrow="Platform Admin"
+                title="Tenants"
+                subtitle="Manage organizations, licenses, and status."
+              />
+              <Button variant="primary" onClick={() => setShowNew(true)}>+ New Tenant</Button>
+            </div>
 
-        <SectionBadge
-          icon="🏢"
-          title="Organization Directory"
-          subtitle="Create tenants, manage user seats, and open Roles, Category, or Users for each organization."
-        />
+            <SectionBadge
+              icon="🏢"
+              title="Organization Directory"
+              subtitle="Create tenants, manage user seats, and open Roles, Category, or Users for each organization."
+            />
 
-        {loading ? (
-          <div className={styles.center}><Loader size="lg" /></div>
-        ) : tenants.length === 0 ? (
-          <EmptyState
-            icon="🏢"
-            title="No tenants yet"
-            message="Create the first organization to get started."
-            action={() => setShowNew(true)}
-            actionLabel="+ New Tenant"
-          />
+            {loading ? (
+              <div className={styles.center}><Loader size="lg" /></div>
+            ) : tenants.length === 0 ? (
+              <EmptyState
+                icon="🏢"
+                title="No tenants yet"
+                message="Create the first organization to get started."
+                action={() => setShowNew(true)}
+                actionLabel="+ New Tenant"
+              />
+            ) : (
+              <div className={styles.card}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Code</th>
+                      <th>Users</th>
+                      <th>Status</th>
+                      <th className={styles.actionsCol}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tenants.map((t) => (
+                      <tr key={t.id}>
+                        <td className={styles.name}>{t.name}</td>
+                        <td><code className={styles.code}>{t.slug}</code></td>
+                        <td>{t.active_users} / {t.max_users}</td>
+                        <td>
+                          <span className={t.status === 'active' ? styles.statusActive : styles.statusSuspended}>
+                            {t.status === 'active' ? '● Active' : '○ Suspended'}
+                          </span>
+                        </td>
+                        <td className={styles.actions}>
+                          <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.TENANT_USERS(t.id))}>
+                            Users
+                          </Button>
+                          <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.TENANT_ROLES(t.id))}>
+                            Roles
+                          </Button>
+                          <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(t.id))}>
+                            Category
+                          </Button>
+                          <Button variant="secondary" size="xs" onClick={() => toggleStatus(t)}>
+                            {t.status === 'active' ? 'Suspend' : 'Activate'}
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         ) : (
-          <div className={styles.card}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Code</th>
-                  <th>Users</th>
-                  <th>Status</th>
-                  <th className={styles.actionsCol}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tenants.map((t) => (
-                  <tr key={t.id}>
-                    <td className={styles.name}>{t.name}</td>
-                    <td><code className={styles.code}>{t.slug}</code></td>
-                    <td>{t.active_users} / {t.max_users}</td>
-                    <td>
-                      <span className={t.status === 'active' ? styles.statusActive : styles.statusSuspended}>
-                        {t.status === 'active' ? '● Active' : '○ Suspended'}
-                      </span>
-                    </td>
-                    <td className={styles.actions}>
-                      <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.TENANT_USERS(t.id))}>
-                        Users
-                      </Button>
-                      <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.TENANT_ROLES(t.id))}>
-                        Roles
-                      </Button>
-                      <Button variant="ghost" size="xs" onClick={() => navigate(ROUTES.PROJECT_CLUSTERS(t.id))}>
-                        Category
-                      </Button>
-                      <Button variant="secondary" size="xs" onClick={() => toggleStatus(t)}>
-                        {t.status === 'active' ? 'Suspend' : 'Activate'}
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className={styles.headerRow}>
+              <SelectionPageHeader
+                eyebrow="Platform Admin"
+                title="Audit Log"
+                subtitle="Structured log of every significant action across the platform."
+              />
+            </div>
+
+            <SectionBadge
+              icon="📜"
+              title="Audit Trail"
+              subtitle="Who did what, when — including exactly what went into each generation."
+            />
+
+            {auditLoading ? (
+              <div className={styles.center}><Loader size="lg" /></div>
+            ) : auditItems.length === 0 ? (
+              <EmptyState icon="📜" title="No audit events yet" message="Audit events appear here as users work in the platform." />
+            ) : (
+              <div className={styles.card}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>User</th>
+                      <th>Tenant</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditItems.map((ev) => (
+                      <Fragment key={ev.id}>
+                        <tr className={styles.auditRow} onClick={() => toggleAuditDetail(ev.id)}>
+                          <td>{formatTimestamp(ev.created_at)}</td>
+                          <td>{ev.actor}</td>
+                          <td>{tenantName(ev.project_id)}</td>
+                          <td>{ev.icon || ''} {ev.label || ev.action}</td>
+                        </tr>
+                        {expandedAuditId === ev.id && (
+                          <tr className={styles.auditDetailRow}>
+                            <td colSpan={4}>
+                              {ev.metadata && Object.keys(ev.metadata).length > 0 ? (
+                                <>
+                                  <dl className={styles.auditDetail}>
+                                    {Object.entries(ev.metadata).map(([k, v]) => (
+                                      CONTENT_KEYS.includes(k) || v === null || v === undefined || v === '' ? null : (
+                                        <div key={k} className={styles.auditDetail__row}>
+                                          <dt>{k}</dt>
+                                          <dd>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</dd>
+                                        </div>
+                                      )
+                                    ))}
+                                  </dl>
+                                  {CONTENT_KEYS.some((k) => ev.metadata[k]) && (
+                                    <Button variant="secondary" size="xs" onClick={() => setViewContentEvent(ev)}>
+                                      📄 View Content
+                                    </Button>
+                                  )}
+                                </>
+                              ) : (
+                                <p className={styles.emptyHint}>No additional details logged for this event.</p>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </main>
 
@@ -241,6 +363,49 @@ export default function TenantsPage() {
           </div>
         </form>
       </Modal>
+
+      <Modal
+        open={Boolean(viewContentEvent)}
+        onClose={() => setViewContentEvent(null)}
+        title={`Content — ${viewContentEvent?.label || viewContentEvent?.action || ''}`}
+        size="xl"
+        footer={null}
+      >
+        {viewContentEvent && (
+          <div className={styles.contentView}>
+            {viewContentEvent.metadata?.input_mode && (
+              <span className={
+                viewContentEvent.metadata.input_mode === 'truncated'
+                  ? styles.inputModeBadgeTruncated
+                  : styles.inputModeBadgeFull
+              }>
+                {viewContentEvent.metadata.input_mode === 'truncated'
+                  ? '✂️ Source content was truncated to fit the model'
+                  : '✅ Full, untruncated content was sent'}
+              </span>
+            )}
+            {viewContentEvent.metadata?.system_prompt && (
+              <div className={styles.contentBlock}>
+                <div className={styles.contentBlock__label}>System Prompt</div>
+                <pre className={styles.contentBlock__body}>{viewContentEvent.metadata.system_prompt}</pre>
+              </div>
+            )}
+            {viewContentEvent.metadata?.user_prompt && (
+              <div className={styles.contentBlock}>
+                <div className={styles.contentBlock__label}>Full Input (prompt + source content)</div>
+                <pre className={styles.contentBlock__body}>{viewContentEvent.metadata.user_prompt}</pre>
+              </div>
+            )}
+            {viewContentEvent.metadata?.output && (
+              <div className={styles.contentBlock}>
+                <div className={styles.contentBlock__label}>Output</div>
+                <pre className={styles.contentBlock__body}>{viewContentEvent.metadata.output}</pre>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
       <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
     </div>
   );

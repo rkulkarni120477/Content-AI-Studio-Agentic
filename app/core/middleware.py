@@ -21,6 +21,7 @@ layer to the Celery task — as a single trace without needing a full APM tool.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -31,6 +32,29 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 _log = logging.getLogger(__name__)
+
+_LOGGABLE_CONTENT_TYPES = ("application/json", "text/")
+_REDACT_KEYS = {"password", "admin_password", "new_password", "password_hash",
+                 "azure_client_secret", "token", "access_token"}
+
+
+def _redact(body_bytes: bytes):
+    """Best-effort: parse as JSON and mask sensitive fields (as a real nested
+    object, not a re-stringified blob, so the log line stays proper JSON).
+    Falls back to the raw decoded text for non-JSON bodies. No size limit —
+    full request/response content is always logged.
+    """
+    try:
+        data = json.loads(body_bytes)
+        def scrub(obj):
+            if isinstance(obj, dict):
+                return {k: ("***" if k in _REDACT_KEYS else scrub(v)) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [scrub(v) for v in obj]
+            return obj
+        return scrub(data)
+    except (ValueError, UnicodeDecodeError):
+        return body_bytes.decode("utf-8", errors="replace")
 
 # ContextVar allows any code running in the same async context (services,
 # repositories, Celery tasks via manual pass-through) to read the current
@@ -59,11 +83,42 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Store on request.state so route handlers can access it directly.
         request.state.request_id = request_id
 
+        # Best-effort: tag this request's logs with the calling username, so
+        # they land in that user's per-login session log file. This must
+        # happen here (before call_next spawns the route's task) rather than
+        # inside get_current_user() — BaseHTTPMiddleware runs the downstream
+        # app in a separate child task, so a ContextVar set there never
+        # becomes visible back in this middleware's own request_completed
+        # log. Setting it here, before call_next, means the child task's
+        # copied context already includes it. Never used for authorization —
+        # get_current_user() still does the real, validated auth.
+        from promptops_app.core.logging import session_username_ctx
+        from app.core.security import decode_access_token
+
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            try:
+                claims = decode_access_token(auth_header[7:])
+                username = claims.get("sub")
+                if username:
+                    session_username_ctx.set(username)
+            except Exception:
+                pass
+
         start_time = time.perf_counter()
 
+        # Reading body() caches it on the request, so downstream handlers can
+        # still read it normally — this does not consume the stream for them.
+        req_body = await request.body()
+        req_body_val = _redact(req_body) if req_body else ""
+
         _log.info(
-            "request_started  id=%s  method=%s  path=%s",
-            request_id, request.method, request.url.path,
+            "request_started",
+            extra={
+                "event": "request_started", "request_id": request_id,
+                "method": request.method, "path": request.url.path,
+                "request_body": req_body_val,
+            },
         )
 
         try:
@@ -71,8 +126,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             _log.error(
-                "request_error  id=%s  method=%s  path=%s  duration_ms=%d  error=%s",
-                request_id, request.method, request.url.path, duration_ms, exc,
+                "request_error",
+                extra={
+                    "event": "request_error", "request_id": request_id,
+                    "method": request.method, "path": request.url.path,
+                    "duration_ms": duration_ms, "error": str(exc),
+                },
             )
             raise
         finally:
@@ -82,10 +141,28 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
 
+        # Capture the response body for logging, then rebuild an identical
+        # response so the client still receives it untouched.
+        resp_body_val = ""
+        content_type = response.headers.get("content-type", "")
+        if any(content_type.startswith(ct) for ct in _LOGGABLE_CONTENT_TYPES):
+            resp_bytes = b"".join([chunk async for chunk in response.body_iterator])
+            resp_body_val = _redact(resp_bytes) if resp_bytes else ""
+            response = Response(
+                content=resp_bytes,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+
         _log.info(
-            "request_completed  id=%s  method=%s  path=%s  status=%d  duration_ms=%d",
-            request_id, request.method, request.url.path,
-            response.status_code, duration_ms,
+            "request_completed",
+            extra={
+                "event": "request_completed", "request_id": request_id,
+                "method": request.method, "path": request.url.path,
+                "status": response.status_code, "duration_ms": duration_ms,
+                "response_body": resp_body_val,
+            },
         )
 
         # Attach the correlation ID to the response so the frontend/client

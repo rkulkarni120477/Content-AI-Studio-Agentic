@@ -489,6 +489,7 @@ def generate_style_intelligence(
     effective_extra = "\n\n".join(extra_parts).strip()
 
     # Use regenerate if understanding already exists, otherwise generate fresh.
+    _audit_capture = {}
     if style.generated_summary:
         result = regenerate_style_understanding(
             db,
@@ -496,6 +497,7 @@ def generate_style_intelligence(
             request_body.model_choice,
             effective_extra,
             system_prompt=request_body.system_prompt_override,
+            audit_capture=_audit_capture,
         )
     else:
         result = generate_style_understanding(
@@ -504,6 +506,7 @@ def generate_style_intelligence(
             request_body.model_choice,
             effective_extra,
             system_prompt=request_body.system_prompt_override,
+            audit_capture=_audit_capture,
         )
 
     if isinstance(result, str) and result.startswith("ERROR: No documents or instructions"):
@@ -526,6 +529,24 @@ def generate_style_intelligence(
     style.generated_summary = understanding_text
     db.commit()
     _upsert_generated_style_to_dis(style, current_user)
+
+    from promptops_app.services.audit_service import log_audit_event
+
+    log_audit_event(
+        db, current_user.username, "style.upgraded",
+        entity_type="style", entity_id=style.style_id,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        metadata={
+            "name": style.name,
+            "model_choice": request_body.model_choice,
+            "extra_instructions": request_body.extra_instructions,
+            "document_ids": request_body.document_ids,
+            "input_mode": "full",
+            "system_prompt": _audit_capture.get("system_prompt"),
+            "user_prompt": _audit_capture.get("user_prompt"),
+            "output": understanding_text,
+        },
+    )
 
     _log.info("style_understood  user=%s  style_id=%d  model=%s",
               current_user.username, style_id, request_body.model_choice)

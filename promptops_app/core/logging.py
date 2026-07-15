@@ -28,9 +28,15 @@ PROMPTOPS_LOG_COLOR        1 | true  — force color even when stdout is not a T
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+import logging.handlers
+import re
 import sys
+import threading
 import time
+from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Dict, Generator, Optional
 
 from promptops_app.core.config import settings as _cfg
@@ -44,27 +50,89 @@ LOG_FULL_PROMPTS: bool = _cfg.enable_prompt_logging
 _CONFIGURED = False
 _timing_log = logging.getLogger("promptops_app.timing")
 
+# ---------------------------------------------------------------------------
+# Per-login session log files
+#
+# Every successful login gets its own fresh log file under logs/sessions/,
+# even a repeat login by the same username. get_current_user() sets
+# session_username_ctx on every authenticated request, so all of that user's
+# subsequent activity (requests, LLM calls) is mirrored into their active
+# session file in addition to the main logs/app.log.
+# ---------------------------------------------------------------------------
+
+session_username_ctx: ContextVar[str] = ContextVar("session_username", default="")
+_session_handlers: Dict[str, logging.Handler] = {}
+_session_lock = threading.Lock()
+
+
+class _SessionFilter(logging.Filter):
+    """Only pass log records emitted while this username is the active request user."""
+
+    def __init__(self, username: str) -> None:
+        super().__init__()
+        self._username = username
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        return session_username_ctx.get() == self._username
+
+
+def _safe_filename(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", text) or "user"
+
+
+def start_session_log(username: str) -> None:
+    """Create a brand-new per-login log file for this username and make it active.
+
+    Call this once, right after a successful login. Any previous session
+    file for the same username is detached (left on disk as history) and
+    this new one takes over as the live target.
+    """
+    configure_logging()
+
+    Path("logs/sessions").mkdir(parents=True, exist_ok=True)
+    path = f"logs/sessions/{_safe_filename(username)}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(_JsonFormatter())
+    handler.addFilter(_SessionFilter(username))
+
+    root = logging.getLogger()
+    with _session_lock:
+        old = _session_handlers.get(username)
+        if old is not None:
+            root.removeHandler(old)
+            old.close()
+        root.addHandler(handler)
+        _session_handlers[username] = handler
+
+    session_username_ctx.set(username)
+    logging.getLogger(__name__).info(
+        "session_log_started", extra={"event": "session_log_started", "username": username, "file": path},
+    )
+
 
 # ---------------------------------------------------------------------------
 # Formatter
 # ---------------------------------------------------------------------------
 
-class _LocalFormatter(logging.Formatter):
-    """Readable single-line formatter — optional ANSI color for TTY output."""
+# Standard LogRecord attributes — anything else on the record came from a
+# caller's `extra={...}` dict and gets surfaced as its own JSON field.
+_STANDARD_RECORD_KEYS = frozenset({
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process", "message", "taskName",
+})
 
-    _COLORS: dict[str, str] = {
-        "DEBUG":    "\033[36m",    # cyan
-        "INFO":     "\033[32m",    # green
-        "WARNING":  "\033[33m",    # yellow
-        "ERROR":    "\033[31m",    # red
-        "CRITICAL": "\033[1;31m",  # bold red
-    }
-    _RESET = "\033[0m"
-    _DIM   = "\033[2m"
 
-    def __init__(self, use_color: bool = False) -> None:
-        super().__init__()
-        self._use_color = use_color
+class _JsonFormatter(logging.Formatter):
+    """One JSON object per line. No truncation — full field values always included.
+
+    Any keys passed via `extra={...}` on the logging call are merged in as
+    top-level fields (e.g. extra={"method": "GET", "body": "..."} becomes
+    {"method": "GET", "body": "..."} in the JSON line), so the file stays
+    directly greppable/parseable per field instead of one opaque string.
+    """
 
     @staticmethod
     def _shorten(name: str) -> str:
@@ -73,19 +141,18 @@ class _LocalFormatter(logging.Formatter):
         return name
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: A003
-        ts   = self.formatTime(record, datefmt="%H:%M:%S")
-        lvl  = record.levelname
-        name = self._shorten(record.name)
-        msg  = record.getMessage()
-
+        payload: Dict[str, Any] = {
+            "timestamp": self.formatTime(record, datefmt="%Y-%m-%d %H:%M:%S"),
+            "level": record.levelname,
+            "logger": self._shorten(record.name),
+            "message": record.getMessage(),
+        }
+        for key, value in record.__dict__.items():
+            if key not in _STANDARD_RECORD_KEYS and not key.startswith("_"):
+                payload[key] = value
         if record.exc_info:
-            msg = f"{msg}\n{self.formatException(record.exc_info)}"
-
-        if self._use_color:
-            c, r, d = self._COLORS.get(lvl, ""), self._RESET, self._DIM
-            return f"{d}{ts}{r}  {c}{lvl:<8}{r}  {d}{name}{r}  {msg}"
-
-        return f"{ts}  {lvl:<8}  {name}  {msg}"
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -109,15 +176,23 @@ def configure_logging(level: Optional[str] = None) -> None:
     raw_level = (level or _cfg.log_level).upper()
     log_level  = getattr(logging, raw_level, logging.INFO)
 
-    use_color = sys.stdout.isatty() or _cfg.log_color
-
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(_LocalFormatter(use_color=use_color))
+    handler.setFormatter(_JsonFormatter())
 
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(log_level)
+
+    # Also write everything to a rotating file so logs survive past the
+    # console scrollback and can be grepped/tailed directly (repo root is
+    # bind-mounted into the container, so this shows up on the host too).
+    Path("logs").mkdir(exist_ok=True)
+    file_handler = logging.handlers.RotatingFileHandler(
+        "logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8",
+    )
+    file_handler.setFormatter(_JsonFormatter())
+    root.addHandler(file_handler)
 
     # Quiet chatty third-party libraries that flood logs at DEBUG/INFO
     for noisy in (
@@ -127,8 +202,8 @@ def configure_logging(level: Optional[str] = None) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     logging.getLogger(__name__).debug(
-        "logging configured  level=%s  color=%s  full_prompts=%s",
-        raw_level, use_color, LOG_FULL_PROMPTS,
+        "logging configured  level=%s  full_prompts=%s",
+        raw_level, LOG_FULL_PROMPTS,
     )
 
 
@@ -164,16 +239,17 @@ def log_duration(
                           extra={"fmt": "zip", "user": user_name}):
             data = _build_zip(request)
     """
-    _logger     = logger or _timing_log
-    _extra_str  = _fmt_extra(extra or {})
-    start       = time.monotonic()
+    _logger = logger or _timing_log
+    _extra  = dict(extra or {})
+    start   = time.monotonic()
     try:
         yield
     except Exception:
         elapsed = time.monotonic() - start
         _logger.error(
-            "FAILED  %s  duration=%.3fs%s",
-            operation, elapsed, _extra_str,
+            "operation_failed",
+            extra={"event": "operation_failed", "operation": operation,
+                   "duration_seconds": round(elapsed, 3), **_extra},
             exc_info=True,
         )
         raise
@@ -181,16 +257,7 @@ def log_duration(
         elapsed = time.monotonic() - start
         _logger.log(
             level,
-            "%s  duration=%.3fs%s",
-            operation, elapsed, _extra_str,
+            "operation_completed",
+            extra={"event": "operation_completed", "operation": operation,
+                   "duration_seconds": round(elapsed, 3), **_extra},
         )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _fmt_extra(extra: Dict[str, Any]) -> str:
-    if not extra:
-        return ""
-    return "  " + "  ".join(f"{k}={v!r}" for k, v in extra.items())
