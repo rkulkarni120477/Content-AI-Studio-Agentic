@@ -189,14 +189,23 @@ retrieval:
       - syllabus
       - lesson_plan
     course_generation:
+      # Pipeline-era classification names (kept for backward compatibility).
       - lesson_plan
       - lesson_slide_deck
-      - slide_deck
       - project_activity
       - quiz_exam
-      - study_questions
       - student_handout
       - ebook_reference
+      # Actual Source Library doc types produced for AIM (must be listed here or
+      # course-generation retrieval finds nothing). Mirrors
+      # aim_content_rules.course_generation_source_types below.
+      - lesson_pdf
+      - slide_deck
+      - quiz
+      - final_exam
+      - project
+      - hangar_activity
+      - study_questions
 security:
   require_jwt: true
   jwt_audience: aim-dis-api

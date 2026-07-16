@@ -245,7 +245,10 @@ def generate_cdd(
             ]),
             "filters": {
                 "purpose": "cdd",
-                "document_types": ["syllabus", "course_outline", "learning_objectives", "style_guide", "authoring_guide"],
+                # No hard document_types filter: fixed type names did not match real
+                # stored doc types (e.g. Cengage docs are typed "pdf"), silently
+                # returning zero. Retrieval relies on purpose + semantic ranking;
+                # the security allow-set still applies.
             },
             "retrieval": {"top_k": 12, "token_budget": 12000},
         },

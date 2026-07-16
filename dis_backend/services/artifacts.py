@@ -70,18 +70,34 @@ class ArtifactWriter:
         env = self.settings.environment or "development"
         return f"processed/{namespace}/{env}/{job_id}"
 
+    def _s3_client(self):
+        """Return a cached boto3 S3 client.
+
+        Creating a boto3 client is expensive (~1s: credential + endpoint
+        resolution). Retrieval reads one content.json per source document, so a
+        per-call client made every read the bottleneck (~1s x N docs). Caching it
+        on the instance makes each read a fast GET. Behavior is unchanged.
+        """
+        client = getattr(self, "_cached_s3", None)
+        if client is not None:
+            return client
+        import boto3
+        cfg = self.tenant_cfg.storage.s3
+        kwargs = {"region_name": cfg.region or self.settings.aws_region}
+        if cfg.endpoint_url:
+            kwargs["endpoint_url"] = cfg.endpoint_url
+        if self.settings.aws_access_key_id:
+            kwargs["aws_access_key_id"] = self.settings.aws_access_key_id
+            kwargs["aws_secret_access_key"] = self.settings.aws_secret_access_key
+        client = boto3.client("s3", **kwargs)
+        self._cached_s3 = client
+        return client
+
     def write_json(self, key: str, payload: Any) -> str:
         data = json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default).encode("utf-8")
         if self.provider == "s3":
-            import boto3
             cfg = self.tenant_cfg.storage.s3
-            kwargs = {"region_name": cfg.region or self.settings.aws_region}
-            if cfg.endpoint_url:
-                kwargs["endpoint_url"] = cfg.endpoint_url
-            if self.settings.aws_access_key_id:
-                kwargs["aws_access_key_id"] = self.settings.aws_access_key_id
-                kwargs["aws_secret_access_key"] = self.settings.aws_secret_access_key
-            s3 = boto3.client("s3", **kwargs)
+            s3 = self._s3_client()
             extra = {"ContentType": "application/json"}
             if cfg.kms_key_id:
                 extra["ServerSideEncryption"] = "aws:kms"
@@ -94,24 +110,14 @@ class ArtifactWriter:
 
     def read_json(self, key: str) -> Any:
         if self.provider == "s3":
-            import boto3
-            cfg = self.tenant_cfg.storage.s3
-            kwargs = {"region_name": cfg.region or self.settings.aws_region}
-            if cfg.endpoint_url:
-                kwargs["endpoint_url"] = cfg.endpoint_url
-            s3 = boto3.client("s3", **kwargs)
+            s3 = self._s3_client()
             storage_key = _join_prefix(self.base_prefix, key)
             return json.loads(s3.get_object(Bucket=self.processed_bucket, Key=storage_key)["Body"].read())
         raise RuntimeError("DIS storage is S3-only. Cannot read local artifact storage.")
 
     def list_keys(self, prefix: str, suffix: str = "") -> List[str]:
         if self.provider == "s3":
-            import boto3
-            cfg = self.tenant_cfg.storage.s3
-            kwargs = {"region_name": cfg.region or self.settings.aws_region}
-            if cfg.endpoint_url:
-                kwargs["endpoint_url"] = cfg.endpoint_url
-            s3 = boto3.client("s3", **kwargs)
+            s3 = self._s3_client()
             keys: List[str] = []
             token = None
             while True:

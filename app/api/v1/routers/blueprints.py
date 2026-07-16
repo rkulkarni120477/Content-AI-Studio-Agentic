@@ -193,7 +193,10 @@ def generate_blueprint(
             "filters": {
                 "purpose": "blueprint",
                 "selected_module": request_body.selected_module,
-                "document_types": ["syllabus", "course_calendar", "chapter_outline", "module_map", "course_outline"],
+                # No hard document_types filter here. The DIS blueprint handler
+                # already narrows to calendar/syllabus (content_types), and the
+                # fixed names below did not match real stored doc types. Retrieval
+                # relies on purpose + semantic ranking; security allow-set applies.
             },
             "retrieval": {"top_k": 12, "token_budget": 12000},
         },

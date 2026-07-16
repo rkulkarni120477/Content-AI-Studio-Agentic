@@ -332,3 +332,106 @@ def ensure_index(client, index_name: str, dimension: int):
         },
     }
     client.indices.create(index=index_name, body=body)
+
+
+# =============================================================================
+# Query-time vector retrieval (READ path).
+#
+# These functions are used by services/context_retrieval.py to rank content by
+# semantic meaning. They are strictly read-only (never write/modify the index)
+# and they raise on failure so the caller can fall back to S3 keyword scoring.
+# Security is NOT enforced here: the caller cross-checks every hit's job_id
+# against the S3 source-index allow set, so gating stays identical to the S3
+# retrieval path even if OpenSearch metadata is incomplete.
+# =============================================================================
+
+def embed_query(tenant_cfg: TenantConfig, text: str) -> List[float]:
+    """Embed a single query string using the SAME model used at ingestion.
+
+    Returns [] when embeddings are disabled or the text is empty. Any Bedrock
+    error propagates to the caller (which falls back to keyword retrieval).
+    """
+    cfg = tenant_cfg.embedding
+    text = (text or "").strip()
+    if not cfg.enabled or not text:
+        return []
+    import boto3
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=cfg.region or tenant_cfg.storage.s3.region or get_settings().aws_region,
+    )
+    body = json.dumps({"inputText": text[: cfg.max_input_chars], "dimensions": cfg.dimension, "normalize": True})
+    resp = client.invoke_model(modelId=cfg.model_id, body=body)
+    data = json.loads(resp["body"].read())
+    return data.get("embedding", []) or []
+
+
+def _vector_store_read_client(cfg):
+    """Build a read-only OpenSearch client from tenant vector_store config.
+
+    Mirrors the connection logic in opensearch_upsert but is kept separate so
+    the ingestion write path is never affected by read-path changes.
+    """
+    from opensearchpy import OpenSearch, RequestsHttpConnection
+    endpoint = cfg.endpoint.replace("https://", "").replace("http://", "").rstrip("/")
+    if cfg.auth_mode == "basic":
+        return OpenSearch(
+            hosts=[{"host": endpoint, "port": 443}],
+            http_auth=((cfg.username or "").strip(), (cfg.password or "").strip()),
+            use_ssl=True, verify_certs=True,
+            connection_class=RequestsHttpConnection, timeout=30, max_retries=2, retry_on_timeout=True,
+        )
+    import boto3
+    from requests_aws4auth import AWS4Auth
+    session = boto3.Session(region_name=cfg.region)
+    credentials = session.get_credentials()
+    auth = AWS4Auth(credentials.access_key, credentials.secret_key, cfg.region, "es", session_token=credentials.token)
+    return OpenSearch(
+        hosts=[{"host": endpoint, "port": 443}],
+        http_auth=auth, use_ssl=True, verify_certs=True,
+        connection_class=RequestsHttpConnection, timeout=30, max_retries=2, retry_on_timeout=True,
+    )
+
+
+def vector_search(tenant_cfg: TenantConfig, client_id: str, query_text: str, query_embedding: List[float], size: int = 40) -> List[Dict[str, Any]]:
+    """Hybrid semantic + keyword search over the tenant OpenSearch index.
+
+    - Semantic: kNN over the `embedding` field (meaning match).
+    - Keyword: BM25 `multi_match` over title/text/keywords (exact-term match,
+      e.g. course codes like "B2D4"). Combined as a bool query so both signals
+      contribute to the score.
+    - Isolation: filters by `client_id` inside the query.
+
+    Returns hit `_source` dicts (embedding excluded) each with an added
+    `_score`, ordered by relevance. Read-only. Raises on connection/query error.
+    """
+    cfg = tenant_cfg.vector_store
+    if not cfg.enabled or not query_embedding:
+        return []
+    client = _vector_store_read_client(cfg)
+    should: List[Dict[str, Any]] = []
+    if (query_text or "").strip():
+        should.append({
+            "multi_match": {
+                "query": query_text,
+                "fields": ["title^2", "text", "keywords^1.5", "visual_summary^1.2", "topics"],
+            }
+        })
+    body = {
+        "size": size,
+        "query": {
+            "bool": {
+                "must": [{"knn": {"embedding": {"vector": query_embedding, "k": max(size, 10)}}}],
+                "should": should,
+                "filter": [{"term": {"client_id": client_id}}],
+            }
+        },
+        "_source": {"excludes": ["embedding"]},
+    }
+    resp = client.search(index=cfg.index_name, body=body)
+    out: List[Dict[str, Any]] = []
+    for h in resp.get("hits", {}).get("hits", []):
+        src = h.get("_source", {}) or {}
+        src["_score"] = h.get("_score", 0.0)
+        out.append(src)
+    return out

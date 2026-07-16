@@ -129,7 +129,10 @@ def launch_generation(
                 "purpose": "course_generation",
                 "component_label": request_body.component_label,
                 "component_type": request_body.component_type,
-                "document_types": ["textbook_chapter", "activity", "assessment", "rubric", "lesson_plan", "slide_deck", "student_handout", "style_guide", "authoring_guide"],
+                # No hard document_types filter: those fixed names did not match
+                # real stored doc types (AIM: lesson_pdf/quiz/project; Cengage: pdf),
+                # which silently returned zero results. Retrieval now relies on
+                # purpose + semantic ranking; the security allow-set still applies.
             },
             "retrieval": {"top_k": 16, "token_budget": 16000},
         },

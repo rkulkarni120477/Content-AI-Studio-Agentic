@@ -71,6 +71,10 @@ async def documents_library(
 
 class DynamicContextRequest(BaseModel):
     request_id: str | None = None
+    # Free-text query the caller (CAS) builds from the current step. This is the
+    # primary signal for semantic retrieval; without it, retrieve() has no query
+    # to embed and falls back to unranked keyword results. CAS sends it top-level.
+    query: str | None = None
     generation: Dict[str, Any] = Field(default_factory=dict)
     context_input: Dict[str, Any] = Field(default_factory=dict)
     filters: Dict[str, Any] = Field(default_factory=dict)
@@ -238,7 +242,11 @@ async def retrieve_course_generation_context(request: Request, body: DynamicCont
     data.setdefault("generation", {})
     data["generation"].setdefault("type", "course_generation")
     filters = data.setdefault("filters", {})
-    filters.setdefault("visibility", "student")
+    # Do NOT force visibility=student here. Course content is authored by content
+    # teams, so generation must be able to use instructor/content-team-authored
+    # SOURCE documents (e.g. Cengage manuscripts, AIM calendar). Genuinely
+    # restricted material (answer keys, instructor guides, admin/internal-only) is
+    # still blocked by the retrieval restricted gate (_is_hard_restricted).
     filters.setdefault("use_for_course_generation", True)
     filters.setdefault("include_restricted", False)
     if filters.get("include_restricted") and role not in {"client_admin", "super_admin"}:
