@@ -4,10 +4,13 @@ This is not a public semantic search API. It is used by Content AI Studio to
 retrieve relevant DIS-extracted content units for dynamic blueprint/prompt JSON.
 """
 from __future__ import annotations
+import logging
 import math
 import re
 import uuid
 from typing import Any, Dict, Iterable, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
@@ -450,6 +453,115 @@ class ContextRetrievalService:
         hint_text = " ".join(h for h in hints if h).strip()
         return {"day_number": int(requested_day_number), "day_id": requested_day_id, "text": hint_text, "terms": terms(hint_text)} if hint_text else {}
 
+    def _source_file_from_record(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "name": rec.get("source_file_name"),
+            "type": rec.get("source_file_type"),
+            # Original-file references for source citation/deep-link.
+            "raw_url": rec.get("raw_storage_url"),
+            "raw_key": rec.get("raw_key"),
+            "relative_path": rec.get("source_relative_path"),
+        }
+
+    def _metadata_from_record(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """Doc-level metadata rebuilt from a compact source-index record.
+
+        Includes the filter / calendar-join keys promoted into the record by
+        compact_source_record, so _passes_filters can gate block/day/quiz/
+        project entirely from the index (no content-file read). Keys absent on
+        older, pre-enrichment records come back None and behave as "unset".
+        """
+        return {
+            "title": rec.get("title"),
+            "document_type": rec.get("document_type"),
+            "doc_type": rec.get("document_type"),
+            "purpose": rec.get("purpose"),
+            "visibility": rec.get("visibility"),
+            # Security-critical: propagate restriction flags so the retrieval
+            # gate can hide restricted sources from students.
+            "restricted": rec.get("restricted"),
+            "access_level": rec.get("access_level"),
+            "status": rec.get("status"),
+            "course_name": rec.get("course_name"),
+            "block": rec.get("block"),
+            "day": rec.get("day"),
+            "chapter": rec.get("chapter"),
+            "module_name": rec.get("module_name"),
+            "learning_objective": rec.get("learning_objective"),
+            "content_type": rec.get("content_type"),
+            "block_id": rec.get("block_id"),
+            "block_number": rec.get("block_number"),
+            "day_number": rec.get("day_number"),
+            "day_id": rec.get("day_id"),
+            "mapped_day": rec.get("mapped_day"),
+            "filename_day_id": rec.get("filename_day_id"),
+            "quiz_number": rec.get("quiz_number"),
+            "project_number": rec.get("project_number"),
+            "lesson_name": rec.get("lesson_name"),
+            "subject_unit": rec.get("subject_unit"),
+            "course_id": rec.get("course_id"),
+            "program_id": rec.get("program_id"),
+            "calendar_mapping_required": rec.get("calendar_mapping_required"),
+            "is_generation_candidate": rec.get("is_generation_candidate"),
+            "is_archive_or_working_version": rec.get("is_archive_or_working_version"),
+        }
+
+    def _enrich_payload_meta(self, payload: Dict[str, Any]) -> None:
+        """Derive use_for_* purpose flags and back-stop restricted marking.
+
+        Shared by the record-only and content-file payload builders so both
+        gate identically. Purely additive: it only turns a use_for_* flag ON
+        when the doc's inferred purpose qualifies, and only ever ADDS a
+        restricted mark (answer keys / instructor guides) — never relaxes a
+        security gate.
+        """
+        _purposes = set(self._purposes_for_payload(payload))
+        _meta = payload["metadata"]
+        for _p in ("style", "cdd", "blueprint", "course_generation"):
+            _key = f"use_for_{_p}"
+            if not _meta.get(_key):
+                _meta[_key] = _p in _purposes
+        if not _meta.get("restricted") and self._is_restricted_source(_meta.get("document_type"), (payload.get("source_file") or {}).get("name")):
+            _meta["restricted"] = True
+            if not _meta.get("access_level"):
+                _meta["access_level"] = "admin_only"
+
+    def _record_to_payload(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """Doc-level payload (no content_units) synthesized from a source-index
+        record, for building the security/filter allow-set WITHOUT reading the
+        content file. Same metadata shaping/enrichment as _iter_payloads."""
+        payload = {
+            "job_id": rec.get("job_id"),
+            "tenant_id": rec.get("tenant_id"),
+            "client_id": rec.get("client_id"),
+            "source_file": self._source_file_from_record(rec),
+            "metadata": self._metadata_from_record(rec),
+            "content_units": [],
+            "reading_content": "",
+        }
+        self._enrich_payload_meta(payload)
+        return payload
+
+    def _iter_source_records(self, client_id: str, filters: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+        """Yield doc-level payloads built from source-index records only (no
+        content-file reads) — the fast path for building the allow-set. Honors
+        the same job_ids narrowing as _iter_payloads.
+        """
+        job_ids = filters.get("job_ids") or filters.get("job_id") or filters.get("document_ids") or []
+        if isinstance(job_ids, str):
+            job_ids = [job_ids]
+        index = read_source_index(self.tenant_cfg, client_id)
+        records = list(index.get("sources") or [])
+        if job_ids:
+            wanted = {str(j) for j in job_ids}
+            records = [r for r in records if str(r.get("job_id")) in wanted]
+        for rec in records:
+            try:
+                yield self._record_to_payload(rec)
+            except Exception as exc:
+                logger.warning("skipping source record (allow-set) job_id=%s: %s", rec.get("job_id"), exc)
+                continue
+
     def _iter_payloads(self, client_id: str, filters: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         """Yield retrieval-ready source documents.
 
@@ -469,64 +581,18 @@ class ContextRetrievalService:
             for rec in records:
                 try:
                     doc = self.writer.read_json(rec.get("content_key"))
-                    payload = {
-                        "job_id": rec.get("job_id"),
-                        "tenant_id": rec.get("tenant_id"),
-                        "client_id": rec.get("client_id"),
-                        "source_file": {
-                            "name": rec.get("source_file_name"),
-                            "type": rec.get("source_file_type"),
-                            # Original-file references for source citation/deep-link.
-                            "raw_url": rec.get("raw_storage_url"),
-                            "raw_key": rec.get("raw_key"),
-                            "relative_path": rec.get("source_relative_path"),
-                        },
-                        "metadata": {
-                            "title": rec.get("title"),
-                            "document_type": rec.get("document_type"),
-                            "doc_type": rec.get("document_type"),
-                            "purpose": rec.get("purpose"),
-                            "visibility": rec.get("visibility"),
-                            # Security-critical: propagate restriction flags so the
-                            # retrieval gate can hide restricted sources from students.
-                            "restricted": rec.get("restricted"),
-                            "access_level": rec.get("access_level"),
-                            "status": rec.get("status"),
-                            "course_name": rec.get("course_name"),
-                            "block": rec.get("block"),
-                            "day": rec.get("day"),
-                            "chapter": rec.get("chapter"),
-                            "module_name": rec.get("module_name"),
-                            "learning_objective": rec.get("learning_objective"),
-                        },
-                        "content_units": doc.get("content_units") or [],
-                        "reading_content": doc.get("reading_content") or "",
-                    }
-                    # Derive use_for_* eligibility flags from the document's purpose
-                    # mapping (config-driven, per client). Source index records
-                    # written at ingestion do not carry these flags, so the
-                    # generation handlers' use_for_* filters would otherwise reject
-                    # every doc. This is purely ADDITIVE: it only turns a flag ON
-                    # when the doc's inferred purpose qualifies; it never relaxes the
-                    # restricted/visibility security gates.
-                    _purposes = set(self._purposes_for_payload(payload))
-                    _meta = payload["metadata"]
-                    for _p in ("style", "cdd", "blueprint", "course_generation"):
-                        _key = f"use_for_{_p}"
-                        if not _meta.get(_key):
-                            _meta[_key] = _p in _purposes
-                    # Security hardening: mark answer keys / instructor guides as
-                    # restricted by doc type or filename, even when the source
-                    # index record left the flag unset. This makes their protection
-                    # robust (by type, not by the instructor-visibility gate), which
-                    # is required now that instructor/content-team SOURCE docs are
-                    # allowed into generation context.
-                    if not _meta.get("restricted") and self._is_restricted_source(_meta.get("document_type"), (payload.get("source_file") or {}).get("name")):
-                        _meta["restricted"] = True
-                        if not _meta.get("access_level"):
-                            _meta["access_level"] = "admin_only"
+                    # Same doc-level shaping/enrichment as the allow-set path,
+                    # plus the actual content pulled from the content file.
+                    payload = self._record_to_payload(rec)
+                    payload["content_units"] = doc.get("content_units") or []
+                    payload["reading_content"] = doc.get("reading_content") or ""
                     yield payload
-                except Exception:
+                except Exception as exc:
+                    # A single unreadable/corrupt source record must not abort
+                    # retrieval, but silently dropping it can mask a systemic
+                    # problem (bad content_key, S3 outage), so leave a trace.
+                    logger.warning("skipping source record job_id=%s content_key=%s: %s",
+                                   rec.get("job_id"), rec.get("content_key"), exc)
                     continue
             return
 
@@ -752,73 +818,59 @@ class ContextRetrievalService:
         token_budget = min(int(retrieval.get("token_budget", 6000)), 20000)
         min_score = float(retrieval.get("min_score", 0.0))
 
-        scored: List[Tuple[float, Dict[str, Any]]] = []
-        # Security/filter allow-set. Any doc with >=1 unit that passes the existing
-        # S3 gate (_passes_filters: restricted, visibility, client, purpose, day,
-        # etc.) is eligible. OpenSearch results are later restricted to these
-        # job_ids, so semantic retrieval can never surface content the S3 gate
-        # would have hidden. This keeps security identical to the S3 path.
+        # Security/filter allow-set. A doc that passes the S3 gate
+        # (_passes_filters: restricted, visibility, client, purpose, day, etc.)
+        # is eligible; OpenSearch results are later restricted to these job_ids,
+        # so semantic retrieval can never surface content the gate would hide.
+        #
+        # Fast path: build the allow-set from source-index records ALONE — no
+        # content-file reads — since the gate is doc-level and every field it
+        # needs is now promoted into the record (compact_source_record). The
+        # content files are read lazily only when we fall back to keyword
+        # ranking (S3 keyword path below). Unit-level `unit_types` filtering
+        # can't be evaluated from a record, so when it is requested we use the
+        # content path to stay correct.
+        include_visual_summary = bool(filters.get("include_visual_summary", True))
+        explicit_selection = bool(filters.get("job_ids") or filters.get("job_id") or filters.get("document_ids"))
+        needs_units = bool(filters.get("unit_types"))
+
         allowed_jobs: set = set()
         allowed_records: Dict[str, Dict[str, Any]] = {}
-        for payload in self._iter_payloads(client_id, filters):
-            for unit in payload.get("content_units", []):
-                if not self._passes_filters(unit, payload, filters):
+
+        retrieval_method = "s3_keyword"
+        chosen_units: List[Dict[str, Any]] = []
+
+        if not explicit_selection and not needs_units:
+            for payload in self._iter_source_records(client_id, filters):
+                # Empty synthetic unit -> doc-level gate (see _passes_filters).
+                if not self._passes_filters({}, payload, filters):
                     continue
                 _jid = payload.get("job_id")
+                if not _jid:
+                    continue
                 allowed_jobs.add(_jid)
                 allowed_records.setdefault(_jid, payload)
-                searchable = " ".join([
-                    str(unit.get("title", "")),
-                    str(unit.get("text", "")),
-                    str(unit.get("visual_summary", "")),
-                    " ".join(unit.get("keywords", []) or []),
-                    " ".join(unit.get("topics", []) or []),
-                    " ".join(str(v) for v in unit.get("metadata", {}).values()),
-                    " ".join(str(v) for v in payload.get("metadata", {}).values()),
-                ]).lower()
-                if not searchable.strip():
-                    continue
-                hits = sum(1 for t in query_terms if t in searchable)
-                title_hits = sum(1 for t in query_terms if t in str(unit.get("title", "")).lower())
-                keyword_hits = sum(1 for t in query_terms if t in " ".join(unit.get("keywords", []) or []).lower())
-                visual_hits = sum(1 for t in query_terms if t in str(unit.get("visual_summary", "")).lower())
-                denom = max(1, len(set(query_terms)))
-                raw = (hits + title_hits*2 + keyword_hits*1.5 + visual_hits*1.2) / denom
-                score = min(1.0, raw / 3.0)
-                if score >= min_score or not query_terms:
-                    src = payload.get("source_file", {}) or {}
-                    enriched = {**unit}
-                    enriched["job_id"] = payload.get("job_id")
-                    enriched["source_file_name"] = src.get("name")
-                    enriched["source_file_type"] = src.get("type")
-                    # Original-file reference so callers can cite/deep-link the
-                    # source document in S3, not just name it. Empty for older
-                    # sources indexed before these fields were carried through.
-                    enriched["source_file_url"] = src.get("raw_url") or ""
-                    enriched["source_relative_path"] = src.get("relative_path") or ""
-                    enriched["score"] = round(score, 4)
-                    enriched["matched_on"] = []
-                    if title_hits: enriched["matched_on"].append("title")
-                    if keyword_hits: enriched["matched_on"].append("keywords")
-                    if visual_hits: enriched["matched_on"].append("visual_summary")
-                    if hits: enriched["matched_on"].append("text_or_metadata")
-                    scored.append((score, enriched))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        s3_units: List[Dict[str, Any]] = [u for _, u in scored]
-        include_visual_summary = bool(filters.get("include_visual_summary", True))
-
-        # Prefer semantic (OpenSearch hybrid) ranking, restricted to the allow-set.
-        # Fall back to S3 keyword ranking when the user hand-picked documents, when
-        # there is no query, or when OpenSearch is disabled/empty/unavailable.
-        retrieval_method = "s3_keyword"
-        chosen_units = s3_units
-        explicit_selection = bool(filters.get("job_ids") or filters.get("job_id") or filters.get("document_ids"))
-        if not explicit_selection:
-            vector_units = self._vector_units(client_id, query_text, allowed_jobs, allowed_records, top_k)
+            vector_units = self._vector_units(client_id, query_text, allowed_jobs, allowed_records, top_k, min_score)
             if vector_units:
                 chosen_units = vector_units
                 retrieval_method = "opensearch_hybrid"
+
+        if not chosen_units:
+            # Fallback (no vector hits / no query / explicit selection / unit_types):
+            # read content files for the allowed set and rank by keyword overlap.
+            allowed_units: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+            content_filters = filters
+            if allowed_jobs and not explicit_selection:
+                # Restrict the content read to the jobs the fast gate already
+                # allowed, so the fallback stays scoped (no full-corpus read).
+                content_filters = {**filters, "job_ids": list(allowed_jobs)}
+            for payload in self._iter_payloads(client_id, content_filters):
+                for unit in payload.get("content_units", []):
+                    if not self._passes_filters(unit, payload, filters):
+                        continue
+                    allowed_units.append((unit, payload))
+            chosen_units = self._score_s3_units(allowed_units, query_terms, min_score)
+            retrieval_method = "s3_keyword"
 
         selected, used_tokens, combined = self._pack_units(chosen_units, top_k, token_budget, include_visual_summary)
         return {
@@ -841,12 +893,18 @@ class ContextRetrievalService:
             "combined_context": combined,
         }
 
-    def _vector_units(self, client_id: str, query_text: str, allowed_jobs: set, allowed_records: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
+    def _vector_units(self, client_id: str, query_text: str, allowed_jobs: set, allowed_records: Dict[str, Any], top_k: int, min_score: float = 0.0) -> List[Dict[str, Any]]:
         """Semantically-ranked units from OpenSearch, gated to allowed_jobs.
 
         Returns [] (so the caller uses S3 keyword ranking) when vector retrieval
         is disabled, the query is empty, no docs are allowed, or OpenSearch
         errors. Never raises.
+
+        The allow-set is enforced BOTH server-side (a `job_id` terms filter in
+        the query, so the ANN ranks within allowed docs) AND here in Python
+        (defence in depth). Raw hybrid scores (BM25 + kNN) are normalised to
+        0..1 by the top hit so `score`/`min_score` are comparable with the S3
+        keyword path.
         """
         vs = getattr(self.tenant_cfg, "vector_store", None)
         emb_cfg = getattr(self.tenant_cfg, "embedding", None)
@@ -859,10 +917,19 @@ class ContextRetrievalService:
             query_embedding = embed_query(self.tenant_cfg, query_text)
             if not query_embedding:
                 return []
-            hits = vector_search(self.tenant_cfg, client_id, query_text, query_embedding, size=max(top_k * 4, 20))
-        except Exception:
+            hits = vector_search(
+                self.tenant_cfg, client_id, query_text, query_embedding,
+                size=max(top_k * 4, 20), allowed_job_ids=list(allowed_jobs),
+            )
+        except Exception as exc:
             # Any failure (missing deps, network, bad index) -> S3 keyword fallback.
+            # Logged so a persistently-failing vector path is visible in prod
+            # rather than silently degrading every query to keyword ranking.
+            logger.warning("vector retrieval failed for client_id=%s; falling back to S3 keyword: %s", client_id, exc)
             return []
+        # Normalise raw hybrid scores to 0..1 by the top hit for cross-method
+        # comparability (kNN+BM25 sums are unbounded, e.g. ~7.0).
+        max_raw = max((float(h.get("_score") or 0.0) for h in hits), default=0.0) or 1.0
         units: List[Dict[str, Any]] = []
         seen: set = set()
         for h in hits:
@@ -877,6 +944,9 @@ class ContextRetrievalService:
             if cuid in seen:
                 continue
             seen.add(cuid)
+            norm_score = round(float(h.get("_score") or 0.0) / max_raw, 4)
+            if min_score and norm_score < min_score:
+                continue
             rec = allowed_records.get(job_id) or {}
             src = rec.get("source_file", {}) if isinstance(rec, dict) else {}
             units.append({
@@ -892,12 +962,59 @@ class ContextRetrievalService:
                 "source_file_type": h.get("source_file_type") or (src.get("type") if src else "") or "",
                 "source_file_url": (src.get("raw_url") if src else "") or "",
                 "source_relative_path": (src.get("relative_path") if src else "") or "",
-                "score": round(float(h.get("_score") or 0.0), 4),
+                "score": norm_score,
                 "matched_on": ["semantic"],
             })
             if len(units) >= max(top_k * 3, top_k):
                 break
         return units
+
+    def _score_s3_units(self, allowed_units: List[Tuple[Dict[str, Any], Dict[str, Any]]], query_terms: List[str], min_score: float) -> List[Dict[str, Any]]:
+        """Lexical (keyword-overlap) ranking of the allow-set — the fallback path.
+
+        Computed lazily by retrieve() only when the OpenSearch hybrid path is
+        unavailable/empty, so its cost is not paid on the common vector path.
+        """
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for unit, payload in allowed_units:
+            searchable = " ".join([
+                str(unit.get("title", "")),
+                str(unit.get("text", "")),
+                str(unit.get("visual_summary", "")),
+                " ".join(unit.get("keywords", []) or []),
+                " ".join(unit.get("topics", []) or []),
+                " ".join(str(v) for v in unit.get("metadata", {}).values()),
+                " ".join(str(v) for v in payload.get("metadata", {}).values()),
+            ]).lower()
+            if not searchable.strip():
+                continue
+            hits = sum(1 for t in query_terms if t in searchable)
+            title_hits = sum(1 for t in query_terms if t in str(unit.get("title", "")).lower())
+            keyword_hits = sum(1 for t in query_terms if t in " ".join(unit.get("keywords", []) or []).lower())
+            visual_hits = sum(1 for t in query_terms if t in str(unit.get("visual_summary", "")).lower())
+            denom = max(1, len(set(query_terms)))
+            raw = (hits + title_hits*2 + keyword_hits*1.5 + visual_hits*1.2) / denom
+            score = min(1.0, raw / 3.0)
+            if score >= min_score or not query_terms:
+                src = payload.get("source_file", {}) or {}
+                enriched = {**unit}
+                enriched["job_id"] = payload.get("job_id")
+                enriched["source_file_name"] = src.get("name")
+                enriched["source_file_type"] = src.get("type")
+                # Original-file reference so callers can cite/deep-link the
+                # source document in S3, not just name it. Empty for older
+                # sources indexed before these fields were carried through.
+                enriched["source_file_url"] = src.get("raw_url") or ""
+                enriched["source_relative_path"] = src.get("relative_path") or ""
+                enriched["score"] = round(score, 4)
+                enriched["matched_on"] = []
+                if title_hits: enriched["matched_on"].append("title")
+                if keyword_hits: enriched["matched_on"].append("keywords")
+                if visual_hits: enriched["matched_on"].append("visual_summary")
+                if hits: enriched["matched_on"].append("text_or_metadata")
+                scored.append((score, enriched))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [u for _, u in scored]
 
     def _pack_units(self, units: List[Dict[str, Any]], top_k: int, token_budget: int, include_visual_summary: bool) -> Tuple[List[Dict[str, Any]], int, str]:
         """Pack ranked units into the token budget. Returns (selected, tokens, combined)."""

@@ -181,6 +181,26 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
     document_type = str(meta.get("document_type") or meta.get("doc_type") or source.get("type") or "document")
     purpose = normalize_purpose(str(meta.get("purpose") or ""), document_type)
     now = datetime.utcnow().isoformat()
+
+    def _first_unit_value(key: str):
+        """Fallback: first non-empty value of `key` across content-unit metadata.
+
+        Doc-level payload metadata usually carries the calendar-join keys, but
+        for some doc types they live only on the units; this keeps the promoted
+        value correct without a full aggregation.
+        """
+        for u in (payload.get("content_units") or []):
+            v = (u.get("metadata") or {}).get(key)
+            if v not in (None, "", []):
+                return v
+        return None
+
+    def _promote(key: str, default=""):
+        v = meta.get(key)
+        if v in (None, "", []):
+            v = _first_unit_value(key)
+        return v if v not in (None, "", []) else default
+
     return {
         "document_id": payload.get("job_id"),
         "job_id": payload.get("job_id"),
@@ -219,6 +239,26 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "chapter": meta.get("chapter") or "",
         "module_name": meta.get("module_name") or "",
         "learning_objective": meta.get("learning_objective") or "",
+        # Filter / calendar-join keys promoted from the processed payload, so the
+        # retrieval allow-set and the block/day/quiz/project filters can be
+        # evaluated from the source index alone — no per-query content-file
+        # reads. Additive only; absent values stay empty/None.
+        "content_type": meta.get("content_type") or "",
+        "block_id": meta.get("block_id") or meta.get("block") or "",
+        "block_number": meta.get("block_number") or "",
+        "day_number": _promote("day_number", None),
+        "day_id": _promote("day_id"),
+        "mapped_day": meta.get("mapped_day") or "",
+        "filename_day_id": meta.get("filename_day_id") or "",
+        "quiz_number": _promote("quiz_number", None),
+        "project_number": _promote("project_number"),
+        "lesson_name": meta.get("lesson_name") or "",
+        "subject_unit": _promote("subject_unit"),
+        "course_id": meta.get("course_id") or "",
+        "program_id": meta.get("program_id") or "",
+        "calendar_mapping_required": bool(meta.get("calendar_mapping_required")),
+        "is_generation_candidate": meta.get("is_generation_candidate"),
+        "is_archive_or_working_version": bool(meta.get("is_archive_or_working_version")),
     }
 
 
