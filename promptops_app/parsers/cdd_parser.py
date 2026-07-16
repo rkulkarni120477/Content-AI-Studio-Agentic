@@ -167,13 +167,18 @@ def _rebuild_cdd_full_content(parsed: dict) -> str:
 # Summary extraction (used by context injection)
 # ---------------------------------------------------------------------------
 
-def extract_cdd_summary(cdd_version, max_chars: int = 3000) -> str:
+def _cap(text: str, max_chars: int) -> str:
+    """0 (default across this module's extractors) = no cap, return unchanged."""
+    return text[:max_chars] if max_chars else text
+
+
+def extract_cdd_summary(cdd_version, max_chars: int = 0) -> str:
     """Extract a concise summary from a CDDVersion for context injection."""
     if not cdd_version:
         return "No CDD available."
     sections = safe_json_loads(cdd_version.sections) if cdd_version.sections else {}
     if not sections:
-        return (cdd_version.full_content or "")[:max_chars]
+        return _cap(cdd_version.full_content or "", max_chars)
 
     priority_keys = [
         "Learning Objectives",
@@ -191,10 +196,10 @@ def extract_cdd_summary(cdd_version, max_chars: int = 3000) -> str:
                 break
 
     result = "\n\n".join(summary_parts)
-    return result[:max_chars] if result else (cdd_version.full_content or "")[:max_chars]
+    return _cap(result, max_chars) if result else _cap(cdd_version.full_content or "", max_chars)
 
 
-def extract_module_section(cdd_version, selected_module: str, max_chars: int = 6000) -> str:
+def extract_module_section(cdd_version, selected_module: str, max_chars: int = 0) -> str:
     """Pull the full text block for one module out of the CDD's Course Structure.
 
     *selected_module* is the free-text string sent by the Blueprint UI, e.g.
@@ -232,18 +237,18 @@ def extract_module_section(cdd_version, selected_module: str, max_chars: int = 6
         if num != target_num:
             continue
         next_start = positions[i + 1][0] if i + 1 < len(positions) else len(structure)
-        return structure[start:next_start].strip()[:max_chars]
+        return _cap(structure[start:next_start].strip(), max_chars)
 
     return ""
 
 
-def extract_blueprint_summary(bp_version, max_chars: int = 3000) -> str:
+def extract_blueprint_summary(bp_version, max_chars: int = 0) -> str:
     """Extract a concise summary from a BlueprintVersion for context injection."""
     if not bp_version:
         return "No Blueprint available."
     sections = safe_json_loads(bp_version.sections) if bp_version.sections else {}
     if not sections:
-        return (bp_version.full_content or "")[:max_chars]
+        return _cap(bp_version.full_content or "", max_chars)
 
     priority_keys = [
         "Learning Objectives",
@@ -260,4 +265,4 @@ def extract_blueprint_summary(bp_version, max_chars: int = 3000) -> str:
                 break
 
     result = "\n\n".join(summary_parts)
-    return result[:max_chars] if result else (bp_version.full_content or "")[:max_chars]
+    return _cap(result, max_chars) if result else _cap(bp_version.full_content or "", max_chars)

@@ -131,6 +131,7 @@
   flex-wrap: wrap;
 }
 
+
 .center {
   @include flex-center;
   padding: $space-10;
@@ -238,4 +239,89 @@
   justify-content: flex-end;
   gap: $space-3;
   margin-top: $space-2;
+}
+
+.auditRow {
+  cursor: pointer;
+
+  &:hover td {
+    background: $color-gray-50;
+  }
+}
+
+.auditDetailRow td {
+  background: $color-gray-50;
+  padding: $space-3;
+}
+
+.auditDetail {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: $space-1 $space-3;
+  margin: 0;
+
+  dt {
+    font-weight: $font-weight-bold;
+    color: $color-gray-600;
+    white-space: nowrap;
+  }
+
+  dd {
+    margin: 0;
+    color: $color-gray-800;
+    word-break: break-word;
+  }
+}
+
+.contentView {
+  @include flex-col;
+  gap: $space-4;
+}
+
+.inputModeBadgeFull,
+.inputModeBadgeTruncated {
+  display: inline-block;
+  width: fit-content;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  padding: $space-1 $space-3;
+  border-radius: $radius-full;
+}
+
+.inputModeBadgeFull {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.inputModeBadgeTruncated {
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+}
+
+.contentBlock {
+  @include flex-col;
+  gap: $space-1;
+
+  &__label {
+    font-size: 0.82rem;
+    font-weight: $font-weight-bold;
+    color: $color-gray-700;
+  }
+
+  &__body {
+    margin: 0;
+    padding: $space-4;
+    background: #f8fafc;
+    border: 1px solid $color-gray-200;
+    border-radius: $radius-md;
+    font-family: $font-family-mono;
+    font-size: $font-size-xs;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+    @include custom-scrollbar(6px);
+    color: $color-gray-900;
+  }
 }

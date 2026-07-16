@@ -121,10 +121,13 @@ export const regenerateStyleThunk = createAsyncThunk(
   'style/regenerate',
   async (styleId, { getState, rejectWithValue }) => {
     try {
-      const modelChoice = getState()?.dashboard?.modelChoice || 'GPT-5.4';
+      const state = getState();
+      const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
       const result = await styleService.regenerateStyle(styleId, {
         model_choice: modelChoice,
         extra_instructions: '',
+        course_id: state?.dashboard?.selectedCourse?.id ?? null,
+        project_id: state?.dashboard?.selectedProject?.id ?? null,
       });
       toast.success('Style understanding generated.');
       return result;
@@ -139,10 +142,13 @@ export const refineStyleThunk = createAsyncThunk(
   'style/refine',
   async ({ styleId, corrections }, { getState, rejectWithValue }) => {
     try {
-      const modelChoice = getState()?.dashboard?.modelChoice || 'GPT-5.4';
+      const state = getState();
+      const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
       const result = await styleService.regenerateStyle(styleId, {
         model_choice: modelChoice,
         extra_instructions: corrections,
+        course_id: state?.dashboard?.selectedCourse?.id ?? null,
+        project_id: state?.dashboard?.selectedProject?.id ?? null,
       });
       toast.success('Refined Style Intelligence Layer saved.');
       return result;

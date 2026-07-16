@@ -1774,11 +1774,7 @@ def _build_unified_style_docs(db, style: "Style") -> str:
     for sd in style.style_documents:
         doc = sd.document
         if doc and doc.content:
-            parts.append(
-                f"[DOCUMENT: {doc.filename}]\n"
-                f"{doc.content[:6000]}"
-                + ("...[truncated]" if len(doc.content) > 6000 else "")
-            )
+            parts.append(f"[DOCUMENT: {doc.filename}]\n{doc.content}")
     return "\n\n---\n\n".join(parts)
 
 
@@ -1834,7 +1830,7 @@ def build_style_context(db, style: "Style", cluster_id: int | None = None) -> st
         for cp in get_cluster_prompts(db, cluster_id):
             content = cp.system_prompt or cp.user_prompt_template or ""
             if content:
-                parts.append(f"## Cluster Prompt: {cp.name}\n{content[:3000]}")
+                parts.append(f"## Cluster Prompt: {cp.name}\n{content}")
 
     if not style:
         return "\n\n".join(parts)
@@ -1849,11 +1845,7 @@ def build_style_context(db, style: "Style", cluster_id: int | None = None) -> st
         for sd in style.style_documents:
             doc = sd.document
             if doc and doc.content:
-                parts.append(
-                    f"### Style Reference: {doc.filename}\n"
-                    f"{doc.content[:4000]}"
-                    + ("..." if len(doc.content) > 4000 else "")
-                )
+                parts.append(f"### Style Reference: {doc.filename}\n{doc.content}")
     return "\n\n".join(parts)
 
 

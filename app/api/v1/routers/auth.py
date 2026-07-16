@@ -150,6 +150,10 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)) -> TokenResp
         user._project_id = None
         user._is_platform_admin = True
         user._role = user.role or "admin"
+
+        from promptops_app.core.logging import start_session_log
+        start_session_log(username)
+
         return _build_token_response(user)
 
     # ── Tenant local-password path ─────────────────────────────────────────
@@ -188,6 +192,9 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)) -> TokenResp
         user._custom_permissions = frozenset(effective_perms)
     user.project_id = project.id
     db.commit()
+
+    from promptops_app.core.logging import start_session_log
+    start_session_log(username)
 
     _log.info("login_success  username=%s  org=%s  role=%s", username, org, membership.role)
     return _build_token_response(user)
@@ -245,6 +252,10 @@ def microsoft_callback(
     user._role = effective_role
     if custom_role_id is not None:
         user._custom_permissions = frozenset(effective_perms)
+
+    from promptops_app.core.logging import start_session_log
+    start_session_log(user.username)
+
     token = _build_token_response(user).access_token
 
     _log.info("ms_login_success  username=%s  project_id=%s  role=%s",

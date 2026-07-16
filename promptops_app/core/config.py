@@ -126,15 +126,18 @@ class AppSettings(BaseSettings):
     )
 
     # ── Context / chunking ────────────────────────────────────────────────────
+    # 0 = no cap (default) — full source-document content reaches the LLM.
+    # Set a positive value via the env var only if generation cost/latency
+    # requires capping input size again.
     max_source_chars: int = Field(
-        default=6000,
+        default=0,
         alias="PROMPTOPS_MAX_SOURCE_CHARS",
-        gt=0,
+        ge=0,
     )
     max_context_chars: int = Field(
-        default=30000,
+        default=0,
         alias="PROMPTOPS_MAX_CONTEXT_CHARS",
-        gt=0,
+        ge=0,
     )
 
     # ── Pagination ────────────────────────────────────────────────────────────

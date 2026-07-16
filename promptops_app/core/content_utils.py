@@ -52,6 +52,59 @@ def trim_generation_context(context: str) -> str:
     return _clip_text(context or "", PROMPTOPS_MAX_CONTEXT_CHARS)
 
 
+def find_labeled_snippet(sections: dict, keys: list, full_text: str = "", max_chars: int = 0) -> str:
+    """Find a labeled field's content — first among top-level section headings,
+    then, since many CDD/Blueprint templates nest fields like "Key Concepts" or
+    "Learning Objective" inside a larger module/lesson section instead of giving
+    them their own top-level heading, as an inline markdown heading or bold
+    label anywhere in the raw text. Aggregates every match found (one lesson's
+    worth isn't representative of a whole module) — the full match, unless a
+    caller passes a positive max_chars.
+
+    Returns "" if nothing is found anywhere — callers choose their own default.
+    """
+    def _cap(s: str) -> str:
+        return s[:max_chars] if max_chars else s
+
+    for k in keys:
+        for sk, sv in sections.items():
+            if k.lower() in sk.lower():
+                return _cap(str(sv))
+
+    if not full_text:
+        return ""
+
+    for k in keys:
+        esc = re.escape(k)
+        # "#### Key Concepts\n1. ...\n2. ..." — captures to the next heading of any level.
+        blocks = re.findall(
+            rf'^#{{1,6}}\s*{esc}s?\s*\n(.*?)(?=^#{{1,6}}\s|\Z)',
+            full_text, re.IGNORECASE | re.MULTILINE | re.DOTALL,
+        )
+        # "- **Learning Objective:** text" / "**Key Concepts:** text" — one per line.
+        bold_lines = re.findall(
+            rf'\*\*{esc}s?:?\*\*:?\s*(.+)',
+            full_text, re.IGNORECASE,
+        )
+        # "Learning Objective: text" plain (no bold), optionally bulleted — one per
+        # line. Excludes "*" from the bullet prefix so this can't also (mis)match a
+        # "**Label:**" bold line — that's bold_lines' job, and letting both match
+        # would leak the stray closing "**" into this capture.
+        plain_lines = re.findall(
+            rf'^[\s•\-]*{esc}s?:\s*(.+)$',
+            full_text, re.IGNORECASE | re.MULTILINE,
+        )
+        found = (
+            [b.strip() for b in blocks if b.strip()]
+            + [l.strip() for l in bold_lines if l.strip()]
+            + [l.strip() for l in plain_lines if l.strip()]
+        )
+        if found:
+            return _cap("\n".join(found))
+
+    return ""
+
+
 def build_context_injection(
     db,
     cdd_id: Optional[int],
@@ -97,19 +150,19 @@ def build_context_injection(
     cdd_sections = safe_json_loads(cdd_ver.sections) if cdd_ver and cdd_ver.sections else {}
     bp_sections  = safe_json_loads(bp_ver.sections)  if bp_ver  and bp_ver.sections  else {}
 
-    def _find(sections: dict, keys: list) -> str:
-        for k in keys:
-            for sk, sv in sections.items():
-                if k.lower() in sk.lower():
-                    return sv
-        return ""
+    cdd_full = cdd_ver.full_content if cdd_ver else ""
+    bp_full  = bp_ver.full_content  if bp_ver  else ""
 
-    learning_objectives = _find(bp_sections,  ["Learning Objectives"]) or \
-                          _find(cdd_sections, ["Learning Objectives"])
-    tone_guidelines     = _find(cdd_sections, ["Tone & Style", "Tone", "Style"])
-    key_concepts        = _find(bp_sections,  ["Key Concepts"]) or \
-                          _find(cdd_sections, ["Key Concepts", "Terminology"])
-    quality_standards   = _find(cdd_sections, ["Quality Standards", "Constraints"])
+    learning_objectives = (
+        find_labeled_snippet(bp_sections, ["Learning Objectives", "Learning Objective"], bp_full)
+        or find_labeled_snippet(cdd_sections, ["Learning Objectives", "Learning Objective"], cdd_full)
+    )
+    tone_guidelines   = find_labeled_snippet(cdd_sections, ["Tone & Style", "Tone", "Style"], cdd_full)
+    key_concepts      = (
+        find_labeled_snippet(bp_sections, ["Key Concepts"], bp_full)
+        or find_labeled_snippet(cdd_sections, ["Key Concepts", "Terminology"], cdd_full)
+    )
+    quality_standards = find_labeled_snippet(cdd_sections, ["Quality Standards", "Constraints"], cdd_full)
 
     cdd_summary       = extract_cdd_summary(cdd_ver)       if cdd_ver else "No CDD linked."
     blueprint_summary = extract_blueprint_summary(bp_ver)   if bp_ver  else "No Blueprint linked."

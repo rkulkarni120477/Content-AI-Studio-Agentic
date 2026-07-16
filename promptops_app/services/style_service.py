@@ -63,6 +63,7 @@ def generate_style_understanding(
     model_choice: str,
     extra_instructions: str = "",
     system_prompt: str | None = None,
+    audit_capture: dict | None = None,
 ) -> str:
     """Generate a unified Style Intelligence Layer from linked documents + custom instructions.
 
@@ -96,6 +97,10 @@ def generate_style_understanding(
         )
     )
 
+    if audit_capture is not None:
+        audit_capture["system_prompt"] = system_prompt
+        audit_capture["user_prompt"] = user_p
+
     with log_duration(
         "style_service.generate_style_understanding",
         extra={"style_id": style.id, "model": model_choice, "prompt_template": _tpl_name},
@@ -120,6 +125,7 @@ def regenerate_style_understanding(
     model_choice: str,
     correction_instructions: str,
     system_prompt: str | None = None,
+    audit_capture: dict | None = None,
 ) -> str:
     """Refine the Style Intelligence Layer using previous output + user corrections."""
     unified_docs = _build_unified_style_docs(db, style)
@@ -137,6 +143,10 @@ def regenerate_style_understanding(
         "Produce an updated Style Understanding in the same WHAT THIS IS / WHAT I LEARNED / "
         "HOW I WILL WORK / WHAT I WILL NOT DO format, fully incorporating the corrections."
     )
+
+    if audit_capture is not None:
+        audit_capture["system_prompt"] = system_prompt
+        audit_capture["user_prompt"] = user_p
 
     with log_duration(
         "style_service.regenerate_style_understanding",
