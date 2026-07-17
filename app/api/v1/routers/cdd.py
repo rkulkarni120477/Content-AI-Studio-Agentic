@@ -245,7 +245,10 @@ def generate_cdd(
             ]),
             "filters": {
                 "purpose": "cdd",
-                "document_types": ["syllabus", "course_outline", "learning_objectives", "style_guide", "authoring_guide"],
+                # No hard document_types filter: fixed type names did not match real
+                # stored doc types (e.g. Cengage docs are typed "pdf"), silently
+                # returning zero. Retrieval relies on purpose + semantic ranking;
+                # the security allow-set still applies.
             },
             "retrieval": {"top_k": 12, "token_budget": 12000},
         },
@@ -446,7 +449,19 @@ def generate_cdd(
         entity_id=new_cdd.id,
         project_id=request_body.project_id,
         course_id=request_body.course_id,
-        metadata={"title": document_title, "sections": len(sections)},
+        metadata={
+            "title": document_title, "sections": len(sections),
+            "model_choice": request_body.model_choice,
+            "course_title": request_body.course_title,
+            "target_audience": request_body.target_audience,
+            "expert_domain": request_body.expert_domain,
+            "extra_instructions": request_body.extra_instructions,
+            "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
+            "input_mode": "full",
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "output": raw_output,
+        },
     )
 
     _log.info(

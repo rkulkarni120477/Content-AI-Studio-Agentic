@@ -535,10 +535,21 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         )
 
         # ── Audit ─────────────────────────────────────────────────────
+        # "[truncated for faster generation]" is the exact marker clip_text()
+        # appends (promptops_app/core/config.py) — its presence in the
+        # assembled source context is the only reliable signal that one or
+        # more source documents got cut short rather than sent in full.
+        _input_truncated = "[truncated for faster generation]" in context if context else False
         log_audit_event(db, user_name, "content.generated", entity_type="generation",
                         entity_id=g_entry.id, project_id=project_id, course_id=course_id,
                         metadata={"topic": topic, "block_type": b_type,
-                                  "blocks": len(blocks), "cdd": used_cdd_label, "blueprint": used_bp_label})
+                                  "blocks": len(blocks), "cdd": used_cdd_label, "blueprint": used_bp_label,
+                                  "model_choice": model_choice,
+                                  "source_documents_used": len(supp_files) + len(ctx_docs or []),
+                                  "input_mode": "truncated" if _input_truncated else "full",
+                                  "system_prompt": system_p,
+                                  "user_prompt": user_p,
+                                  "output": out})
 
         # ── Done ──────────────────────────────────────────────────────
         job.result_json = json.dumps({

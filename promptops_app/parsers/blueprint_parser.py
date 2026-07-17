@@ -210,7 +210,7 @@ def regen_single_item(
         f"Current item (index {item_index}): {item_text}\n\n"
         f"Instruction: {custom_instruction or 'Improve this item.'}"
         + (f"\n\nLEARNED PREFERENCES:\n{learning_signals}" if learning_signals else "")
-        + f"\n\nSection context (first 800 chars):\n{section_content[:800]}"
+        + f"\n\nSection context:\n{section_content}"
     )
     sys_p = _ITEM_REGEN_SYSTEM
     result = call_llm(model_choice, sys_p, user_p)
@@ -376,28 +376,26 @@ def build_component_generation_prompt(
     bp_secs  = safe_json_loads(bp_version.sections)  if bp_version  and bp_version.sections  else {}
     cdd_secs = safe_json_loads(cdd_version.sections) if cdd_version and cdd_version.sections else {}
 
-    def _find(secs, keys, max_c=400):
-        for k in keys:
-            for sk, sv in secs.items():
-                if k.lower() in sk.lower():
-                    return str(sv)[:max_c]
-        return ""
+    from promptops_app.core.content_utils import find_labeled_snippet
 
-    bp_los   = _find(bp_secs,  ["Learning Objectives"])
-    bp_plan  = _find(bp_secs,  ["Lesson Plan"], 600)
-    bp_keys  = _find(bp_secs,  ["Key Concepts"])
-    cdd_los  = _find(cdd_secs, ["Learning Objectives"])
-    cdd_tone = _find(cdd_secs, ["Tone & Style", "Tone"])
-    cdd_qual = _find(cdd_secs, ["Quality Standards"])
+    bp_full  = bp_version.full_content  if bp_version  else ""
+    cdd_full = cdd_version.full_content if cdd_version else ""
+
+    bp_los   = find_labeled_snippet(bp_secs,  ["Learning Objectives", "Learning Objective"], bp_full)
+    bp_plan  = find_labeled_snippet(bp_secs,  ["Lesson Plan", "Lesson-by-Lesson", "Lesson Blueprint"], bp_full)
+    bp_keys  = find_labeled_snippet(bp_secs,  ["Key Concepts"], bp_full)
+    cdd_los  = find_labeled_snippet(cdd_secs, ["Learning Objectives", "Learning Objective"], cdd_full)
+    cdd_tone = find_labeled_snippet(cdd_secs, ["Tone & Style", "Tone"], cdd_full)
+    cdd_qual = find_labeled_snippet(cdd_secs, ["Quality Standards"], cdd_full)
 
     ctx_block = (
         f"BLUEPRINT CONTEXT (Module: "
         f"{getattr(bp_version, 'blueprint_id', 'N/A') if bp_version else 'N/A'}):\n"
-        f"Module LOs: {bp_los or 'See Blueprint'}\n"
-        f"Key Concepts: {bp_keys or 'See Blueprint'}\n"
-        f"Lesson Plan excerpt: {bp_plan[:400] if bp_plan else 'See Blueprint'}\n\n"
+        f"Module LOs: {bp_los or 'Not specified in the Blueprint.'}\n"
+        f"Key Concepts: {bp_keys or 'Not specified in the Blueprint.'}\n"
+        f"Lesson Plan excerpt: {bp_plan or 'Not specified in the Blueprint.'}\n\n"
         f"CDD CONTEXT:\n"
-        f"Course LOs: {cdd_los or 'See CDD'}\n"
+        f"Course LOs: {cdd_los or 'Not specified in the CDD.'}\n"
         f"Tone & Style: {cdd_tone or 'Professional, engaging, accessible'}\n"
         f"Quality Standards: {cdd_qual or 'High quality, structured content'}\n\n"
         f"TARGET AUDIENCE: {target_audience or 'As defined in CDD'}\n"

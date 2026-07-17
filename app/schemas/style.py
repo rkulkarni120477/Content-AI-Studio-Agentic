@@ -43,6 +43,10 @@ class StyleUnderstandRequest(BaseModel):
     extra_instructions: str = Field(default="", max_length=12000)
     document_ids: list[str] = Field(default_factory=list, description="Optional DIS source document/job IDs to use for this Understand/Refine call.")
     system_prompt_override: Optional[str] = None
+    # Not used by the generation logic itself — only so the audit trail can
+    # attribute this event to the tenant the user was working in.
+    project_id: Optional[int] = Field(default=None, description="Current workspace project, for audit attribution only.")
+    course_id: Optional[int] = Field(default=None, description="Current workspace course, for audit attribution only.")
 
 
 class StyleUnderstandResponse(BaseModel):

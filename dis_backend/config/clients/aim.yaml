@@ -47,10 +47,13 @@ processing:
 pipeline:
   models:
     embedding: amazon.titan-embed-text-v2:0
-    classification: anthropic.claude-3-haiku-20240307-v1:0
+    # Claude 3 Haiku (20240307) is now a Bedrock "legacy" model and is not
+    # invokable on this account; Claude 3 Sonnet (20240229) is. Use Sonnet for
+    # every text step so classification/quality-check don't silently fall back.
+    classification: anthropic.claude-3-sonnet-20240229-v1:0
     metadata_extraction: anthropic.claude-3-sonnet-20240229-v1:0
     structure_extraction: anthropic.claude-3-sonnet-20240229-v1:0
-    quality_check: anthropic.claude-3-haiku-20240307-v1:0
+    quality_check: anthropic.claude-3-sonnet-20240229-v1:0
     vision: anthropic.claude-3-sonnet-20240229-v1:0
   llm_temperature: 0.0
   chunking_strategy: semantic
@@ -186,14 +189,23 @@ retrieval:
       - syllabus
       - lesson_plan
     course_generation:
+      # Pipeline-era classification names (kept for backward compatibility).
       - lesson_plan
       - lesson_slide_deck
-      - slide_deck
       - project_activity
       - quiz_exam
-      - study_questions
       - student_handout
       - ebook_reference
+      # Actual Source Library doc types produced for AIM (must be listed here or
+      # course-generation retrieval finds nothing). Mirrors
+      # aim_content_rules.course_generation_source_types below.
+      - lesson_pdf
+      - slide_deck
+      - quiz
+      - final_exam
+      - project
+      - hangar_activity
+      - study_questions
 security:
   require_jwt: true
   jwt_audience: aim-dis-api
@@ -385,14 +397,21 @@ document_processing:
   restricted_document_types:
   - quiz_answer_key
   - project_key
+# Ingestion writes each content unit to BOTH stores below. They are complementary,
+# not redundant: the vector store serves semantic/tag search, and the structure
+# store is the relational system-of-record for exact filters, joins and reporting.
+# Scope note (2026-07): both are populated at ingestion, but the live read path
+# (services/context_retrieval.py) still reads S3 source JSON and queries NEITHER
+# store yet. They are filled ahead of the retrieval wiring. If AIM only ever needs
+# semantic tagging/search, structure_store can be disabled to avoid dual-write drift.
 structure_store:
-  enabled: true
+  enabled: true          # RDS (Postgres): relational system-of-record; exact/ACS/day joins, reporting
   provider: postgres
   url: 'postgresql://dis_user:Academian%23123@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db'
   schema_name: dis
   auto_create_schema: true
 vector_store:
-  enabled: true
+  enabled: true          # OpenSearch: semantic kNN + tag filtering; used to map content to calendar days
   provider: opensearch
   endpoint: 'https://search-ai-platform-opensearch-6fjt7fienyf2aeactjfqdms4y4.us-east-1.es.amazonaws.com'
   index_name: dis-content-dev-aim
@@ -437,6 +456,7 @@ aim_content_rules:
   # First matching folder gets source_priority=1.
   version_priority:
     lesson_pdf:
+      - Finalized PDFs
       - Final PDFs
     slide_deck:
       - Final Slide Deck

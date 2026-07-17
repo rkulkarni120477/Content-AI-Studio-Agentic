@@ -6,7 +6,7 @@ with status=skipped so local/S3-first testing remains simple.
 from __future__ import annotations
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from config.settings import TenantConfig, get_settings
 
@@ -332,3 +332,163 @@ def ensure_index(client, index_name: str, dimension: int):
         },
     }
     client.indices.create(index=index_name, body=body)
+
+
+# =============================================================================
+# Query-time vector retrieval (READ path).
+#
+# These functions are used by services/context_retrieval.py to rank content by
+# semantic meaning. They are strictly read-only (never write/modify the index)
+# and they raise on failure so the caller can fall back to S3 keyword scoring.
+# Security is NOT enforced here: the caller cross-checks every hit's job_id
+# against the S3 source-index allow set, so gating stays identical to the S3
+# retrieval path even if OpenSearch metadata is incomplete.
+# =============================================================================
+
+# Reused clients. Building a boto3/OpenSearch client per query adds a TLS
+# handshake (and AWS4Auth signing setup) to every retrieval; caching removes
+# that from the hot path. Basic-auth OpenSearch clients and Bedrock clients are
+# safe to reuse process-wide. AWS-SigV4 OpenSearch clients are intentionally NOT
+# cached so rotating instance-role credentials never go stale (see below).
+_BEDROCK_CLIENTS: Dict[str, Any] = {}
+_OS_READ_CLIENTS: Dict[str, Any] = {}
+
+
+def _bedrock_runtime_client(region: str):
+    """Return a cached bedrock-runtime client for `region` with bounded retries.
+
+    Explicit connect/read timeouts + a small retry budget keep a slow or
+    throttling Bedrock endpoint from stacking latency on the retrieval path.
+    """
+    client = _BEDROCK_CLIENTS.get(region)
+    if client is None:
+        import boto3
+        from botocore.config import Config
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            config=Config(retries={"max_attempts": 3, "mode": "standard"},
+                          connect_timeout=5, read_timeout=30),
+        )
+        _BEDROCK_CLIENTS[region] = client
+    return client
+
+
+def embed_query(tenant_cfg: TenantConfig, text: str) -> List[float]:
+    """Embed a single query string using the SAME model/params as ingestion.
+
+    Parity with generate_embeddings() (model_id, dimensions, normalize) is
+    required for kNN distances to be meaningful. Returns [] when embeddings are
+    disabled or the text is empty. Any Bedrock error propagates to the caller
+    (which falls back to keyword retrieval).
+    """
+    cfg = tenant_cfg.embedding
+    text = (text or "").strip()
+    if not cfg.enabled or not text:
+        return []
+    region = cfg.region or tenant_cfg.storage.s3.region or get_settings().aws_region
+    client = _bedrock_runtime_client(region)
+    body = json.dumps({"inputText": text[: cfg.max_input_chars], "dimensions": cfg.dimension, "normalize": True})
+    resp = client.invoke_model(modelId=cfg.model_id, body=body)
+    data = json.loads(resp["body"].read())
+    return data.get("embedding", []) or []
+
+
+def _vector_store_read_client(cfg):
+    """Build (or reuse) a read-only OpenSearch client from vector_store config.
+
+    Mirrors the connection logic in opensearch_upsert but is kept separate so
+    the ingestion write path is never affected by read-path changes. Basic-auth
+    clients are cached per endpoint. SigV4 clients are built per call because
+    caching them would freeze credentials that rotate on the instance role.
+    """
+    from opensearchpy import OpenSearch, RequestsHttpConnection
+    endpoint = cfg.endpoint.replace("https://", "").replace("http://", "").rstrip("/")
+    if cfg.auth_mode == "basic":
+        cache_key = f"basic::{endpoint}"
+        client = _OS_READ_CLIENTS.get(cache_key)
+        if client is None:
+            client = OpenSearch(
+                hosts=[{"host": endpoint, "port": 443}],
+                http_auth=((cfg.username or "").strip(), (cfg.password or "").strip()),
+                use_ssl=True, verify_certs=True,
+                connection_class=RequestsHttpConnection, timeout=30, max_retries=2, retry_on_timeout=True,
+            )
+            _OS_READ_CLIENTS[cache_key] = client
+        return client
+    import boto3
+    from requests_aws4auth import AWS4Auth
+    session = boto3.Session(region_name=cfg.region)
+    credentials = session.get_credentials()
+    auth = AWS4Auth(credentials.access_key, credentials.secret_key, cfg.region, "es", session_token=credentials.token)
+    return OpenSearch(
+        hosts=[{"host": endpoint, "port": 443}],
+        http_auth=auth, use_ssl=True, verify_certs=True,
+        connection_class=RequestsHttpConnection, timeout=30, max_retries=2, retry_on_timeout=True,
+    )
+
+
+def vector_search(tenant_cfg: TenantConfig, client_id: str, query_text: str, query_embedding: List[float],
+                  size: int = 40, allowed_job_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Hybrid semantic + keyword search over the tenant OpenSearch index.
+
+    - Semantic: kNN over the `embedding` field (meaning match).
+    - Keyword: BM25 `multi_match` over title/text/keywords (exact-term match,
+      e.g. course codes like "B2D4"). Combined as a bool query so both signals
+      contribute to the score.
+    - Isolation/security: filters by `client_id`, and — when `allowed_job_ids`
+      is provided — by that allow-set INSIDE the query. Filtering server-side
+      (rather than only in Python after retrieval) means the ANN ranks within
+      the allowed set, so allowed hits can't be truncated behind disallowed
+      ones. `allowed_job_ids=None` means no job restriction; an empty list
+      restricts to nothing and returns [].
+
+    Returns hit `_source` dicts (embedding excluded) each with an added
+    `_score`, ordered by relevance. Read-only. Raises on connection/query error.
+    """
+    cfg = tenant_cfg.vector_store
+    if not cfg.enabled or not query_embedding:
+        return []
+    if allowed_job_ids is not None:
+        # Drop falsy job_ids: a None/"" in a `terms` filter is invalid and would
+        # error the query. If nothing is left, the allow-set is effectively empty.
+        allowed_job_ids = [j for j in allowed_job_ids if j]
+        if not allowed_job_ids:
+            return []
+    client = _vector_store_read_client(cfg)
+    should: List[Dict[str, Any]] = []
+    if (query_text or "").strip():
+        should.append({
+            "multi_match": {
+                "query": query_text,
+                "fields": ["title^2", "text", "keywords^1.5", "visual_summary^1.2", "topics"],
+                "type": "best_fields",
+                "tie_breaker": 0.3,
+            }
+        })
+    filter_clauses: List[Dict[str, Any]] = [{"term": {"client_id": client_id}}]
+    if allowed_job_ids is not None:
+        filter_clauses.append({"terms": {"job_id": list(allowed_job_ids)}})
+    # Over-fetch candidates (k >= size, generous floor). The default nmslib
+    # engine applies the bool `filter` post-ANN, so a generous k keeps recall
+    # healthy once the allow-set narrows results. For large multi-tenant scale,
+    # move `embedding` to the Lucene engine for true pre-filtered kNN.
+    knn_k = max(size, 100)
+    body = {
+        "size": size,
+        "query": {
+            "bool": {
+                "must": [{"knn": {"embedding": {"vector": query_embedding, "k": knn_k}}}],
+                "should": should,
+                "filter": filter_clauses,
+            }
+        },
+        "_source": {"excludes": ["embedding"]},
+    }
+    resp = client.search(index=cfg.index_name, body=body)
+    out: List[Dict[str, Any]] = []
+    for h in resp.get("hits", {}).get("hits", []):
+        src = h.get("_source", {}) or {}
+        src["_score"] = h.get("_score", 0.0)
+        out.append(src)
+    return out

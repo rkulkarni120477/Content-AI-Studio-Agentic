@@ -68,6 +68,7 @@ def _tenant_read(db: Session, project) -> TenantRead:
         id=project.id,
         slug=project.slug,
         name=project.name,
+        client_name=project.client_name,
         status=project.status or "active",
         max_users=project.max_users or 50,
         microsoft_auth_enabled=bool(getattr(project, "microsoft_auth_enabled", True)),
@@ -148,6 +149,7 @@ def create_tenant(
             admin_username=body.admin_username,
             admin_password_hash=hash_password(body.admin_password),
             admin_display_name=body.admin_display_name or body.admin_username,
+            client_name=body.client_name,
         )
         db.commit()
     except ValidationError:
@@ -176,6 +178,8 @@ def update_tenant(
 
     if body.name is not None:
         project.name = body.name.strip()
+    if body.client_name is not None:
+        project.client_name = body.client_name.strip() or None
     if body.status is not None:
         if body.status not in ("active", "suspended"):
             raise ValidationError("status must be 'active' or 'suspended'.")

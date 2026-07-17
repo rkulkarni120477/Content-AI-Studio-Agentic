@@ -91,16 +91,27 @@ def _visible_custom_instructions(text: str | None) -> str:
     return _DIS_IDS_RE.sub("", text or "").strip()
 
 
-def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None) -> str:
+def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None, extra_instructions: str = "") -> str:
     ids = _extract_dis_ids(style, document_ids)
     if not ids:
         return ""
+    # Style-specific query so semantic (vector) retrieval ranks chunks against
+    # THIS style's intent, not only a generic sentence. Capped so the query
+    # stays well inside embedding-model input limits.
+    query_parts = [
+        str(getattr(style, "name", "") or ""),
+        str(getattr(style, "description", "") or ""),
+        _visible_custom_instructions(getattr(style, "custom_instructions", "")),
+        str(extra_instructions or ""),
+        "Understand instructional style, authoring standards, copyediting rules, quality standards, tone, structure, and prohibited writing patterns.",
+    ]
+    query = " ".join(p.strip() for p in query_parts if p and p.strip())[:4000]
     payload = {
         "purpose": "style",
         "document_ids": ids,
         "filters": {"document_ids": ids, "purpose": "style"},
         "retrieval": {"top_k": 20, "token_budget": 14000},
-        "query": "Understand instructional style, authoring standards, copyediting rules, quality standards, tone, structure, and prohibited writing patterns.",
+        "query": query,
     }
     try:
         result = dis_client.retrieve_context_sync("style", payload, current_user=current_user)
@@ -480,7 +491,10 @@ def generate_style_intelligence(
 
     style = _get_style_or_404(db, style_id)
 
-    dis_context = _retrieve_dis_style_context(style, current_user, request_body.document_ids)
+    dis_context = _retrieve_dis_style_context(
+        style, current_user, request_body.document_ids,
+        extra_instructions=request_body.extra_instructions,
+    )
     extra_parts = []
     if dis_context:
         extra_parts.append(dis_context)
@@ -489,6 +503,7 @@ def generate_style_intelligence(
     effective_extra = "\n\n".join(extra_parts).strip()
 
     # Use regenerate if understanding already exists, otherwise generate fresh.
+    _audit_capture = {}
     if style.generated_summary:
         result = regenerate_style_understanding(
             db,
@@ -496,6 +511,7 @@ def generate_style_intelligence(
             request_body.model_choice,
             effective_extra,
             system_prompt=request_body.system_prompt_override,
+            audit_capture=_audit_capture,
         )
     else:
         result = generate_style_understanding(
@@ -504,6 +520,7 @@ def generate_style_intelligence(
             request_body.model_choice,
             effective_extra,
             system_prompt=request_body.system_prompt_override,
+            audit_capture=_audit_capture,
         )
 
     if isinstance(result, str) and result.startswith("ERROR: No documents or instructions"):
@@ -526,6 +543,24 @@ def generate_style_intelligence(
     style.generated_summary = understanding_text
     db.commit()
     _upsert_generated_style_to_dis(style, current_user)
+
+    from promptops_app.services.audit_service import log_audit_event
+
+    log_audit_event(
+        db, current_user.username, "style.upgraded",
+        entity_type="style", entity_id=style.style_id,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        metadata={
+            "name": style.name,
+            "model_choice": request_body.model_choice,
+            "extra_instructions": request_body.extra_instructions,
+            "document_ids": request_body.document_ids,
+            "input_mode": "full",
+            "system_prompt": _audit_capture.get("system_prompt"),
+            "user_prompt": _audit_capture.get("user_prompt"),
+            "output": understanding_text,
+        },
+    )
 
     _log.info("style_understood  user=%s  style_id=%d  model=%s",
               current_user.username, style_id, request_body.model_choice)

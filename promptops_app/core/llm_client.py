@@ -17,7 +17,9 @@ Note: module-level singletons are used for connection reuse (thread-safe lazy in
 """
 
 import json
+import logging
 import threading
+import time
 import requests
 import boto3
 from botocore.config import Config
@@ -29,6 +31,8 @@ from promptops_app.core.config import settings as _cfg
 
 # Resolved once at import time from the central AppSettings.
 PROMPTOPS_API_TIMEOUT_SECONDS = _cfg.llm_timeout_seconds
+
+_log = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -105,6 +109,11 @@ def call_openai(system_prompt: str, user_prompt: str) -> str:
         "temperature": 0.3,
         "max_tokens": 16384,
     }
+    _log.info("llm_call_started", extra={
+        "event": "llm_call_started", "provider": "openai", "model": target_model,
+        "system_prompt": system_prompt, "user_prompt": user_prompt,
+    })
+    start = time.monotonic()
     try:
         resp = _get_openai_session().post(
             url,
@@ -113,8 +122,17 @@ def call_openai(system_prompt: str, user_prompt: str) -> str:
             timeout=(10, PROMPTOPS_API_TIMEOUT_SECONDS),
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        text = resp.json()["choices"][0]["message"]["content"]
+        _log.info("llm_call_completed", extra={
+            "event": "llm_call_completed", "provider": "openai", "model": target_model,
+            "duration_ms": int((time.monotonic() - start) * 1000), "output": text,
+        })
+        return text
     except Exception as e:
+        _log.error("llm_call_failed", extra={
+            "event": "llm_call_failed", "provider": "openai", "model": target_model,
+            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(e),
+        })
         return f"ERROR (OpenAI - {target_model}): {e}"
 
 
@@ -146,37 +164,56 @@ def _call_openai_raw(
         "temperature": 0.3,
         "max_tokens": 16384,
     }
+    _log.info("llm_call_started", extra={
+        "event": "llm_call_started", "provider": "openai", "model": target_model,
+        "system_prompt": system_prompt, "user_prompt": user_prompt,
+    })
+    start = time.monotonic()
     try:
-        resp = _get_openai_session().post(
-            url,
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json=data,
-            timeout=(10, PROMPTOPS_API_TIMEOUT_SECONDS),
+        try:
+            resp = _get_openai_session().post(
+                url,
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json=data,
+                timeout=(10, PROMPTOPS_API_TIMEOUT_SECONDS),
+            )
+        except requests.exceptions.Timeout as exc:
+            raise LLMTimeoutError(f"OpenAI request timed out after {PROMPTOPS_API_TIMEOUT_SECONDS}s") from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise LLMProviderError(f"OpenAI connection error: {exc}") from exc
+        except requests.exceptions.RequestException as exc:
+            raise LLMProviderError(f"OpenAI request error: {exc}") from exc
+
+        if resp.status_code == 401:
+            raise LLMAuthError("OpenAI authentication failed (HTTP 401).")
+        if resp.status_code == 429:
+            raise LLMRateLimitError("OpenAI rate limit exceeded (HTTP 429).")
+        try:
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            raise LLMProviderError(f"OpenAI HTTP error {resp.status_code}: {exc}") from exc
+
+        body = resp.json()
+        usage = body.get("usage", {})
+        result = LLMResponse(
+            text=body["choices"][0]["message"]["content"],
+            model=target_model,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
         )
-    except requests.exceptions.Timeout as exc:
-        raise LLMTimeoutError(f"OpenAI request timed out after {PROMPTOPS_API_TIMEOUT_SECONDS}s") from exc
-    except requests.exceptions.ConnectionError as exc:
-        raise LLMProviderError(f"OpenAI connection error: {exc}") from exc
-    except requests.exceptions.RequestException as exc:
-        raise LLMProviderError(f"OpenAI request error: {exc}") from exc
-
-    if resp.status_code == 401:
-        raise LLMAuthError("OpenAI authentication failed (HTTP 401).")
-    if resp.status_code == 429:
-        raise LLMRateLimitError("OpenAI rate limit exceeded (HTTP 429).")
-    try:
-        resp.raise_for_status()
-    except requests.exceptions.HTTPError as exc:
-        raise LLMProviderError(f"OpenAI HTTP error {resp.status_code}: {exc}") from exc
-
-    body = resp.json()
-    usage = body.get("usage", {})
-    return LLMResponse(
-        text=body["choices"][0]["message"]["content"],
-        model=target_model,
-        prompt_tokens=usage.get("prompt_tokens"),
-        completion_tokens=usage.get("completion_tokens"),
-    )
+        _log.info("llm_call_completed", extra={
+            "event": "llm_call_completed", "provider": "openai", "model": target_model,
+            "duration_ms": int((time.monotonic() - start) * 1000),
+            "prompt_tokens": result.prompt_tokens, "completion_tokens": result.completion_tokens,
+            "output": result.text,
+        })
+        return result
+    except Exception as exc:
+        _log.error("llm_call_failed", extra={
+            "event": "llm_call_failed", "provider": "openai", "model": target_model,
+            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(exc),
+        })
+        raise
 
 
 # =============================================================================
@@ -207,9 +244,14 @@ def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] =
     "global.anthropic.claude-sonnet-4-6-20250929-v1:0"), resolved by the
     model catalog.  Falls back to ``settings.bedrock_model_id`` when omitted.
     """
+    target_model_id = model_id or settings.bedrock_model_id
+    _log.info("llm_call_started", extra={
+        "event": "llm_call_started", "provider": "bedrock", "model": target_model_id,
+        "system_prompt": system_prompt, "user_prompt": user_prompt,
+    })
+    start = time.monotonic()
     try:
         client = _get_bedrock_client()
-        target_model_id = model_id or settings.bedrock_model_id
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 16384,
@@ -219,9 +261,18 @@ def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] =
         })
         response = client.invoke_model(modelId=target_model_id, body=body)
         response_body = json.loads(response.get("body").read())
-        return response_body.get("content", [{}])[0].get("text", "ERROR: Empty response from Bedrock")
+        text = response_body.get("content", [{}])[0].get("text", "ERROR: Empty response from Bedrock")
+        _log.info("llm_call_completed", extra={
+            "event": "llm_call_completed", "provider": "bedrock", "model": target_model_id,
+            "duration_ms": int((time.monotonic() - start) * 1000), "output": text,
+        })
+        return text
     except Exception as e:
-        return f"ERROR (Bedrock - {model_id or settings.bedrock_model_id}): {e}"
+        _log.error("llm_call_failed", extra={
+            "event": "llm_call_failed", "provider": "bedrock", "model": target_model_id,
+            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(e),
+        })
+        return f"ERROR (Bedrock - {target_model_id}): {e}"
 
 
 def _call_bedrock_raw(
@@ -235,45 +286,63 @@ def _call_bedrock_raw(
     ``model_id`` should be the actual Bedrock model ID resolved by the catalog;
     falls back to ``settings.bedrock_model_id`` when omitted.
     """
-    try:
-        client = _get_bedrock_client()
-    except Exception as exc:
-        raise LLMProviderError(f"Bedrock client init failed: {exc}") from exc
-
     target_model_id = model_id or settings.bedrock_model_id
-
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 16384,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_prompt}],
-        "temperature": 0.3,
+    _log.info("llm_call_started", extra={
+        "event": "llm_call_started", "provider": "bedrock", "model": target_model_id,
+        "system_prompt": system_prompt, "user_prompt": user_prompt,
     })
-
+    start = time.monotonic()
     try:
-        response = client.invoke_model(modelId=target_model_id, body=body)
+        try:
+            client = _get_bedrock_client()
+        except Exception as exc:
+            raise LLMProviderError(f"Bedrock client init failed: {exc}") from exc
+
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 16384,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+            "temperature": 0.3,
+        })
+
+        try:
+            response = client.invoke_model(modelId=target_model_id, body=body)
+        except Exception as exc:
+            err_lower = str(exc).lower()
+            if any(k in err_lower for k in ("timeout", "timed out", "read timeout", "connect timeout")):
+                raise LLMTimeoutError(f"Bedrock request timed out: {exc}") from exc
+            if any(k in err_lower for k in ("throttl", "rate", "too many")):
+                raise LLMRateLimitError(f"Bedrock throttled: {exc}") from exc
+            if any(k in err_lower for k in ("access denied", "not authorized", "credential", "auth")):
+                raise LLMAuthError(f"Bedrock auth error: {exc}") from exc
+            raise LLMProviderError(f"Bedrock invoke error: {exc}") from exc
+
+        response_body = json.loads(response.get("body").read())
+        text = response_body.get("content", [{}])[0].get("text", "")
+        if not text:
+            raise LLMProviderError("Bedrock returned an empty response body.")
+
+        usage = response_body.get("usage", {})
+        result = LLMResponse(
+            text=text,
+            model=target_model_id,
+            prompt_tokens=usage.get("input_tokens"),
+            completion_tokens=usage.get("output_tokens"),
+        )
+        _log.info("llm_call_completed", extra={
+            "event": "llm_call_completed", "provider": "bedrock", "model": target_model_id,
+            "duration_ms": int((time.monotonic() - start) * 1000),
+            "prompt_tokens": result.prompt_tokens, "completion_tokens": result.completion_tokens,
+            "output": result.text,
+        })
+        return result
     except Exception as exc:
-        err_lower = str(exc).lower()
-        if any(k in err_lower for k in ("timeout", "timed out", "read timeout", "connect timeout")):
-            raise LLMTimeoutError(f"Bedrock request timed out: {exc}") from exc
-        if any(k in err_lower for k in ("throttl", "rate", "too many")):
-            raise LLMRateLimitError(f"Bedrock throttled: {exc}") from exc
-        if any(k in err_lower for k in ("access denied", "not authorized", "credential", "auth")):
-            raise LLMAuthError(f"Bedrock auth error: {exc}") from exc
-        raise LLMProviderError(f"Bedrock invoke error: {exc}") from exc
-
-    response_body = json.loads(response.get("body").read())
-    text = response_body.get("content", [{}])[0].get("text", "")
-    if not text:
-        raise LLMProviderError("Bedrock returned an empty response body.")
-
-    usage = response_body.get("usage", {})
-    return LLMResponse(
-        text=text,
-        model=target_model_id,
-        prompt_tokens=usage.get("input_tokens"),
-        completion_tokens=usage.get("output_tokens"),
-    )
+        _log.error("llm_call_failed", extra={
+            "event": "llm_call_failed", "provider": "bedrock", "model": target_model_id,
+            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(exc),
+        })
+        raise
 
 
 # =============================================================================

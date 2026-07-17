@@ -156,6 +156,12 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
         "document_type": document_type,
         "purpose": purpose,
         "visibility": normalize_visibility(meta.get("visibility") or "instructor"),
+        # Security-critical: carry restriction flags into the compact index so the
+        # retrieval gate can hide answer keys / instructor guides / calendars from
+        # students. Without these, gating fell back to a visibility string the gate
+        # did not recognize and restricted content leaked into retrieval.
+        "restricted": bool(meta.get("restricted")),
+        "access_level": meta.get("access_level") or ("admin_only" if meta.get("restricted") else ""),
         "status": meta.get("status") or "processed",
         "size_bytes": source.get("size_bytes") or payload.get("file_size_bytes") or meta.get("file_size_bytes"),
         "page_count": payload.get("page_count") or meta.get("page_count"),
@@ -175,6 +181,26 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
     document_type = str(meta.get("document_type") or meta.get("doc_type") or source.get("type") or "document")
     purpose = normalize_purpose(str(meta.get("purpose") or ""), document_type)
     now = datetime.utcnow().isoformat()
+
+    def _first_unit_value(key: str):
+        """Fallback: first non-empty value of `key` across content-unit metadata.
+
+        Doc-level payload metadata usually carries the calendar-join keys, but
+        for some doc types they live only on the units; this keeps the promoted
+        value correct without a full aggregation.
+        """
+        for u in (payload.get("content_units") or []):
+            v = (u.get("metadata") or {}).get(key)
+            if v not in (None, "", []):
+                return v
+        return None
+
+    def _promote(key: str, default=""):
+        v = meta.get(key)
+        if v in (None, "", []):
+            v = _first_unit_value(key)
+        return v if v not in (None, "", []) else default
+
     return {
         "document_id": payload.get("job_id"),
         "job_id": payload.get("job_id"),
@@ -186,12 +212,24 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "document_type": document_type,
         "purpose": purpose,
         "visibility": normalize_visibility(meta.get("visibility") or "instructor"),
+        # Security-critical: carry restriction flags into the compact index so the
+        # retrieval gate can hide answer keys / instructor guides / calendars from
+        # students. Without these, gating fell back to a visibility string the gate
+        # did not recognize and restricted content leaked into retrieval.
+        "restricted": bool(meta.get("restricted")),
+        "access_level": meta.get("access_level") or ("admin_only" if meta.get("restricted") else ""),
         "status": meta.get("status") or "processed",
         "size_bytes": source.get("size_bytes") or payload.get("file_size_bytes") or meta.get("file_size_bytes"),
         "page_count": payload.get("page_count") or meta.get("page_count"),
         "total_units": len(payload.get("content_units") or []),
         "payload_key": payload_key,
         "content_key": content_key,
+        # Reference back to the original uploaded file in S3, so retrieval can
+        # cite/deep-link the source (not just its filename). These come straight
+        # from the payload's source_file block written at ingestion.
+        "raw_storage_url": source.get("raw_url") or "",
+        "raw_key": source.get("raw_key") or "",
+        "source_relative_path": source.get("relative_path") or "",
         "created_at": payload.get("created_at") or now,
         "updated_at": now,
         # Optional simple filter values only. No internal metadata dump.
@@ -201,6 +239,26 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "chapter": meta.get("chapter") or "",
         "module_name": meta.get("module_name") or "",
         "learning_objective": meta.get("learning_objective") or "",
+        # Filter / calendar-join keys promoted from the processed payload, so the
+        # retrieval allow-set and the block/day/quiz/project filters can be
+        # evaluated from the source index alone — no per-query content-file
+        # reads. Additive only; absent values stay empty/None.
+        "content_type": meta.get("content_type") or "",
+        "block_id": meta.get("block_id") or meta.get("block") or "",
+        "block_number": meta.get("block_number") or "",
+        "day_number": _promote("day_number", None),
+        "day_id": _promote("day_id"),
+        "mapped_day": meta.get("mapped_day") or "",
+        "filename_day_id": meta.get("filename_day_id") or "",
+        "quiz_number": _promote("quiz_number", None),
+        "project_number": _promote("project_number"),
+        "lesson_name": meta.get("lesson_name") or "",
+        "subject_unit": _promote("subject_unit"),
+        "course_id": meta.get("course_id") or "",
+        "program_id": meta.get("program_id") or "",
+        "calendar_mapping_required": bool(meta.get("calendar_mapping_required")),
+        "is_generation_candidate": meta.get("is_generation_candidate"),
+        "is_archive_or_working_version": bool(meta.get("is_archive_or_working_version")),
     }
 
 

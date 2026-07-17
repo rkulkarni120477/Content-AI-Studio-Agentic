@@ -27,6 +27,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from promptops_app.core.logging import configure_logging
+
+configure_logging()
+
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
 from app.core.exceptions import AppError

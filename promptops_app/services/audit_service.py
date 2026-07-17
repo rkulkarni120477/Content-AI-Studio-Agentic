@@ -77,11 +77,13 @@ AUDIT_EVENTS: dict[str, dict] = {
 
     # ── Blueprint ─────────────────────────────────────────────────────────────
     "blueprint.generated":     {"level": "info",    "entity": "blueprint",  "icon": "🗂️", "label": "Blueprint generated"},
+    "blueprint.created":       {"level": "info",    "entity": "blueprint",  "icon": "🗂️", "label": "Blueprint generated"},
     "blueprint.version_committed": {"level": "info","entity": "blueprint",  "icon": "💾", "label": "Blueprint version committed"},
     "blueprint.version_activated": {"level": "info","entity": "blueprint",  "icon": "✅", "label": "Blueprint active version changed"},
     "blueprint.pinned":        {"level": "info",    "entity": "blueprint",  "icon": "📌", "label": "Blueprint pinned for generation"},
 
     # ── Content Generation ────────────────────────────────────────────────────
+    "generation.launched":     {"level": "info",    "entity": "generation", "icon": "🚀", "label": "Generation launched"},
     "content.generated":       {"level": "info",    "entity": "generation", "icon": "⚡", "label": "Content generated"},
     "content.edited":          {"level": "info",    "entity": "block",      "icon": "✏️", "label": "Content block edited"},
     "content.regenerated":     {"level": "info",    "entity": "block",      "icon": "🔄", "label": "Content block regenerated"},

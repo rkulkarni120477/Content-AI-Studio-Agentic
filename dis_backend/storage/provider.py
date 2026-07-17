@@ -63,6 +63,16 @@ class StorageProvider(abc.ABC):
     async def exists(self, key: str) -> bool:
         """Check if object exists."""
 
+    async def presigned_download_url(self, key: str, expires: int = 3600, filename: str = "") -> str:
+        """Generate a pre-signed URL for downloading (GET) an existing object.
+
+        Distinct from ``presigned_url`` above, which signs a PUT for uploads.
+        Concrete default: unsupported. S3/Azure/GCP/Local override this. Kept
+        non-abstract so introducing a new provider degrades to a clear error
+        instead of silently breaking source download links.
+        """
+        raise NotImplementedError("Presigned download URLs are not supported for this storage provider.")
+
 
 # ── AWS S3 ────────────────────────────────────────────────────────────────────
 
@@ -121,6 +131,14 @@ class S3Provider(StorageProvider):
             Params={"Bucket": bucket, "Key": self._key_for_storage(key)},
             ExpiresIn=expires,
         )
+
+    async def presigned_download_url(self, key: str, expires: int = 3600, filename: str = "") -> str:
+        bucket = self._bucket_for(key)
+        params = {"Bucket": bucket, "Key": self._key_for_storage(key)}
+        if filename:
+            # Make the browser save with the original filename, not the S3 key.
+            params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+        return self._s3.generate_presigned_url("get_object", Params=params, ExpiresIn=expires)
 
     async def exists(self, key: str) -> bool:
         import botocore
@@ -185,6 +203,19 @@ class AzureProvider(StorageProvider):
         )
         return f"https://{self._account}.blob.core.windows.net/{container}/{key}?{sas}"
 
+    async def presigned_download_url(self, key: str, expires: int = 3600, filename: str = "") -> str:
+        import datetime
+        container = self._container(key)
+        sas = self._gen_sas(
+            account_name=self._account,
+            container_name=container,
+            blob_name=key,
+            account_key=self._key,
+            permission=self._sas_perms(read=True),
+            expiry=datetime.datetime.utcnow() + datetime.timedelta(seconds=expires),
+        )
+        return f"https://{self._account}.blob.core.windows.net/{container}/{key}?{sas}"
+
     async def exists(self, key: str) -> bool:
         container = self._container(key)
         blob = self._client.get_blob_client(container=container, blob=key)
@@ -232,6 +263,15 @@ class GCPProvider(StorageProvider):
             method="PUT",
         )
 
+    async def presigned_download_url(self, key: str, expires: int = 3600, filename: str = "") -> str:
+        import datetime
+        bucket = self._client.bucket(self._bucket_name(key))
+        blob = bucket.blob(key)
+        return blob.generate_signed_url(
+            expiration=datetime.timedelta(seconds=expires),
+            method="GET",
+        )
+
     async def exists(self, key: str) -> bool:
         bucket = self._client.bucket(self._bucket_name(key))
         return bucket.blob(key).exists()
@@ -277,6 +317,10 @@ class LocalProvider(StorageProvider):
     async def presigned_url(self, key: str, expires: int = 3600) -> str:
         # Local dev: return fake URL; actual upload done via API
         return f"http://localhost:8000/v1/dev/upload/{key}"
+
+    async def presigned_download_url(self, key: str, expires: int = 3600, filename: str = "") -> str:
+        # Local dev: return a fake URL; actual download served via API.
+        return f"http://localhost:8000/v1/dev/download/{key}"
 
     async def exists(self, key: str) -> bool:
         return self._path(key).exists()
