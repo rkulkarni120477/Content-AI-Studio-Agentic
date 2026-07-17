@@ -185,6 +185,13 @@ async def upload_source_document(
     chapter: str = Form(default=""),
     module_name: str = Form(default=""),
     learning_objective: str = Form(default=""),
+    # Folder upload: the browser folder picker gives each file a relative path
+    # (e.g. "MyFolder/Quizzes/Quiz 4.pdf"). The frontend uploads one file per
+    # request, so one value per request is correct. DIS already accepts these
+    # fields, preserves the structure in S3, and uses the path for auto-tagging.
+    # Defaults are empty, so plain file uploads behave exactly as before.
+    source_relative_path: str = Form(default=""),
+    source_root: str = Form(default=""),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -202,6 +209,8 @@ async def upload_source_document(
         "chapter": chapter,
         "module_name": module_name,
         "learning_objective": learning_objective,
+        "source_relative_path": source_relative_path,
+        "source_root": source_root,
     }
     return await dis_client.upload_documents(files=files, form_fields=form_fields, current_user=current_user, client_id=resolved_client)
 

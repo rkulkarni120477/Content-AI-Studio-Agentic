@@ -360,16 +360,30 @@ export default function SourceLibraryPage() {
     const formEl = e.currentTarget;
     const rawForm = new FormData(formEl);
     const selectedFiles = Array.from(formEl.elements.files?.files || []);
-    if (!selectedFiles.length) {
-      setError('Please select one or more files.');
+    // Folder picker (webkitdirectory): the browser flattens the chosen folder into
+    // a file list where each file carries webkitRelativePath ("Folder/sub/f.pdf").
+    // Unsupported file types are skipped up front so junk files (.DS_Store etc.)
+    // don't show up as failed uploads.
+    const folderFiles = Array.from(formEl.elements.folder?.files || []);
+    const SUPPORTED_EXT = /\.(pdf|docx?|pptx?|xlsx?|csv|txt|json|jpe?g|png)$/i;
+    const folderEntries = folderFiles
+      .filter((f) => SUPPORTED_EXT.test(f.name))
+      .map((file) => ({ file, relativePath: file.webkitRelativePath || file.name }));
+    const skippedUnsupported = folderFiles.length - folderEntries.length;
+    const entries = [
+      ...selectedFiles.map((file) => ({ file, relativePath: '' })),
+      ...folderEntries,
+    ];
+    if (!entries.length) {
+      setError('Please select one or more files, or a folder.');
       return;
     }
     const selectedPurpose = String(rawForm.get('purpose') || 'general_reference');
     const selectedDocumentType = String(rawForm.get('document_type') || '').trim();
-    const queue = selectedFiles.map((file, idx) => ({
+    const queue = entries.map((entry, idx) => ({
       id: `${Date.now()}-${idx}`,
-      name: file.name,
-      size: file.size,
+      name: entry.relativePath || entry.file.name,
+      size: entry.file.size,
       status: 'pending',
       progress: 0,
       purpose: selectedPurpose,
@@ -382,19 +396,23 @@ export default function SourceLibraryPage() {
     setError('');
     let failed = 0;
 
-    for (let i = 0; i < selectedFiles.length; i += 1) {
-      const file = selectedFiles[i];
+    for (let i = 0; i < entries.length; i += 1) {
+      const { file, relativePath } = entries[i];
       setPersistedUploadQueue((q) => q.map((item) => (item.id === queue[i].id ? { ...item, status: 'uploading', progress: 0, detail: 'Uploading to DIS and processing'  } : item)));
       const fd = new FormData();
       fd.append('files', file);
       for (const [key, value] of rawForm.entries()) {
-        if (key !== 'files') fd.set(key, value);
+        if (key !== 'files' && key !== 'folder') fd.set(key, value);
+      }
+      if (relativePath) {
+        fd.set('source_relative_path', relativePath);
+        fd.set('source_root', relativePath.split('/')[0] || '');
       }
       if (scopedProjectId) fd.set('project_id', scopedProjectId);
       if (scopedCourseId) fd.set('course_id', scopedCourseId);
       try {
         const result = await sourceLibraryApi.uploadDocument(fd, (pct) => {
-          setUploadProgress(Math.round(((i + pct / 100) / selectedFiles.length) * 100));
+          setUploadProgress(Math.round(((i + pct / 100) / entries.length) * 100));
           setPersistedUploadQueue((q) => q.map((item) => (item.id === queue[i].id ? { ...item, progress: pct } : item)));
         });
         if (result?.failed) {
@@ -410,8 +428,11 @@ export default function SourceLibraryPage() {
       }
     }
 
-    if (failed) setError(`${failed} file(s) failed. Previous processed documents are still available and unaffected.`);
-    else {
+    const notes = [];
+    if (failed) notes.push(`${failed} file(s) failed. Previous processed documents are still available and unaffected.`);
+    if (skippedUnsupported) notes.push(`${skippedUnsupported} unsupported file(s) in the folder were skipped.`);
+    if (notes.length) setError(notes.join(' '));
+    if (!failed) {
       formEl.reset();
     }
     await loadDocuments(filters);
@@ -521,6 +542,10 @@ export default function SourceLibraryPage() {
               <div>
                 <label className={styles.label}>Files</label>
                 <input className={styles.input} type="file" name="files" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.json,.jpg,.jpeg,.png" />
+              </div>
+              <div>
+                <label className={styles.label}>Or Folder (uploads all supported files inside, keeping subfolders)</label>
+                <input className={styles.input} type="file" name="folder" webkitdirectory="" directory="" multiple />
               </div>
               <div>
                 <label className={styles.label}>Purpose</label>

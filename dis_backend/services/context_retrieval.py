@@ -840,7 +840,14 @@ class ContextRetrievalService:
         retrieval_method = "s3_keyword"
         chosen_units: List[Dict[str, Any]] = []
 
-        if not explicit_selection and not needs_units:
+        # Explicit selections (job_ids/document_ids) also take the vector path:
+        # _iter_source_records narrows the allow-set to exactly the selected
+        # docs, and _passes_filters keeps the restricted/visibility gate while
+        # skipping only the purpose gate — so semantic ranking runs INSIDE the
+        # hand-picked docs and can never widen the selection. If OpenSearch is
+        # unavailable or a selected doc is not indexed, the S3 keyword fallback
+        # below behaves exactly as before.
+        if not needs_units:
             for payload in self._iter_source_records(client_id, filters):
                 # Empty synthetic unit -> doc-level gate (see _passes_filters).
                 if not self._passes_filters({}, payload, filters):
@@ -854,6 +861,12 @@ class ContextRetrievalService:
             if vector_units:
                 chosen_units = vector_units
                 retrieval_method = "opensearch_hybrid"
+                if explicit_selection:
+                    # Hand-picked docs must each contribute context (a large doc
+                    # can otherwise dominate the top hits).
+                    chosen_units = self._ensure_doc_coverage(
+                        client_id, chosen_units, allowed_jobs, filters, query_terms, top_k,
+                    )
 
         if not chosen_units:
             # Fallback (no vector hits / no query / explicit selection / unit_types):
@@ -892,6 +905,45 @@ class ContextRetrievalService:
             "source_units": selected,
             "combined_context": combined,
         }
+
+    def _ensure_doc_coverage(self, client_id: str, units: List[Dict[str, Any]], allowed_jobs: set, filters: Dict[str, Any], query_terms: List[str], top_k: int) -> List[Dict[str, Any]]:
+        """Guarantee every explicitly selected doc contributes at least one unit.
+
+        Vector ranking can let one large hand-picked doc dominate the top hits
+        and starve the other selected docs. This is purely additive and only
+        runs for explicit selections: it reads content ONLY for uncovered docs,
+        gates each unit through _passes_filters (restricted gate intact), takes
+        the best keyword-ranked chunk per missing doc, and reserves pack slots
+        so the supplements survive the top_k cut in _pack_units. On any failure
+        the original vector ranking is returned unchanged.
+        """
+        try:
+            covered = {u.get("job_id") for u in units}
+            missing = [j for j in allowed_jobs if j not in covered]
+            if not missing:
+                return units
+            candidates: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+            for payload in self._iter_payloads(client_id, {**filters, "job_ids": list(missing)}):
+                for unit in payload.get("content_units", []):
+                    if not self._passes_filters(unit, payload, filters):
+                        continue
+                    candidates.append((unit, payload))
+            supplements: List[Dict[str, Any]] = []
+            picked: set = set()
+            for u in self._score_s3_units(candidates, query_terms, min_score=0.0):
+                jid = u.get("job_id")
+                if jid in picked or jid not in set(missing):
+                    continue
+                picked.add(jid)
+                u["matched_on"] = list(u.get("matched_on") or []) + ["coverage_topup"]
+                supplements.append(u)
+            if not supplements:
+                return units
+            keep = max(1, top_k - len(supplements))
+            return units[:keep] + supplements
+        except Exception as exc:
+            logger.warning("doc coverage top-up failed for client_id=%s: %s", client_id, exc)
+            return units
 
     def _vector_units(self, client_id: str, query_text: str, allowed_jobs: set, allowed_records: Dict[str, Any], top_k: int, min_score: float = 0.0) -> List[Dict[str, Any]]:
         """Semantically-ranked units from OpenSearch, gated to allowed_jobs.

@@ -91,16 +91,27 @@ def _visible_custom_instructions(text: str | None) -> str:
     return _DIS_IDS_RE.sub("", text or "").strip()
 
 
-def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None) -> str:
+def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None, extra_instructions: str = "") -> str:
     ids = _extract_dis_ids(style, document_ids)
     if not ids:
         return ""
+    # Style-specific query so semantic (vector) retrieval ranks chunks against
+    # THIS style's intent, not only a generic sentence. Capped so the query
+    # stays well inside embedding-model input limits.
+    query_parts = [
+        str(getattr(style, "name", "") or ""),
+        str(getattr(style, "description", "") or ""),
+        _visible_custom_instructions(getattr(style, "custom_instructions", "")),
+        str(extra_instructions or ""),
+        "Understand instructional style, authoring standards, copyediting rules, quality standards, tone, structure, and prohibited writing patterns.",
+    ]
+    query = " ".join(p.strip() for p in query_parts if p and p.strip())[:4000]
     payload = {
         "purpose": "style",
         "document_ids": ids,
         "filters": {"document_ids": ids, "purpose": "style"},
         "retrieval": {"top_k": 20, "token_budget": 14000},
-        "query": "Understand instructional style, authoring standards, copyediting rules, quality standards, tone, structure, and prohibited writing patterns.",
+        "query": query,
     }
     try:
         result = dis_client.retrieve_context_sync("style", payload, current_user=current_user)
@@ -480,7 +491,10 @@ def generate_style_intelligence(
 
     style = _get_style_or_404(db, style_id)
 
-    dis_context = _retrieve_dis_style_context(style, current_user, request_body.document_ids)
+    dis_context = _retrieve_dis_style_context(
+        style, current_user, request_body.document_ids,
+        extra_instructions=request_body.extra_instructions,
+    )
     extra_parts = []
     if dis_context:
         extra_parts.append(dis_context)
