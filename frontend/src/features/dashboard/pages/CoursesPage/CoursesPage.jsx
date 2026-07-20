@@ -14,6 +14,8 @@ import StreamlitCard from '@components/streamlit/StreamlitCard/StreamlitCard';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import EditEntityModal from '@features/dashboard/components/EditEntityModal/EditEntityModal';
 import ManageUsersModal from '@features/dashboard/components/ManageUsersModal/ManageUsersModal';
+import CreateCourseModal from '@features/dashboard/components/CreateCourseModal/CreateCourseModal';
+import { importService } from '@features/import/services/importService';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import { useAuth } from '@hooks/useAuth';
 import { ROUTES, ROLES } from '@utils/constants';
@@ -30,10 +32,12 @@ export default function CoursesPage() {
   const selCluster = useAppSelector(selectSelectedCluster);
 
   const [createLoading, setCreateLoading] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editModal, setEditModal] = useState(null);
   const [usersModal, setUsersModal] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [importEnabled, setImportEnabled] = useState(false);
 
   const pid = Number(projectId);
   const cid = Number(clusterId);
@@ -74,6 +78,16 @@ export default function CoursesPage() {
   useEffect(() => {
     if (cid) dispatch(fetchCoursesThunk(cid));
   }, [cid, dispatch]);
+
+  // Probe the reverse-pipeline flag: /imports/health 404s when the router isn't
+  // mounted (flag off), in which case Import stays disabled.
+  useEffect(() => {
+    let alive = true;
+    importService.health()
+      .then((res) => { if (alive) setImportEnabled(Boolean(res?.enabled)); })
+      .catch(() => { if (alive) setImportEnabled(false); });
+    return () => { alive = false; };
+  }, []);
 
   async function handleCreate(data) {
     setCreateLoading(true);
@@ -121,6 +135,7 @@ export default function CoursesPage() {
         projectId: pid,
         onBackClusters: () => navigate(ROUTES.PROJECT_CLUSTERS(pid)),
         onCreateCourse: handleCreate,
+        onRequestCreateCourse: () => setCreateModalOpen(true),
         createLoading,
       }}
     >
@@ -138,6 +153,7 @@ export default function CoursesPage() {
             <StreamlitCard
               key={course.id}
               title={course.name}
+              badge={course.source_type === 'imscc' ? 'Imported' : undefined}
               description={course.description}
               onOpen={() => handleOpen(course)}
               openLabel="Enter Workspace →"
@@ -152,6 +168,14 @@ export default function CoursesPage() {
         </div>
       )}
 
+      <CreateCourseModal
+        open={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onCreateCourse={handleCreate}
+        createLoading={createLoading}
+        importEnabled={importEnabled}
+        onImport={() => navigate(`${ROUTES.IMPORT(pid)}?cluster_id=${cid}`)}
+      />
       <EditEntityModal open={Boolean(editModal)} entityType="course" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchCoursesThunk(cid))} />
       <ManageUsersModal open={Boolean(usersModal)} onClose={() => setUsersModal(null)} scope="course" entityId={usersModal?.item?.id} entityName={usersModal?.item?.name} projectId={pid} />
       <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Course" message={`Delete "${deleteTarget?.name}"? All content will be archived.`} loading={deleteLoading} />

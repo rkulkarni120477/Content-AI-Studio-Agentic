@@ -240,7 +240,7 @@ def list_courses_in_cluster(
 
     courses = (
         db.query(Course)
-        .filter(Course.cluster_id == cluster_id)
+        .filter(Course.cluster_id == cluster_id, Course.is_active == True)  # noqa: E712
         .order_by(Course.created_at.asc())
         .all()
     )
