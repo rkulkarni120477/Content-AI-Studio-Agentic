@@ -21,6 +21,7 @@ const TenantUsersPage = lazy(() => import('@features/platform/pages/TenantUsersP
 const TenantRolesPage = lazy(() => import('@features/platform/pages/TenantRolesPage/TenantRolesPage'));
 const ClustersPage  = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
 const CoursesPage   = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
+const ImportWizardPage = lazy(() => import('@features/import/pages/ImportWizardPage/ImportWizardPage'));
 const CddPage       = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
 const BlueprintPage = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
 const GeneratePage  = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
@@ -74,6 +75,7 @@ export const router = createBrowserRouter([
       },
       { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
       { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
+      { path: '/projects/:projectId/import', element: wrap(<ImportWizardPage />) },
       promptLibraryRoute,
     ],
   },

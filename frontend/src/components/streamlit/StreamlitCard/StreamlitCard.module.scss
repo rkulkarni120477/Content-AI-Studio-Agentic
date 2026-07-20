@@ -29,6 +29,18 @@
     word-break: break-word;
   }
 
+  &__badge {
+    display: inline-block;
+    margin-left: $space-2;
+    padding: 0 $space-2;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    color: $color-primary;
+    background: $color-primary-soft;
+    border-radius: $radius-full;
+    vertical-align: middle;
+  }
+
   &__client {
     margin: 0;
     font-size: $font-size-xs;

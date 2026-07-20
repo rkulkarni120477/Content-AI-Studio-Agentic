@@ -48,6 +48,7 @@ export default function SelectionSidebar({
   onCreateProject,
   onCreateCluster,
   onCreateCourse,
+  onRequestCreateCourse,
   createLoading,
 }) {
   const dispatch = useAppDispatch();
@@ -394,14 +395,26 @@ export default function SelectionSidebar({
         <button
           type="button"
           className={cn(styles.navBtn, styles.iconOnly)}
-          title="New Course"
-          onClick={() => expandWith(setShowNewCourse)}
+          title="Create Course"
+          onClick={onRequestCreateCourse ? onRequestCreateCourse : () => expandWith(setShowNewCourse)}
         >
           ➕
         </button>
       )}
 
-      {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && (
+      {/* Reverse pipeline: when a modal handler is supplied, the course create
+          action opens the New-vs-Import fork instead of the inline form. The
+          "New Course" choice in that modal calls the identical onCreateCourse
+          path, so the scratch flow is unchanged. See reverse_cas.md. */}
+      {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && onRequestCreateCourse && (
+        <div className={styles.expander}>
+          <button type="button" className={styles.expander__toggle} onClick={onRequestCreateCourse}>
+            ➕ Create Course
+          </button>
+        </div>
+      )}
+
+      {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && !onRequestCreateCourse && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCourse((v) => !v)}>
             ➕ New Course {showNewCourse ? '▾' : '▸'}

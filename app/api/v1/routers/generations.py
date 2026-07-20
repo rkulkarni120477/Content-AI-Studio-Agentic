@@ -267,11 +267,15 @@ def list_generations(
     blueprint_id: int | None = Query(default=None, description="Pin filter — active blueprint."),
     cdd_id: int | None = Query(default=None, description="Pin filter — active CDD (when no blueprint)."),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    page_size: int = Query(default=20, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[GenerationListItem]:
-    """Return recent generations. Used by the Editor page to list available content."""
+    """Return recent generations. Used by the Editor page to list available content.
+
+    The cap matches the repository fetch limit (500) so imported courses — which
+    write one generation per item — list every item on a single page.
+    """
     from promptops_app.repositories import generation_repository
 
     generations = generation_repository.list_editor_generations(

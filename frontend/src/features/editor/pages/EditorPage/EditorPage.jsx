@@ -129,7 +129,7 @@ export default function EditorPage() {
     const list = await dispatch(fetchGenerationsThunk({
       courseId: numericCourseId,
       projectId: projectId ?? undefined,
-      pageSize: 100,
+      pageSize: 500,
     })).unwrap();
 
     const filtered = normalizeList(list);
