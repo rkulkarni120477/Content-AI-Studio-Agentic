@@ -125,7 +125,7 @@ export default function ImportWizardPage() {
           <button type="button" className={styles.back} onClick={() => navigate(coursesRoute)}>
             ← Courses
           </button>
-          <h1 className={styles.title}>Import a Course</h1>
+          <h1 className={styles.title}>Import a Course / Title</h1>
           <p className={styles.subtitle}>
             Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS course.
           </p>
