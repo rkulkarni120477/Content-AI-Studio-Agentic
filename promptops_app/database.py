@@ -1735,9 +1735,52 @@ def add_files_to_style(db, style: "Style", new_doc_ids: list):
     return added
 
 
-def get_styles(db) -> list:
-    """Return all styles ordered by most recently updated."""
-    return db.query(Style).order_by(Style.updated_at.desc()).all()
+def get_styles(db, project_id: int | None = None, course_id: int | None = None) -> list:
+    """Return styles ordered by most recently updated.
+
+    When ``project_id`` and/or ``course_id`` is provided, restrict to styles that
+    belong to that tenant workspace:
+      * the course's ``active_style_id`` (if ``course_id`` given)
+      * the project's ``active_style_id``
+      * any ``active_style_id`` on courses in the same project
+
+    Styles are activation-scoped (no ownership columns on ``styles``), so this is
+    the only reliable tenant filter without a schema change. Unscoped calls keep
+    the legacy global catalogue behaviour.
+    """
+    q = db.query(Style).order_by(Style.updated_at.desc())
+    if project_id is None and course_id is None:
+        return q.all()
+
+    style_ids: set[int] = set()
+
+    resolved_project_id = project_id
+    if course_id:
+        course = db.query(Course).filter(Course.id == course_id).first()
+        if course:
+            if course.active_style_id:
+                style_ids.add(course.active_style_id)
+            if resolved_project_id is None:
+                resolved_project_id = course.project_id
+
+    if resolved_project_id:
+        proj = db.query(Project).filter(Project.id == resolved_project_id).first()
+        if proj and proj.active_style_id:
+            style_ids.add(proj.active_style_id)
+        for sid in (
+            db.query(Course.active_style_id)
+            .filter(
+                Course.project_id == resolved_project_id,
+                Course.active_style_id.isnot(None),
+            )
+            .all()
+        ):
+            if sid[0]:
+                style_ids.add(sid[0])
+
+    if not style_ids:
+        return []
+    return q.filter(Style.id.in_(style_ids)).all()
 
 
 def get_active_style(db, project_id=None, course_id=None) -> "Style | None":

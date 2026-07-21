@@ -72,6 +72,8 @@ class ICourse:
     modules: list[IModule] = field(default_factory=list)
     resources: list[IResource] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Additive: "imscc" (default) | "cendoc" — display / API only; rebuild ignores it.
+    package_format: str = "imscc"
 
     def iter_items(self):
         """Yield every (module, item) pair in reading order."""

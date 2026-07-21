@@ -51,7 +51,23 @@ def test_validate_returns_structure_counts(validate_client):
         "modules": 2, "pages": 2, "quizzes": 1,
         "assignments": 0, "discussions": 0, "resources": 1,
     }
+    assert body.get("package_format", "imscc") == "imscc"
     assert any("External Tool" in w for w in body["warnings"])
+
+
+def test_validate_cendoc_package(validate_client):
+    from tests.importers.fixtures import build_sample_cendoc
+
+    resp = validate_client.post(
+        "/imports/validate",
+        files={"file": ("cendoc.zip", build_sample_cendoc(), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["course_title"] == "Sample Cendoc Book"
+    assert body["package_format"] == "cendoc"
+    assert body["structure_counts"]["modules"] >= 1
+    assert body["structure_counts"]["pages"] >= 2
 
 
 def test_validate_rejects_corrupt_package(validate_client):

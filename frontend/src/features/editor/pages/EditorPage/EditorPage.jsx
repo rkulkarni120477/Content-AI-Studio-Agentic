@@ -326,7 +326,13 @@ export default function EditorPage() {
         label: `${g.topic} (ID: #${g.id}) — ${g.created_at ? formatDateTime(g.created_at) : ''}`,
       });
     });
-    return Array.from(groups.values()).sort((a, b) => a.order - b.order);
+    return Array.from(groups.values())
+      .sort((a, b) => a.order - b.order)
+      .map((grp) => ({
+        ...grp,
+        // Ascending ID so chapters follow blueprint order (#174, #175, …), not newest-first.
+        options: [...grp.options].sort((a, b) => Number(a.value) - Number(b.value)),
+      }));
   }, [displayGens, blueprintMeta, extraBlueprintMeta]);
 
   // Modules with at least one generated lesson — feeds the "Download Module Lessons" dropdown.

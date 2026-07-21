@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
@@ -53,6 +53,26 @@ const RESETTABLE = new Set([
   WORKFLOW_STATES.REJECTED,
   WORKFLOW_STATES.CHANGES_REQUESTED,
 ]);
+
+/** Allowed drag-drop targets keyed by current workflow state. */
+const KANBAN_DROP_TARGETS = {
+  [WORKFLOW_STATES.DRAFT]: [WORKFLOW_STATES.IN_REVIEW],
+  [WORKFLOW_STATES.IN_REVIEW]: [
+    WORKFLOW_STATES.APPROVED,
+    WORKFLOW_STATES.CHANGES_REQUESTED,
+  ],
+  [WORKFLOW_STATES.CHANGES_REQUESTED]: [
+    WORKFLOW_STATES.IN_REVIEW,
+    WORKFLOW_STATES.DRAFT,
+  ],
+  [WORKFLOW_STATES.APPROVED]: [
+    WORKFLOW_STATES.PUBLISHED,
+    WORKFLOW_STATES.ARCHIVED,
+    WORKFLOW_STATES.DRAFT,
+  ],
+  [WORKFLOW_STATES.PUBLISHED]: [WORKFLOW_STATES.ARCHIVED],
+  [WORKFLOW_STATES.ARCHIVED]: [],
+};
 
 function normalizeList(data) {
   if (Array.isArray(data)) return data;
@@ -111,6 +131,11 @@ export default function WorkflowPage() {
   const [adminBreakdown, setAdminBreakdown] = useState([]);
   const [breakdownLoading, setBreakdownLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [dragBlockId, setDragBlockId] = useState(null);
+  const [dragFromState, setDragFromState] = useState(null);
+  const [dropTargetState, setDropTargetState] = useState(null);
+  const approvalCenterRef = useRef(null);
+  const suppressKanbanClickRef = useRef(false);
 
   const showAdminBreakdown = isAdmin || hasPermission('analytics.view_all');
 
@@ -249,6 +274,93 @@ export default function WorkflowPage() {
     }
   }
 
+  const selectKanbanBlock = useCallback((blockId) => {
+    if (suppressKanbanClickRef.current) {
+      suppressKanbanClickRef.current = false;
+      return;
+    }
+    setApprovalBlockId(blockId);
+    // Defer scroll so Approval Center reflects the new selection first.
+    requestAnimationFrame(() => {
+      approvalCenterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
+  const clearDrag = useCallback(() => {
+    if (dragBlockId != null) suppressKanbanClickRef.current = true;
+    setDragBlockId(null);
+    setDragFromState(null);
+    setDropTargetState(null);
+  }, [dragBlockId]);
+
+  const canDropOnColumn = useCallback((fromState, toState) => {
+    if (!fromState || !toState || fromState === toState) return false;
+    return (KANBAN_DROP_TARGETS[fromState] || []).includes(toState);
+  }, []);
+
+  async function applyKanbanTransition(blockId, fromState, toState) {
+    if (fromState === toState) return;
+    if (!canDropOnColumn(fromState, toState)) {
+      toast.error(
+        `Cannot move from ${WORKFLOW_STATE_LABELS[fromState] || fromState} to ${WORKFLOW_STATE_LABELS[toState] || toState}`,
+      );
+      return;
+    }
+
+    const needsReviewer = toState === WORKFLOW_STATES.APPROVED
+      || toState === WORKFLOW_STATES.CHANGES_REQUESTED;
+    if (needsReviewer && !canApprove && !isAdmin) {
+      toast.error('Only reviewers can move blocks into this status.');
+      return;
+    }
+
+    try {
+      if (toState === WORKFLOW_STATES.IN_REVIEW && SUBMITTABLE.has(fromState)) {
+        await dispatch(submitBlockThunk({
+          blockId,
+          reviewer: reviewerName || undefined,
+        })).unwrap();
+      } else if (
+        fromState === WORKFLOW_STATES.IN_REVIEW
+        && toState === WORKFLOW_STATES.APPROVED
+      ) {
+        await dispatch(approveBlockThunk({ blockId, comment: '' })).unwrap();
+      } else if (
+        fromState === WORKFLOW_STATES.IN_REVIEW
+        && toState === WORKFLOW_STATES.CHANGES_REQUESTED
+      ) {
+        const reason = window.prompt('Reason for requesting changes:');
+        if (!reason?.trim()) {
+          toast.error('A reason is required to request changes.');
+          return;
+        }
+        await dispatch(requestChangesThunk({ blockId, reason: reason.trim() })).unwrap();
+      } else if (
+        toState === WORKFLOW_STATES.PUBLISHED
+        && fromState === WORKFLOW_STATES.APPROVED
+      ) {
+        await dispatch(publishBlockThunk(blockId)).unwrap();
+      } else if (
+        toState === WORKFLOW_STATES.ARCHIVED
+        && (fromState === WORKFLOW_STATES.APPROVED || fromState === WORKFLOW_STATES.PUBLISHED)
+      ) {
+        await dispatch(archiveBlockThunk(blockId)).unwrap();
+      } else if (
+        toState === WORKFLOW_STATES.DRAFT
+        && RESETTABLE.has(fromState)
+      ) {
+        await dispatch(resetDraftBlockThunk(blockId)).unwrap();
+      } else {
+        toast.error('This status change is not supported via drag and drop.');
+        return;
+      }
+      setApprovalBlockId(blockId);
+      refresh();
+    } catch (err) {
+      toast.error(typeof err === 'string' ? err : (err?.message || 'Status change failed'));
+    }
+  }
+
   const scopeProjId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
   const showCourseFilter = Boolean(scopeProjId) && projectCourses.length > 0;
 
@@ -364,8 +476,16 @@ export default function WorkflowPage() {
               const colBlocks = blocksByState[state] || [];
               const color = WORKFLOW_KANBAN_COLORS[state];
               const label = WORKFLOW_STATE_LABELS[state];
+              const isDropTarget = dropTargetState === state
+                && canDropOnColumn(dragFromState, state);
               return (
-                <div key={state} className={styles.column}>
+                <div
+                  key={state}
+                  className={[
+                    styles.column,
+                    isDropTarget ? styles['column--dropTarget'] : '',
+                  ].filter(Boolean).join(' ')}
+                >
                   <div
                     className={styles.column__header}
                     style={{ borderBottomColor: color }}
@@ -375,32 +495,84 @@ export default function WorkflowPage() {
                       ({colBlocks.length})
                     </span>
                   </div>
-                  <div className={styles.column__cards}>
+                  <div
+                    className={styles.column__cards}
+                    onDragOver={(e) => {
+                      if (!canDropOnColumn(dragFromState, state)) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (dropTargetState !== state) setDropTargetState(state);
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget)) {
+                        setDropTargetState((cur) => (cur === state ? null : cur));
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const raw = e.dataTransfer.getData('application/json')
+                        || e.dataTransfer.getData('text/plain');
+                      let payload;
+                      try {
+                        payload = JSON.parse(raw);
+                      } catch {
+                        payload = null;
+                      }
+                      const blockId = payload?.blockId ?? dragBlockId;
+                      const fromState = payload?.fromState ?? dragFromState;
+                      clearDrag();
+                      if (blockId == null || !fromState) return;
+                      void applyKanbanTransition(Number(blockId), fromState, state);
+                    }}
+                  >
                     {colBlocks.length === 0 ? (
                       <p className={styles.emptyDash}>—</p>
                     ) : (
-                      colBlocks.slice(0, 5).map((block) => (
-                        <div
-                          key={block.id}
-                          className={styles.kanbanCard}
-                          style={{ borderLeftColor: `${color}22` }}
-                        >
-                          <p className={styles.kanbanCard__label}>
-                            {truncate(block.block_label || `Block ${block.id}`, 25)}
-                          </p>
-                          <p className={styles.kanbanCard__meta}>
-                            #{block.id}
-                            {block.assigned_reviewer && (
-                              <span className={styles.kanbanCard__reviewer}>
-                                {' '}→ {block.assigned_reviewer}
-                              </span>
-                            )}
-                            {block.sla?.label && (
-                              <span className={styles.kanbanCard__sla}> {block.sla.label}</span>
-                            )}
-                          </p>
-                        </div>
-                      ))
+                      colBlocks.map((block) => {
+                        const isSelected = approvalBlockId === block.id;
+                        const isDragging = dragBlockId === block.id;
+                        return (
+                          <button
+                            type="button"
+                            key={block.id}
+                            draggable
+                            className={[
+                              styles.kanbanCard,
+                              isSelected ? styles['kanbanCard--selected'] : '',
+                              isDragging ? styles['kanbanCard--dragging'] : '',
+                            ].filter(Boolean).join(' ')}
+                            style={{ borderLeftColor: `${color}22` }}
+                            title="Click to open in Approval Center · Drag to change status"
+                            onClick={() => selectKanbanBlock(block.id)}
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData(
+                                'application/json',
+                                JSON.stringify({ blockId: block.id, fromState: state }),
+                              );
+                              e.dataTransfer.setData('text/plain', String(block.id));
+                              setDragBlockId(block.id);
+                              setDragFromState(state);
+                            }}
+                            onDragEnd={clearDrag}
+                          >
+                            <p className={styles.kanbanCard__label}>
+                              {truncate(block.block_label || `Block ${block.id}`, 25)}
+                            </p>
+                            <p className={styles.kanbanCard__meta}>
+                              #{block.id}
+                              {block.assigned_reviewer && (
+                                <span className={styles.kanbanCard__reviewer}>
+                                  {' '}→ {block.assigned_reviewer}
+                                </span>
+                              )}
+                              {block.sla?.label && (
+                                <span className={styles.kanbanCard__sla}> {block.sla.label}</span>
+                              )}
+                            </p>
+                          </button>
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -411,7 +583,7 @@ export default function WorkflowPage() {
 
         <hr className={styles.divider} />
 
-        <h2 className={styles.sectionTitle}>⚙️ Approval Center</h2>
+        <h2 ref={approvalCenterRef} className={styles.sectionTitle}>⚙️ Approval Center</h2>
 
         {filteredBlocks.length === 0 ? (
           <p className={styles.emptyHint}>

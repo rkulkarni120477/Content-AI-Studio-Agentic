@@ -2,7 +2,15 @@ import { api } from '@services/apiClient';
 import { STYLES, DOCUMENTS } from '@services/endpoints';
 
 export const styleService = {
-  listStyles:       ()           => api.get(STYLES.LIST),
+  listStyles: ({ projectId, courseId, page = 1, pageSize = 100 } = {}) =>
+    api.get(STYLES.LIST, {
+      params: {
+        page,
+        page_size: pageSize,
+        ...(projectId != null ? { project_id: projectId } : {}),
+        ...(courseId != null ? { course_id: courseId } : {}),
+      },
+    }),
   getStyle:         (id)         => api.get(STYLES.GET(id)),
   createStyle:      (data)       => api.post(STYLES.CREATE, data),
   updateStyle:      (id, data)   => api.put(STYLES.UPDATE(id), data),
