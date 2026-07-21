@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IMSCC Import — How It Works</title>
+  <style>
+    :root {
+      --bg: #f7f5f1;
+      --ink: #1a1a18;
+      --muted: #5c5a54;
+      --line: #d9d4c8;
+      --card: #ffffff;
+      --accent: #0b5f4b;
+      --accent-soft: #e4f2ed;
+      --warn: #8a5a12;
+      --warn-bg: #f8efd9;
+      --code-bg: #efeee8;
+      --mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
+      --sans: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+      --display: "Fraunces", "Georgia", serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #e8f0ec 0%, transparent 55%),
+        radial-gradient(900px 400px at 100% 0%, #f3ebe0 0%, transparent 50%),
+        var(--bg);
+      line-height: 1.55;
+    }
+
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 4rem;
+    }
+
+    header {
+      margin-bottom: 2.5rem;
+      padding-bottom: 1.75rem;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+      margin: 0 0 0.6rem;
+    }
+
+    h1 {
+      font-family: var(--display);
+      font-weight: 550;
+      font-size: clamp(1.9rem, 4vw, 2.6rem);
+      line-height: 1.15;
+      margin: 0 0 0.75rem;
+      letter-spacing: -0.02em;
+    }
+
+    .lede {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 42rem;
+      margin: 0;
+    }
+
+    .flag {
+      display: inline-block;
+      margin-top: 1.1rem;
+      padding: 0.35rem 0.7rem;
+      background: var(--warn-bg);
+      color: var(--warn);
+      border-radius: 4px;
+      font-size: 0.88rem;
+      font-weight: 600;
+    }
+
+    h2 {
+      font-family: var(--display);
+      font-size: 1.45rem;
+      font-weight: 550;
+      margin: 2.4rem 0 0.85rem;
+      letter-spacing: -0.01em;
+    }
+
+    h3 {
+      font-size: 1.05rem;
+      margin: 1.4rem 0 0.5rem;
+      color: var(--ink);
+    }
+
+    p { margin: 0 0 1rem; color: var(--ink); }
+    .muted { color: var(--muted); }
+
+    ol.steps, ul {
+      margin: 0 0 1.2rem;
+      padding-left: 1.25rem;
+    }
+
+    ol.steps li, ul li {
+      margin-bottom: 0.45rem;
+    }
+
+    .flow {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1.25rem 1.35rem;
+      margin: 1rem 0 1.5rem;
+      overflow-x: auto;
+    }
+
+    .flow-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      font-size: 0.92rem;
+    }
+
+    .chip {
+      background: var(--accent-soft);
+      color: var(--accent);
+      padding: 0.4rem 0.7rem;
+      border-radius: 6px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .arrow {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 0.75rem 0 1.4rem;
+      font-size: 0.94rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.7rem 0.9rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      background: #f0ede6;
+      font-weight: 650;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    code, .path {
+      font-family: var(--mono);
+      font-size: 0.86em;
+      background: var(--code-bg);
+      padding: 0.12em 0.35em;
+      border-radius: 3px;
+    }
+
+    .path-block {
+      display: block;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      background: var(--code-bg);
+      padding: 0.85rem 1rem;
+      border-radius: 8px;
+      margin: 0.5rem 0 1.2rem;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0 1.5rem;
+    }
+
+    @media (max-width: 700px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1.1rem 1.2rem;
+    }
+
+    .panel h3 { margin-top: 0; }
+
+    .panel ul { margin-bottom: 0; }
+
+    .note {
+      border-left: 3px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 0.85rem 1rem;
+      border-radius: 0 8px 8px 0;
+      margin: 1rem 0 1.5rem;
+      font-size: 0.95rem;
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    a { color: var(--accent); }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,550&family=Source+Sans+3:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Content AI Studio</p>
+      <h1>IMSCC import — how it works</h1>
+      <p class="lede">
+        A feature-flagged reverse pipeline: upload a Canvas Common Cartridge,
+        reconstruct a normal CAS course Editor, then optionally LLM-rebuild
+        Blueprint, CDD, and Style so the course is editable end-to-end.
+      </p>
+      <span class="flag">Gated by <code>IMPORT_COURSES_ENABLED</code> (default off)</span>
+    </header>
+
+    <h2>End-to-end flow</h2>
+    <div class="flow">
+      <div class="flow-steps">
+        <span class="chip">1. Validate</span>
+        <span class="arrow">→</span>
+        <span class="chip">2. Start import</span>
+        <span class="arrow">→</span>
+        <span class="chip">3. Parse + rebuild Editor</span>
+        <span class="arrow">→</span>
+        <span class="chip">4. Reverse-gen design</span>
+        <span class="arrow">→</span>
+        <span class="chip">5. Open Editor</span>
+      </div>
+    </div>
+
+    <ol class="steps">
+      <li><strong>Validate</strong> (sync, no DB) — extract ZIP + structural parse → title, counts, warnings.</li>
+      <li><strong>Start</strong> — create course shell (<code>source_type="imscc"</code>), <code>CourseImport</code> record, stage package to a temp path, enqueue job.</li>
+      <li><strong>Job</strong> — full parse → Editor rebuild → reverse-gen Blueprint / CDD / Style → finalize.</li>
+      <li><strong>UI</strong> — poll job status; on success navigate to <code>/workspace/{courseId}/editor</code>.</li>
+    </ol>
+
+    <h2>API surface</h2>
+    <p class="muted">Mounted only when the feature flag is on — <code>app/api/v1/routers/imports.py</code></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Endpoint</th>
+          <th>Role</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>GET /imports/health</code></td>
+          <td>Capability probe</td>
+        </tr>
+        <tr>
+          <td><code>POST /imports/validate</code></td>
+          <td>Pre-flight parse (no DB writes)</td>
+        </tr>
+        <tr>
+          <td><code>POST /projects/{id}/imports</code></td>
+          <td>Start async import</td>
+        </tr>
+        <tr>
+          <td><code>GET /imports/{id}</code></td>
+          <td>Import record / status</td>
+        </tr>
+        <tr>
+          <td><code>POST /imports/{id}/retry</code></td>
+          <td>Re-run Blueprint / CDD / Style only</td>
+        </tr>
+        <tr>
+          <td><code>POST /imports/{id}/cancel</code></td>
+          <td>Cancel active import job</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Frontend wizard: <code>/projects/:projectId/import</code> (<code>ImportWizardPage</code>).</p>
+
+    <h2>Parsing pipeline</h2>
+    <p class="muted">Orchestrator: <code>promptops_app/importers/imscc_importer.py</code> — no database writes.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Step</th>
+          <th>Module</th>
+          <th>What it does</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Extract</td>
+          <td><code>package_extractor.py</code></td>
+          <td>Safe unzip (size / ratio / entry caps); find <code>imsmanifest.xml</code></td>
+        </tr>
+        <tr>
+          <td>Structure</td>
+          <td><code>canvas_parser.parse_structure</code></td>
+          <td>Modules + item stubs from manifest / <code>module_meta.xml</code></td>
+        </tr>
+        <tr>
+          <td>Content</td>
+          <td><code>canvas_parser.parse_course</code></td>
+          <td>Bodies via HTML→MD and QTI quiz parsing</td>
+        </tr>
+        <tr>
+          <td>Model</td>
+          <td><code>internal_model.py</code></td>
+          <td><code>ICourse</code> / modules / pages / assessments</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <strong>validate_package</strong> = extract + structure.
+      <strong>parse_package</strong> = extract + full content.
+      Fatal zip/manifest problems raise <code>PackageValidationError</code>.
+      Unsupported types (LTI, URLs, attachments, …) become warnings.
+    </div>
+
+    <h2>Background job stages</h2>
+    <p class="muted"><code>promptops_app/jobs/import_jobs.py</code> → <code>run_import_job</code></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Progress</th>
+          <th>Stage</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>10%</td><td>Read staged package</td></tr>
+        <tr><td>30%</td><td><code>parse_package</code></td></tr>
+        <tr><td>50–74%</td><td><code>editor_builder.build</code> → modules, generations, blocks + provenance</td></tr>
+        <tr><td>78%</td><td><code>reverse_blueprint.build_blueprints</code></td></tr>
+        <tr><td>86%</td><td><code>reverse_cdd.build_cdd</code></td></tr>
+        <tr><td>92%</td><td><code>style_analyzer.build_style</code></td></tr>
+        <tr><td>96%</td><td>Finalize (<code>completed</code>, <code>provenance_ready=True</code>)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      Editor rebuild is required for success. Reverse-gen failures are
+      <strong>non-fatal</strong> — the Editor stays usable. Retry re-runs design
+      artifacts only via <code>run_reverse_gen_job</code>.
+    </div>
+
+    <h2>What gets persisted</h2>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Import tracking</h3>
+        <ul>
+          <li><code>reverse_course_imports</code></li>
+          <li><code>reverse_import_provenance</code></li>
+          <li>Canvas identifier ↔ CAS module/block</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Editor (deterministic)</h3>
+        <ul>
+          <li><code>CourseModule</code></li>
+          <li><code>Generation</code> / <code>Block</code></li>
+          <li>Lessons, quizzes, assignments, discussions</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Design artifacts (LLM)</h3>
+        <ul>
+          <li><code>ModuleBlueprint</code></li>
+          <li><code>CourseDesignDocument</code></li>
+          <li><code>Style</code> — pinned as course actives</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>After import</h3>
+        <ul>
+          <li>Behaves like a normal CAS course</li>
+          <li>Edit, regenerate, export all work</li>
+          <li>Re-export can use provenance for fidelity</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>Key files</h2>
+    <span class="path-block">promptops_app/importers/imscc_importer.py</span>
+    <span class="path-block">promptops_app/importers/package_extractor.py</span>
+    <span class="path-block">promptops_app/importers/canvas_parser.py</span>
+    <span class="path-block">promptops_app/importers/editor_builder.py</span>
+    <span class="path-block">promptops_app/jobs/import_jobs.py</span>
+    <span class="path-block">app/api/v1/routers/imports.py</span>
+
+    <h2>Inverse of export</h2>
+    <p>
+      The importer is the intentional inverse of
+      <code>promptops_app/exporters/imscc_exporter.py</code>.
+      Product intent: legacy Canvas package → fully AI-editable CAS project
+      (see <code>PRD-CAS-Reverse-Pipeline.md</code> / <code>reverse_cas.md</code>).
+    </p>
+
+    <footer>
+      Generated from the current Content AI Studio reverse-pipeline implementation.
+      Open this file in a browser for a readable overview.
+    </footer>
+  </div>
+</body>
+</html>
