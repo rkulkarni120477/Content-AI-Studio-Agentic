@@ -62,16 +62,33 @@ def list_clusters(
     from sqlalchemy import func
     from promptops_app.database import Cluster, Course
 
-    rows = (
-        db.query(Cluster, func.count(Course.id).label("course_count"))
-        .outerjoin(Course, Course.cluster_id == Cluster.id)
-        .filter(Cluster.project_id == project_id, Cluster.is_active == True)  # noqa: E712
-        .group_by(Cluster.id)
-        .order_by(Cluster.created_at.asc())
+    # Paginate the clusters in SQL (indexed on project_id) instead of loading
+    # every cluster and slicing in Python; this is what makes the page render
+    # promptly even on large projects. Course counts are then fetched in a single
+    # grouped query for just this page's clusters (same "all courses" semantics as
+    # before — no is_active filter on the count).
+    base = db.query(Cluster).filter(
+        Cluster.project_id == project_id, Cluster.is_active == True  # noqa: E712
+    )
+    total = base.count()
+    clusters = (
+        base.order_by(Cluster.created_at.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
-    total = len(rows)
-    start = (page - 1) * page_size
+
+    counts: dict[int, int] = {}
+    cluster_ids = [c.id for c in clusters]
+    if cluster_ids:
+        count_rows = (
+            db.query(Course.cluster_id, func.count(Course.id))
+            .filter(Course.cluster_id.in_(cluster_ids))
+            .group_by(Course.cluster_id)
+            .all()
+        )
+        counts = {cid: n for cid, n in count_rows}
+
     items = [
         ClusterListItem(
             id=cluster.id,
@@ -79,9 +96,9 @@ def list_clusters(
             name=cluster.name,
             description=cluster.description,
             created_at=cluster.created_at,
-            course_count=count,
+            course_count=counts.get(cluster.id, 0),
         )
-        for cluster, count in rows[start: start + page_size]
+        for cluster in clusters
     ]
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
 

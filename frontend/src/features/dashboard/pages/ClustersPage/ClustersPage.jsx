@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { fetchClustersThunk } from '@features/dashboard/dashboardThunks';
 import {
   selectClusters, selectSelectedProject, setSelectedProject, setSelectedCluster,
+  selectIsLoadingClusters, selectDashboardError,
 } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionLayout from '@components/layout/SelectionLayout/SelectionLayout';
@@ -15,6 +16,7 @@ import EditEntityModal from '@features/dashboard/components/EditEntityModal/Edit
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import ClusterPromptManager from '@components/cluster/ClusterPromptManager/ClusterPromptManager';
 import Button from '@components/common/Button/Button';
+import Loader from '@components/common/Loader/Loader';
 import { useAuth } from '@hooks/useAuth';
 import { ROUTES } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
@@ -28,6 +30,8 @@ export default function ClustersPage() {
   const { hasPermission, isAdmin } = useAuth();
   const clusters = useAppSelector(selectClusters);
   const selProj = useAppSelector(selectSelectedProject);
+  const isLoadingClusters = useAppSelector(selectIsLoadingClusters);
+  const clustersError = useAppSelector(selectDashboardError);
 
   const [createLoading, setCreateLoading] = useState(false);
   const [editModal, setEditModal] = useState(null);
@@ -126,9 +130,11 @@ export default function ClustersPage() {
         <ClusterPromptManager clusters={clusters?.items || []} />
       )}
 
-      {clusters?.items?.length === 0 ? (
-        <EmptyState title="No categories" message="Create a category using the sidebar panel." />
-      ) : (
+      {isLoadingClusters ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
+          <Loader size="sm" /> Loading categories…
+        </div>
+      ) : clusters?.items?.length ? (
         <div className={gridStyles.grid}>
           {clusters?.items?.map((cluster) => (
             <StreamlitCard
@@ -144,6 +150,13 @@ export default function ClustersPage() {
             />
           ))}
         </div>
+      ) : clustersError ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '1.5rem 0', flexWrap: 'wrap' }}>
+          <span>⚠️ Couldn’t load categories.</span>
+          <Button type="button" variant="ghost" onClick={() => dispatch(fetchClustersThunk(pid))}>Try again</Button>
+        </div>
+      ) : (
+        <EmptyState title="No categories" message="Create a category using the sidebar panel." />
       )}
 
       <EditEntityModal open={Boolean(editModal)} entityType="cluster" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchClustersThunk(pid))} />
