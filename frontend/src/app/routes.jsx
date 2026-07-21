@@ -2,34 +2,26 @@ import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import ProtectedRoute from '@components/layout/ProtectedRoute/ProtectedRoute';
 import WorkspaceLayout from '@components/layout/WorkspaceLayout/WorkspaceLayout';
 import { ROUTES } from '@utils/constants';
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
 import Loader from '@components/common/Loader/Loader';
 import { promptLibraryRoute } from '@features/promptLibrary/routes';
+import { lazyWithReload } from '@utils/lazyWithReload';
 
-const lazy$ = (factory) => {
-  const Comp = lazy(factory);
-  return (
-    <Suspense fallback={<Loader size="xl" overlay />}>
-      <Comp />
-    </Suspense>
-  );
-};
-
-const LoginPage     = lazy(() => import('@features/auth/pages/LoginPage/LoginPage'));
-const TenantsPage     = lazy(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
-const TenantUsersPage = lazy(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
-const TenantRolesPage = lazy(() => import('@features/platform/pages/TenantRolesPage/TenantRolesPage'));
-const ClustersPage  = lazy(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
-const CoursesPage   = lazy(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
-const CddPage       = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
-const BlueprintPage = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
-const GeneratePage  = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
-const EditorPage    = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
-const WorkflowPage  = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
-const ExportPage    = lazy(() => import('@features/export/pages/ExportPage/ExportPage'));
-const SourceLibraryPage = lazy(() => import('@features/sourceLibrary/pages/SourceLibraryPage/SourceLibraryPage'));
-const StylePage     = lazy(() => import('@features/style/pages/StylePage/StylePage'));
-const AnalyticsPage = lazy(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
+const LoginPage     = lazyWithReload(() => import('@features/auth/pages/LoginPage/LoginPage'));
+const TenantsPage     = lazyWithReload(() => import('@features/platform/pages/TenantsPage/TenantsPage'));
+const TenantUsersPage = lazyWithReload(() => import('@features/platform/pages/TenantUsersPage/TenantUsersPage'));
+const TenantRolesPage = lazyWithReload(() => import('@features/platform/pages/TenantRolesPage/TenantRolesPage'));
+const ClustersPage  = lazyWithReload(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
+const CoursesPage   = lazyWithReload(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
+const CddPage       = lazyWithReload(() => import('@features/cdd/pages/CddPage/CddPage'));
+const BlueprintPage = lazyWithReload(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
+const GeneratePage  = lazyWithReload(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
+const EditorPage    = lazyWithReload(() => import('@features/editor/pages/EditorPage/EditorPage'));
+const WorkflowPage  = lazyWithReload(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
+const ExportPage    = lazyWithReload(() => import('@features/export/pages/ExportPage/ExportPage'));
+const SourceLibraryPage = lazyWithReload(() => import('@features/sourceLibrary/pages/SourceLibraryPage/SourceLibraryPage'));
+const StylePage     = lazyWithReload(() => import('@features/style/pages/StylePage/StylePage'));
+const AnalyticsPage = lazyWithReload(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
 
 const wrap = (comp) => (
   <Suspense fallback={<Loader size="xl" overlay />}>
