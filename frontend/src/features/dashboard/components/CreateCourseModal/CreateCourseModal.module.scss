@@ -1,0 +1,84 @@
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: $space-3;
+}
+
+.choice {
+  display: flex;
+  flex-direction: column;
+  gap: $space-1;
+  width: 100%;
+  padding: $space-4;
+  text-align: left;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  cursor: pointer;
+  transition: border-color $transition-fast, box-shadow $transition-fast, background $transition-fast;
+
+  &:hover:not(:disabled) {
+    border-color: $color-primary-light;
+    background: $color-primary-soft;
+    box-shadow: $shadow-sm;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+    background: $color-gray-50;
+  }
+}
+
+.choice__icon {
+  font-size: $font-size-xl;
+}
+
+.choice__title {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-base;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-900;
+}
+
+.choice__desc {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  line-height: $line-height-snug;
+}
+
+.badge {
+  font-size: $font-size-xs;
+  font-weight: $font-weight-medium;
+  color: $color-gray-600;
+  background: $color-gray-100;
+  border-radius: $radius-full;
+  padding: 0 $space-2;
+}
+
+.textareaLabel {
+  display: block;
+  margin-top: $space-4;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  color: $color-gray-700;
+}
+
+.textarea {
+  width: 100%;
+  margin-top: $space-1;
+  padding: $space-2 $space-3;
+  border: 1px solid $color-gray-300;
+  border-radius: $radius-lg;
+  font-family: $font-family-base;
+  font-size: $font-size-sm;
+  resize: vertical;
+}
+
+.error {
+  margin-top: $space-3;
+  color: $color-danger;
+  font-size: $font-size-sm;
+}

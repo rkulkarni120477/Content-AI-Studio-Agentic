@@ -13,6 +13,7 @@ const TenantUsersPage = lazyWithReload(() => import('@features/platform/pages/Te
 const TenantRolesPage = lazyWithReload(() => import('@features/platform/pages/TenantRolesPage/TenantRolesPage'));
 const ClustersPage  = lazyWithReload(() => import('@features/dashboard/pages/ClustersPage/ClustersPage'));
 const CoursesPage   = lazyWithReload(() => import('@features/dashboard/pages/CoursesPage/CoursesPage'));
+const ImportWizardPage = lazyWithReload(() => import('@features/import/pages/ImportWizardPage/ImportWizardPage'));
 const CddPage       = lazyWithReload(() => import('@features/cdd/pages/CddPage/CddPage'));
 const BlueprintPage = lazyWithReload(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
 const GeneratePage  = lazyWithReload(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
       },
       { path: '/projects/:projectId/clusters', element: wrap(<ClustersPage />) },
       { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
+      { path: '/projects/:projectId/import', element: wrap(<ImportWizardPage />) },
       promptLibraryRoute,
     ],
   },

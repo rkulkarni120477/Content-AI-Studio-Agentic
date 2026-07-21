@@ -35,21 +35,21 @@ const dashboardSlice = createSlice({
       if (!payload) {
         state.selectedCluster = null;
         state.selectedCourse  = null;
-        state.clusters        = [];
-        state.courses         = [];
+        state.clusters        = { items: [], total: 0 };
+        state.courses         = { items: [], total: 0 };
         return;
       }
       if (prevId !== payload.id) {
         state.selectedCluster = null;
         state.selectedCourse  = null;
-        state.clusters        = [];
-        state.courses         = [];
+        state.clusters        = { items: [], total: 0 };
+        state.courses         = { items: [], total: 0 };
       }
     },
     setSelectedCluster(state, { payload }) {
       state.selectedCluster = payload;
       state.selectedCourse  = null;
-      state.courses         = [];
+      state.courses         = { items: [], total: 0 };
     },
     setSelectedCourse(state, { payload }) {
       state.selectedCourse = payload;
@@ -103,6 +103,9 @@ export const selectModelChoice      = (s) => s.dashboard.modelChoice;
 export const selectExpertDomain     = (s) => s.dashboard.expertDomain;
 export const selectTargetAudience   = (s) => s.dashboard.targetAudience;
 export const selectAudienceCategory = (s) => s.dashboard.audienceCategory;
+export const selectIsLoadingClusters = (s) => s.dashboard.isLoadingClusters;
+export const selectIsLoadingCourses  = (s) => s.dashboard.isLoadingCourses;
+export const selectDashboardError    = (s) => s.dashboard.error;
 export const selectWorkspaceConfig = (s) => ({
   modelChoice:      s.dashboard.modelChoice,
   expertDomain:     s.dashboard.expertDomain,

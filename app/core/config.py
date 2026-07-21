@@ -189,6 +189,13 @@ class AppSettings(BaseSettings):
         default=False,
         alias="PROMPTOPS_SYNC_QUALITY_CHECKS",
     )
+    # Reverse pipeline (IMSCC course import). Default OFF: when false the imports
+    # router is not mounted and the create-course modal hides the Import option,
+    # so the app is behaviourally identical to today. See reverse_cas.md.
+    import_courses_enabled: bool = Field(
+        default=False,
+        alias="IMPORT_COURSES_ENABLED",
+    )
     approval_sla_hours: int = Field(
         default=24,
         alias="PROMPTOPS_APPROVAL_SLA_HOURS",

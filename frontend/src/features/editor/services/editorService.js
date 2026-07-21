@@ -19,9 +19,9 @@ async function listAllPages(fetchPage) {
 
 export const editorService = {
   listGenerations: async ({
-    courseId, projectId, blueprintId, cddId, pageSize = 100,
+    courseId, projectId, blueprintId, cddId, pageSize = 500,
   } = {}) => {
-    const base = { page: 1, page_size: Math.min(pageSize, 100) };
+    const base = { page: 1, page_size: Math.min(pageSize, 500) };
     if (courseId != null) base.course_id = courseId;
     if (projectId != null) base.project_id = projectId;
 
