@@ -2,7 +2,7 @@
   "default_client_id": "cengage",
   "default_tenant_id": "cengage",
   "available_clients": ["aim", "cengage"],
-  "super_admin_usernames": ["admin"],
+  "super_admin_usernames": ["admin", "platformadmin"],
   "super_admin_roles": [],
   "client_admin_map": {
     "cengage_admin": "cengage",

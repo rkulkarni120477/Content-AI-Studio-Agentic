@@ -232,15 +232,20 @@ def list_styles(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[StyleListItem]:
-    """Return all styles ordered by updated_at desc. Matches get_styles() from database.py."""
-    from promptops_app.database import get_styles
+    """Return styles for the workspace scope (project/course) when provided."""
+    from promptops_app.database import get_active_style, get_styles
 
-    styles = get_styles(db)
+    styles = get_styles(db, project_id=project_id, course_id=course_id)
+    active = get_active_style(db, project_id=project_id, course_id=course_id)
+    active_id = active.id if active else None
+
     total = len(styles)
     start = (page - 1) * page_size
     items = []
     for s in styles[start: start + page_size]:
         item = StyleListItem.model_validate(s)
+        # Surface course/project activation, not the legacy global Style.is_active flag.
+        item.is_active = bool(active_id is not None and s.id == active_id)
         if s.generated_summary:
             item.understanding_preview = s.generated_summary[:200]
         items.append(item)

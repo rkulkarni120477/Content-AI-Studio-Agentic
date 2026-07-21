@@ -825,6 +825,25 @@ def list_course_modules(
 # Full course export
 # ---------------------------------------------------------------------------
 
+def _import_item_ids(db, course, ordered_blocks) -> "list[str] | None":
+    """Return per-block Canvas item ids for provenance-aware IMSCC re-export.
+
+    Returns a list parallel to ``ordered_blocks`` (empty string where a block has
+    no captured identifier), or ``None`` when the course was not imported / has no
+    provenance — in which case export uses fresh ids (today's behavior). This is
+    a pure optional read; it never changes the export for scratch courses.
+    """
+    import_id = getattr(course, "import_id", None) if course else None
+    if not import_id:
+        return None
+    from promptops_app.importers import provenance
+
+    id_map = provenance.block_identifier_map(db, import_id)
+    if not id_map:
+        return None
+    return [id_map.get(b.id, "") for b in ordered_blocks]
+
+
 @router.get(
     "/courses/{course_id}/export",
     summary="Export the full course as a file",
@@ -866,6 +885,12 @@ def export_course(
     ):
         modules_struct = None
 
+    # Provenance-aware IMSCC re-export (optional read): if this course was imported
+    # and we captured Canvas item identifiers, reuse them so a re-import maps back
+    # to the same items. Gated on the presence of provenance — NOT on source_type —
+    # and defaults to today's behavior (fresh ids) when absent.
+    block_item_ids = _import_item_ids(db, course, ordered_blocks) if format == "imscc" else None
+
     export_req = ExportRequest(
         fmt=format,
         topic=topic,
@@ -873,6 +898,7 @@ def export_course(
         block_types=[b.block_type or "" for b in ordered_blocks],
         block_html=[getattr(b, "content_html", None) or "" for b in ordered_blocks],
         modules=modules_struct,
+        block_item_ids=block_item_ids,
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
         entity_type="full_course",

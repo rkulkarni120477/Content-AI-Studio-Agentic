@@ -1113,6 +1113,9 @@ class Course(Base):
     active_style_id       = Column(Integer, nullable=True)   # Course-level active style override
     active_cdd_id         = Column(Integer, nullable=True)   # Course-level pinned CDD (Req 3)
     active_blueprint_id   = Column(Integer, nullable=True)   # Course-level pinned Blueprint (Req 3)
+    # Reverse pipeline (IMSCC import) — additive metadata ONLY; never branches core logic.
+    source_type           = Column(String(20), nullable=True)   # None/"scratch" | "imscc" (display/analytics)
+    import_id             = Column(Integer, nullable=True)       # soft link → course_imports.id
     # Target & Model config — persisted per course (Req 1)
     config_model_choice      = Column(String(100), nullable=True)
     config_expert_domain     = Column(String(255), nullable=True)
@@ -1120,6 +1123,51 @@ class Course(Base):
     config_audience_category = Column(String(100), nullable=True)
     project          = relationship("Project", back_populates="courses")
     cluster          = relationship("Cluster", back_populates="courses")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class CourseImport(Base):
+    """One row per IMSCC import attempt (reverse pipeline).
+
+    Additive subsystem — see reverse_cas.md. Holds pre-flight structure counts,
+    warnings, and status for the import wizard/progress screen. Ids are managed
+    manually (no DB-level FK), matching the rest of the course graph.
+
+    NOTE: named ``reverse_course_imports`` to stay fully decoupled from an
+    unrelated ``course_imports`` table that another effort created on the shared
+    dev DB under the same Alembic revision (000100000009). This feature owns its
+    own tables and never touches that one.
+    """
+    __tablename__ = "reverse_course_imports"
+    id                    = Column(Integer, primary_key=True)
+    course_id             = Column(Integer, nullable=True, index=True)
+    project_id            = Column(Integer, nullable=True, index=True)
+    uploaded_by           = Column(String(100), nullable=True)
+    package_name          = Column(String(255), nullable=True)
+    package_size          = Column(Integer, nullable=True)
+    status                = Column(String(30), nullable=False, default="pending")
+    structure_counts_json = Column(Text, nullable=True)
+    warnings_json         = Column(Text, nullable=True)
+    provenance_ready      = Column(Boolean, nullable=False, default=False)
+    created_at            = Column(DateTime, default=datetime.utcnow)
+    completed_at          = Column(DateTime, nullable=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ImportProvenance(Base):
+    """Canvas-item ↔ CAS-entity map captured at import for high-fidelity re-export.
+
+    Named ``reverse_import_provenance`` for the same decoupling reason as
+    :class:`CourseImport` above.
+    """
+    __tablename__ = "reverse_import_provenance"
+    id                = Column(Integer, primary_key=True)
+    import_id         = Column(Integer, nullable=False, index=True)
+    canvas_identifier = Column(String(255), nullable=False)
+    canvas_type       = Column(String(20), nullable=False)   # page | quiz | module
+    cas_entity_type   = Column(String(20), nullable=False)   # block | module
+    cas_entity_id     = Column(Integer, nullable=False)
+    created_at        = Column(DateTime, default=datetime.utcnow)
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
@@ -1741,9 +1789,52 @@ def add_files_to_style(db, style: "Style", new_doc_ids: list):
     return added
 
 
-def get_styles(db) -> list:
-    """Return all styles ordered by most recently updated."""
-    return db.query(Style).order_by(Style.updated_at.desc()).all()
+def get_styles(db, project_id: int | None = None, course_id: int | None = None) -> list:
+    """Return styles ordered by most recently updated.
+
+    When ``project_id`` and/or ``course_id`` is provided, restrict to styles that
+    belong to that tenant workspace:
+      * the course's ``active_style_id`` (if ``course_id`` given)
+      * the project's ``active_style_id``
+      * any ``active_style_id`` on courses in the same project
+
+    Styles are activation-scoped (no ownership columns on ``styles``), so this is
+    the only reliable tenant filter without a schema change. Unscoped calls keep
+    the legacy global catalogue behaviour.
+    """
+    q = db.query(Style).order_by(Style.updated_at.desc())
+    if project_id is None and course_id is None:
+        return q.all()
+
+    style_ids: set[int] = set()
+
+    resolved_project_id = project_id
+    if course_id:
+        course = db.query(Course).filter(Course.id == course_id).first()
+        if course:
+            if course.active_style_id:
+                style_ids.add(course.active_style_id)
+            if resolved_project_id is None:
+                resolved_project_id = course.project_id
+
+    if resolved_project_id:
+        proj = db.query(Project).filter(Project.id == resolved_project_id).first()
+        if proj and proj.active_style_id:
+            style_ids.add(proj.active_style_id)
+        for sid in (
+            db.query(Course.active_style_id)
+            .filter(
+                Course.project_id == resolved_project_id,
+                Course.active_style_id.isnot(None),
+            )
+            .all()
+        ):
+            if sid[0]:
+                style_ids.add(sid[0])
+
+    if not style_ids:
+        return []
+    return q.filter(Style.id.in_(style_ids)).all()
 
 
 def get_active_style(db, project_id=None, course_id=None) -> "Style | None":

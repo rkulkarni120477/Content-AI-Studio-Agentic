@@ -1,20 +1,21 @@
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
 import { Navigate } from 'react-router-dom';
 import Loader from '@components/common/Loader/Loader';
 import ProtectedRoute from '@components/layout/ProtectedRoute/ProtectedRoute';
 import { ROLES } from '@utils/constants';
+import { lazyWithReload } from '@utils/lazyWithReload';
 import PromptLibraryLayout from './components/layout/PromptLibraryLayout';
 
-const PromptListPage = lazy(() => import('./pages/PromptListPage'));
-const PromptDetailPage = lazy(() => import('./pages/PromptDetailPage'));
-const PromptFormPage = lazy(() => import('./pages/PromptFormPage'));
-const CoursePromptsPage = lazy(() => import('./pages/CoursePromptsPage'));
-const RequestsPage = lazy(() => import('./pages/RequestsPage'));
-const RequestNewPage = lazy(() => import('./pages/RequestNewPage'));
-const AdminRequestsPage = lazy(() => import('./pages/admin/AdminRequestsPage'));
-const AdminRequestDetailPage = lazy(() => import('./pages/admin/AdminRequestDetailPage'));
-const AdminReviewsPage = lazy(() => import('./pages/admin/AdminReviewsPage'));
-const AdminAuditLogPage = lazy(() => import('./pages/admin/AdminAuditLogPage'));
+const PromptListPage = lazyWithReload(() => import('./pages/PromptListPage'));
+const PromptDetailPage = lazyWithReload(() => import('./pages/PromptDetailPage'));
+const PromptFormPage = lazyWithReload(() => import('./pages/PromptFormPage'));
+const CoursePromptsPage = lazyWithReload(() => import('./pages/CoursePromptsPage'));
+const RequestsPage = lazyWithReload(() => import('./pages/RequestsPage'));
+const RequestNewPage = lazyWithReload(() => import('./pages/RequestNewPage'));
+const AdminRequestsPage = lazyWithReload(() => import('./pages/admin/AdminRequestsPage'));
+const AdminRequestDetailPage = lazyWithReload(() => import('./pages/admin/AdminRequestDetailPage'));
+const AdminReviewsPage = lazyWithReload(() => import('./pages/admin/AdminReviewsPage'));
+const AdminAuditLogPage = lazyWithReload(() => import('./pages/admin/AdminAuditLogPage'));
 
 const w = (el) => <Suspense fallback={<Loader size="xl" overlay />}>{el}</Suspense>;
 const MANAGER = [ROLES.ADMIN, ROLES.REVIEWER];

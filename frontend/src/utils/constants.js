@@ -144,6 +144,7 @@ export const ROUTES = {
   DASHBOARD:    '/dashboard',
   PROJECT_CLUSTERS: (projectId) => `/projects/${projectId}/clusters`,
   CLUSTER_COURSES:  (projectId, clusterId) => `/projects/${projectId}/clusters/${clusterId}/courses`,
+  IMPORT:       (projectId) => `/projects/${projectId}/import`,
   WORKSPACE:    (courseId) => `/workspace/${courseId}`,
   SOURCE_LIBRARY: (courseId) => `/workspace/${courseId}/sources`,
   STYLE:        (courseId) => `/workspace/${courseId}/style`,

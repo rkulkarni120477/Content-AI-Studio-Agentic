@@ -3,6 +3,7 @@ import styles from './StreamlitCard.module.scss';
 
 export default function StreamlitCard({
   title,
+  badge,
   clientLine,
   description,
   footerLine,
@@ -20,7 +21,10 @@ export default function StreamlitCard({
   return (
     <article className={styles.card}>
       <div className={styles.card__body}>
-        <h3 className={styles.card__title}>{title}</h3>
+        <h3 className={styles.card__title}>
+          {title}
+          {badge && <span className={styles.card__badge}>{badge}</span>}
+        </h3>
         {clientLine && <p className={styles.card__client}>Client: {clientLine}</p>}
         {desc && <p className={styles.card__desc}>{desc}</p>}
         {footerLine && <p className={styles.card__meta}>{footerLine}</p>}

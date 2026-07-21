@@ -94,11 +94,3 @@ graphify-out/
 docs/*
 data/*
 
-# =============================================================================
-# Not part of this branch — pulled in locally only to let Alembic resolve the
-# chain for the feedback migration (000100000011). These belong to the
-# reverse-import feature on origin/dev and arrive via merge/rebase, not here.
-# =============================================================================
-migrations/versions/20260718_1200_000100000009_import_scaffolding.py
-migrations/versions/20260719_1000_000100000010_reverse_import_tables.py
-

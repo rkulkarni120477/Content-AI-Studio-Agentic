@@ -114,10 +114,13 @@ export default function StylePage() {
   const [docPage, setDocPage] = useState(1);
   const DOCS_PAGE_SIZE = 8;
 
+  const selectedCourse = useAppSelector((s) => s.dashboard?.selectedCourse);
+  const selectedProject = useAppSelector((s) => s.dashboard?.selectedProject);
+
   useEffect(() => {
     dispatch(fetchStylesThunk());
     dispatch(fetchDocumentsThunk());
-  }, []);
+  }, [dispatch, selectedCourse?.id, selectedProject?.id]);
 
   async function onUploadDocs() {
     if (!uploadedFiles.length) return;

@@ -30,6 +30,7 @@ Route prefix structure
 
 from fastapi import APIRouter
 
+from app.core.config import settings
 from app.api.v1.routers.admin import router as admin_router
 from app.api.v1.routers.analytics import router as analytics_router
 from app.api.v1.routers.auth import router as auth_router
@@ -92,6 +93,22 @@ api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prom
 # ── Prompt Library (ported standalone app; replaces the Central Repository UI) ──
 api_v1_router.include_router(prompt_library_router, prefix="/prompt-library", tags=["Prompt Library"])
 
+# ── Reverse pipeline — Canvas IMSCC course import (feature-flagged, additive) ──
+# Registered BEFORE the blocks router: blocks mounts greedy root-level
+# `/{block_id}/…` routes (e.g. POST /{block_id}/validate) that would otherwise
+# match POST /imports/validate with block_id="imports" and 422 on int parsing.
+# Route match order is registration order, so imports must come first.
+# Mounted ONLY when the flag is on — with it off the API surface is byte-for-byte
+# identical to today. See reverse_cas.md.
+if settings.import_courses_enabled:
+    from app.api.v1.routers.imports import (
+        project_router as imports_project_router,
+        router as imports_router,
+    )
+    api_v1_router.include_router(imports_router, prefix="/imports", tags=["Imports"])
+    # Project-scoped create route (POST /projects/{projectId}/imports) — no prefix.
+    api_v1_router.include_router(imports_project_router, tags=["Imports"])
+
 # ── Editor and workflow ───────────────────────────────────────────────────────
 api_v1_router.include_router(blocks_router,    tags=["Blocks"])
 api_v1_router.include_router(workflow_router,  prefix="/workflow",   tags=["Workflow"])
@@ -108,3 +125,6 @@ api_v1_router.include_router(
     prefix="/platform/tenants",
     tags=["Platform — Tenant Management"],
 )
+
+# NOTE: the reverse-pipeline (imports) routers are intentionally registered
+# ABOVE the blocks router — see that block for why (route-collision fix).

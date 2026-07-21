@@ -63,6 +63,18 @@ export const COURSES = {
   ACTIVE_CDD:       (id)      => `/api/v1/courses/${id}/active-cdd`,
 };
 
+// ─── Imports (reverse pipeline — Canvas IMSCC) ────────────────────────────────
+// Feature-flagged backend; when IMPORT_COURSES_ENABLED is off these routes 404.
+// Progress polling reuses the shared jobs endpoint (GENERATE.JOB_STATUS).
+export const IMPORTS = {
+  HEALTH:           '/api/v1/imports/health',
+  VALIDATE:         '/api/v1/imports/validate',
+  CREATE:           (projectId) => `/api/v1/projects/${projectId}/imports`,
+  GET:              (importId)  => `/api/v1/imports/${importId}`,
+  RETRY:            (importId)  => `/api/v1/imports/${importId}/retry`,
+  CANCEL:           (importId)  => `/api/v1/imports/${importId}/cancel`,
+};
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 export const USERS = {
   LIST:             '/api/v1/users',
