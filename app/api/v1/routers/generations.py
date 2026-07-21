@@ -24,6 +24,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.http import content_disposition
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.core.dis_client import dis_client
@@ -342,7 +343,7 @@ def export_generation(
     return Response(
         content=result.data,
         media_type=result.mime_type,
-        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+        headers={"Content-Disposition": content_disposition(result.file_name)},
     )
 
 

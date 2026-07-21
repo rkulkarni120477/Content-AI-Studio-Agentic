@@ -571,8 +571,9 @@ export default function CddPage() {
                             {displayCdd.title || displayCdd.course_title}
                           </h3>
                           <div className={styles.activeContent__actions}>
-                            <Button variant="ghost" size="sm" onClick={() => onExport('markdown')}>↓ MD</Button>
+                            <Button variant="ghost" size="sm" onClick={() => onExport('md')}>↓ MD</Button>
                             <Button variant="ghost" size="sm" onClick={() => onExport('docx')}>↓ DOCX</Button>
+                            <Button variant="ghost" size="sm" onClick={() => onExport('xlsx')}>↓ XLSX</Button>
                             <Button variant="ghost" size="sm" onClick={handleDownloadPrompt}>⬇️ Prompt</Button>
                             <Button variant="secondary" size="sm" onClick={() => setShowVersionModal(true)}>
                               + Save Version

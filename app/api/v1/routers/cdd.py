@@ -41,6 +41,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.http import content_disposition
 from app.core.exceptions import (
     LLMGenerationError,
     NotFoundError,
@@ -935,5 +936,5 @@ def export_cdd(
     return Response(
         content=result.data,
         media_type=result.mime_type,
-        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+        headers={"Content-Disposition": content_disposition(result.file_name)},
     )

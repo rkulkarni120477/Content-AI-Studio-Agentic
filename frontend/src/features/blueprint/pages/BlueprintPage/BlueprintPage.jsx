@@ -884,6 +884,9 @@ export default function BlueprintPage() {
                           <Button variant="secondary" fullWidth onClick={() => onExport('docx')}>
                             ⬇️ Word (.docx)
                           </Button>
+                          <Button variant="secondary" fullWidth onClick={() => onExport('xlsx')}>
+                            ⬇️ Excel (.xlsx)
+                          </Button>
                           <Button variant="secondary" fullWidth onClick={handleDownloadPrompt}>
                             ⬇️ Download Prompt Used (.doc)
                           </Button>
