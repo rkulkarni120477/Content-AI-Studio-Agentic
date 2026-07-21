@@ -381,7 +381,58 @@ _CENDOC_XML = """<?xml version="1.0" encoding="UTF-8"?>
             <cl:title identifier="ST1">What Is Marketing?</cl:title>
             <cl:label><cl:ordinal>1-1</cl:ordinal></cl:label>
           </cl:complex-meta>
-          <cl:para identifier="P1">Marketing means <cl:style identifier="STY1" styles="italic">value</cl:style> for customers.</cl:para>
+          <cl:para identifier="P1">Marketing means <cl:style identifier="STY1" styles="italic">value</cl:style> for customers.
+            See <cl:xref identifier="XR1" link-target="CH2" ordinal="2" pre-text="Chapter "/> for more.
+            H<cl:subscript identifier="SUB1">2</cl:subscript>O is water<cl:superscript identifier="SUP1">1</cl:superscript>.
+            <cl:footnote identifier="FN1"><cl:para identifier="FNP1"><cl:ref identifier="REF1"><cl:composed-content identifier="CC1">Smith, Marketing 101.</cl:composed-content></cl:ref></cl:para></cl:footnote>
+          </cl:para>
+          <cl:para identifier="P1B">
+            <cl:key-term-entry identifier="KTE1">
+              <cl:key-term identifier="KT1">marketing</cl:key-term>
+              <cl:key-term-def identifier="KTD1">creating value for customers</cl:key-term-def>
+            </cl:key-term-entry> is important.
+          </cl:para>
+          <cl:learn-obj-list identifier="LOL1" list-style="Customized">
+            <cl:learn-obj identifier="LOA1" manual-label="1-1">Define the term marketing</cl:learn-obj>
+            <cl:para identifier="LOP1">Marketing creates value.</cl:para>
+          </cl:learn-obj-list>
+          <cl:key-term-list identifier="KTL1" list-style="Unformatted">
+            <cl:key-term-entry identifier="KTE2">
+              <cl:key-term identifier="KT2">exchange</cl:key-term>
+              <cl:key-term-def identifier="KTD2">people giving up something to receive something else<cl:aux-ref identifier="AR1"> (p. 2)</cl:aux-ref></cl:key-term-def>
+            </cl:key-term-entry>
+          </cl:key-term-list>
+          <cl:epigraph identifier="EP1">“Adapt or perish.”
+            <cl:credit-byline identifier="CB1">—H. G. Wells</cl:credit-byline>
+          </cl:epigraph>
+          <cl:table-wrapper identifier="TW1" number="numbered">
+            <cl:simple-meta identifier="TSM1">
+              <cl:title identifier="TT1">Sample Matrix</cl:title>
+              <cl:label>Table <cl:ordinal>1.1</cl:ordinal></cl:label>
+            </cl:simple-meta>
+            <cl:table frame="topbot">
+              <cl:tgroup identifier="TG1" cols="2">
+                <cl:colspec identifier="CS1" colnum="1" colname="c1"/>
+                <cl:colspec identifier="CS2" colnum="2" colname="c2"/>
+                <cl:thead>
+                  <cl:row identifier="THR1">
+                    <cl:entry identifier="THE1" namest="c1" nameend="c2"><cl:para identifier="THP1">Span Header</cl:para></cl:entry>
+                  </cl:row>
+                </cl:thead>
+                <cl:tbody>
+                  <cl:row identifier="TBR1">
+                    <cl:entry identifier="TBE1" colname="c1"><cl:para identifier="TBP1">A</cl:para></cl:entry>
+                    <cl:entry identifier="TBE2" colname="c2"><cl:para identifier="TBP2">B</cl:para></cl:entry>
+                  </cl:row>
+                </cl:tbody>
+              </cl:tgroup>
+            </cl:table>
+          </cl:table-wrapper>
+          <cl:math-expr identifier="ME1" xmlns:m="http://www.w3.org/1998/Math/MathML">
+            <cl:equation identifier="EQ1">
+              <m:math display="block"><m:mrow><m:mi>Price</m:mi><m:mo>×</m:mo><m:mi>Units</m:mi><m:mo>=</m:mo><m:mi>Revenue</m:mi></m:mrow></m:math>
+            </cl:equation>
+          </cl:math-expr>
           <cl:figure identifier="FIG1" number="nonumber">
             <cl:simple-meta>
               <cl:caption identifier="CAP1"><cl:para identifier="CP1">A sample figure.</cl:para></cl:caption>
@@ -403,8 +454,15 @@ _CENDOC_XML = """<?xml version="1.0" encoding="UTF-8"?>
           </cl:complex-meta>
           <cl:para identifier="P3">Because it matters.</cl:para>
           <cl:list identifier="L1" list-style="Ordered" numeration="arabic">
-            <cl:item identifier="I1"><cl:para identifier="IP1">Reason one</cl:para></cl:item>
+            <cl:item identifier="I1">
+              <cl:para identifier="IP1"><cl:style identifier="STYB1" styles="bold">The Insurance Industry</cl:style></cl:para>
+              <cl:para identifier="IP1B">In the insurance industry, companies create the products and then sell them.</cl:para>
+            </cl:item>
             <cl:item identifier="I2"><cl:para identifier="IP2">Reason two</cl:para></cl:item>
+          </cl:list>
+          <cl:list identifier="L2" list-style="Unordered">
+            <cl:item identifier="IU1"><cl:para identifier="IUP1">Bullet alpha</cl:para></cl:item>
+            <cl:item identifier="IU2"><cl:para identifier="IUP2">Bullet beta</cl:para></cl:item>
           </cl:list>
         </cl:sect1>
       </cl:chapter>
