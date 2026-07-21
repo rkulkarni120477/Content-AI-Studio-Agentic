@@ -76,6 +76,8 @@
 .column {
   @include flex-col;
   min-width: 140px;
+  min-height: 280px;
+  max-height: 420px;
 
   &__header {
     background: rgba(148, 163, 184, 0.05);
@@ -86,6 +88,7 @@
     font-size: $font-size-sm;
     margin-bottom: 10px;
     border-bottom: 2px solid $color-gray-300;
+    flex-shrink: 0;
   }
 
   &__count {
@@ -93,14 +96,70 @@
     margin-left: 6px;
   }
 
-  &__cards { @include flex-col; gap: 6px; }
+  &__cards {
+    @include flex-col;
+    gap: 6px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 2px 8px;
+    border-radius: 8px;
+    border: 1px dashed transparent;
+    transition: background 0.15s ease, border-color 0.15s ease;
+
+    // Keep scrollbar usable for long columns (e.g. 153 drafts)
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+
+    &::-webkit-scrollbar {
+      width: 6px;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 999px;
+    }
+  }
+
+  &--dropTarget &__cards {
+    background: rgba(99, 102, 241, 0.08);
+    border-color: rgba(99, 102, 241, 0.45);
+  }
 }
 
 .kanbanCard {
-  background: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.95);
   padding: 8px;
+  border: none;
   border-radius: 6px;
   border-left: 3px solid rgba(148, 163, 184, 0.15);
+  cursor: grab;
+  text-align: left;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  appearance: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease;
+
+  &:hover {
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &--selected {
+    outline: 2px solid #6366f1;
+    outline-offset: 1px;
+    background: #eef2ff;
+  }
+
+  &--dragging {
+    opacity: 0.55;
+  }
 
   &__label {
     font-size: 0.85rem;
