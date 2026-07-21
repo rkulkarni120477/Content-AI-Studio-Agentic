@@ -25,6 +25,7 @@ const CddPage       = lazy(() => import('@features/cdd/pages/CddPage/CddPage'));
 const BlueprintPage = lazy(() => import('@features/blueprint/pages/BlueprintPage/BlueprintPage'));
 const GeneratePage  = lazy(() => import('@features/generate/pages/GeneratePage/GeneratePage'));
 const EditorPage    = lazy(() => import('@features/editor/pages/EditorPage/EditorPage'));
+const FeedbackPage  = lazy(() => import('@features/feedback/pages/FeedbackPage/FeedbackPage'));
 const WorkflowPage  = lazy(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
 const ExportPage    = lazy(() => import('@features/export/pages/ExportPage/ExportPage'));
 const SourceLibraryPage = lazy(() => import('@features/sourceLibrary/pages/SourceLibraryPage/SourceLibraryPage'));
@@ -93,6 +94,7 @@ export const router = createBrowserRouter([
       { path: 'blueprint', element: wrap(<BlueprintPage />) },
       { path: 'generate',  element: wrap(<GeneratePage />) },
       { path: 'editor',    element: wrap(<EditorPage />) },
+      { path: 'feedback',  element: wrap(<FeedbackPage />) },
       { path: 'workflow',  element: wrap(<WorkflowPage />) },
       { path: 'export',    element: wrap(<ExportPage />) },
       { path: 'analytics', element: wrap(<AnalyticsPage />) },

@@ -151,6 +151,7 @@ export const ROUTES = {
   BLUEPRINT:    (courseId) => `/workspace/${courseId}/blueprint`,
   GENERATE:     (courseId) => `/workspace/${courseId}/generate`,
   EDITOR:       (courseId) => `/workspace/${courseId}/editor`,
+  FEEDBACK:     (courseId) => `/workspace/${courseId}/feedback`,
   WORKFLOW:     (courseId) => `/workspace/${courseId}/workflow`,
   EXPORT:       (courseId) => `/workspace/${courseId}/export`,
   ANALYTICS:    (courseId) => `/workspace/${courseId}/analytics`,

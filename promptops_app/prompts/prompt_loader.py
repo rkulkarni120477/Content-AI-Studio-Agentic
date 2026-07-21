@@ -148,6 +148,12 @@ _REGISTRY: dict[str, dict] = {
         "required_vars": [],
         "optional_vars": ["block_type", "output_format"],
     },
+    "feedback_extraction": {
+        "version":      "v1",
+        "description":  "Extract structured reviewer feedback items from an uploaded document.",
+        "required_vars": ["document_text"],
+        "optional_vars": ["document_name"],
+    },
 }
 
 

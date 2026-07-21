@@ -97,6 +97,14 @@ export const DOCUMENTS = {
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
 };
 
+// ─── Reviewer Feedback ────────────────────────────────────────────────────────
+export const FEEDBACK = {
+  LIST:        '/api/v1/feedback',
+  ANALYZE:     '/api/v1/feedback/analyze',
+  DELETE_ITEM: (id) => `/api/v1/feedback/items/${id}`,
+  BULK_DELETE: '/api/v1/feedback/bulk-delete',
+};
+
 // ─── Source Library / DIS ─────────────────────────────────────────────────────
 export const SOURCE_LIBRARY = {
   ME:               '/api/v1/source-library/me',

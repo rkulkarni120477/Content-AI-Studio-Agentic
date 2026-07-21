@@ -5,6 +5,7 @@ import cddReducer        from '@features/cdd/cddSlice';
 import blueprintReducer  from '@features/blueprint/blueprintSlice';
 import generateReducer   from '@features/generate/generateSlice';
 import editorReducer     from '@features/editor/editorSlice';
+import feedbackReducer   from '@features/feedback/feedbackSlice';
 import workflowReducer   from '@features/workflow/workflowSlice';
 import styleReducer      from '@features/style/styleSlice';
 import promptsReducer    from '@features/prompts/promptsSlice';
@@ -18,6 +19,7 @@ const store = configureStore({
     blueprint: blueprintReducer,
     generate:  generateReducer,
     editor:    editorReducer,
+    feedback:  feedbackReducer,
     workflow:  workflowReducer,
     style:     styleReducer,
     prompts:   promptsReducer,
