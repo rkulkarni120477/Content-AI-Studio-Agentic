@@ -183,6 +183,21 @@
   color: $color-gray-800;
 }
 
+.done__hint {
+  margin: 0;
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  max-width: 28rem;
+}
+
+.done__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: $space-2;
+  margin-top: $space-2;
+}
+
 .error {
   margin: 0;
   color: $color-danger;
