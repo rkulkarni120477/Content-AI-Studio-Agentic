@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   validatePackageThunk,
@@ -24,9 +25,9 @@ const COUNT_LABELS = [
 ];
 
 /**
- * Import wizard (reverse pipeline): upload & validate an IMSCC → start import →
- * watch reconstruction progress → open the populated Editor. Pre-course flow at
- * /projects/:projectId/import (cluster passed via ?cluster_id=). See reverse_cas.md §S4.
+ * Import wizard (reverse pipeline): upload & validate an IMSCC/Cendoc package →
+ * start import → watch reconstruction → choose Editor or Feedback Import.
+ * Pre-course flow at /projects/:projectId/import (cluster via ?cluster_id=).
  */
 export default function ImportWizardPage() {
   const { projectId } = useParams();
@@ -46,14 +47,33 @@ export default function ImportWizardPage() {
   } = useAppSelector(selectImport);
 
   const importWarnings = record?.warnings ?? [];
+  // Prefer live wizard courseId; fall back to completed import record.
+  const resolvedCourseId = courseId ?? record?.course_id ?? null;
+
+  // Editor modules/blocks are populated by progress 74%; reverse-gen (blueprint/
+  // CDD/style) continues after that — enable next-step actions as soon as content exists.
+  const CONTENT_READY_AT = 74;
+  const stepLabel = job?.current_step || '';
+  const contentReady = step === 'done' || (
+    step === 'progress'
+    && resolvedCourseId
+    && (
+      (job?.progress ?? 0) >= CONTENT_READY_AT
+      || /blueprint|course design|style|finaliz/i.test(stepLabel)
+    )
+  );
 
   const [file, setFile] = useState(null);
   const [name, setName] = useState('');
 
-  // Fresh wizard on entry.
+  // Fresh wizard when project/cluster changes (not on every HMR remount of same URL).
+  const entryKey = `${pid}:${clusterId ?? ''}`;
+  const lastEntryKey = useRef(null);
   useEffect(() => {
+    if (lastEntryKey.current === entryKey) return;
+    lastEntryKey.current = entryKey;
     dispatch(resetImport());
-  }, [dispatch]);
+  }, [dispatch, entryKey]);
 
   // Prefill the course name from the parsed manifest title (once, if untouched).
   useEffect(() => {
@@ -65,16 +85,6 @@ export default function ImportWizardPage() {
   useEffect(() => {
     if (step === 'done' && importId) dispatch(fetchImportRecordThunk(importId));
   }, [step, importId, dispatch]);
-
-  // Auto-hand-off to the Editor only when the import is clean; if there are
-  // warnings, let the user read them and open the Editor manually.
-  useEffect(() => {
-    if (step === 'done' && courseId && record && importWarnings.length === 0) {
-      const t = setTimeout(() => navigate(ROUTES.EDITOR(courseId)), 900);
-      return () => clearTimeout(t);
-    }
-    return undefined;
-  }, [step, courseId, record, importWarnings.length, navigate]);
 
   function handleFile(files) {
     const picked = files?.[0];
@@ -92,6 +102,20 @@ export default function ImportWizardPage() {
     dispatch(resetImport());
     setFile(null);
     setName('');
+  }
+
+  function handleOpenEditor() {
+    if (!resolvedCourseId) {
+      toast.error('Course is not ready yet.');
+      return;
+    }
+    // Workspace Editor: /workspace/:courseId/editor
+    navigate(ROUTES.EDITOR(resolvedCourseId));
+  }
+
+  function handleFeedbackImport() {
+    // Placeholder until feedback-import flow is wired.
+    toast('Feedback import is coming soon.');
   }
 
   return (
@@ -199,9 +223,30 @@ export default function ImportWizardPage() {
                 {job?.current_step || 'Queued…'} {job?.progress != null ? `(${job.progress}%)` : ''}
               </p>
               <p className={styles.progress__hint}>
-                Reconstructing modules, pages and quizzes. This can take a moment for large courses.
+                {contentReady
+                  ? 'Course content is in the Editor. Design artifacts (Blueprint / CDD / Style) are still finishing — you can continue below.'
+                  : 'Reconstructing modules, pages and quizzes. This can take a moment for large courses.'}
               </p>
             </div>
+
+            {contentReady && (
+              <div className={styles.done__actions}>
+                <Button
+                  variant="primary"
+                  onClick={handleOpenEditor}
+                  disabled={!resolvedCourseId}
+                >
+                  Go to Editor →
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={handleFeedbackImport}
+                  title="Feedback import — coming soon"
+                >
+                  Feedback Import
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
@@ -212,13 +257,27 @@ export default function ImportWizardPage() {
               <p className={styles.done__text}>
                 {importWarnings.length > 0
                   ? 'Import complete — a few items were flagged for review.'
-                  : 'Import complete — opening the Editor…'}
+                  : 'Import complete — your course content is ready.'}
               </p>
-              {courseId && (
-                <Button variant="primary" onClick={() => navigate(ROUTES.EDITOR(courseId))}>
-                  Open in Editor →
+              <p className={styles.done__hint}>
+                Open the Editor to review lessons, or continue with feedback import.
+              </p>
+              <div className={styles.done__actions}>
+                <Button
+                  variant="primary"
+                  onClick={handleOpenEditor}
+                  disabled={!resolvedCourseId}
+                >
+                  Go to Editor →
                 </Button>
-              )}
+                <Button
+                  variant="secondary"
+                  onClick={handleFeedbackImport}
+                  title="Feedback import — coming soon"
+                >
+                  Feedback Import
+                </Button>
+              </div>
             </div>
 
             {importWarnings.length > 0 && (
