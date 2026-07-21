@@ -88,3 +88,9 @@ OPENSEARCH_RETRIEVAL_PLAN.md
 logs/
 .graphify_python
 graphify-out/
+
+# ===================
+*.xlsx
+docs/*
+data/*
+
