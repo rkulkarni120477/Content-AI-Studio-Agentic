@@ -34,6 +34,10 @@ class ImportValidateResponse(BaseModel):
         default_factory=list,
         description="Non-fatal items flagged for review (e.g. external LTI).",
     )
+    package_format: str = Field(
+        default="imscc",
+        description="Detected package format: imscc | cendoc.",
+    )
 
 
 class ImportStartResponse(BaseModel):

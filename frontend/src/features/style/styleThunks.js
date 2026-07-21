@@ -19,9 +19,15 @@ async function loadDocumentRegistry() {
 
 export const fetchStylesThunk = createAsyncThunk(
   'style/fetchStyles',
-  async (_, { rejectWithValue }) => {
-    try { return await styleService.listStyles(); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const state = getState();
+      const courseId = state?.dashboard?.selectedCourse?.id ?? null;
+      const projectId = state?.dashboard?.selectedProject?.id ?? null;
+      return await styleService.listStyles({ projectId, courseId });
+    } catch (e) {
+      return rejectWithValue(extractErrorMessage(e));
+    }
   },
 );
 

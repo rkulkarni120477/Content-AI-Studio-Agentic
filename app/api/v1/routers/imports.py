@@ -1,12 +1,9 @@
 """
-Imports router — reverse pipeline (Canvas IMSCC course import).
+Imports router — reverse pipeline (Canvas IMSCC + Cengage CendocXML course import).
 
 This whole router is mounted ONLY when ``settings.import_courses_enabled`` is
 true (see app/api/v1/router.py). When the flag is off the routes below do not
 exist, so the API surface is identical to today.
-
-Session 0 ships only the health/capability probe; validate/start/status/retry/
-cancel endpoints land in later sessions. See reverse_cas.md.
 """
 
 from __future__ import annotations
@@ -56,11 +53,12 @@ def import_health(
 @router.post(
     "/validate",
     response_model=ImportValidateResponse,
-    summary="Validate an IMSCC package (pre-flight, no DB writes)",
+    summary="Validate a course package (pre-flight, no DB writes)",
     description=(
-        "Uploads a Canvas IMSCC package, extracts and structurally parses it, and "
-        "returns the structure counts plus any items flagged for review. Nothing is "
-        "persisted — this powers the import wizard's confirmation step."
+        "Uploads a Canvas IMSCC or Cengage CendocXML package, extracts and "
+        "structurally parses it, and returns the structure counts plus any items "
+        "flagged for review. Nothing is persisted — this powers the import "
+        "wizard's confirmation step."
     ),
 )
 async def validate_import_package(
@@ -75,17 +73,18 @@ async def validate_import_package(
     try:
         course = validate_package(raw_bytes)
     except PackageValidationError as exc:
-        raise ValidationError(f"Invalid IMSCC package: {exc}") from exc
+        raise ValidationError(f"Invalid course package: {exc}") from exc
 
     _log.info(
-        "import_validate  user=%s  package=%s  modules=%d",
-        current_user.username, file.filename, len(course.modules),
+        "import_validate  user=%s  package=%s  format=%s  modules=%d",
+        current_user.username, file.filename, course.package_format, len(course.modules),
     )
     return ImportValidateResponse(
-        package_name=file.filename or "package.imscc",
+        package_name=file.filename or "package.zip",
         course_title=course.title,
         structure_counts=StructureCounts(**course.structure_counts()),
         warnings=course.warnings,
+        package_format=course.package_format or "imscc",
     )
 
 
@@ -93,7 +92,7 @@ async def validate_import_package(
     "/projects/{project_id}/imports",
     response_model=ImportStartResponse,
     status_code=201,
-    summary="Create a course from an IMSCC package (async reconstruction)",
+    summary="Create a course from an IMSCC or CendocXML package (async reconstruction)",
     description=(
         "Creates a course shell + a course_imports record, stages the uploaded "
         "package, and enqueues a background import job. Poll GET /jobs/{jobId} for "
@@ -110,12 +109,26 @@ async def start_import(
 ) -> ImportStartResponse:
     """Create the course shell + import record and enqueue the reconstruction job."""
     from promptops_app.database import Course, CourseImport
+    from promptops_app.importers.package_extractor import (
+        FORMAT_CENDOC,
+        PackageValidationError,
+        detect_package_format,
+    )
     from promptops_app.jobs import import_jobs, job_runner
     from promptops_app.repositories import job_repository
 
     raw_bytes = await file.read()
     if not raw_bytes:
-        raise ValidationError("Uploaded IMSCC package is empty.")
+        raise ValidationError("Uploaded package is empty.")
+
+    try:
+        package_format = detect_package_format(raw_bytes)
+    except PackageValidationError as exc:
+        raise ValidationError(f"Invalid course package: {exc}") from exc
+
+    source_type = "cendoc" if package_format == FORMAT_CENDOC else "imscc"
+    suffix = ".zip" if package_format == FORMAT_CENDOC else ".imscc"
+    default_name = "package.zip" if package_format == FORMAT_CENDOC else "package.imscc"
 
     # Course shell — same construction as scratch create, plus additive import
     # metadata (source_type is display/analytics only; never branched on).
@@ -124,7 +137,7 @@ async def start_import(
         project_id=project_id,
         cluster_id=cluster_id,
         created_by=current_user.username,
-        source_type="imscc",
+        source_type=source_type,
     )
     db.add(course)
     db.commit()
@@ -134,7 +147,7 @@ async def start_import(
         course_id=course.id,
         project_id=project_id,
         uploaded_by=current_user.username,
-        package_name=file.filename or "package.imscc",
+        package_name=file.filename or default_name,
         package_size=len(raw_bytes),
         status="queued",
     )
@@ -147,7 +160,7 @@ async def start_import(
 
     # Stage the package to a temp file — the background job reads it by path
     # (job payloads must be JSON-serialisable) and deletes it when done.
-    fd, package_path = tempfile.mkstemp(prefix="imscc_pkg_", suffix=".imscc")
+    fd, package_path = tempfile.mkstemp(prefix="import_pkg_", suffix=suffix)
     with os.fdopen(fd, "wb") as handle:
         handle.write(raw_bytes)
 
@@ -160,7 +173,8 @@ async def start_import(
             "project_id": project_id,
             "user_name": current_user.username,
             "package_path": package_path,
-            "package_name": file.filename or "package.imscc",
+            "package_name": file.filename or default_name,
+            "package_format": package_format,
             "options": {},
         },
         project_id=project_id,
@@ -170,8 +184,10 @@ async def start_import(
     job_runner.submit(import_jobs.run_import_job, job_id)
 
     _log.info(
-        "import_started  user=%s  project_id=%d  course_id=%d  import_id=%d  job=%s  package=%s",
-        current_user.username, project_id, course.id, course_import.id, job_id, file.filename,
+        "import_started  user=%s  project_id=%d  course_id=%d  import_id=%d  job=%s  "
+        "package=%s  format=%s",
+        current_user.username, project_id, course.id, course_import.id, job_id,
+        file.filename, package_format,
     )
     return ImportStartResponse(course_id=course.id, import_id=course_import.id, job_id=job_id)
 

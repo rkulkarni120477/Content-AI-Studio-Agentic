@@ -153,7 +153,7 @@ export default function CoursesPage() {
             <StreamlitCard
               key={course.id}
               title={course.name}
-              badge={course.source_type === 'imscc' ? 'Imported' : undefined}
+              badge={course.source_type === 'imscc' || course.source_type === 'cendoc' ? 'Imported' : undefined}
               description={course.description}
               onOpen={() => handleOpen(course)}
               openLabel="Enter Workspace →"

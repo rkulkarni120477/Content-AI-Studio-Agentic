@@ -331,3 +331,128 @@ def build_zip_with_traversal() -> bytes:
         zf.writestr("imsmanifest.xml", _MANIFEST)
         zf.writestr("../evil.txt", "escape attempt")
     return buf.getvalue()
+
+
+# ── CendocXML fixtures ──────────────────────────────────────────────────────
+
+_TINY_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+    b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+_CENDOC_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<cl:doc identifier="DOC1" xmlns:cl="http://xml.cengage-learning.com/cendoc-core"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <cl:doc-meta identifier="META1">
+    <cl:title identifier="T0">Sample Cendoc Book</cl:title>
+  </cl:doc-meta>
+  <cl:front-matter identifier="FM1">
+    <cl:dedication identifier="D1"><cl:para identifier="P0">Dedicated to testers.</cl:para></cl:dedication>
+  </cl:front-matter>
+  <cl:body-matter identifier="BM1">
+    <cl:part identifier="PART1">
+      <cl:complex-meta><cl:title identifier="PT1">Part One</cl:title></cl:complex-meta>
+      <cl:chapter identifier="CH1">
+        <cl:complex-meta>
+          <cl:title identifier="CT1">An Overview</cl:title>
+          <cl:label>Chapter <cl:ordinal>1</cl:ordinal></cl:label>
+        </cl:complex-meta>
+        <cl:opener identifier="OP1">
+          <cl:sect1 number="nonumber" identifier="OPSECT">
+            <cl:figure identifier="FIG0" number="nonumber">
+              <cl:simple-meta><cl:alt-text identifier="A0">cover</cl:alt-text></cl:simple-meta>
+              <cl:media identifier="M0">
+                <cl:media-object identifier="MO0" link-target="cover.png" media-size="page"/>
+              </cl:media>
+            </cl:figure>
+            <cl:sidebar identifier="SB0">
+              <cl:complex-meta><cl:label>Learning Outcomes</cl:label></cl:complex-meta>
+              <cl:list identifier="LO1" list-style="Customized">
+                <cl:item identifier="LI1" manual-label="1-1">
+                  <cl:para identifier="LP1">Define marketing</cl:para>
+                </cl:item>
+              </cl:list>
+            </cl:sidebar>
+          </cl:sect1>
+        </cl:opener>
+        <cl:sect1 identifier="S1">
+          <cl:complex-meta>
+            <cl:title identifier="ST1">What Is Marketing?</cl:title>
+            <cl:label><cl:ordinal>1-1</cl:ordinal></cl:label>
+          </cl:complex-meta>
+          <cl:para identifier="P1">Marketing means <cl:style identifier="STY1" styles="italic">value</cl:style> for customers.</cl:para>
+          <cl:figure identifier="FIG1" number="nonumber">
+            <cl:simple-meta>
+              <cl:caption identifier="CAP1"><cl:para identifier="CP1">A sample figure.</cl:para></cl:caption>
+              <cl:alt-text identifier="A1">sample</cl:alt-text>
+            </cl:simple-meta>
+            <cl:media identifier="M1">
+              <cl:media-object identifier="MO1" link-target="fig1.png" media-size="page" width="10" height="10"/>
+              <cl:media-object identifier="MO2" link-target="fig1-full.png" media-size="full"/>
+            </cl:media>
+          </cl:figure>
+          <cl:sect2 identifier="S2A">
+            <cl:complex-meta><cl:title identifier="ST2A">A Nested Topic</cl:title></cl:complex-meta>
+            <cl:para identifier="P2">Nested section body.</cl:para>
+          </cl:sect2>
+        </cl:sect1>
+        <cl:sect1 identifier="S2">
+          <cl:complex-meta>
+            <cl:title identifier="ST2">Why Study Marketing?</cl:title>
+          </cl:complex-meta>
+          <cl:para identifier="P3">Because it matters.</cl:para>
+          <cl:list identifier="L1" list-style="Ordered" numeration="arabic">
+            <cl:item identifier="I1"><cl:para identifier="IP1">Reason one</cl:para></cl:item>
+            <cl:item identifier="I2"><cl:para identifier="IP2">Reason two</cl:para></cl:item>
+          </cl:list>
+        </cl:sect1>
+      </cl:chapter>
+    </cl:part>
+  </cl:body-matter>
+  <cl:back-matter identifier="BACK1">
+    <cl:appendix identifier="APP1">
+      <cl:simple-section number="nonumber" identifier="APS1">
+        <cl:complex-meta><cl:title identifier="APT1">AI Appendix</cl:title></cl:complex-meta>
+        <cl:para identifier="AP1">Appendix prose.</cl:para>
+        <cl:quiz identifier="QZ1">
+          <cl:metadata-wrapper>
+            <cl:descriptive-meta><cl:broad-term>Chapter exercises</cl:broad-term></cl:descriptive-meta>
+          </cl:metadata-wrapper>
+          <cl:question-section identifier="QS1">
+            <cl:short-answer-section identifier="SA1">
+              <cl:sa-item identifier="SAI1">
+                <cl:question identifier="QQ1"><cl:para identifier="QP1">What is AI?</cl:para></cl:question>
+                <cl:answer identifier="QA1"><cl:para identifier="QAP1">A set of tools.</cl:para></cl:answer>
+              </cl:sa-item>
+            </cl:short-answer-section>
+          </cl:question-section>
+        </cl:quiz>
+      </cl:simple-section>
+    </cl:appendix>
+  </cl:back-matter>
+</cl:doc>
+"""
+
+
+def build_sample_cendoc(*, with_images: bool = True, missing_image: bool = False) -> bytes:
+    """Tiny CendocXML zip: 1 chapter, 2 sect1s, figure, quiz, optional book_images."""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("cendoc-sample.xml", _CENDOC_XML)
+        if with_images:
+            zf.writestr("book_images/cover.png", _TINY_PNG)
+            if not missing_image:
+                zf.writestr("book_images/fig1.png", _TINY_PNG)
+            zf.writestr("book_images/fig1-full.png", _TINY_PNG)
+    return buf.getvalue()
+
+
+def build_ambiguous_imscc_and_cendoc() -> bytes:
+    """Zip containing both imsmanifest.xml and a Cendoc XML — IMSCC must win."""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("imsmanifest.xml", _MANIFEST)
+        zf.writestr("course_settings/canvas_export.txt", "Canvas\n")
+        zf.writestr("cendoc-sample.xml", _CENDOC_XML)
+    return buf.getvalue()

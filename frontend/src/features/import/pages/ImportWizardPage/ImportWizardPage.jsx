@@ -103,16 +103,16 @@ export default function ImportWizardPage() {
           </button>
           <h1 className={styles.title}>Import a Course</h1>
           <p className={styles.subtitle}>
-            Upload a Canvas IMSCC package and reconstruct it as an editable CAS course.
+            Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS course.
           </p>
         </header>
 
         {step === 'upload' && (
           <div className={styles.body}>
             <FileUpload
-              accept=".imscc,.zip"
-              label="Drop an IMSCC package here or click to browse"
-              hint="Canvas Course Export (.imscc / .zip)"
+              accept=".imscc,.zip,.xml"
+              label="Drop a course package here or click to browse"
+              hint="Canvas IMSCC (.imscc / .zip) or Cengage CendocXML (.zip / .xml)"
               onChange={handleFile}
               error={validateError || undefined}
             />
@@ -135,6 +135,12 @@ export default function ImportWizardPage() {
 
             {validation && (
               <div className={styles.preview}>
+                {validation.package_format && (
+                  <p className={styles.filename}>
+                    Detected format:{' '}
+                    {validation.package_format === 'cendoc' ? 'CendocXML' : 'Canvas IMSCC'}
+                  </p>
+                )}
                 <Input
                   label="Course Name *"
                   value={name}
