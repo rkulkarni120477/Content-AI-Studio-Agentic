@@ -31,6 +31,7 @@ def test_editor_builder_from_cendoc(db):
         .order_by(CourseModule.position)
         .all()
     )
-    assert modules[0].title == "An Overview"
-    blocks = db.query(Block).filter(Block.module_id == modules[0].id).all()
+    assert modules[0].title == "Front Matter"
+    overview = next(m for m in modules if m.title == "An Overview")
+    blocks = db.query(Block).filter(Block.module_id == overview.id).all()
     assert any(b.block_type == "lesson" and b.content for b in blocks)

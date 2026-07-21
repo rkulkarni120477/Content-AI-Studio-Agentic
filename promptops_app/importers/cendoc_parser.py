@@ -1,11 +1,12 @@
 """Parse an extracted CendocXML package into the shared :class:`ICourse` model.
 
 Mapping (v1):
+  * ``cl:front-matter`` → ``Front Matter`` module (dedication, acknowledgements, …)
   * ``cl:chapter`` → ``IModule``
   * titled ``cl:sect1`` (skip opener ``number=nonumber``) → ``IPage`` lesson
   * nested sect2/3/4 → markdown headings inside the parent lesson
-  * ``cl:quiz`` short-answer → ``IAssessment`` quiz
-  * front-matter skipped (warning); parts ignored as modules
+  * ``cl:quiz`` (short-answer and other *-item types) → ``IAssessment`` and/or in-body
+  * parts ignored as modules
   * appendices / back-matter prose → trailing ``Appendices`` module
 
 Does **not** touch Canvas IMSCC parsers. Image embedding is Cendoc-only via
@@ -19,6 +20,8 @@ from xml.etree import ElementTree as ET
 
 from promptops_app.importers.cendoc_to_markdown import (
     ImageResolver,
+    block_html,
+    block_md,
     local,
     q,
     quiz_to_markdown,
@@ -174,6 +177,56 @@ def _chapter_module(
     return module
 
 
+def _front_matter_module(
+    root: ET.Element,
+    images: ImageResolver,
+    *,
+    load_bodies: bool,
+) -> IModule | None:
+    """Import dedication / acknowledgements / preface as a Front Matter module."""
+    front = root.find(q("front-matter"))
+    if front is None:
+        return None
+
+    items: list = []
+    for child in list(front):
+        name = local(child.tag)
+        if name in ("complex-meta", "simple-meta", "metadata-wrapper"):
+            continue
+        title = title_of(child) or name.replace("-", " ").title()
+        page = IPage(
+            title=title,
+            href="",
+            provenance_id=_identifier(child),
+            kind=PAGE_KIND,
+        )
+        if load_bodies:
+            # Dedicated section handlers exist for dedication/acknowledgements.
+            if name in ("dedication", "acknowledgements", "preface", "foreword",
+                        "sect1", "simple-section"):
+                page.markdown = section_to_markdown(
+                    child, images, heading_level=0, include_own_title=False
+                )
+                page.raw_body_html = section_to_html(
+                    child, images, heading_level=0, include_own_title=False
+                )
+            else:
+                page.markdown = block_md(child, images)
+                page.raw_body_html = block_html(child, images)
+            page.html = page.raw_body_html
+        items.append(page)
+
+    if not items:
+        return None
+
+    return IModule(
+        title="Front Matter",
+        position=0,
+        provenance_id=_identifier(front) or "cendoc-front-matter",
+        items=items,
+    )
+
+
 def _appendix_modules(
     root: ET.Element,
     images: ImageResolver,
@@ -252,15 +305,19 @@ def _build_course(extract: ExtractResult, *, load_bodies: bool) -> ICourse:
     root = _parse_xml(extract.xml_path)
     warnings: list[str] = []
 
-    if root.find(q("front-matter")) is not None:
-        warnings.append("Front matter was skipped during Cendoc import.")
-
     images = ImageResolver(extract.images_dir)
     if load_bodies and extract.images_dir is None:
         warnings.append("No book_images/ folder found — figures will be caption-only.")
 
     modules: list[IModule] = []
     position = 1
+
+    front_mod = _front_matter_module(root, images, load_bodies=load_bodies)
+    if front_mod is not None:
+        front_mod.position = position
+        modules.append(front_mod)
+        position += 1
+
     body = root.find(q("body-matter"))
     chapters: list[ET.Element] = []
     if body is not None:
