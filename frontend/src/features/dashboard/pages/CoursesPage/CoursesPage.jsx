@@ -6,6 +6,7 @@ import { fetchCoursesThunk, fetchWorkspaceConfigThunk } from '@features/dashboar
 import {
   selectCourses, selectSelectedProject, selectSelectedCluster,
   setSelectedProject, setSelectedCluster, setSelectedCourse,
+  selectIsLoadingCourses, selectDashboardError,
 } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionLayout from '@components/layout/SelectionLayout/SelectionLayout';
@@ -17,6 +18,8 @@ import ManageUsersModal from '@features/dashboard/components/ManageUsersModal/Ma
 import CreateCourseModal from '@features/dashboard/components/CreateCourseModal/CreateCourseModal';
 import { importService } from '@features/import/services/importService';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
+import Loader from '@components/common/Loader/Loader';
+import Button from '@components/common/Button/Button';
 import { useAuth } from '@hooks/useAuth';
 import { ROUTES, ROLES } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
@@ -30,6 +33,8 @@ export default function CoursesPage() {
   const courses = useAppSelector(selectCourses);
   const selProj = useAppSelector(selectSelectedProject);
   const selCluster = useAppSelector(selectSelectedCluster);
+  const isLoadingCourses = useAppSelector(selectIsLoadingCourses);
+  const coursesError = useAppSelector(selectDashboardError);
 
   const [createLoading, setCreateLoading] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -145,9 +150,11 @@ export default function CoursesPage() {
         subtitle="Choose a course to enter the workspace."
       />
 
-      {courses?.items?.length === 0 ? (
-        <EmptyState title="No courses" message={canCreate ? 'Create a course using the sidebar panel.' : 'Ask an Admin or Lead to create courses.'} />
-      ) : (
+      {isLoadingCourses ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
+          <Loader size="sm" /> Loading courses…
+        </div>
+      ) : courses?.items?.length ? (
         <div className={gridStyles.grid}>
           {courses?.items?.map((course) => (
             <StreamlitCard
@@ -166,6 +173,13 @@ export default function CoursesPage() {
             />
           ))}
         </div>
+      ) : coursesError ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '1.5rem 0', flexWrap: 'wrap' }}>
+          <span>⚠️ Couldn’t load courses.</span>
+          <Button type="button" variant="ghost" onClick={() => dispatch(fetchCoursesThunk(cid))}>Try again</Button>
+        </div>
+      ) : (
+        <EmptyState title="No courses" message={canCreate ? 'Create a course using the sidebar panel.' : 'Ask an Admin or Lead to create courses.'} />
       )}
 
       <CreateCourseModal
