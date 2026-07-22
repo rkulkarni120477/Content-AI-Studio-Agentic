@@ -1275,12 +1275,17 @@ class FeedbackDocument(Base):
     The raw text is extracted on upload and analysed by the LLM into
     individual ``FeedbackItem`` rows. Scoped to a tenant via ``project_id``
     (so ``apply_tenant_filter`` isolates it automatically) and linked to a
-    course via ``course_id``.
+    course via ``course_id``. Optional ``blueprint_id`` maps the upload to a
+    module (``NULL`` = entire course).
     """
     __tablename__ = "feedback_documents"
     id            = Column(Integer, primary_key=True)
     project_id    = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
     course_id     = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    blueprint_id  = Column(
+        Integer, ForeignKey("module_blueprints.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     filename      = Column(String(255), nullable=False)
     file_type     = Column(String(120))
     content       = Column(Text)                              # extracted raw text
@@ -1301,7 +1306,8 @@ class FeedbackItem(Base):
 
     Carries ``project_id``/``course_id`` directly (denormalised from the
     parent document) so items are tenant-scoped and course-scoped without a
-    join.
+    join. ``blueprint_id`` maps the item to a module (``NULL`` = entire course)
+    and may be remapped after upload.
     """
     __tablename__ = "feedback_items"
     id              = Column(Integer, primary_key=True)
@@ -1311,6 +1317,10 @@ class FeedbackItem(Base):
     )
     project_id      = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
     course_id       = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    blueprint_id    = Column(
+        Integer, ForeignKey("module_blueprints.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     feedback_text   = Column(Text, nullable=False)
     source_location = Column(String(500))                     # e.g. "Slide 5" / question ref
     theme           = Column(String(255))                     # category / topic
@@ -1514,6 +1524,9 @@ def _run_legacy_ddl():
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_client_secret VARCHAR(512)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_new_user_role VARCHAR(32)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS allowed_email_domains VARCHAR(500)",
+        # feedback — module (blueprint) scope
+        "ALTER TABLE feedback_documents ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
+        "ALTER TABLE feedback_items ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
