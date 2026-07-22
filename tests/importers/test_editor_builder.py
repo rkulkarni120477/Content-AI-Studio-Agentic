@@ -12,7 +12,16 @@ import tempfile
 
 from sqlalchemy.orm import sessionmaker
 
-from promptops_app.database import Block, Course, CourseImport, CourseModule, Generation, GenerationJob
+from promptops_app.core.constants import ChangeSource
+from promptops_app.database import (
+    Block,
+    BlockVersion,
+    Course,
+    CourseImport,
+    CourseModule,
+    Generation,
+    GenerationJob,
+)
 from promptops_app.importers import editor_builder, provenance
 from promptops_app.importers.imscc_importer import parse_package
 from tests.importers.fixtures import build_content_imscc
@@ -54,6 +63,20 @@ def test_build_creates_modules_generations_blocks(db):
     assert len(blocks) == 3
     assert all(b.workflow_state == "draft" for b in blocks)
     assert all(b.module_id is not None for b in blocks)
+    assert all(b.block_type in {"lesson", "quiz", "assignment", "discussion"} for b in blocks)
+
+    for block in blocks:
+        versions = (
+            db.query(BlockVersion)
+            .filter(BlockVersion.block_id == block.id)
+            .order_by(BlockVersion.version_num)
+            .all()
+        )
+        assert len(versions) == 1
+        assert versions[0].version_num == 1
+        assert versions[0].change_source == ChangeSource.IMPORT
+        assert versions[0].change_note == "Initial version"
+        assert versions[0].content == (block.content or "")
 
 
 def test_block_types_content_and_order(db):

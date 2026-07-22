@@ -61,6 +61,7 @@ class CourseListItem(BaseModel):
     active_cdd_id: Optional[int] = None
     active_blueprint_id: Optional[int] = None
     source_type: Optional[str] = None          # display-only origin badge
+    is_active: bool = True                     # False = archived (soft-deleted)
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

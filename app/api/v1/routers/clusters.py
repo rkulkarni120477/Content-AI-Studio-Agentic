@@ -241,25 +241,30 @@ def delete_cluster(
     "/clusters/{cluster_id}/courses",
     response_model=PaginatedResponse[CourseListItem],
     summary="List courses inside a cluster",
-    description="Returns all courses belonging to this cluster.",
+    description=(
+        "Returns courses belonging to this cluster. "
+        "By default only active courses are returned; pass "
+        "``include_archived=true`` to also include soft-deleted courses."
+    ),
 )
 def list_courses_in_cluster(
     cluster_id: int,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    include_archived: bool = Query(
+        default=False,
+        description="When true, include archived (is_active=false) courses.",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[CourseListItem]:
-    """Return all courses inside a cluster."""
-    from promptops_app.database import Course
+    """Return courses inside a cluster."""
+    from promptops_app.repositories import course_repository
 
     _get_cluster_or_404(db, cluster_id)
 
-    courses = (
-        db.query(Course)
-        .filter(Course.cluster_id == cluster_id, Course.is_active == True)  # noqa: E712
-        .order_by(Course.created_at.asc())
-        .all()
+    courses = course_repository.list_courses_for_cluster(
+        db, cluster_id, include_archived=include_archived
     )
     total = len(courses)
     start = (page - 1) * page_size

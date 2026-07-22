@@ -12,14 +12,19 @@ def save_block_version(
     db,
     block: Block,
     change_source: str,
-    change_note: str,
-    created_by: str,
+    change_note: str = "",
+    created_by: str = "",
+    *,
+    commit: bool = True,
 ) -> BlockVersion:
     """Snapshot the block's current content.
 
     Increments version_num on both the BlockVersion row and the parent Block.
     Safe to call before or after a content update — always captures the
     state of block.content at call time.
+
+    When ``commit=False``, the version is flushed only so callers can batch
+    with surrounding writes (e.g. import reconstruct).
     """
     max_ver = (
         db.query(func.max(BlockVersion.version_num))
@@ -33,15 +38,18 @@ def save_block_version(
         version_num=new_ver,
         content=block.content or "",
         change_source=change_source,
-        change_note=change_note,
+        change_note=change_note or "",
         workflow_state_at_save=block.workflow_state,
         word_count=len((block.content or "").split()),
-        created_by=created_by,
+        created_by=created_by or "",
     )
     db.add(ver)
     block.version_num = new_ver
-    db.commit()
-    db.refresh(ver)
+    if commit:
+        db.commit()
+        db.refresh(ver)
+    else:
+        db.flush()
     return ver
 
 
