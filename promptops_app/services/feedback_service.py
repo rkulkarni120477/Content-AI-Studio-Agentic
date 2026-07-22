@@ -150,11 +150,13 @@ def analyze_and_store(
     project_id: int,
     course,
     created_by: str,
+    blueprint_id: int | None = None,
 ):
     """Full pipeline for one upload. Returns (FeedbackDocument, list[FeedbackItem]).
 
     Adds rows to the session and flushes; the caller commits. Raises
     ``FeedbackExtractionError`` on parse or LLM failure (so nothing is persisted).
+    ``blueprint_id`` scopes the document and its items to a module (None = course).
     """
     course_id = getattr(course, "id", None) if course else None
     cluster_id = getattr(course, "cluster_id", None) if course else None
@@ -192,8 +194,8 @@ def analyze_and_store(
     raw_items = _coerce_items(parsed)
     items_data = [it for it in (_normalise_item(e) for e in raw_items) if it]
     _log.info(
-        "feedback_extracted file=%s model=%s raw=%d kept=%d",
-        filename, model_choice, len(raw_items), len(items_data),
+        "feedback_extracted file=%s model=%s raw=%d kept=%d blueprint_id=%s",
+        filename, model_choice, len(raw_items), len(items_data), blueprint_id,
     )
 
     # 5. Persist document + items (caller commits).
@@ -201,6 +203,7 @@ def analyze_and_store(
         db,
         project_id=project_id,
         course_id=course_id,
+        blueprint_id=blueprint_id,
         filename=filename,
         file_type=(filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else None,
         content=document_text,
@@ -549,3 +552,114 @@ def recommend_for_items(
         )
 
     return items
+
+
+_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def compile_feedback_instruction(items: list) -> str:
+    """Build a regenerate instruction string from feedback item rows."""
+    if not items:
+        return ""
+    sorted_items = sorted(
+        items,
+        key=lambda i: (_PRIORITY_ORDER.get((i.priority or "").lower(), 9), i.id or 0),
+    )
+    lines = ["Reviewer feedback to apply:"]
+    for item in sorted_items:
+        priority = (item.priority or "medium").upper()
+        sentiment = (item.sentiment or "neutral").lower()
+        theme = (item.theme or "").strip()
+        theme_part = f" {theme}:" if theme else ""
+        lines.append(f"[{priority}][{sentiment}]{theme_part} {item.feedback_text}".rstrip())
+    return "\n".join(lines)
+
+
+def resolve_apply_blueprint_id(items: list, override_blueprint_id: int | None) -> int | None:
+    """Resolve the target module for Apply.
+
+    Returns a blueprint id when unambiguous from the selection, or when the
+    caller provides an override. Returns None when the caller must supply one
+    (course-wide or mixed module selection without override).
+    """
+    if override_blueprint_id is not None:
+        return override_blueprint_id
+    ids = {getattr(i, "blueprint_id", None) for i in items}
+    if len(ids) == 1:
+        only = next(iter(ids))
+        if only is not None:
+            return only
+    return None
+
+
+def apply_feedback_to_module(
+    db,
+    *,
+    items: list,
+    blueprint,
+    course,
+    created_by: str,
+) -> tuple[str, list[dict], int]:
+    """Compile selected feedback and regenerate latest blocks for a module.
+
+    Returns ``(instruction, regenerated[{block_id, block_label}], skipped)``.
+    Caller owns the commit. Skips blocks that fail LLM regenerate without
+    aborting the whole batch.
+    """
+    from promptops_app.core.constants import ChangeSource
+    from promptops_app.prompt_templates import IMPROVISE_BLOCK_PROMPT_TEMPLATE, PERSONA_PREFIX_TEMPLATE
+    from promptops_app.repositories import generation_repository
+    from promptops_app.repositories.block_repo import save_block_version
+    from promptops_app.services.llm_service import generate_with_metadata
+    from promptops_app.services.usage_service import UsageLogContext
+
+    instruction = compile_feedback_instruction(items)
+    if not instruction.strip():
+        return instruction, [], 0
+
+    model_choice = resolve_model_choice(course)
+    gens = generation_repository.list_latest_generations_for_blueprint(db, blueprint.id)
+    gen_ids = [g.id for g in gens]
+    blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids) if gen_ids else []
+
+    regenerated: list[dict] = []
+    skipped = 0
+    system_prompt = PERSONA_PREFIX_TEMPLATE
+
+    for block in blocks:
+        gen = getattr(block, "generation", None)
+        topic = (getattr(gen, "topic", None) if gen else None) or block.block_label or ""
+        user_prompt = IMPROVISE_BLOCK_PROMPT_TEMPLATE.format(
+            topic=topic,
+            block_type=block.block_type or "lesson",
+            improvise_instruction=instruction,
+            original_content=block.content or "",
+        )
+        usage_ctx = UsageLogContext(
+            user_name=created_by,
+            project_id=getattr(course, "project_id", None),
+            course_id=getattr(course, "id", None),
+            entity_type="block",
+            entity_id=str(block.id),
+        )
+        llm_result = generate_with_metadata(
+            model_choice, system_prompt, user_prompt, usage_ctx=usage_ctx,
+        )
+        if getattr(llm_result, "status", None) == "error" or getattr(llm_result, "is_error", False):
+            _log.warning(
+                "feedback_apply_block_failed block_id=%s error=%s",
+                block.id, getattr(llm_result, "error_type", None),
+            )
+            skipped += 1
+            continue
+
+        save_block_version(
+            db, block, change_source=ChangeSource.REGENERATION, created_by=created_by,
+        )
+        block.content = llm_result.text
+        regenerated.append({
+            "block_id": block.id,
+            "block_label": block.block_label,
+        })
+
+    return instruction, regenerated, skipped
