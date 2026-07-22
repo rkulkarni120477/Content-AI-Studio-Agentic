@@ -1,15 +1,22 @@
 import { createSlice } from '@reduxjs/toolkit';
 import {
-  fetchFeedbackThunk, analyzeFeedbackThunk,
+  fetchFeedbackThunk, analyzeFeedbackThunk, recommendFeedbackThunk,
   deleteFeedbackItemThunk, bulkDeleteFeedbackThunk,
 } from './feedbackThunks';
 
 const initialState = {
-  items:        [],
-  isLoading:    false,
-  isProcessing: false,   // AI analysis of an upload in flight
-  error:        null,
+  items:           [],
+  isLoading:       false,
+  isProcessing:    false,   // AI analysis of an upload in flight
+  recommendingIds: [],      // feedback item ids with a recommendation in flight
+  error:           null,
 };
+
+/** Replace items in-place by id with the server's updated copies. */
+function mergeItems(list, updated) {
+  const byId = new Map(updated.map((u) => [u.id, u]));
+  return list.map((i) => byId.get(i.id) || i);
+}
 
 const feedbackSlice = createSlice({
   name: 'feedback',
@@ -34,6 +41,22 @@ const feedbackSlice = createSlice({
       })
       .addCase(analyzeFeedbackThunk.rejected,  (s, { payload }) => { s.isProcessing = false; s.error = payload; })
 
+      .addCase(recommendFeedbackThunk.pending, (s, { meta }) => {
+        s.error = null;
+        const ids = (meta.arg?.itemIds || []).map(Number);
+        s.recommendingIds = [...new Set([...s.recommendingIds, ...ids])];
+      })
+      .addCase(recommendFeedbackThunk.fulfilled, (s, { payload }) => {
+        const done = new Set((payload.requestedIds || []).map(Number));
+        s.recommendingIds = s.recommendingIds.filter((id) => !done.has(id));
+        s.items = mergeItems(s.items, payload.items || []);
+      })
+      .addCase(recommendFeedbackThunk.rejected, (s, { payload, meta }) => {
+        const done = new Set((meta.arg?.itemIds || []).map(Number));
+        s.recommendingIds = s.recommendingIds.filter((id) => !done.has(id));
+        s.error = payload;
+      })
+
       .addCase(deleteFeedbackItemThunk.fulfilled, (s, { payload }) => {
         s.items = s.items.filter((i) => i.id !== payload.id);
       })
@@ -51,4 +74,5 @@ export default feedbackSlice.reducer;
 export const selectFeedbackItems      = (s) => s.feedback.items;
 export const selectFeedbackLoading    = (s) => s.feedback.isLoading;
 export const selectFeedbackProcessing = (s) => s.feedback.isProcessing;
+export const selectFeedbackRecommending = (s) => s.feedback.recommendingIds;
 export const selectFeedbackError      = (s) => s.feedback.error;

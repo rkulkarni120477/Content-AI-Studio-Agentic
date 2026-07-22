@@ -5,6 +5,7 @@ const ICONS = {
   json: '📦',
   html: '🌐',
   docx: '📄',
+  xlsx: '📊',
   pdf: '📑',
 };
 

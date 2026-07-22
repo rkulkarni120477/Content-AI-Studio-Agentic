@@ -76,7 +76,7 @@ const styleSlice = createSlice({
       })
 
       .addCase(regenerateStyleThunk.pending,  (s, { meta }) => {
-        s.generatingStyleId = meta.arg;
+        s.generatingStyleId = (meta.arg && typeof meta.arg === 'object') ? meta.arg.styleId : meta.arg;
       })
       .addCase(regenerateStyleThunk.fulfilled,(s, { payload }) => {
         s.generatingStyleId = null;

@@ -41,6 +41,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.http import content_disposition
 from app.core.exceptions import (
     LLMGenerationError,
     NotFoundError,
@@ -305,9 +306,10 @@ def generate_cdd(
                 project_id=course.project_id if course else None,
                 cluster_id=course.cluster_id if course else None,
                 course_id=request_body.course_id,
+                prompt_id=request_body.prompt_id,
             )
             prompt_provenance = {
-                "prompt_source": "registry",
+                "prompt_source": "selected" if request_body.prompt_id else "registry",
                 "prompt_name": _tpl_name,
                 "prompt_version": _tpl_version,
             }
@@ -935,5 +937,5 @@ def export_cdd(
     return Response(
         content=result.data,
         media_type=result.mime_type,
-        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+        headers={"Content-Disposition": content_disposition(result.file_name)},
     )

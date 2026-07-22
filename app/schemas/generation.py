@@ -48,6 +48,14 @@ class GenerationLaunchRequest(BaseModel):
 
     # Prompt template (optional — prompt is auto-built from CDD/Blueprint context)
     prompt_name: Optional[str] = Field(default="", description="Prompt template name. Unused when CDD/Blueprint are present.")
+    prompt_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Id of the pipeline prompt selected in the 'Prompt Template' dropdown. "
+            "When set (and not a system default), that prompt's active version drives "
+            "content generation instead of the component-default resolution."
+        ),
+    )
 
     # Sidebar config
     model_choice: str = Field(default="GPT-5.4")

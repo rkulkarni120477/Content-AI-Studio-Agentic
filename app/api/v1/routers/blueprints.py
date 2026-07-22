@@ -32,6 +32,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.http import content_disposition
 from app.core.exceptions import (
     LLMGenerationError,
     NotFoundError,
@@ -248,6 +249,8 @@ def generate_blueprint(
                 # (variant-exact wins); the NULL-variant seeded default serves
                 # both modes until then. Ignored while the resolution flag is off.
                 variant="teacher" if request_body.teacher_mode else "student",
+                # A user-selected pipeline prompt (dropdown) wins over scope/default.
+                prompt_id=request_body.prompt_id,
             )
         except PromptVariableError as exc:
             # A declared-variable violation is a template misconfiguration —
@@ -722,7 +725,7 @@ def export_blueprint(
 
     return Response(
         content=result.data, media_type=result.mime_type,
-        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+        headers={"Content-Disposition": content_disposition(result.file_name)},
     )
 
 
@@ -783,5 +786,5 @@ def export_module_lessons(
 
     return Response(
         content=result.data, media_type=result.mime_type,
-        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+        headers={"Content-Disposition": content_disposition(result.file_name)},
     )

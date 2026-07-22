@@ -46,6 +46,7 @@ export const blueprintService = {
       teacher_mode: Boolean(data.teacher_mode),
       system_prompt_override: data.system_prompt_override || undefined,
       user_prompt_override: data.user_prompt_override || undefined,
+      prompt_id: data.prompt_id ?? undefined,
     };
     const created = await api.post(BLUEPRINT.GENERATE, body);
     if (created?.blueprint_id) {

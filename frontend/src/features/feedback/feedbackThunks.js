@@ -28,6 +28,27 @@ export const analyzeFeedbackThunk = createAsyncThunk(
   },
 );
 
+export const recommendFeedbackThunk = createAsyncThunk(
+  'feedback/recommend',
+  async ({ itemIds, guidance, modelChoice } = {}, { rejectWithValue }) => {
+    try {
+      const ids = (itemIds || []).map(Number);
+      const result = await feedbackService.recommend(ids, { guidance, modelChoice });
+      const ok = result?.recommended ?? 0;
+      const failed = result?.failed ?? 0;
+      if (ok > 0) {
+        toast.success(
+          `Generated ${ok} recommendation${ok === 1 ? '' : 's'}`
+          + (failed > 0 ? ` · ${failed} failed.` : '.'),
+        );
+      } else {
+        toast.error('Could not generate a recommendation. Please try again.');
+      }
+      return { items: result?.items ?? [], requestedIds: ids };
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 export const deleteFeedbackItemThunk = createAsyncThunk(
   'feedback/deleteItem',
   async (itemId, { rejectWithValue }) => {

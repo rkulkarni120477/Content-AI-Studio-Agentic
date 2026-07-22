@@ -24,6 +24,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.http import content_disposition
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.core.dis_client import dis_client
@@ -163,6 +164,8 @@ def launch_generation(
         "supplementary_files": [f.model_dump() for f in request_body.supplementary_files],
         "extra_instructions":  (request_body.extra_instructions or "") + (dis_context_block or ""),
         "dis_source_units":    dis_source_units,
+        # User-selected pipeline prompt (dropdown). None → default resolution.
+        "prompt_id":           request_body.prompt_id,
     }
 
     job_id = job_repository.create_job(
@@ -342,7 +345,7 @@ def export_generation(
     return Response(
         content=result.data,
         media_type=result.mime_type,
-        headers={"Content-Disposition": f'attachment; filename="{result.file_name}"'},
+        headers={"Content-Disposition": content_disposition(result.file_name)},
     )
 
 

@@ -689,6 +689,16 @@
   line-height: 1.5;
 }
 
+.addFilesList {
+  margin: 0;
+  padding-left: $space-2;
+  list-style: none;
+  @include flex-col;
+  gap: $space-1;
+  font-size: $font-size-sm;
+  color: $color-gray-700;
+}
+
 .addFilesBlock {
   @include flex-col;
   gap: $space-2;

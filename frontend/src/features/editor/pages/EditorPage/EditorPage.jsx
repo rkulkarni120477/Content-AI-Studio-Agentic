@@ -426,7 +426,7 @@ export default function EditorPage() {
                     wrapperClassName={styles.templateSelect}
                   />
                   <div className={styles.exportGrid4}>
-                    {['md', 'html', 'docx', 'zip'].map((fmt) => (
+                    {['md', 'html', 'docx', 'xlsx', 'zip'].map((fmt) => (
                       <ExportTileButton key={fmt} format={fmt} label={fmt.toUpperCase()} loading={isExporting} onClick={() => onExportCourse(fmt)} />
                     ))}
                   </div>
@@ -584,6 +584,7 @@ export default function EditorPage() {
                     { fmt: 'json', label: 'JSON' },
                     { fmt: 'html', label: 'HTML' },
                     { fmt: 'docx', label: 'DOCX' },
+                    { fmt: 'xlsx', label: 'XLSX' },
                     { fmt: 'pdf', label: 'PDF' },
                   ].map(({ fmt, label }) => (
                     <ExportTileButton
