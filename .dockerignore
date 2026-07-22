@@ -14,3 +14,13 @@ logs/
 data/
 uploads/
 
+# Frontend build artifacts & dependencies — the backend images are Python-only
+# (see Dockerfile: COPY . . + uvicorn) and never use the built SPA. Sending these
+# (large, and re-written on every `npm run build`) bloats the context and, on
+# OneDrive-synced trees, triggers buildkit "invalid file request" errors mid-transfer.
+**/node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+dist/
+
