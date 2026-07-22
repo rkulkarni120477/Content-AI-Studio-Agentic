@@ -23,10 +23,39 @@
   h2 { font-size: 1.15rem; }
   h3 { font-size: 1rem; }
 
+  p {
+    margin: 0.5em 0;
+  }
+
   ul {
     margin: 0.5em 0;
     padding-left: 1.25rem;
     list-style: disc;
+  }
+
+  blockquote {
+    margin: 0.75em 0;
+    padding: 0.6em 0.9em;
+    border-left: 3px solid #94a3b8;
+    background: #f1f5f9;
+    color: #334155;
+    border-radius: 0 6px 6px 0;
+
+    p { margin: 0.35em 0; }
+    ul { margin: 0.35em 0; }
+  }
+
+  figure {
+    margin: 0.85em 0;
+  }
+
+  :global(.md-img),
+  img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0.75rem 0;
+    border-radius: 4px;
   }
 
   code {

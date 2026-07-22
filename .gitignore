@@ -83,6 +83,13 @@ MIGRATION_RUNBOOK.md
 CAS_PromptInject.md
 CONTEXT_FLOW_AND_ARCHITECTURE.md
 Embd_based_retieval.md
+DIS_SOURCE_LIBRARY_LOGIC_FLOW.md
+OPENSEARCH_RETRIEVAL_PLAN.md
 logs/
 .graphify_python
 graphify-out/
+
+# ===================
+*.xlsx
+docs/*
+data/*

@@ -14,12 +14,22 @@ import EmptyState from '@components/common/EmptyState/EmptyState';
 import AppBrand from '@components/common/AppBrand/AppBrand';
 import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/SelectionPageHeader';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
+import Select from '@components/common/Select/Select';
 import styles from './TenantsPage.module.scss';
 
 const EMPTY_FORM = {
-  slug: '', name: '', max_users: 50,
+  slug: '', name: '', client_name: '', max_users: 50,
   admin_username: '', admin_password: '', admin_display_name: '',
 };
+
+// Which client's content the org works on. Drives Source Library access for the
+// org's members, so it is required at creation. Same options as Edit Project.
+const CLIENT_OPTIONS = [
+  { value: 'Cengage', label: 'Cengage' },
+  { value: 'AIM', label: 'AIM' },
+  { value: 'Academian', label: 'Academian' },
+  { value: 'Demo', label: 'Demo' },
+];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]: '#7c3aed',
@@ -65,11 +75,16 @@ export default function TenantsPage() {
 
   async function handleCreate(e) {
     e.preventDefault();
+    if (!form.client_name) {
+      toast.error('Please select a Client — it decides which Source Library content the organization can access.');
+      return;
+    }
     setSaving(true);
     try {
       await platformService.createTenant({
         slug: form.slug.trim().toLowerCase(),
         name: form.name.trim(),
+        client_name: form.client_name,
         max_users: Number(form.max_users) || 50,
         admin_username: form.admin_username.trim(),
         admin_password: form.admin_password,
@@ -191,6 +206,7 @@ export default function TenantsPage() {
                     <tr>
                       <th>Name</th>
                       <th>Code</th>
+                      <th>Client</th>
                       <th>Users</th>
                       <th>Status</th>
                       <th className={styles.actionsCol}>Actions</th>
@@ -201,6 +217,7 @@ export default function TenantsPage() {
                       <tr key={t.id}>
                         <td className={styles.name}>{t.name}</td>
                         <td><code className={styles.code}>{t.slug}</code></td>
+                        <td>{t.client_name || <span title="No client set — members will fall back to the default client in Source Library">⚠ not set</span>}</td>
                         <td>{t.active_users} / {t.max_users}</td>
                         <td>
                           <span className={t.status === 'active' ? styles.statusActive : styles.statusSuspended}>
@@ -326,6 +343,13 @@ export default function TenantsPage() {
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
             placeholder="e.g. AIM 16 Block Development"
+            required
+          />
+          <Select
+            label="Client *"
+            options={[{ value: '', label: 'Select client…' }, ...CLIENT_OPTIONS]}
+            value={form.client_name}
+            onChange={(e) => set('client_name', e.target.value)}
             required
           />
           <Input

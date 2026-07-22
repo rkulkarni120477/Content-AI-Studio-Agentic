@@ -78,7 +78,11 @@ export default function CreateStyleForm({ embedded = false }) {
       setSourceLoading(true);
       setSourceError('');
       try {
-        const params = { status: 'processed' };
+        // DIS `status` is a review axis (approved_candidate / needs_review), not a
+        // processing-complete flag — everything in the source index is already
+        // processed. Filtering by status: 'processed' matched nothing and left the
+        // selector empty/disabled. List all ingested docs for the course's client.
+        const params = {};
         if (selectedCourse?.id || courseId) params.course_id = selectedCourse?.id || courseId;
         else if (selectedProject?.id) params.project_id = selectedProject.id;
         const res = await sourceLibraryApi.listDocuments(params);

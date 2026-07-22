@@ -171,6 +171,49 @@ def _current_username(user: Any) -> str:
     return str(getattr(user, "username", "") or getattr(user, "email", "") or getattr(user, "id", "")).strip()
 
 
+
+# Same alias normalization the Source Library router applies to project client
+# names, so "Cengage" / "cengage_learning" / "AIM" all resolve consistently.
+_CLIENT_NAME_ALIASES = {"cengage_learning": "cengage", "cengage": "cengage", "aim": "aim", "academian": "academian", "demo": "demo"}
+
+
+def _normalize_client_name(value: Any) -> str:
+    v = str(value or "").strip().lower().replace(" ", "_")
+    return _CLIENT_NAME_ALIASES.get(v, v)
+
+
+def _membership_clients(current_user: Any) -> list[tuple[str, str]]:
+    """Return [(client_id, membership_role)] from the user's active project
+    memberships, newest membership first.
+
+    This links Source Library access to tenant/org membership: adding a user to
+    an org whose projects carry a client_name grants DIS access to that client
+    without editing config/dis_access.json. Strictly read-only; any DB problem
+    returns [] so resolution falls back to the previous (config-only) behavior.
+    """
+    user_id = getattr(current_user, "id", None)
+    if not user_id:
+        return []
+    try:
+        from promptops_app.database import Project, SessionLocal, TenantMembership
+        with SessionLocal() as db:
+            rows = (
+                db.query(Project.client_name, TenantMembership.role)
+                .join(TenantMembership, TenantMembership.project_id == Project.id)
+                .filter(TenantMembership.user_id == int(user_id), Project.is_active == True)  # noqa: E712
+                .order_by(TenantMembership.id.desc())
+                .all()
+            )
+    except Exception:
+        return []
+    out: list[tuple[str, str]] = []
+    for client_name, role in rows:
+        cid = _normalize_client_name(client_name)
+        if cid:
+            out.append((cid, str(role or "").strip().lower()))
+    return out
+
+
 def _infer_client_from_username(username: str, available: list[str]) -> str:
     lowered = username.lower()
     for client in available:
@@ -224,6 +267,34 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
         client_id = user_client_map[username_l]
         dis_role = "user"
     else:
+        # Resolution step 3 (new): derive access from tenant/org membership.
+        # A user added to an org whose projects carry client_name=AIM gets AIM
+        # Source Library access automatically — no config edit, no restart.
+        # Explicit config mappings above still take priority; when the lookup
+        # yields nothing (no memberships, projects without client_name, or any
+        # DB error) we fall through to the previous default behavior unchanged.
+        membership = _membership_clients(current_user)
+        member_clients: list[str] = []
+        for cid, _mrole in membership:
+            if cid not in member_clients and (not available or cid in available):
+                member_clients.append(cid)
+        requested_norm = _normalize_client_name(requested_client_id or "")
+        # Membership only ADDS access — it never blocks a request the previous
+        # config-only logic would have allowed. So it applies only when the
+        # requested client is one of the user's membership clients, or when no
+        # specific client was requested (follow the newest membership). Any other
+        # case falls through to the legacy default path unchanged.
+        if member_clients and (not requested_norm or requested_norm in member_clients):
+            client_id = requested_norm if requested_norm in member_clients else member_clients[0]
+            member_role = next((mrole for cid, mrole in membership if cid == client_id), "")
+            dis_role = "client_admin" if (member_role == "admin" or role in {"admin", "reviewer"}) else "user"
+            return DISAccessContext(
+                tenant_id=client_id,
+                client_id=client_id,
+                dis_role=dis_role,
+                is_super_admin=False,
+                available_clients=[client_id],
+            )
         client_id = profile_client or inferred_client or default_client
         dis_role = "client_admin" if role in {"admin", "reviewer"} else "user"
 

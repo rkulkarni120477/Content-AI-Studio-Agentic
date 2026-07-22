@@ -76,6 +76,7 @@ AUDIT_EVENTS: dict[str, dict] = {
     "cdd.pinned":              {"level": "info",    "entity": "cdd",        "icon": "📌", "label": "CDD pinned for generation"},
 
     # ── Blueprint ─────────────────────────────────────────────────────────────
+    "blueprint.generated":     {"level": "info",    "entity": "blueprint",  "icon": "🗂️", "label": "Blueprint generated"},
     "blueprint.created":       {"level": "info",    "entity": "blueprint",  "icon": "🗂️", "label": "Blueprint generated"},
     "blueprint.version_committed": {"level": "info","entity": "blueprint",  "icon": "💾", "label": "Blueprint version committed"},
     "blueprint.version_activated": {"level": "info","entity": "blueprint",  "icon": "✅", "label": "Blueprint active version changed"},

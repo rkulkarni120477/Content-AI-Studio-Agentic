@@ -27,6 +27,7 @@ const NAV_ITEMS = [
   { label: 'Blueprint', icon: '🧩', segment: 'blueprint' },
   { label: 'Generate',  icon: '⚙️', segment: 'generate' },
   { label: 'Editor',    icon: '✏️', segment: 'editor' },
+  { label: 'Feedback',  icon: '💬', segment: 'feedback' },
   { label: 'Workflow',  icon: '🚦', segment: 'workflow' },
   { label: 'Export',    icon: '📦', segment: 'export' },
   { label: 'Analytics', icon: '📊', segment: 'analytics' },

@@ -100,6 +100,11 @@ _PERMISSIONS: dict[str, list[str]] = {
     "workflow.reset_draft":     [_ADMIN, _REVIEWER, _AUTHOR],
     "workflow.archive":         [_ADMIN],
 
+    # ── Reviewer feedback ─────────────────────────────────────────────────────
+    "feedback.view":         [_ADMIN, _REVIEWER, _AUTHOR],
+    "feedback.upload":       [_ADMIN, _REVIEWER, _AUTHOR],
+    "feedback.delete":       [_ADMIN, _REVIEWER, _AUTHOR],
+
     # ── Export ────────────────────────────────────────────────────────────────
     "export.course":         [_ADMIN, _REVIEWER, _AUTHOR],
     "export.audit_log":      [_ADMIN, _REVIEWER],

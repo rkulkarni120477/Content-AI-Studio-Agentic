@@ -89,6 +89,7 @@ def create_tenant(
     admin_username: str,
     admin_password_hash: str,
     admin_display_name: str,
+    client_name: str = "",
 ):
     """Create a Project (tenant) + its initial admin User + admin membership.
 
@@ -108,6 +109,9 @@ def create_tenant(
     project = Project(
         name=name.strip(),
         slug=slug,
+        # Client decides which Source Library content the org's members can
+        # access (via membership-based DIS access resolution). Never leave empty.
+        client_name=(client_name or "").strip() or None,
         status="active",
         max_users=int(max_users),
         microsoft_auth_enabled=True,

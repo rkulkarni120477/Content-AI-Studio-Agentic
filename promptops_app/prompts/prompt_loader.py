@@ -148,6 +148,33 @@ _REGISTRY: dict[str, dict] = {
         "required_vars": [],
         "optional_vars": ["block_type", "output_format"],
     },
+    "feedback_extraction": {
+        "version":      "v1",
+        "description":  "Extract structured reviewer feedback items from an uploaded document.",
+        "required_vars": ["document_text"],
+        "optional_vars": ["document_name"],
+    },
+    # ── Reverse pipeline (IMSCC import) — additive, file-only templates ─────────
+    # Not in _STEM_COMPONENT, so they resolve straight from the file tier; the
+    # forward scratch prompts above are never touched. See reverse_cas.md §S5.
+    "reverse_blueprint": {
+        "version":      "v1",
+        "description":  "Reconstruct a module blueprint from imported module content.",
+        "required_vars": ["module_title", "module_content"],
+        "optional_vars": ["course_name", "extra_instructions"],
+    },
+    "reverse_cdd": {
+        "version":      "v1",
+        "description":  "Reconstruct a Course Design Document from imported course structure.",
+        "required_vars": ["course_name", "course_content"],
+        "optional_vars": ["target_audience", "expert_domain", "extra_instructions"],
+    },
+    "style_analysis": {
+        "version":      "v1",
+        "description":  "Reverse-detect the instructional style from imported lessons.",
+        "required_vars": ["lesson_samples"],
+        "optional_vars": ["course_name", "extra_instructions"],
+    },
 }
 
 

@@ -13,7 +13,7 @@ export const fetchGenerationsThunk = createAsyncThunk(
         projectId,
         blueprintId,
         cddId,
-        pageSize: 100,
+        pageSize: 500,
       });
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));

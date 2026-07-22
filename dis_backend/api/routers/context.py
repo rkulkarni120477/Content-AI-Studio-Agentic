@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from api.middleware.auth import get_current_tenant
 from services.context_retrieval import ContextRetrievalService
 from config.settings import get_tenant_config
+from storage.provider import get_storage_provider
 
 router = APIRouter(prefix="/context", tags=["Studio Context"])
 
@@ -70,6 +71,10 @@ async def documents_library(
 
 class DynamicContextRequest(BaseModel):
     request_id: str | None = None
+    # Free-text query the caller (CAS) builds from the current step. This is the
+    # primary signal for semantic retrieval; without it, retrieve() has no query
+    # to embed and falls back to unranked keyword results. CAS sends it top-level.
+    query: str | None = None
     generation: Dict[str, Any] = Field(default_factory=dict)
     context_input: Dict[str, Any] = Field(default_factory=dict)
     filters: Dict[str, Any] = Field(default_factory=dict)
@@ -132,6 +137,46 @@ async def source_structure(job_id: str, request: Request):
         raise HTTPException(404, f"Source structure not found: {exc}")
 
 
+@router.get("/sources/{job_id}/download-url")
+async def source_download_url(
+    job_id: str,
+    request: Request,
+    expires: int = Query(900, ge=60, le=3600, description="Link lifetime in seconds (default 15 min, max 1 hour)."),
+):
+    """Mint a short-lived presigned URL to download a source's original file.
+
+    The original stays in a private bucket; this returns a temporary GET link on
+    demand instead of exposing the S3 key. Restricted/instructor-only sources are
+    blocked for normal users. Returns 404 if the source has no stored original
+    (older ingests predate deep-link capture; re-ingest to enable).
+    """
+    tenant = get_current_tenant(request)
+    role = getattr(request.state, "role", "user")
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    svc = ContextRetrievalService(tenant, role=role)
+    try:
+        ref = svc.resolve_source_raw_ref(client_id, job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    raw_key = ref.get("raw_key")
+    if not raw_key:
+        raise HTTPException(404, "No original file stored for this source (predates deep-link capture; re-ingest to enable download).")
+    provider = get_storage_provider(tenant)
+    try:
+        url = await provider.presigned_download_url(raw_key, expires=expires, filename=ref.get("source_file_name") or "")
+    except NotImplementedError as exc:
+        raise HTTPException(501, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"Could not create download URL: {exc}")
+    return {
+        "job_id": job_id,
+        "source_file_name": ref.get("source_file_name"),
+        "source_file_type": ref.get("source_file_type"),
+        "download_url": url,
+        "expires_in": expires,
+    }
 
 
 
@@ -197,7 +242,11 @@ async def retrieve_course_generation_context(request: Request, body: DynamicCont
     data.setdefault("generation", {})
     data["generation"].setdefault("type", "course_generation")
     filters = data.setdefault("filters", {})
-    filters.setdefault("visibility", "student")
+    # Do NOT force visibility=student here. Course content is authored by content
+    # teams, so generation must be able to use instructor/content-team-authored
+    # SOURCE documents (e.g. Cengage manuscripts, AIM calendar). Genuinely
+    # restricted material (answer keys, instructor guides, admin/internal-only) is
+    # still blocked by the retrieval restricted gate (_is_hard_restricted).
     filters.setdefault("use_for_course_generation", True)
     filters.setdefault("include_restricted", False)
     if filters.get("include_restricted") and role not in {"client_admin", "super_admin"}:

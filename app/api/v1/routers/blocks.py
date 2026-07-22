@@ -680,13 +680,24 @@ def get_block_canvas_html(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
 ) -> BlockCanvasHtmlResponse:
-    """Return the stored Canvas HTML for a block (for preview in the Export screen)."""
+    """Return Canvas HTML for a block (preview). Rebuilds from markdown when present."""
+    from promptops_app.services.canvas_html_layout import lock_single_column_html
+    from promptops_app.services.canvas_html_service import build_canvas_html_from_markdown
+
     block = _get_block_or_404(db, block_id)
-    html = getattr(block, "content_html", None)
+    html = None
+    if (block.content or "").strip():
+        html = build_canvas_html_from_markdown(block.block_label or "", block.content or "")
+    else:
+        html = getattr(block, "content_html", None)
+        if html and html.strip():
+            html = lock_single_column_html(html)
     return BlockCanvasHtmlResponse(
         block_id=block.id,
         block_label=block.block_label or f"Block {block.id}",
-        has_html=bool(html and html.strip()),
+        has_html=bool(html and html.strip()) or bool(
+            getattr(block, "content_html", None) and block.content_html.strip()
+        ) or bool((block.content or "").strip()),
         content_html=html,
         content_html_at=getattr(block, "content_html_at", None),
     )
@@ -753,6 +764,9 @@ def regenerate_block_canvas_html(
 # ---------------------------------------------------------------------------
 
 def _has_html(b) -> bool:
+    # Preview/export rebuild from markdown, so any non-empty content is usable.
+    if (getattr(b, "content", None) or "").strip():
+        return True
     return bool(getattr(b, "content_html", None) and b.content_html.strip())
 
 
@@ -811,6 +825,25 @@ def list_course_modules(
 # Full course export
 # ---------------------------------------------------------------------------
 
+def _import_item_ids(db, course, ordered_blocks) -> "list[str] | None":
+    """Return per-block Canvas item ids for provenance-aware IMSCC re-export.
+
+    Returns a list parallel to ``ordered_blocks`` (empty string where a block has
+    no captured identifier), or ``None`` when the course was not imported / has no
+    provenance — in which case export uses fresh ids (today's behavior). This is
+    a pure optional read; it never changes the export for scratch courses.
+    """
+    import_id = getattr(course, "import_id", None) if course else None
+    if not import_id:
+        return None
+    from promptops_app.importers import provenance
+
+    id_map = provenance.block_identifier_map(db, import_id)
+    if not id_map:
+        return None
+    return [id_map.get(b.id, "") for b in ordered_blocks]
+
+
 @router.get(
     "/courses/{course_id}/export",
     summary="Export the full course as a file",
@@ -852,6 +885,12 @@ def export_course(
     ):
         modules_struct = None
 
+    # Provenance-aware IMSCC re-export (optional read): if this course was imported
+    # and we captured Canvas item identifiers, reuse them so a re-import maps back
+    # to the same items. Gated on the presence of provenance — NOT on source_type —
+    # and defaults to today's behavior (fresh ids) when absent.
+    block_item_ids = _import_item_ids(db, course, ordered_blocks) if format == "imscc" else None
+
     export_req = ExportRequest(
         fmt=format,
         topic=topic,
@@ -859,6 +898,7 @@ def export_course(
         block_types=[b.block_type or "" for b in ordered_blocks],
         block_html=[getattr(b, "content_html", None) or "" for b in ordered_blocks],
         modules=modules_struct,
+        block_item_ids=block_item_ids,
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
         entity_type="full_course",

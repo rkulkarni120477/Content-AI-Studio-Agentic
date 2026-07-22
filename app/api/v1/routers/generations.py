@@ -129,7 +129,10 @@ def launch_generation(
                 "purpose": "course_generation",
                 "component_label": request_body.component_label,
                 "component_type": request_body.component_type,
-                "document_types": ["textbook_chapter", "activity", "assessment", "rubric", "lesson_plan", "slide_deck", "student_handout", "style_guide", "authoring_guide"],
+                # No hard document_types filter: those fixed names did not match
+                # real stored doc types (AIM: lesson_pdf/quiz/project; Cengage: pdf),
+                # which silently returned zero results. Retrieval now relies on
+                # purpose + semantic ranking; the security allow-set still applies.
             },
             "retrieval": {"top_k": 16, "token_budget": 16000},
         },
@@ -264,11 +267,15 @@ def list_generations(
     blueprint_id: int | None = Query(default=None, description="Pin filter — active blueprint."),
     cdd_id: int | None = Query(default=None, description="Pin filter — active CDD (when no blueprint)."),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    page_size: int = Query(default=20, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[GenerationListItem]:
-    """Return recent generations. Used by the Editor page to list available content."""
+    """Return recent generations. Used by the Editor page to list available content.
+
+    The cap matches the repository fetch limit (500) so imported courses — which
+    write one generation per item — list every item on a single page.
+    """
     from promptops_app.repositories import generation_repository
 
     generations = generation_repository.list_editor_generations(

@@ -72,10 +72,10 @@ class ProcessingConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     embedding: str = "amazon.titan-embed-text-v2:0"
-    classification: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    classification: str = "anthropic.claude-3-sonnet-20240229-v1:0"
     metadata_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
     structure_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    quality_check: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    quality_check: str = "anthropic.claude-3-sonnet-20240229-v1:0"
     vision: str = "anthropic.claude-3-sonnet-20240229-v1:0"
 
 class PipelineConfig(BaseModel):

@@ -3,13 +3,16 @@ import styles from './StreamlitCard.module.scss';
 
 export default function StreamlitCard({
   title,
+  badge,
   clientLine,
   description,
   footerLine,
   onOpen,
   openLabel = 'Open →',
+  hideOpen = false,
   onEdit,
   onDelete,
+  deleteLabel = '🗑️ Delete',
   onManageUsers,
   canEdit = false,
   canDelete = false,
@@ -20,16 +23,21 @@ export default function StreamlitCard({
   return (
     <article className={styles.card}>
       <div className={styles.card__body}>
-        <h3 className={styles.card__title}>{title}</h3>
+        <h3 className={styles.card__title}>
+          {title}
+          {badge && <span className={styles.card__badge}>{badge}</span>}
+        </h3>
         {clientLine && <p className={styles.card__client}>Client: {clientLine}</p>}
         {desc && <p className={styles.card__desc}>{desc}</p>}
         {footerLine && <p className={styles.card__meta}>{footerLine}</p>}
       </div>
 
       <div className={styles.card__actions}>
-        <Button variant="primary" size="sm" onClick={onOpen}>
-          {openLabel}
-        </Button>
+        {!hideOpen && onOpen && (
+          <Button variant="primary" size="sm" onClick={onOpen}>
+            {openLabel}
+          </Button>
+        )}
         {canEdit && (
           <Button variant="secondary" size="sm" onClick={onEdit}>
             ✏️ Edit
@@ -42,7 +50,7 @@ export default function StreamlitCard({
         )}
         {canDelete && (
           <Button variant="danger" size="sm" onClick={onDelete}>
-            🗑️ Delete
+            {deleteLabel}
           </Button>
         )}
       </div>

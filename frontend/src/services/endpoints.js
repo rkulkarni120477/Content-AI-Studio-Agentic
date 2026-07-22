@@ -58,9 +58,22 @@ export const COURSES = {
   GET:              (id)      => `/api/v1/courses/${id}`,
   UPDATE:           (id)      => `/api/v1/courses/${id}`,
   DELETE:           (id)      => `/api/v1/courses/${id}`,
+  PERMANENT_DELETE: (id)      => `/api/v1/courses/${id}/permanent`,
   USERS:            (id)      => `/api/v1/courses/${id}/users`,
   UNASSIGN_USER:    (id, user) => `/api/v1/courses/${id}/users/${encodeURIComponent(user)}`,
   ACTIVE_CDD:       (id)      => `/api/v1/courses/${id}/active-cdd`,
+};
+
+// ─── Imports (reverse pipeline — Canvas IMSCC) ────────────────────────────────
+// Feature-flagged backend; when IMPORT_COURSES_ENABLED is off these routes 404.
+// Progress polling reuses the shared jobs endpoint (GENERATE.JOB_STATUS).
+export const IMPORTS = {
+  HEALTH:           '/api/v1/imports/health',
+  VALIDATE:         '/api/v1/imports/validate',
+  CREATE:           (projectId) => `/api/v1/projects/${projectId}/imports`,
+  GET:              (importId)  => `/api/v1/imports/${importId}`,
+  RETRY:            (importId)  => `/api/v1/imports/${importId}/retry`,
+  CANCEL:           (importId)  => `/api/v1/imports/${importId}/cancel`,
 };
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -95,6 +108,14 @@ export const DOCUMENTS = {
   PARSE:            '/api/v1/documents/parse',
   DELETE:           (id)      => `/api/v1/documents/${id}`,
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
+};
+
+// ─── Reviewer Feedback ────────────────────────────────────────────────────────
+export const FEEDBACK = {
+  LIST:        '/api/v1/feedback',
+  ANALYZE:     '/api/v1/feedback/analyze',
+  DELETE_ITEM: (id) => `/api/v1/feedback/items/${id}`,
+  BULK_DELETE: '/api/v1/feedback/bulk-delete',
 };
 
 // ─── Source Library / DIS ─────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ Route prefix structure
 
 from fastapi import APIRouter
 
+from app.core.config import settings
 from app.api.v1.routers.admin import router as admin_router
 from app.api.v1.routers.analytics import router as analytics_router
 from app.api.v1.routers.auth import router as auth_router
@@ -40,6 +41,7 @@ from app.api.v1.routers.cluster_prompts import router as cluster_prompts_router
 from app.api.v1.routers.clusters import router as clusters_router
 from app.api.v1.routers.courses import router as courses_router
 from app.api.v1.routers.documents import router as documents_router
+from app.api.v1.routers.feedback import router as feedback_router
 from app.api.v1.routers.generations import router as generations_router
 from app.api.v1.routers.health import router as health_router
 from app.api.v1.routers.jobs import router as jobs_router
@@ -83,12 +85,29 @@ api_v1_router.include_router(cdd_router,        prefix="/cdd",        tags=["CDD
 api_v1_router.include_router(blueprints_router, prefix="/blueprints", tags=["Blueprints"])
 api_v1_router.include_router(generations_router,prefix="/generations",tags=["Generations"])
 api_v1_router.include_router(jobs_router,       prefix="/jobs",       tags=["Jobs"])
+api_v1_router.include_router(feedback_router,   prefix="/feedback",   tags=["Feedback"])
 
 # ── Prompt registry ───────────────────────────────────────────────────────────
 api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])
 
 # ── Prompt Library (ported standalone app; replaces the Central Repository UI) ──
 api_v1_router.include_router(prompt_library_router, prefix="/prompt-library", tags=["Prompt Library"])
+
+# ── Reverse pipeline — Canvas IMSCC course import (feature-flagged, additive) ──
+# Registered BEFORE the blocks router: blocks mounts greedy root-level
+# `/{block_id}/…` routes (e.g. POST /{block_id}/validate) that would otherwise
+# match POST /imports/validate with block_id="imports" and 422 on int parsing.
+# Route match order is registration order, so imports must come first.
+# Mounted ONLY when the flag is on — with it off the API surface is byte-for-byte
+# identical to today. See reverse_cas.md.
+if settings.import_courses_enabled:
+    from app.api.v1.routers.imports import (
+        project_router as imports_project_router,
+        router as imports_router,
+    )
+    api_v1_router.include_router(imports_router, prefix="/imports", tags=["Imports"])
+    # Project-scoped create route (POST /projects/{projectId}/imports) — no prefix.
+    api_v1_router.include_router(imports_project_router, tags=["Imports"])
 
 # ── Editor and workflow ───────────────────────────────────────────────────────
 api_v1_router.include_router(blocks_router,    tags=["Blocks"])
@@ -106,3 +125,6 @@ api_v1_router.include_router(
     prefix="/platform/tenants",
     tags=["Platform — Tenant Management"],
 )
+
+# NOTE: the reverse-pipeline (imports) routers are intentionally registered
+# ABOVE the blocks router — see that block for why (route-collision fix).

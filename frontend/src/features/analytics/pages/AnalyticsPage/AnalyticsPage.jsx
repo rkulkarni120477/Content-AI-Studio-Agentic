@@ -247,6 +247,9 @@ export default function AnalyticsPage() {
     { key: 'action', header: 'Action', render: (v, row) => `${row.icon || ''} ${v || ''}`.trim() },
     { key: 'label', header: 'Label' },
     { key: 'entity_type', header: 'Entity type', render: (v) => v || '—' },
+    { key: 'entity_id', header: 'Entity ID', render: (v) => v || '—' },
+    { key: 'project_id', header: 'Project', render: (v) => (v != null ? String(v) : '—') },
+    { key: 'ip_address', header: 'IP', render: (v) => v || '—' },
   ];
 
   const actorOptions = [

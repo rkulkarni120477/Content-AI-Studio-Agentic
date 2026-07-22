@@ -52,7 +52,10 @@ export default function ReferenceDocsPanel({
       setLoading(true);
       setWarning('');
       try {
-        const params = { purpose, status: 'processed' };
+        // No status filter: DIS `status` is a review axis (approved_candidate /
+        // needs_review), not a processing-complete flag. Filtering by 'processed'
+        // matched nothing. All source-index docs are already processed.
+        const params = { purpose };
         if (courseId) params.course_id = courseId;
         else if (projectId) params.project_id = projectId;
         const res = await sourceLibraryApi.listDocuments(params);

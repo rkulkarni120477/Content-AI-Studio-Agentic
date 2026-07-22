@@ -6,6 +6,7 @@ import { fetchCoursesThunk, fetchWorkspaceConfigThunk } from '@features/dashboar
 import {
   selectCourses, selectSelectedProject, selectSelectedCluster,
   setSelectedProject, setSelectedCluster, setSelectedCourse,
+  selectIsLoadingCourses, selectDashboardError,
 } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionLayout from '@components/layout/SelectionLayout/SelectionLayout';
@@ -14,7 +15,11 @@ import StreamlitCard from '@components/streamlit/StreamlitCard/StreamlitCard';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import EditEntityModal from '@features/dashboard/components/EditEntityModal/EditEntityModal';
 import ManageUsersModal from '@features/dashboard/components/ManageUsersModal/ManageUsersModal';
+import CreateCourseModal from '@features/dashboard/components/CreateCourseModal/CreateCourseModal';
+import { importService } from '@features/import/services/importService';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
+import Loader from '@components/common/Loader/Loader';
+import Button from '@components/common/Button/Button';
 import { useAuth } from '@hooks/useAuth';
 import { ROUTES, ROLES } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
@@ -28,12 +33,17 @@ export default function CoursesPage() {
   const courses = useAppSelector(selectCourses);
   const selProj = useAppSelector(selectSelectedProject);
   const selCluster = useAppSelector(selectSelectedCluster);
+  const isLoadingCourses = useAppSelector(selectIsLoadingCourses);
+  const coursesError = useAppSelector(selectDashboardError);
 
   const [createLoading, setCreateLoading] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editModal, setEditModal] = useState(null);
   const [usersModal, setUsersModal] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [purgeTarget, setPurgeTarget] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [importEnabled, setImportEnabled] = useState(false);
 
   const pid = Number(projectId);
   const cid = Number(clusterId);
@@ -75,6 +85,16 @@ export default function CoursesPage() {
     if (cid) dispatch(fetchCoursesThunk(cid));
   }, [cid, dispatch]);
 
+  // Probe the reverse-pipeline flag: /imports/health 404s when the router isn't
+  // mounted (flag off), in which case Import stays disabled.
+  useEffect(() => {
+    let alive = true;
+    importService.health()
+      .then((res) => { if (alive) setImportEnabled(Boolean(res?.enabled)); })
+      .catch(() => { if (alive) setImportEnabled(false); });
+    return () => { alive = false; };
+  }, []);
+
   async function handleCreate(data) {
     setCreateLoading(true);
     try {
@@ -110,6 +130,27 @@ export default function CoursesPage() {
     }
   }
 
+  async function handlePermanentDelete() {
+    if (!purgeTarget) return;
+    setDeleteLoading(true);
+    try {
+      await dashboardService.permanentlyDeleteCourse(purgeTarget.id);
+      toast.success('Course permanently deleted');
+      setPurgeTarget(null);
+      dispatch(fetchCoursesThunk(cid));
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  function courseBadge(course) {
+    if (course.is_active === false) return 'Archived';
+    if (course.source_type === 'imscc' || course.source_type === 'cendoc') return 'Imported';
+    return undefined;
+  }
+
   if (!selProj || !selCluster) return null;
 
   return (
@@ -121,6 +162,7 @@ export default function CoursesPage() {
         projectId: pid,
         onBackClusters: () => navigate(ROUTES.PROJECT_CLUSTERS(pid)),
         onCreateCourse: handleCreate,
+        onRequestCreateCourse: () => setCreateModalOpen(true),
         createLoading,
       }}
     >
@@ -130,31 +172,69 @@ export default function CoursesPage() {
         subtitle="Choose a course to enter the workspace."
       />
 
-      {courses?.items?.length === 0 ? (
-        <EmptyState title="No courses" message={canCreate ? 'Create a course using the sidebar panel.' : 'Ask an Admin or Lead to create courses.'} />
-      ) : (
-        <div className={gridStyles.grid}>
-          {courses?.items?.map((course) => (
-            <StreamlitCard
-              key={course.id}
-              title={course.name}
-              description={course.description}
-              onOpen={() => handleOpen(course)}
-              openLabel="Enter Workspace →"
-              onEdit={() => setEditModal({ type: 'course', item: course })}
-              onDelete={() => setDeleteTarget(course)}
-              onManageUsers={() => setUsersModal({ scope: 'course', item: course })}
-              canEdit={canEditCourse}
-              canDelete={canDeleteCourse}
-              canManageUsers={canAssignUsers}
-            />
-          ))}
+      {isLoadingCourses ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
+          <Loader size="sm" /> Loading courses…
         </div>
+      ) : courses?.items?.length ? (
+        <div className={gridStyles.grid}>
+          {courses?.items?.map((course) => {
+            const archived = course.is_active === false;
+            return (
+              <StreamlitCard
+                key={course.id}
+                title={course.name}
+                badge={courseBadge(course)}
+                description={course.description}
+                onOpen={archived ? undefined : () => handleOpen(course)}
+                openLabel="Enter Workspace →"
+                hideOpen={archived}
+                onEdit={archived ? undefined : () => setEditModal({ type: 'course', item: course })}
+                onDelete={() => (archived ? setPurgeTarget(course) : setDeleteTarget(course))}
+                deleteLabel={archived ? '🗑️ Permanently delete' : '🗑️ Delete'}
+                onManageUsers={archived ? undefined : () => setUsersModal({ scope: 'course', item: course })}
+                canEdit={canEditCourse && !archived}
+                canDelete={canDeleteCourse}
+                canManageUsers={canAssignUsers && !archived}
+              />
+            );
+          })}
+        </div>
+      ) : coursesError ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '1.5rem 0', flexWrap: 'wrap' }}>
+          <span>⚠️ Couldn’t load courses.</span>
+          <Button type="button" variant="ghost" onClick={() => dispatch(fetchCoursesThunk(cid))}>Try again</Button>
+        </div>
+      ) : (
+        <EmptyState title="No courses" message={canCreate ? 'Create a course using the sidebar panel.' : 'Ask an Admin or Lead to create courses.'} />
       )}
 
+      <CreateCourseModal
+        open={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onCreateCourse={handleCreate}
+        createLoading={createLoading}
+        importEnabled={importEnabled}
+        onImport={() => navigate(`${ROUTES.IMPORT(pid)}?cluster_id=${cid}`)}
+      />
       <EditEntityModal open={Boolean(editModal)} entityType="course" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchCoursesThunk(cid))} />
       <ManageUsersModal open={Boolean(usersModal)} onClose={() => setUsersModal(null)} scope="course" entityId={usersModal?.item?.id} entityName={usersModal?.item?.name} projectId={pid} />
-      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Course" message={`Delete "${deleteTarget?.name}"? All content will be archived.`} loading={deleteLoading} />
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        title="Archive Course"
+        message={`Archive "${deleteTarget?.name}"? You can permanently delete it later from the archived list.`}
+        loading={deleteLoading}
+      />
+      <ConfirmDialog
+        open={Boolean(purgeTarget)}
+        onClose={() => setPurgeTarget(null)}
+        onConfirm={handlePermanentDelete}
+        title="Permanently Delete Course"
+        message={`Permanently delete "${purgeTarget?.name}" and all of its content (modules, generations, blocks, CDD, blueprints, imports)? This cannot be undone.`}
+        loading={deleteLoading}
+      />
     </SelectionLayout>
   );
 }
