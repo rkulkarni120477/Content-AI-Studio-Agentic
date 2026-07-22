@@ -75,9 +75,10 @@ PERMISSION_CATEGORIES: list[dict] = [
         "category": "feedback",
         "label": "Reviewer Feedback",
         "permissions": [
-            {"key": "feedback.view",   "label": "View reviewer feedback"},
-            {"key": "feedback.upload", "label": "Upload & analyse feedback documents"},
-            {"key": "feedback.delete", "label": "Delete feedback items"},
+            {"key": "feedback.view",      "label": "View reviewer feedback"},
+            {"key": "feedback.upload",    "label": "Upload & analyse feedback documents"},
+            {"key": "feedback.recommend", "label": "Generate AI recommendations for feedback"},
+            {"key": "feedback.delete",    "label": "Delete feedback items"},
         ],
     },
     {

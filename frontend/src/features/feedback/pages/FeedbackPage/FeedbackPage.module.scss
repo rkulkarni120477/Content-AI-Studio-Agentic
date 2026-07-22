@@ -191,7 +191,14 @@
 
 .colCheck  { width: 38px; }
 .colId     { width: 40px; color: $color-gray-400; font-variant-numeric: tabular-nums; font-weight: $font-weight-semibold; }
-.colActions { width: 70px; text-align: right; }
+.colActions { width: 190px; text-align: right; }
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: $space-2;
+}
 
 .fbText {
   max-width: 460px;
@@ -288,4 +295,260 @@
   padding: $space-3 $space-4;
   font-size: $font-size-xs;
   color: $color-gray-400;
+}
+
+/* ── AI recommendation ──────────────────── */
+.hasRecRow td { background: rgba($color-primary, 0.02); }
+
+.recDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: $color-primary;
+  vertical-align: middle;
+}
+
+.recBtn {
+  border: 1px solid $color-primary;
+  background: $color-primary;
+  color: $color-white;
+  border-radius: $radius-md;
+  padding: 5px $space-3;
+  font-family: inherit;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background $transition-fast, border-color $transition-fast;
+
+  &:hover { background: $color-primary-dark; border-color: $color-primary-dark; }
+}
+
+.recBusy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  color: $color-primary-dark;
+  white-space: nowrap;
+}
+
+.linkBtn {
+  border: none;
+  background: transparent;
+  color: $color-primary;
+  font-family: inherit;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  cursor: pointer;
+  padding: 4px 2px;
+  white-space: nowrap;
+
+  &:hover { text-decoration: underline; }
+}
+
+.recRow td {
+  padding: 0 $space-4 $space-3 $space-4;
+  border-bottom: 1px solid $color-gray-100;
+  background: $color-gray-50;
+}
+
+.recPanel { padding-top: $space-1; }
+
+.recInner {
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-left: 3px solid $color-primary;
+  border-radius: $radius-lg;
+  padding: $space-3 $space-4;
+}
+
+.recHead {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  margin-bottom: $space-2;
+  flex-wrap: wrap;
+}
+
+.recTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-bold;
+  color: $color-gray-900;
+
+  &__ai { color: $color-primary; }
+}
+
+.recModel {
+  font-size: $font-size-xs;
+  font-family: $font-family-mono, monospace;
+  color: $color-gray-500;
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  padding: 1px 7px;
+  border-radius: $radius-sm;
+}
+
+.recBody {
+  font-size: $font-size-sm;
+  color: $color-gray-800;
+  line-height: $line-height-relaxed;
+  /* content-aware: compact for short recs, scrolls when long */
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  padding-right: $space-2;
+
+  :global(p) { margin: 0 0 $space-2; }
+  :global(p:last-child) { margin-bottom: 0; }
+  :global(ul), :global(ol) { margin: $space-1 0 $space-2; padding-left: 20px; }
+  :global(li) { margin: 3px 0; }
+  :global(li)::marker { color: $color-primary; }
+  :global(strong) { color: $color-gray-900; font-weight: $font-weight-semibold; }
+  :global(blockquote) {
+    margin: $space-2 0 0;
+    padding: $space-2 $space-3;
+    border-left: 3px solid $color-primary-light;
+    background: $color-primary-soft;
+    border-radius: $radius-sm;
+    color: $color-gray-800;
+  }
+  :global(blockquote p) { margin: 0; }
+  :global(code) {
+    font-family: $font-family-mono, monospace;
+    font-size: 0.9em;
+    background: $color-gray-100;
+    padding: 1px 5px;
+    border-radius: $radius-sm;
+  }
+  :global(h1), :global(h2), :global(h3), :global(h4) {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-bold;
+    margin: $space-2 0 $space-1;
+    color: $color-gray-900;
+  }
+}
+
+.recRefs {
+  margin-top: $space-3;
+  padding-top: $space-3;
+  border-top: 1px dashed $color-gray-200;
+
+  &__l {
+    font-size: $font-size-xs;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-500;
+    margin-bottom: 6px;
+  }
+
+  &__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+}
+
+.refChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: $font-size-xs;
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  padding: 3px $space-2;
+  color: $color-gray-700;
+}
+
+.recFoot {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  margin-top: $space-3;
+}
+
+.recTime {
+  margin-left: auto;
+  font-size: $font-size-xs;
+  color: $color-gray-400;
+}
+
+.recBanner {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-2 $space-4;
+  background: $color-primary-soft;
+  border-bottom: 1px solid $color-gray-200;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-medium;
+  color: $color-primary-dark;
+}
+
+/* ── Regenerate dialog body ── */
+.regen {
+  display: flex;
+  flex-direction: column;
+  gap: $space-3;
+
+  &__ctx {
+    margin: 0;
+    padding: $space-2 $space-3;
+    border-left: 3px solid $color-gray-200;
+    background: $color-gray-50;
+    border-radius: $radius-sm;
+    color: $color-gray-600;
+    font-size: $font-size-sm;
+    font-style: italic;
+    line-height: $line-height-normal;
+  }
+
+  &__label {
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    color: $color-gray-700;
+
+    span { color: $color-gray-400; font-weight: $font-weight-normal; }
+  }
+
+  &__input {
+    width: 100%;
+    resize: vertical;
+    border: 1px solid $color-gray-200;
+    border-radius: $radius-md;
+    background: $color-white;
+    color: $color-gray-900;
+    font-family: inherit;
+    font-size: $font-size-sm;
+    padding: $space-2 $space-3;
+
+    &:focus {
+      outline: 2px solid $color-primary;
+      outline-offset: -1px;
+      border-color: $color-primary;
+    }
+  }
+}
+
+.recLoading {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  padding: $space-2 0;
+
+  &__t { font-size: $font-size-sm; font-weight: $font-weight-medium; color: $color-gray-800; }
+  &__s { font-size: $font-size-xs; color: $color-gray-500; margin-top: 2px; }
+}
+
+.recError {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  font-size: $font-size-sm;
+  color: $color-danger;
+  padding: $space-2 0;
 }

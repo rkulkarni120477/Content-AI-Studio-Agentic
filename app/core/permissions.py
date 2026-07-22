@@ -103,6 +103,7 @@ _PERMISSIONS: dict[str, list[str]] = {
     # ── Reviewer feedback ─────────────────────────────────────────────────────
     "feedback.view":         [_ADMIN, _REVIEWER, _AUTHOR],
     "feedback.upload":       [_ADMIN, _REVIEWER, _AUTHOR],
+    "feedback.recommend":    [_ADMIN, _REVIEWER, _AUTHOR],
     "feedback.delete":       [_ADMIN, _REVIEWER, _AUTHOR],
 
     # ── Export ────────────────────────────────────────────────────────────────
