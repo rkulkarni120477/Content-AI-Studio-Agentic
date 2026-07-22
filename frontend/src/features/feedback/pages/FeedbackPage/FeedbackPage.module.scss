@@ -409,6 +409,13 @@
   &__ai { color: $color-primary; }
 }
 
+.recHead__actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+}
+
 .recModel {
   font-size: $font-size-xs;
   font-family: $font-family-mono, monospace;
@@ -493,10 +500,11 @@
   align-items: center;
   gap: $space-3;
   margin-top: $space-3;
+
+  .linkBtn { margin-left: auto; }
 }
 
 .recTime {
-  margin-left: auto;
   font-size: $font-size-xs;
   color: $color-gray-400;
 }
