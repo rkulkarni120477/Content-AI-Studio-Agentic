@@ -174,14 +174,6 @@ export default function FeedbackPage() {
     return groups;
   }
 
-  function handleCopy(text) {
-    if (!text || !navigator.clipboard) return;
-    navigator.clipboard.writeText(text).then(
-      () => toast.success('Recommendation copied'),
-      () => toast.error('Could not copy to clipboard'),
-    );
-  }
-
   function toggleExpand(id) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -504,6 +496,15 @@ export default function FeedbackPage() {
                                       {item.recommendation_model && (
                                         <span className={styles.recModel}>{item.recommendation_model}</span>
                                       )}
+                                      <div className={styles.recHead__actions}>
+                                        <button
+                                          type="button"
+                                          className={styles.linkBtn}
+                                          onClick={() => openRegen(item)}
+                                        >
+                                          ↻ Regenerate
+                                        </button>
+                                      </div>
                                     </div>
                                     <div
                                       className={cn(styles.recBody, 'markdown-content')}
@@ -522,32 +523,18 @@ export default function FeedbackPage() {
                                       </div>
                                     )}
                                     <div className={styles.recFoot}>
-                                      <button
-                                        type="button"
-                                        className={styles.linkBtn}
-                                        onClick={() => handleCopy(item.recommendation)}
-                                      >
-                                        ⧉ Copy
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={styles.linkBtn}
-                                        onClick={() => openRegen(item)}
-                                      >
-                                        ↻ Regenerate
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={styles.linkBtn}
-                                        onClick={() => toggleExpand(item.id)}
-                                      >
-                                        Hide
-                                      </button>
                                       {item.recommended_at && (
                                         <span className={styles.recTime}>
                                           Generated {formatRelative(item.recommended_at)}
                                         </span>
                                       )}
+                                      <button
+                                        type="button"
+                                        className={styles.linkBtn}
+                                        onClick={() => toggleExpand(item.id)}
+                                      >
+                                        Close
+                                      </button>
                                     </div>
                                   </div>
                                 </div>
