@@ -103,7 +103,7 @@ export const EXPORT_TEMPLATES = {
 export const WORKFLOW_EXPORTABLE = ['approved', 'published'];
 
 export const EXPORT_FORMATS = {
-  MARKDOWN: 'markdown',
+  MARKDOWN: 'md',
   DOCX:     'docx',
   PDF:      'pdf',
   HTML:     'html',

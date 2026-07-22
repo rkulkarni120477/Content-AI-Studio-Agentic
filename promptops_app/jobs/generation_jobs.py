@@ -76,7 +76,7 @@ _log = logging.getLogger(__name__)
 def _db_backed_prompt(
     db, stem, variables, *,
     project_id=None, course_id=None,
-    variant=None, require_variant=False,
+    variant=None, require_variant=False, prompt_id=None,
 ):
     """Resolve a Generate-stage template via the registry (Phase 8 wiring).
 
@@ -96,7 +96,10 @@ def _db_backed_prompt(
     """
     from promptops_app.prompts.prompt_loader import component_resolution_enabled
 
-    if not component_resolution_enabled():
+    # A user-selected prompt_id is an explicit instruction, so it bypasses the
+    # component-resolution feature flag; otherwise the flag still gates the
+    # automatic scope/default resolution.
+    if prompt_id is None and not component_resolution_enabled():
         return None
     try:
         from promptops_app.prompts.prompt_builder import (
@@ -108,6 +111,7 @@ def _db_backed_prompt(
             stem, variables, db=db,
             project_id=project_id, course_id=course_id,
             variant=variant, require_variant=require_variant,
+            prompt_id=prompt_id,
         )
     except PromptVariableError:
         raise
@@ -195,6 +199,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         selected_component  = params.get("selected_component", {})
         supp_files          = params.get("supplementary_files", [])
         extra_instructions  = params.get("extra_instructions", "")
+        # User-selected pipeline prompt from the "Prompt Template" dropdown.
+        # None → normal component/default resolution.
+        sel_prompt_id       = params.get("prompt_id")
 
         # ── Stage 1 — Context ─────────────────────────────────────────
         set_running(db, job, *STAGE_CONTEXT)
@@ -336,6 +343,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 _gen_vars,
                 project_id=project_id,
                 course_id=course_id,
+                prompt_id=sel_prompt_id,
             )
         else:
             _resolved = _db_backed_prompt(
@@ -344,6 +352,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 course_id=course_id,
                 variant="interactive",
                 require_variant=True,
+                prompt_id=sel_prompt_id,
             )
 
         if _resolved:

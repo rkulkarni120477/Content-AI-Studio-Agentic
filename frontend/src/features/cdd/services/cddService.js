@@ -16,6 +16,7 @@ function mapGeneratePayload(data) {
     audience_category: data.audience_category || 'Professional/Corporate',
     system_prompt_override: data.system_prompt_override || undefined,
     user_prompt_override: data.user_prompt_override || undefined,
+    prompt_id: data.prompt_id ?? undefined,
   };
 }
 

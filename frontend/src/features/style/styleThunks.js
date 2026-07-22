@@ -125,7 +125,10 @@ export const uploadDocumentsThunk = createAsyncThunk(
 
 export const regenerateStyleThunk = createAsyncThunk(
   'style/regenerate',
-  async (styleId, { getState, rejectWithValue }) => {
+  async (arg, { getState, rejectWithValue }) => {
+    // Accept either a bare styleId (legacy) or { styleId, promptId }.
+    const styleId = (arg && typeof arg === 'object') ? arg.styleId : arg;
+    const promptId = (arg && typeof arg === 'object') ? arg.promptId : undefined;
     try {
       const state = getState();
       const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
@@ -134,6 +137,7 @@ export const regenerateStyleThunk = createAsyncThunk(
         extra_instructions: '',
         course_id: state?.dashboard?.selectedCourse?.id ?? null,
         project_id: state?.dashboard?.selectedProject?.id ?? null,
+        prompt_id: promptId ?? undefined,
       });
       toast.success('Style understanding generated.');
       return result;

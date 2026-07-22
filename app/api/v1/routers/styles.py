@@ -507,6 +507,32 @@ def generate_style_intelligence(
         extra_parts.append(request_body.extra_instructions.strip())
     effective_extra = "\n\n".join(extra_parts).strip()
 
+    # Resolve the prompt selected in the "Prompt Template" dropdown (if any).
+    # Only pipeline prompts are injectable (Decision 1); a system_prompt_override
+    # from an AI "Use Now" still takes priority for the system prompt.
+    _sel_sys = request_body.system_prompt_override
+    _sel_usr = None
+    if request_body.prompt_id:
+        from promptops_app.database import Prompt, PromptVersion
+        _sel_p = (
+            db.query(Prompt)
+            .filter(Prompt.id == request_body.prompt_id,
+                    Prompt.prompt_kind == "pipeline",
+                    Prompt.deleted_at.is_(None))
+            .first()
+        )
+        if _sel_p:
+            _sel_pv = (
+                db.query(PromptVersion)
+                .filter(PromptVersion.prompt_id == _sel_p.id,
+                        PromptVersion.is_active == True)
+                .first()
+            )
+            if _sel_pv:
+                if not _sel_sys:
+                    _sel_sys = _sel_pv.system_prompt or None
+                _sel_usr = _sel_pv.user_prompt_template or None
+
     # Use regenerate if understanding already exists, otherwise generate fresh.
     _audit_capture = {}
     if style.generated_summary:
@@ -515,7 +541,7 @@ def generate_style_intelligence(
             style,
             request_body.model_choice,
             effective_extra,
-            system_prompt=request_body.system_prompt_override,
+            system_prompt=_sel_sys,
             audit_capture=_audit_capture,
         )
     else:
@@ -524,7 +550,8 @@ def generate_style_intelligence(
             style,
             request_body.model_choice,
             effective_extra,
-            system_prompt=request_body.system_prompt_override,
+            system_prompt=_sel_sys,
+            user_prompt_template=_sel_usr,
             audit_capture=_audit_capture,
         )
 

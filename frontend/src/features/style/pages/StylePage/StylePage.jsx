@@ -23,6 +23,7 @@ import PageContainer from '@components/layout/PageContainer/PageContainer';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
+import FileUpload from '@components/common/FileUpload/FileUpload';
 import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
@@ -30,6 +31,7 @@ import ErrorState from '@components/common/ErrorState/ErrorState';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import SearchBar from '@components/common/SearchBar/SearchBar';
 import PromptLibraryPanel from '@components/prompts/PromptLibraryPanel/PromptLibraryPanel';
+import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
 import CreateStyleForm from '@features/style/components/CreateStyleForm/CreateStyleForm';
 import StyleDetailsPanel from '@features/style/components/StyleDetailsPanel/StyleDetailsPanel';
 import Select from '@components/common/Select/Select';
@@ -104,6 +106,9 @@ export default function StylePage() {
   const [scopeStyleName, setScopeStyleName] = useState('');
   const [styleSearch, setStyleSearch] = useState('');
   const [styleStateFilter, setStyleStateFilter] = useState('all');
+  // Selected "Prompt Template" for style-understanding generation. Applies to
+  // whichever style the user clicks "Understand" on.
+  const [stylePromptConfig, setStylePromptConfig] = useState({ selectedPromptId: null, isDefault: true, hasOverride: false });
 
   // Document Registry UI (Streamlit-like)
   const [docsHelpOpen, setDocsHelpOpen] = useState(true);
@@ -245,14 +250,14 @@ export default function StylePage() {
 
   async function onAppendStyleFiles() {
     if (!filesStyleId) return;
-    if (selectedLibDocIds.length === 0) {
-      toast.error('Select one or more processed Source Library documents.');
+    if (filesToUpload.length === 0 && selectedLibDocIds.length === 0) {
+      toast.error('Upload a local file or select one or more processed Source Library documents.');
       return;
     }
     const styleId = filesStyleId;
     const result = await dispatch(uploadStyleDocsThunk({
       styleId,
-      files: [],
+      files: filesToUpload,
       documentIds: selectedLibDocIds,
       additionalInstructions: filesExtraInstructions,
     }));
@@ -263,7 +268,12 @@ export default function StylePage() {
   }
 
   async function onUnderstandStyle(styleId) {
-    const result = await dispatch(regenerateStyleThunk(styleId));
+    // Forward the selected non-default library prompt so it drives this
+    // style-understanding generation (default → server-side default prompt).
+    const promptId = (!stylePromptConfig.hasOverride && !stylePromptConfig.isDefault && stylePromptConfig.selectedPromptId)
+      ? stylePromptConfig.selectedPromptId
+      : undefined;
+    const result = await dispatch(regenerateStyleThunk({ styleId, promptId }));
     if (!result.error) {
       await refreshViewStyle(styleId);
     }
@@ -453,6 +463,13 @@ export default function StylePage() {
                   <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
                 </div>
               )}
+              {canModify && (
+                <InlinePromptControls
+                  component="style"
+                  onPromptsChange={setStylePromptConfig}
+                  headerHint="Applied when you click Understand on a style below."
+                />
+              )}
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
               ) : filteredStyles.length === 0 ? (
@@ -492,6 +509,15 @@ export default function StylePage() {
                               loading={generatingStyleId === style.id}
                             >
                               Understand
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className={styles.actionBtn}
+                              onClick={() => openAddFiles(style.id, style.name)}
+                              disabled={generatingStyleId != null}
+                            >
+                              File
                             </Button>
                             <Button
                               variant="ghost"
@@ -734,7 +760,7 @@ export default function StylePage() {
             <Button variant="ghost" onClick={closeAddFilesModal}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={filesModalLoading || selectedLibDocIds.length === 0}
+              disabled={filesModalLoading || (filesToUpload.length === 0 && selectedLibDocIds.length === 0)}
               onClick={onAppendStyleFiles}
             >
               Append Files
@@ -747,8 +773,24 @@ export default function StylePage() {
         ) : (
           <div className={styles.addFilesPanel}>
             <p className={styles.addFilesIntro}>
-              Select processed Source Library documents to attach to this style. Uploads are managed only in Source Library.
+              Attach reference documents to this style. Upload a file from your computer, or
+              pick already-processed documents from the Source Library. After appending, click
+              <strong> Understand</strong> to regenerate the style with the new references.
             </p>
+
+            <FileUpload
+              accept=".pdf,.docx,.txt"
+              multiple
+              label="Upload from your computer (PDF, DOCX, TXT)"
+              onChange={setFilesToUpload}
+            />
+            {filesToUpload.length > 0 && (
+              <ul className={styles.addFilesList}>
+                {filesToUpload.map((f, i) => (
+                  <li key={`${f.name}-${i}`}>✓ {f.name}</li>
+                ))}
+              </ul>
+            )}
 
             <MultiSelect
               label="Add from document library"

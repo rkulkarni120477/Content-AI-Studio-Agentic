@@ -11,6 +11,7 @@ function mapLaunchPayload(data) {
     component_label: data.component_label,
     component_type: data.component_type,
     prompt_name: data.prompt_name,
+    prompt_id: data.prompt_id ?? undefined,
     model_choice: data.model_choice || 'GPT-5.4',
     target_audience: data.target_audience || '',
     expert_domain: data.expert_domain || '',

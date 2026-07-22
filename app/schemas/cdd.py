@@ -108,6 +108,17 @@ class CDDGenerateRequest(BaseModel):
         examples=["Professional/Corporate", "Academic/Higher Ed", "K-12"],
     )
 
+    # ── Selected prompt template ──────────────────────────────────────────────
+    prompt_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Id of the pipeline prompt selected in the 'Prompt Template' dropdown. "
+            "When set (and not a system default), that prompt's active version drives "
+            "generation instead of the scope/component-default resolution. Rendered "
+            "through the normal variable path, so context injection still applies."
+        ),
+    )
+
     # ── Advanced prompt overrides ─────────────────────────────────────────────
     system_prompt_override: Optional[str] = Field(
         default=None,

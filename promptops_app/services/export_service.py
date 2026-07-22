@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Optional
@@ -50,6 +50,7 @@ MIME_TYPES: dict[str, str] = {
     "md":   "text/markdown",
     "html": "text/html",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf":  "application/pdf",
     "json": "application/json",
     "zip":  "application/zip",
@@ -191,6 +192,11 @@ def _build_docx(request: ExportRequest) -> bytes:
     return build_docx(request.topic, request.blocks, template=request.template).read()
 
 
+def _build_xlsx(request: ExportRequest) -> bytes:
+    from promptops_app.exporters.xlsx_exporter import build_xlsx
+    return build_xlsx(request.topic, request.blocks, template=request.template).read()
+
+
 def _build_pdf(request: ExportRequest) -> bytes:
     from promptops_app.exporters.pdf_exporter import build_pdf
     return build_pdf(request.topic, request.blocks, template=request.template).read()
@@ -225,10 +231,16 @@ _BUILDERS = {
     "json": _build_json,
     "html": _build_html,
     "docx": _build_docx,
+    "xlsx": _build_xlsx,
     "pdf":  _build_pdf,
     "zip":  _build_zip,
     "imscc": _build_imscc,
 }
+
+# Document-oriented formats whose block text is cleaned of inline Markdown
+# markers (e.g. "**") before building. Structured formats (json) and bundle
+# formats (zip / imscc) are left untouched.
+_CLEAN_FORMATS = {"md", "html", "docx", "xlsx", "pdf"}
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +306,13 @@ def export_content(db, request: ExportRequest) -> ExportResult:
             error_message=f"Unsupported export format: '{request.fmt}'. "
                           f"Supported: {', '.join(MIME_TYPES)}.",
         )
+
+    # 2b. Strip inline Markdown markers (e.g. "**") for document exports so the
+    #     downloaded text is clean. Structural markers (headings/bullets) are
+    #     preserved for the DOCX exporter.
+    if request.fmt in _CLEAN_FORMATS:
+        from promptops_app.exporters.text_clean import clean_blocks
+        request = replace(request, blocks=clean_blocks(request.blocks))
 
     try:
         with log_duration(

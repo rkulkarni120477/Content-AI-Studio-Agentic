@@ -61,14 +61,14 @@
 
 .exportGrid4 {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: $space-2;
-  max-width: 480px;
+  max-width: 600px;
 }
 
 .exportGrid5 {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
   margin-top: $space-2;
 

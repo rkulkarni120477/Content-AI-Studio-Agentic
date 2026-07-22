@@ -82,6 +82,7 @@ export default function GeneratePage() {
   const [allBps, setAllBps] = useState([]);
   const [selectedCompValue, setSelectedCompValue] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
+  const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false, selectedPromptId: null, isDefault: true });
   const [assessmentOverride, setAssessmentOverride] = useState(false);
   const [moduleGate, setModuleGate] = useState(null);
   const [courseGate, setCourseGate] = useState(null);
@@ -269,6 +270,10 @@ export default function GeneratePage() {
       assessment_override: assessmentOverride,
       context_document_names: [],
       supplementary_files,
+      // Non-default library prompt selection drives content generation server-side.
+      prompt_id: (!promptConfig.hasOverride && !promptConfig.isDefault && promptConfig.selectedPromptId)
+        ? promptConfig.selectedPromptId
+        : undefined,
     };
 
     try {
@@ -419,6 +424,7 @@ export default function GeneratePage() {
             component="generate"
             extraInstructions={extraInstructions}
             onExtraInstructionsChange={setExtraInstructions}
+            onPromptsChange={setPromptConfig}
             showExtraInstructions
           />
         </div>

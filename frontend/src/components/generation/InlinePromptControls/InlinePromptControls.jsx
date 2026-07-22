@@ -136,8 +136,14 @@ export default function InlinePromptControls({
       // must use this to decide whether to send system_prompt_override/user_prompt_override;
       // sending the raw auto-loaded default bypasses all real context-building server-side.
       hasOverride: Boolean(isOverride),
+      // Identity of the currently-selected library prompt. Callers send
+      // selectedPromptId as `prompt_id` when the user picked a non-default
+      // template (isDefault === false), so that specific pipeline prompt drives
+      // generation server-side (rendered through the normal variable path).
+      selectedPromptId: selectedPrompt?.id ?? null,
+      isDefault: Boolean(selectedPrompt?.is_default),
     });
-  }, [onPromptsChange, extraInstructions]);
+  }, [onPromptsChange, extraInstructions, selectedPrompt]);
 
   const loadPromptDetail = useCallback(async (promptId) => {
     if (!promptId) {
