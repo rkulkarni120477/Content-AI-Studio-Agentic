@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.course import (
     CourseCreateRequest,
@@ -173,18 +173,46 @@ def update_course(
 @router.delete(
     "/courses/{course_id}",
     status_code=204,
-    summary="Delete a course",
+    summary="Archive a course",
 )
 def delete_course(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.delete")),
 ) -> None:
-    """Archive a course. Admin only."""
+    """Soft-delete (archive) a course. Content remains until permanently deleted."""
     course = _get_course_or_404(db, course_id)
     course.is_active = False
     db.commit()
-    _log.info("course_deleted  user=%s  course_id=%d", current_user.username, course_id)
+    _log.info("course_archived  user=%s  course_id=%d", current_user.username, course_id)
+
+
+@router.delete(
+    "/courses/{course_id}/permanent",
+    status_code=204,
+    summary="Permanently delete an archived course",
+)
+def permanently_delete_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("course.delete")),
+) -> None:
+    """Hard-delete an archived course and all of its content.
+
+    The course must already be archived (``is_active=False``). Active courses
+    must be archived first via ``DELETE /courses/{id}``.
+    """
+    from promptops_app.repositories import course_repository
+
+    course = _get_course_or_404(db, course_id)
+    if course.is_active:
+        raise ValidationError(
+            "Archive the course before permanently deleting it.",
+            detail={"course_id": course_id, "is_active": True},
+        )
+
+    course_repository.purge_course(db, course_id)
+    _log.info("course_purged  user=%s  course_id=%d", current_user.username, course_id)
 
 
 @router.get(

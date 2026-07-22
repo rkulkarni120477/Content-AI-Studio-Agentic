@@ -97,8 +97,30 @@ class FeedbackScope:
 class ChangeSource:
     """Block version change sources recorded in BlockVersion.change_source."""
     GENERATION          = "generation"
+    IMPORT              = "import"
     EDIT                = "edit"
     REGENERATION        = "regeneration"
     RESTORE             = "restore"
     PRE_RESTORE_SNAPSHOT = "pre_restore_snapshot"
     MANUAL_SNAPSHOT     = "manual_snapshot"
+
+
+def canonical_block_type(raw: str | None) -> str:
+    """Map component slugs (``lesson_1``, ``module_assessment``, …) to Block kinds.
+
+    ``Block.block_type`` must stay canonical — never numbered lesson variants.
+    """
+    t = (raw or "").strip().lower()
+    if not t:
+        return "lesson"
+    if t.startswith("lesson"):
+        return "lesson"
+    if t in ("module_assessment", "assessment", "quiz", "test", "exam"):
+        return "quiz"
+    if t.startswith("quiz"):
+        return "quiz"
+    if t.startswith("assignment"):
+        return "assignment"
+    if t.startswith("discussion"):
+        return "discussion"
+    return t

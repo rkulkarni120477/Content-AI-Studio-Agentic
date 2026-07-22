@@ -9,8 +9,10 @@ export default function StreamlitCard({
   footerLine,
   onOpen,
   openLabel = 'Open →',
+  hideOpen = false,
   onEdit,
   onDelete,
+  deleteLabel = '🗑️ Delete',
   onManageUsers,
   canEdit = false,
   canDelete = false,
@@ -31,9 +33,11 @@ export default function StreamlitCard({
       </div>
 
       <div className={styles.card__actions}>
-        <Button variant="primary" size="sm" onClick={onOpen}>
-          {openLabel}
-        </Button>
+        {!hideOpen && onOpen && (
+          <Button variant="primary" size="sm" onClick={onOpen}>
+            {openLabel}
+          </Button>
+        )}
         {canEdit && (
           <Button variant="secondary" size="sm" onClick={onEdit}>
             ✏️ Edit
@@ -46,7 +50,7 @@ export default function StreamlitCard({
         )}
         {canDelete && (
           <Button variant="danger" size="sm" onClick={onDelete}>
-            🗑️ Delete
+            {deleteLabel}
           </Button>
         )}
       </div>

@@ -27,6 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
+from promptops_app.core.constants import ChangeSource, canonical_block_type
 from promptops_app.database import Block, CourseModule, Generation
 from promptops_app.importers import provenance
 from promptops_app.importers.internal_model import (
@@ -39,6 +40,7 @@ from promptops_app.importers.internal_model import (
     PAGE_KIND,
     QUIZ_KIND,
 )
+from promptops_app.repositories.block_repo import save_block_version
 
 _log = logging.getLogger(__name__)
 
@@ -178,6 +180,7 @@ def _persist_item(
     result: BuildResult,
 ) -> None:
     block_type, canvas_type, content, content_html = _item_payload(item, result)
+    block_type = canonical_block_type(block_type)
     label = item.title or block_type.title()
 
     # One Generation per item so each imported item is an individually selectable
@@ -210,6 +213,15 @@ def _persist_item(
     )
     db.add(block)
     db.flush()  # assign block.id without committing
+
+    save_block_version(
+        db,
+        block,
+        change_source=ChangeSource.IMPORT,
+        change_note="Initial version",
+        created_by=user_name or "import",
+        commit=False,
+    )
 
     provenance.record(
         db,

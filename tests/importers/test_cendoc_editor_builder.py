@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from promptops_app.database import Block, Course, CourseModule
+import re
+
+from promptops_app.core.constants import ChangeSource
+from promptops_app.database import Block, BlockVersion, Course, CourseModule
 from promptops_app.importers import editor_builder
 from promptops_app.importers.imscc_importer import parse_package
 from tests.importers.fixtures import build_sample_cendoc
@@ -35,3 +38,17 @@ def test_editor_builder_from_cendoc(db):
     overview = next(m for m in modules if m.title == "An Overview")
     blocks = db.query(Block).filter(Block.module_id == overview.id).all()
     assert any(b.block_type == "lesson" and b.content for b in blocks)
+
+    for block in blocks:
+        assert not re.match(r"^lesson_\d", block.block_type or "")
+        versions = (
+            db.query(BlockVersion)
+            .filter(BlockVersion.block_id == block.id)
+            .order_by(BlockVersion.version_num)
+            .all()
+        )
+        assert len(versions) == 1
+        assert versions[0].version_num == 1
+        assert versions[0].change_source == ChangeSource.IMPORT
+        assert versions[0].change_note == "Initial version"
+        assert versions[0].content == (block.content or "")
