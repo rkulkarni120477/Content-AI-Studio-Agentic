@@ -473,13 +473,17 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         db.commit()
         db.refresh(g_entry)
 
+        from promptops_app.core.constants import ChangeSource, canonical_block_type
+        from promptops_app.repositories.block_repo import save_block_version
+
         saved_blocks = []
         for bt, ordr, cnt, srcs in blocks:
-            _, eval_data, ai_rev_text = get_initial_quality_metadata(cnt, bt)
+            canon_bt = canonical_block_type(bt)
+            _, eval_data, ai_rev_text = get_initial_quality_metadata(cnt, canon_bt)
             blk = Block(
                 generation_id=g_entry.id,
-                block_type=bt,
-                block_label=f"{bt.title()} - {topic}",
+                block_type=canon_bt,
+                block_label=f"{canon_bt.title()} - {topic}",
                 content=cnt,
                 sources=json.dumps(list(set(srcs))) if srcs else None,
                 plagiarism_score=None,          # set by async Copyleaks scan
@@ -489,6 +493,15 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 ai_review=ai_rev_text,
             )
             db.add(blk)
+            db.flush()
+            save_block_version(
+                db,
+                blk,
+                change_source=ChangeSource.GENERATION,
+                change_note="Initial version",
+                created_by=user_name or "",
+                commit=False,
+            )
             saved_blocks.append((blk, cnt))
         db.commit()   # flush so blocks have their PKs
 

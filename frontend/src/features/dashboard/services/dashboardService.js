@@ -16,11 +16,15 @@ export const dashboardService = {
   updateCluster:   (id, data)     => api.put(CLUSTERS.UPDATE(id), data),
   deleteCluster:   (id)           => api.delete(CLUSTERS.DELETE(id)),
 
-  listCourses:     (clusterId)    => api.get(CLUSTERS.COURSES(clusterId)),
+  listCourses:     (clusterId, { includeArchived = false } = {}) =>
+    api.get(CLUSTERS.COURSES(clusterId), {
+      params: includeArchived ? { include_archived: true } : undefined,
+    }),
   createCourse:    (projectId, data) => api.post(PROJECTS.COURSES(projectId), data),
   getCourse:       (id)           => api.get(COURSES.GET(id)),
   updateCourse:    (id, data)     => api.put(COURSES.UPDATE(id), data),
   deleteCourse:    (id)           => api.delete(COURSES.DELETE(id)),
+  permanentlyDeleteCourse: (id)   => api.delete(COURSES.PERMANENT_DELETE(id)),
   listCourseUsers: (id)           => api.get(COURSES.USERS(id)),
   assignCourseUser:(id, username)=> api.post(COURSES.USERS(id), { username }),
   unassignCourseUser:(id, user)   => api.delete(COURSES.UNASSIGN_USER(id, user)),

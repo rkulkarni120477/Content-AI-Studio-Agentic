@@ -41,6 +41,7 @@ from app.api.v1.routers.cluster_prompts import router as cluster_prompts_router
 from app.api.v1.routers.clusters import router as clusters_router
 from app.api.v1.routers.courses import router as courses_router
 from app.api.v1.routers.documents import router as documents_router
+from app.api.v1.routers.feedback import router as feedback_router
 from app.api.v1.routers.generations import router as generations_router
 from app.api.v1.routers.health import router as health_router
 from app.api.v1.routers.jobs import router as jobs_router
@@ -84,6 +85,7 @@ api_v1_router.include_router(cdd_router,        prefix="/cdd",        tags=["CDD
 api_v1_router.include_router(blueprints_router, prefix="/blueprints", tags=["Blueprints"])
 api_v1_router.include_router(generations_router,prefix="/generations",tags=["Generations"])
 api_v1_router.include_router(jobs_router,       prefix="/jobs",       tags=["Jobs"])
+api_v1_router.include_router(feedback_router,   prefix="/feedback",   tags=["Feedback"])
 
 # ── Prompt registry ───────────────────────────────────────────────────────────
 api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])

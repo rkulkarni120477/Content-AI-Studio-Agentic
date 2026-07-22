@@ -1269,6 +1269,60 @@ class CentralRepository(Base):
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class FeedbackDocument(Base):
+    """A reviewer-feedback document uploaded against a course.
+
+    The raw text is extracted on upload and analysed by the LLM into
+    individual ``FeedbackItem`` rows. Scoped to a tenant via ``project_id``
+    (so ``apply_tenant_filter`` isolates it automatically) and linked to a
+    course via ``course_id``.
+    """
+    __tablename__ = "feedback_documents"
+    id            = Column(Integer, primary_key=True)
+    project_id    = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    course_id     = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    filename      = Column(String(255), nullable=False)
+    file_type     = Column(String(120))
+    content       = Column(Text)                              # extracted raw text
+    item_count    = Column(Integer, default=0)
+    model_used    = Column(String(100))                       # LLM display name used for extraction
+    status        = Column(String(20), default="active")      # active | archived
+    created_by    = Column(String(100))
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    items         = relationship(
+        "FeedbackItem", back_populates="document", cascade="all, delete-orphan",
+    )
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class FeedbackItem(Base):
+    """One reviewer-feedback point extracted from a FeedbackDocument.
+
+    Carries ``project_id``/``course_id`` directly (denormalised from the
+    parent document) so items are tenant-scoped and course-scoped without a
+    join.
+    """
+    __tablename__ = "feedback_items"
+    id              = Column(Integer, primary_key=True)
+    document_id     = Column(
+        Integer, ForeignKey("feedback_documents.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    project_id      = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    course_id       = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    feedback_text   = Column(Text, nullable=False)
+    source_location = Column(String(500))                     # e.g. "Slide 5" / question ref
+    theme           = Column(String(255))                     # category / topic
+    sentiment       = Column(String(30))                      # suggestion | concern | praise | neutral
+    priority        = Column(String(20))                      # high | medium | low
+    status          = Column(String(20), default="active")    # active | archived
+    created_by      = Column(String(100))
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    document        = relationship("FeedbackDocument", back_populates="items")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 # =============================================================================
 # Database Initialization & Migrations
 # =============================================================================

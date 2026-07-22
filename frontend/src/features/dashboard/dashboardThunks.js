@@ -23,7 +23,7 @@ export const fetchClustersThunk = createAsyncThunk(
 export const fetchCoursesThunk = createAsyncThunk(
   'dashboard/fetchCourses',
   async (clusterId, { rejectWithValue }) => {
-    try { return await dashboardService.listCourses(clusterId); }
+    try { return await dashboardService.listCourses(clusterId, { includeArchived: true }); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

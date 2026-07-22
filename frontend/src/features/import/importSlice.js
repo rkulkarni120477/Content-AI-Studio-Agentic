@@ -90,6 +90,7 @@ const importSlice = createSlice({
       // ── Import record (warnings surfacing) ────────────────────────
       .addCase(fetchImportRecordThunk.fulfilled, (s, { payload }) => {
         s.record = payload;
+        if (payload?.course_id != null) s.courseId = payload.course_id;
       });
   },
 });

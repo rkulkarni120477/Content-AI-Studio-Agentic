@@ -58,6 +58,7 @@ export const COURSES = {
   GET:              (id)      => `/api/v1/courses/${id}`,
   UPDATE:           (id)      => `/api/v1/courses/${id}`,
   DELETE:           (id)      => `/api/v1/courses/${id}`,
+  PERMANENT_DELETE: (id)      => `/api/v1/courses/${id}/permanent`,
   USERS:            (id)      => `/api/v1/courses/${id}/users`,
   UNASSIGN_USER:    (id, user) => `/api/v1/courses/${id}/users/${encodeURIComponent(user)}`,
   ACTIVE_CDD:       (id)      => `/api/v1/courses/${id}/active-cdd`,
@@ -107,6 +108,14 @@ export const DOCUMENTS = {
   PARSE:            '/api/v1/documents/parse',
   DELETE:           (id)      => `/api/v1/documents/${id}`,
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
+};
+
+// ─── Reviewer Feedback ────────────────────────────────────────────────────────
+export const FEEDBACK = {
+  LIST:        '/api/v1/feedback',
+  ANALYZE:     '/api/v1/feedback/analyze',
+  DELETE_ITEM: (id) => `/api/v1/feedback/items/${id}`,
+  BULK_DELETE: '/api/v1/feedback/bulk-delete',
 };
 
 // ─── Source Library / DIS ─────────────────────────────────────────────────────
