@@ -31,6 +31,7 @@ import ErrorState from '@components/common/ErrorState/ErrorState';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import SearchBar from '@components/common/SearchBar/SearchBar';
 import PromptLibraryPanel from '@components/prompts/PromptLibraryPanel/PromptLibraryPanel';
+import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
 import CreateStyleForm from '@features/style/components/CreateStyleForm/CreateStyleForm';
 import StyleDetailsPanel from '@features/style/components/StyleDetailsPanel/StyleDetailsPanel';
 import Select from '@components/common/Select/Select';
@@ -105,6 +106,9 @@ export default function StylePage() {
   const [scopeStyleName, setScopeStyleName] = useState('');
   const [styleSearch, setStyleSearch] = useState('');
   const [styleStateFilter, setStyleStateFilter] = useState('all');
+  // Selected "Prompt Template" for style-understanding generation. Applies to
+  // whichever style the user clicks "Understand" on.
+  const [stylePromptConfig, setStylePromptConfig] = useState({ selectedPromptId: null, isDefault: true, hasOverride: false });
 
   // Document Registry UI (Streamlit-like)
   const [docsHelpOpen, setDocsHelpOpen] = useState(true);
@@ -264,7 +268,12 @@ export default function StylePage() {
   }
 
   async function onUnderstandStyle(styleId) {
-    const result = await dispatch(regenerateStyleThunk(styleId));
+    // Forward the selected non-default library prompt so it drives this
+    // style-understanding generation (default → server-side default prompt).
+    const promptId = (!stylePromptConfig.hasOverride && !stylePromptConfig.isDefault && stylePromptConfig.selectedPromptId)
+      ? stylePromptConfig.selectedPromptId
+      : undefined;
+    const result = await dispatch(regenerateStyleThunk({ styleId, promptId }));
     if (!result.error) {
       await refreshViewStyle(styleId);
     }
@@ -453,6 +462,13 @@ export default function StylePage() {
                 <div className={styles.activeIndicator}>
                   <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
                 </div>
+              )}
+              {canModify && (
+                <InlinePromptControls
+                  component="style"
+                  onPromptsChange={setStylePromptConfig}
+                  headerHint="Applied when you click Understand on a style below."
+                />
               )}
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>

@@ -164,6 +164,8 @@ def launch_generation(
         "supplementary_files": [f.model_dump() for f in request_body.supplementary_files],
         "extra_instructions":  (request_body.extra_instructions or "") + (dis_context_block or ""),
         "dis_source_units":    dis_source_units,
+        # User-selected pipeline prompt (dropdown). None → default resolution.
+        "prompt_id":           request_body.prompt_id,
     }
 
     job_id = job_repository.create_job(

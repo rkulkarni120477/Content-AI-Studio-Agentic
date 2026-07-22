@@ -56,6 +56,14 @@ class BlueprintGenerateRequest(BaseModel):
             "distinguishing it from real modules, which are always >= 1."
         ),
     )
+    prompt_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Id of the pipeline prompt selected in the 'Prompt Template' dropdown. "
+            "When set (and not a system default), that prompt's active version drives "
+            "generation instead of the scope/component-default resolution."
+        ),
+    )
     system_prompt_override: Optional[str] = None
     user_prompt_override: Optional[str] = None
 

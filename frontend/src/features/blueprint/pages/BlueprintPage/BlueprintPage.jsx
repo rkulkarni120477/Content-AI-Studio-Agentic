@@ -301,6 +301,10 @@ export default function BlueprintPage() {
       // be sent raw, since it bypasses all real CDD/style context-building server-side.
       system_prompt_override: promptConfig.hasOverride ? (promptConfig.systemPrompt || undefined) : undefined,
       user_prompt_override: promptConfig.hasOverride ? (promptConfig.userPromptTemplate || undefined) : undefined,
+      // Non-default library prompt selection drives generation server-side.
+      prompt_id: (!promptConfig.hasOverride && !promptConfig.isDefault && promptConfig.selectedPromptId)
+        ? promptConfig.selectedPromptId
+        : undefined,
     };
     try {
       const bp = await dispatch(generateBlueprintThunk(payload)).unwrap();

@@ -42,6 +42,15 @@ class StyleUnderstandRequest(BaseModel):
     model_choice: str = Field(default="GPT-5.4")
     extra_instructions: str = Field(default="", max_length=12000)
     document_ids: list[str] = Field(default_factory=list, description="Optional DIS source document/job IDs to use for this Understand/Refine call.")
+    prompt_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Id of the pipeline prompt selected in the 'Prompt Template' dropdown. "
+            "When set (and not a system default), its active version's system + user "
+            "prompt drive the style-understanding generation; the source documents are "
+            "always injected regardless of the template."
+        ),
+    )
     system_prompt_override: Optional[str] = None
     # Not used by the generation logic itself — only so the audit trail can
     # attribute this event to the tenant the user was working in.

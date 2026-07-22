@@ -249,6 +249,8 @@ def generate_blueprint(
                 # (variant-exact wins); the NULL-variant seeded default serves
                 # both modes until then. Ignored while the resolution flag is off.
                 variant="teacher" if request_body.teacher_mode else "student",
+                # A user-selected pipeline prompt (dropdown) wins over scope/default.
+                prompt_id=request_body.prompt_id,
             )
         except PromptVariableError as exc:
             # A declared-variable violation is a template misconfiguration —

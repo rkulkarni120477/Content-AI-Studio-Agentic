@@ -134,6 +134,7 @@ def build_prompt(
     course_id=None,
     variant=None,
     require_variant: bool = False,
+    prompt_id=None,
 ) -> tuple[str, str, str, str]:
     """Load a named template, optionally validate variables, and render both parts.
 
@@ -162,6 +163,13 @@ def build_prompt(
         fallback, never a different variant); ``require_variant=True`` allows
         only an exact-variant DB row — no fallback tier at all (the caller
         keeps its own bespoke fallback).  See ``load_template``.
+    prompt_id:
+        Optional specific pipeline-prompt id chosen by the user in the
+        "Prompt Template" dropdown. When supplied and it resolves to a
+        ``prompt_kind='pipeline'`` row, that prompt's active version is used
+        verbatim (highest priority), so a user-selected template drives
+        generation instead of the scope/default resolution.  A miss falls
+        through to the normal resolution chain.
 
     Returns
     -------
@@ -175,6 +183,7 @@ def build_prompt(
         template_name, version=version, db=db,
         project_id=project_id, cluster_id=cluster_id, course_id=course_id,
         variant=variant, require_variant=require_variant,
+        prompt_id=prompt_id,
     )
 
     # Declared-variable enforcement (Phase 8): required_vars comes from the

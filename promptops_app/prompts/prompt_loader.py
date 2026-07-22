@@ -190,6 +190,7 @@ def load_template(
     course_id=None,
     variant=None,
     require_variant: bool = False,
+    prompt_id=None,
 ) -> PromptTemplate:
     """Load a prompt template by name.
 
@@ -218,12 +219,18 @@ def load_template(
         may resolve — no NULL-variant, stem-name, or file fallback (those are
         all a *different* variant's template; the caller keeps its own bespoke
         fallback).  Raises ``FileNotFoundError`` when no such row exists.
+    prompt_id:
+        Optional specific pipeline-prompt id (user's dropdown selection). When
+        supplied and it resolves to a ``prompt_kind='pipeline'`` row, that row
+        is used with highest priority; a miss falls through to the normal
+        scope/default resolution.
     """
     if db is not None:
         tmpl = _from_db(
             db, name, version,
             project_id=project_id, cluster_id=cluster_id, course_id=course_id,
             variant=variant, require_variant=require_variant,
+            prompt_id=prompt_id,
         )
         if tmpl is not None:
             return tmpl
@@ -339,14 +346,27 @@ def _resolve_pipeline_row(
 def _from_db(
     db, name: str, version: str,
     *, project_id=None, cluster_id=None, course_id=None,
-    variant=None, require_variant: bool = False,
+    variant=None, require_variant: bool = False, prompt_id=None,
 ) -> PromptTemplate | None:
     """Try to load from the Prompt / PromptVersion ORM tables.  Returns None on any miss."""
     try:
         from promptops_app.database import Prompt, PromptVersion
 
         prompt = None
-        if component_resolution_enabled():
+        # Highest priority: a specific pipeline prompt the user picked in the
+        # "Prompt Template" dropdown. Guarded to prompt_kind='pipeline' so a
+        # library row can never be injected into a generation call (Decision 1).
+        # A miss (wrong kind, soft-deleted, or unknown id) falls through to the
+        # normal scope/default resolution below.
+        if prompt_id is not None:
+            prompt = (
+                db.query(Prompt)
+                .filter(Prompt.id == prompt_id,
+                        Prompt.prompt_kind == "pipeline",
+                        Prompt.deleted_at.is_(None))
+                .first()
+            )
+        if prompt is None and component_resolution_enabled():
             prompt = _resolve_pipeline_row(
                 db, name,
                 project_id=project_id, cluster_id=cluster_id, course_id=course_id,
