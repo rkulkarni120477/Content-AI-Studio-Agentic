@@ -30,7 +30,6 @@ import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import SearchBar from '@components/common/SearchBar/SearchBar';
-import PromptLibraryPanel from '@components/prompts/PromptLibraryPanel/PromptLibraryPanel';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
 import CreateStyleForm from '@features/style/components/CreateStyleForm/CreateStyleForm';
 import StyleDetailsPanel from '@features/style/components/StyleDetailsPanel/StyleDetailsPanel';
@@ -463,13 +462,6 @@ export default function StylePage() {
                   <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
                 </div>
               )}
-              {canModify && (
-                <InlinePromptControls
-                  component="style"
-                  onPromptsChange={setStylePromptConfig}
-                  headerHint="Applied when you click Understand on a style below."
-                />
-              )}
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
               ) : filteredStyles.length === 0 ? (
@@ -546,12 +538,20 @@ export default function StylePage() {
             </div>
           </details>
 
-          <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>🎯 Style Prompts</summary>
-            <div className={styles.accordion__body}>
-              <PromptLibraryPanel component="style" embedded showHeader={false} />
-            </div>
-          </details>
+          {canModify && (
+            <details className={styles.accordion}>
+              <summary className={styles.accordion__summary}>🎯 Style Prompts</summary>
+              <div className={styles.accordion__body}>
+                <InlinePromptControls
+                  component="style"
+                  embedded
+                  onPromptsChange={setStylePromptConfig}
+                  headerHint="Applied when you click Understand on a style above."
+                />
+              </div>
+            </details>
+          )}
+
         </div>
       )}
 
