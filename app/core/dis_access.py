@@ -171,6 +171,7 @@ def _current_username(user: Any) -> str:
     return str(getattr(user, "username", "") or getattr(user, "email", "") or getattr(user, "id", "")).strip()
 
 
+
 # Same alias normalization the Source Library router applies to project client
 # names, so "Cengage" / "cengage_learning" / "AIM" all resolve consistently.
 _CLIENT_NAME_ALIASES = {"cengage_learning": "cengage", "cengage": "cengage", "aim": "aim", "academian": "academian", "demo": "demo"}

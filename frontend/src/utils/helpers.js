@@ -1,11 +1,23 @@
 import { WORKFLOW_STATES, ROLES, DATE_RANGE_PRESETS } from './constants';
 
 // ─── Formatting ───────────────────────────────────────────────────────────────
+// The backend stores/serializes timestamps as naive UTC (no Z / offset suffix —
+// SQLAlchemy `datetime.utcnow()` columns). `new Date("...")` on a string with no
+// timezone designator is parsed as *local* time, not UTC, so every server date
+// would silently render off by the browser's UTC offset. Normalize once here so
+// every formatter/consumer below gets a correctly-anchored Date.
+function parseServerDate(dateStr) {
+  if (dateStr instanceof Date) return dateStr;
+  if (typeof dateStr !== 'string') return new Date(dateStr);
+  const hasTimezone = /[Zz]|[+-]\d{2}:?\d{2}$/.test(dateStr);
+  return new Date(hasTimezone ? dateStr : `${dateStr}Z`);
+}
+
 export function formatDate(dateStr, opts = {}) {
   if (!dateStr) return '—';
   return new Intl.DateTimeFormat('en-IN', {
     year: 'numeric', month: 'short', day: 'numeric', ...opts,
-  }).format(new Date(dateStr));
+  }).format(parseServerDate(dateStr));
 }
 
 export function formatDateTime(dateStr) {
@@ -15,7 +27,7 @@ export function formatDateTime(dateStr) {
 /** Streamlit audit trail: YYYY-MM-DD HH:MM:SS */
 export function formatTimestamp(dateStr) {
   if (!dateStr) return '—';
-  const d = new Date(dateStr);
+  const d = parseServerDate(dateStr);
   if (Number.isNaN(d.getTime())) return '—';
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
@@ -24,7 +36,7 @@ export function formatTimestamp(dateStr) {
 
 export function formatRelative(dateStr) {
   if (!dateStr) return '—';
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - parseServerDate(dateStr).getTime();
   const mins  = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
   const days  = Math.floor(diff / 86400000);
@@ -126,7 +138,7 @@ export function canTransitionTo(currentState, targetState, role) {
 // ─── SLA Helpers ─────────────────────────────────────────────────────────────
 export function getSlaStatus(submittedAt, slaHours = 24) {
   if (!submittedAt) return null;
-  const elapsed = (Date.now() - new Date(submittedAt).getTime()) / 3600000;
+  const elapsed = (Date.now() - parseServerDate(submittedAt).getTime()) / 3600000;
   if (elapsed > slaHours)       return 'overdue';
   if (elapsed > slaHours * 0.7) return 'warning';
   return 'ok';

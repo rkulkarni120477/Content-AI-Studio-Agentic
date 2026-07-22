@@ -63,6 +63,14 @@ def get_block_versions(db, block_id: int) -> list:
     )
 
 
+def get_block_version(db, block_id: int, version_id: int):
+    """Return a single version's full content, or None if it doesn't belong to this block."""
+    version = db.query(BlockVersion).filter(BlockVersion.id == version_id).first()
+    if not version or version.block_id != block_id:
+        return None
+    return version
+
+
 def restore_block_version(
     db,
     block: Block,

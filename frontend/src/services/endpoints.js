@@ -198,6 +198,7 @@ export const BLOCKS = {
   REGENERATE:       (id)       => `/api/v1/${id}/regenerate`,
   REGENERATE_ITEM:  (id)       => `/api/v1/${id}/regenerate-item`,
   VERSIONS:         (id)       => `/api/v1/${id}/versions`,
+  GET_VERSION:      (id, v)    => `/api/v1/${id}/versions/${v}`,
   RESTORE_VERSION:  (id, v)    => `/api/v1/${id}/versions/${v}/restore`,
   SNAPSHOT:         (id)       => `/api/v1/${id}/snapshot`,
   SCORE:            (id)       => `/api/v1/${id}/score`,

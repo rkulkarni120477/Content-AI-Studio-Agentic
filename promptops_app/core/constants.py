@@ -100,6 +100,7 @@ class ChangeSource:
     IMPORT              = "import"
     EDIT                = "edit"
     REGENERATION        = "regeneration"
+    ITEM_REGENERATION   = "item_regeneration"
     RESTORE             = "restore"
     PRE_RESTORE_SNAPSHOT = "pre_restore_snapshot"
     MANUAL_SNAPSHOT     = "manual_snapshot"
