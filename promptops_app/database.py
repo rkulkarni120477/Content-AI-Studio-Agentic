@@ -1319,6 +1319,13 @@ class FeedbackItem(Base):
     status          = Column(String(20), default="active")    # active | archived
     created_by      = Column(String(100))
     created_at      = Column(DateTime, default=datetime.utcnow)
+    # ── AI recommendation (how to revise the relevant course content) ──────────
+    recommendation        = Column(Text)                       # AI-suggested revision (Markdown)
+    recommendation_refs   = Column(Text)                       # JSON array of referenced block labels
+    recommendation_model  = Column(String(100))                # LLM display name used
+    recommendation_status = Column(String(20), default="none") # none | ready | error
+    recommended_at        = Column(DateTime)
+    recommended_by        = Column(String(100))
     document        = relationship("FeedbackDocument", back_populates="items")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 

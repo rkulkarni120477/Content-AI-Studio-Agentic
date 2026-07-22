@@ -72,6 +72,20 @@ def get_item_by_id(db, item_id: int):
     return db.query(FeedbackItem).filter(FeedbackItem.id == item_id).first()
 
 
+def active_items_by_ids(db, ids: list[int]):
+    """Query for active feedback items whose id is in ``ids``.
+
+    Returns a Query (document eager-loaded) so the caller can layer tenant
+    scoping (apply_tenant_filter) before executing. Order is stable by id.
+    """
+    return (
+        db.query(FeedbackItem)
+        .options(joinedload(FeedbackItem.document))
+        .filter(FeedbackItem.id.in_(ids), FeedbackItem.status == "active")
+        .order_by(FeedbackItem.id.asc())
+    )
+
+
 def list_active_items(db, *, course_id: int | None = None):
     """Base query for active feedback items, newest first.
 

@@ -21,6 +21,12 @@ class FeedbackItemRead(BaseModel):
     priority: Optional[str] = None             # high | medium | low
     document_name: Optional[str] = None        # source document filename
     created_at: Optional[datetime] = None
+    # ── AI recommendation ──────────────────────────────────────────────────────
+    recommendation: Optional[str] = None
+    recommendation_refs: List[str] = Field(default_factory=list)  # referenced block labels
+    recommendation_model: Optional[str] = None
+    recommendation_status: str = "none"        # none | ready | error
+    recommended_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -60,3 +66,29 @@ class FeedbackBulkDeleteRequest(BaseModel):
 
 class FeedbackBulkDeleteResponse(BaseModel):
     deleted: int
+
+
+class FeedbackRecommendRequest(BaseModel):
+    item_ids: List[int] = Field(
+        ..., min_length=1, max_length=25,
+        description="Feedback item ids to generate AI recommendations for (max 25).",
+    )
+    guidance: Optional[str] = Field(
+        default=None, max_length=2000,
+        description="Optional reviewer steering instruction applied to this run.",
+    )
+    model_choice: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional model display name to use for this run. Unknown values "
+            "fall back to the course's configured model / catalog default."
+        ),
+    )
+
+
+class FeedbackRecommendResponse(BaseModel):
+    """Result of an AI-recommendation run — updated items plus a tally."""
+
+    items: List[FeedbackItemRead]
+    recommended: int   # items that produced a recommendation
+    failed: int        # items whose recommendation errored

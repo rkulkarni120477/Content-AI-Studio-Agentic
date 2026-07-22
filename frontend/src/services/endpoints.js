@@ -113,6 +113,7 @@ export const DOCUMENTS = {
 export const FEEDBACK = {
   LIST:        '/api/v1/feedback',
   ANALYZE:     '/api/v1/feedback/analyze',
+  RECOMMEND:   '/api/v1/feedback/recommend',
   DELETE_ITEM: (id) => `/api/v1/feedback/items/${id}`,
   BULK_DELETE: '/api/v1/feedback/bulk-delete',
 };

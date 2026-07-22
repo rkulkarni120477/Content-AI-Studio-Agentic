@@ -8,22 +8,25 @@ linked to the course and stored per-tenant.
 
   Upload & analyse a document → POST   /api/v1/feedback/analyze
   List a course's feedback     → GET    /api/v1/feedback
+  Recommend (AI) for items     → POST   /api/v1/feedback/recommend
   Delete one item              → DELETE /api/v1/feedback/items/{item_id}
   Bulk-delete items            → POST   /api/v1/feedback/bulk-delete
 
 RBAC permissions used
 ---------------------
-  feedback.view    → List feedback items
-  feedback.upload  → Upload and AI-analyse a document
-  feedback.delete  → Delete feedback items
+  feedback.view      → List feedback items
+  feedback.upload    → Upload and AI-analyse a document
+  feedback.recommend → Generate AI recommendations for feedback items
+  feedback.delete    → Delete feedback items
 
-The extraction uses the model the project already uses — the course's
-``config_model_choice`` (falling back to the catalog default) — never a
-hardcoded model. See ``promptops_app.services.feedback_service``.
+The extraction and recommendation both use the model the project already uses —
+the course's ``config_model_choice`` (falling back to the catalog default) —
+never a hardcoded model. See ``promptops_app.services.feedback_service``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
@@ -39,10 +42,23 @@ from app.schemas.feedback import (
     FeedbackDocumentRead,
     FeedbackItemRead,
     FeedbackListResponse,
+    FeedbackRecommendRequest,
+    FeedbackRecommendResponse,
 )
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _parse_refs(raw) -> list[str]:
+    """Decode the stored referenced-block labels (JSON array) → list[str]."""
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+        return [str(x) for x in val] if isinstance(val, list) else []
+    except (ValueError, TypeError):
+        return []
 
 
 def _to_item_read(item) -> FeedbackItemRead:
@@ -58,6 +74,11 @@ def _to_item_read(item) -> FeedbackItemRead:
         priority=item.priority,
         document_name=item.document.filename if item.document else None,
         created_at=item.created_at,
+        recommendation=item.recommendation,
+        recommendation_refs=_parse_refs(item.recommendation_refs),
+        recommendation_model=item.recommendation_model,
+        recommendation_status=item.recommendation_status or "none",
+        recommended_at=item.recommended_at,
     )
 
 
@@ -141,6 +162,62 @@ def list_feedback(
     return FeedbackListResponse(
         items=[_to_item_read(i) for i in items],
         total=len(items),
+    )
+
+
+@router.post(
+    "/recommend",
+    response_model=FeedbackRecommendResponse,
+    summary="Generate AI recommendations for feedback items",
+    description=(
+        "For each selected feedback item, the AI reads the item against the "
+        "relevant generated content of its course and proposes a concrete "
+        "revision. Works for one item or many (one recommendation per item). "
+        "Uses the course's configured model, falling back to the catalog default."
+    ),
+)
+def recommend_feedback(
+    body: FeedbackRecommendRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("feedback.recommend")),
+    tenant=Depends(get_tenant_context),
+) -> FeedbackRecommendResponse:
+    from promptops_app.database import FeedbackItem
+    from promptops_app.repositories import feedback_repository
+    from promptops_app.services.feedback_service import recommend_for_items
+
+    tenant_id, is_platform_admin = tenant
+    # Tenant-safe fetch: only items in the caller's project are eligible.
+    q = feedback_repository.active_items_by_ids(db, body.item_ids)
+    q = apply_tenant_filter(q, FeedbackItem, tenant_id, is_platform_admin)
+    items = q.all()
+    if not items:
+        raise NotFoundError("No matching feedback items found for this tenant.")
+
+    try:
+        recommend_for_items(
+            db, items=items, created_by=current_user.username,
+            guidance=body.guidance, model_override=body.model_choice,
+        )
+    except Exception as exc:  # unexpected structural failure — nothing persisted
+        db.rollback()
+        _log.exception("feedback_recommend_failed user=%s", current_user.username)
+        raise ValidationError("AI recommendation failed. Please try again.") from exc
+
+    db.commit()
+    for item in items:
+        db.refresh(item)
+
+    recommended = sum(1 for i in items if i.recommendation_status == "ready")
+    failed = sum(1 for i in items if i.recommendation_status == "error")
+    _log.info(
+        "feedback_recommended user=%s requested=%d ok=%d failed=%d",
+        current_user.username, len(items), recommended, failed,
+    )
+    return FeedbackRecommendResponse(
+        items=[_to_item_read(i) for i in items],
+        recommended=recommended,
+        failed=failed,
     )
 
 

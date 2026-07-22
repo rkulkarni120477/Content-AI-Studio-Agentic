@@ -154,6 +154,15 @@ _REGISTRY: dict[str, dict] = {
         "required_vars": ["document_text"],
         "optional_vars": ["document_name"],
     },
+    "feedback_recommendation": {
+        "version":      "v1",
+        "description":  "Recommend how to revise course content to address a reviewer feedback item.",
+        "required_vars": ["feedback_text", "course_content"],
+        "optional_vars": [
+            "course_name", "feedback_theme", "feedback_sentiment", "feedback_location",
+            "extra_instructions",
+        ],
+    },
     # ── Reverse pipeline (IMSCC import) — additive, file-only templates ─────────
     # Not in _STEM_COMPONENT, so they resolve straight from the file tier; the
     # forward scratch prompts above are never touched. See reverse_cas.md §S5.
