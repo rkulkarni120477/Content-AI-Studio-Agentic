@@ -114,8 +114,11 @@ export default function ImportWizardPage() {
   }
 
   function handleFeedbackImport() {
-    // Placeholder until feedback-import flow is wired.
-    toast('Feedback import is coming soon.');
+    if (!resolvedCourseId) {
+      toast.error('Course is not ready yet.');
+      return;
+    }
+    navigate(ROUTES.FEEDBACK(resolvedCourseId));
   }
 
   return (
@@ -241,9 +244,9 @@ export default function ImportWizardPage() {
                 <Button
                   variant="secondary"
                   onClick={handleFeedbackImport}
-                  title="Feedback import — coming soon"
+                  disabled={!resolvedCourseId}
                 >
-                  Feedback Import
+                  Feedback Import →
                 </Button>
               </div>
             )}
@@ -260,7 +263,7 @@ export default function ImportWizardPage() {
                   : 'Import complete — your course content is ready.'}
               </p>
               <p className={styles.done__hint}>
-                Open the Editor to review lessons, or continue with feedback import.
+                Open the Editor to review lessons, or continue to Reviewer Feedback.
               </p>
               <div className={styles.done__actions}>
                 <Button
@@ -273,9 +276,9 @@ export default function ImportWizardPage() {
                 <Button
                   variant="secondary"
                   onClick={handleFeedbackImport}
-                  title="Feedback import — coming soon"
+                  disabled={!resolvedCourseId}
                 >
-                  Feedback Import
+                  Feedback Import →
                 </Button>
               </div>
             </div>
