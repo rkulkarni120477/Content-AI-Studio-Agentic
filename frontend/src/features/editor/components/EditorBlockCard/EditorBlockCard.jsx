@@ -29,6 +29,7 @@ import { formatDateTime } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
 import MarkdownPreview from '@features/editor/components/MarkdownPreview/MarkdownPreview';
+import CompareVersionsModal from '@features/editor/components/CompareVersionsModal/CompareVersionsModal';
 import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
 import styles from './EditorBlockCard.module.scss';
@@ -111,6 +112,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
   const [itemPanelOpen, setItemPanelOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
 
   const autosaveTimer = useRef(null);
   const lastEditAt = useRef(null);
@@ -192,8 +194,14 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
   }
 
   useEffect(() => {
-    if (versionOpen) loadVersions();
-  }, [versionOpen, block.id]);
+    loadVersions();
+  }, [block.id]);
+
+  async function handleRestoreVersion(versionId) {
+    await dispatch(restoreBlockVersionThunk({ blockId: block.id, versionId })).unwrap();
+    await refreshBlocks();
+    await loadVersions();
+  }
 
   async function onSave() {
     setSaving(true);
@@ -205,6 +213,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
       setAutosaveStatus('saved');
       setShowDraftRecovery(false);
       await refreshBlocks();
+      await loadVersions();
     } finally {
       setSaving(false);
     }
@@ -219,6 +228,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
         modelChoice,
       })).unwrap();
       await refreshBlocks();
+      await loadVersions();
     } finally {
       setRegenerating(false);
     }
@@ -236,6 +246,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
       })).unwrap();
       if (res?.updated_content) setContent(res.updated_content);
       await refreshBlocks();
+      await loadVersions();
     } finally {
       setItemRegenIdx(null);
     }
@@ -384,6 +395,17 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
 
           <Button variant="primary" size="sm" fullWidth loading={saving} disabled={!canEdit || autosaveLocked} onClick={onSave}>
             💾 Save Edit
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            fullWidth
+            disabled={versions.length === 0}
+            title={versions.length === 0 ? 'No previous version to compare yet' : undefined}
+            onClick={() => setCompareOpen(true)}
+          >
+            🆚 Compare Versions
           </Button>
 
           <p className={styles.autosaveStatus}>
@@ -615,10 +637,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
               variant="primary"
               size="sm"
               disabled={!restoreVerId}
-              onClick={async () => {
-                await dispatch(restoreBlockVersionThunk({ blockId: block.id, versionId: Number(restoreVerId) }));
-                await refreshBlocks();
-              }}
+              onClick={() => handleRestoreVersion(Number(restoreVerId))}
             >
               ⏪ Restore Selected Version
             </Button>
@@ -644,6 +663,15 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
       </details>
 
       <hr className={styles.blockDivider} />
+
+      <CompareVersionsModal
+        open={compareOpen}
+        onClose={() => setCompareOpen(false)}
+        blockId={block.id}
+        versions={versions}
+        currentContent={content}
+        onRestore={handleRestoreVersion}
+      />
     </article>
   );
 }

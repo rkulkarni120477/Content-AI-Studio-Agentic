@@ -14,6 +14,8 @@ class FeedbackItemRead(BaseModel):
     id: int
     document_id: int
     course_id: Optional[int] = None
+    blueprint_id: Optional[int] = None
+    module_label: Optional[str] = None       # "Entire course" or "Module N — Title"
     feedback_text: str
     source_location: Optional[str] = None
     theme: Optional[str] = None
@@ -36,6 +38,7 @@ class FeedbackDocumentRead(BaseModel):
 
     id: int
     course_id: Optional[int] = None
+    blueprint_id: Optional[int] = None
     filename: str
     file_type: Optional[str] = None
     item_count: int = 0
@@ -92,3 +95,40 @@ class FeedbackRecommendResponse(BaseModel):
     items: List[FeedbackItemRead]
     recommended: int   # items that produced a recommendation
     failed: int        # items whose recommendation errored
+
+
+class FeedbackItemUpdateRequest(BaseModel):
+    """Remap a feedback item to a module (or entire course when null)."""
+
+    blueprint_id: Optional[int] = Field(
+        default=None,
+        description="Module blueprint id, or null for entire course.",
+    )
+
+
+class FeedbackApplyRequest(BaseModel):
+    """Apply selected feedback items to regenerate a module's content blocks."""
+
+    item_ids: List[int] = Field(..., min_length=1, description="Feedback item ids to apply.")
+    blueprint_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Target module blueprint. Required when selected items are course-wide "
+            "or map to more than one module."
+        ),
+    )
+
+
+class FeedbackApplyBlockResult(BaseModel):
+    block_id: int
+    block_label: Optional[str] = None
+
+
+class FeedbackApplyResponse(BaseModel):
+    """Summary of an apply-feedback regenerate run."""
+
+    instruction: str
+    regenerated: List[FeedbackApplyBlockResult]
+    skipped: int = 0
+    blueprint_id: int
+    module_label: str

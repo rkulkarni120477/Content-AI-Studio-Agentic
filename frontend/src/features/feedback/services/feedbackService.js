@@ -10,11 +10,20 @@ export const feedbackService = {
     return res?.items ?? [];
   },
 
-  /** Upload a document and analyse it with AI. Returns { document, items }. */
-  analyze: (file, courseId, onProgress) => {
+  /**
+   * Upload a document and analyse it with AI.
+   * @param {File} file
+   * @param {number} courseId
+   * @param {number|null|undefined} blueprintId — module scope; null/omit = entire course
+   * @param {Function} [onProgress]
+   */
+  analyze: (file, courseId, blueprintId, onProgress) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('course_id', courseId);
+    if (blueprintId != null && blueprintId !== '') {
+      formData.append('blueprint_id', String(blueprintId));
+    }
     return api.upload(FEEDBACK.ANALYZE, formData, onProgress);
   },
 
@@ -28,6 +37,19 @@ export const feedbackService = {
     if (modelChoice) body.model_choice = modelChoice;
     return api.post(FEEDBACK.RECOMMEND, body, { timeout: 300_000 });
   },
+
+  /** Remap an item to a module (null = entire course). */
+  updateItem: (itemId, { blueprintId }) =>
+    api.patch(FEEDBACK.UPDATE_ITEM(itemId), {
+      blueprint_id: blueprintId == null || blueprintId === '' ? null : Number(blueprintId),
+    }),
+
+  /** Apply selected items to regenerate a module's blocks. */
+  apply: ({ itemIds, blueprintId }) =>
+    api.post(FEEDBACK.APPLY, {
+      item_ids: itemIds,
+      blueprint_id: blueprintId == null || blueprintId === '' ? null : Number(blueprintId),
+    }),
 
   deleteItem: (itemId) => api.delete(FEEDBACK.DELETE_ITEM(itemId)),
 

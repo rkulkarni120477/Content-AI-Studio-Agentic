@@ -7,7 +7,7 @@ the router via ``app.core.tenant_context`` — these helpers stay tenant-agnosti
 
 from sqlalchemy.orm import joinedload
 
-from promptops_app.database import FeedbackDocument, FeedbackItem
+from promptops_app.database import FeedbackDocument, FeedbackItem, ModuleBlueprint
 
 
 # ── Writes ──────────────────────────────────────────────────────────────────
@@ -22,11 +22,13 @@ def create_document(
     content: str | None,
     model_used: str | None,
     created_by: str | None,
+    blueprint_id: int | None = None,
 ) -> FeedbackDocument:
     """Insert a feedback document row and flush to obtain its id."""
     doc = FeedbackDocument(
         project_id=project_id,
         course_id=course_id,
+        blueprint_id=blueprint_id,
         filename=filename,
         file_type=file_type,
         content=content,
@@ -41,13 +43,17 @@ def create_document(
 
 
 def create_items(db, document: FeedbackDocument, items_data: list[dict]) -> list[FeedbackItem]:
-    """Insert extracted feedback items for a document and update its item_count."""
+    """Insert extracted feedback items for a document and update its item_count.
+
+    Each item inherits ``blueprint_id`` from the parent document (module scope).
+    """
     items: list[FeedbackItem] = []
     for data in items_data:
         item = FeedbackItem(
             document_id=document.id,
             project_id=document.project_id,
             course_id=document.course_id,
+            blueprint_id=document.blueprint_id,
             feedback_text=data["feedback_text"],
             source_location=data.get("source_location") or None,
             theme=data.get("theme") or None,
@@ -86,11 +92,20 @@ def active_items_by_ids(db, ids: list[int]):
     )
 
 
-def list_active_items(db, *, course_id: int | None = None):
+def list_active_items(
+    db,
+    *,
+    course_id: int | None = None,
+    blueprint_id: int | None = None,
+    course_wide_only: bool = False,
+):
     """Base query for active feedback items, newest first.
 
     Returns a Query so the caller can layer tenant scoping (apply_tenant_filter)
     on top before executing.
+
+    ``blueprint_id`` filters to that module. ``course_wide_only`` filters to
+    items with ``blueprint_id IS NULL`` (entire-course scope).
     """
     q = (
         db.query(FeedbackItem)
@@ -99,4 +114,31 @@ def list_active_items(db, *, course_id: int | None = None):
     )
     if course_id is not None:
         q = q.filter(FeedbackItem.course_id == course_id)
+    if course_wide_only:
+        q = q.filter(FeedbackItem.blueprint_id.is_(None))
+    elif blueprint_id is not None:
+        q = q.filter(FeedbackItem.blueprint_id == blueprint_id)
     return q.order_by(FeedbackItem.id.desc())
+
+
+def get_blueprint_labels(db, blueprint_ids: set[int]) -> dict[int, str]:
+    """Return ``{blueprint_id: display_label}`` for the given ids."""
+    if not blueprint_ids:
+        return {}
+    rows = (
+        db.query(ModuleBlueprint)
+        .filter(ModuleBlueprint.id.in_(blueprint_ids))
+        .all()
+    )
+    return {bp.id: format_module_label(bp) for bp in rows}
+
+
+def format_module_label(bp: ModuleBlueprint | None) -> str:
+    """Human-readable module label for UI / API responses."""
+    if bp is None:
+        return "Entire course"
+    title = (bp.module_title or bp.title or "").strip() or f"Blueprint {bp.id}"
+    num = bp.module_number
+    if num is not None:
+        return f"Module {num} — {title}"
+    return title

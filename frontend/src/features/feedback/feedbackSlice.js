@@ -1,6 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit';
 import {
   fetchFeedbackThunk, analyzeFeedbackThunk, recommendFeedbackThunk,
+  updateFeedbackItemThunk, applyFeedbackThunk,
   deleteFeedbackItemThunk, bulkDeleteFeedbackThunk,
 } from './feedbackThunks';
 
@@ -9,6 +10,7 @@ const initialState = {
   isLoading:       false,
   isProcessing:    false,   // AI analysis of an upload in flight
   recommendingIds: [],      // feedback item ids with a recommendation in flight
+  isApplying:      false,
   error:           null,
 };
 
@@ -57,6 +59,16 @@ const feedbackSlice = createSlice({
         s.error = payload;
       })
 
+      .addCase(updateFeedbackItemThunk.fulfilled, (s, { payload }) => {
+        if (!payload?.id) return;
+        s.items = s.items.map((i) => (i.id === payload.id ? { ...i, ...payload } : i));
+      })
+      .addCase(updateFeedbackItemThunk.rejected, (s, { payload }) => { s.error = payload; })
+
+      .addCase(applyFeedbackThunk.pending,   (s) => { s.isApplying = true; s.error = null; })
+      .addCase(applyFeedbackThunk.fulfilled, (s) => { s.isApplying = false; })
+      .addCase(applyFeedbackThunk.rejected,  (s, { payload }) => { s.isApplying = false; s.error = payload; })
+
       .addCase(deleteFeedbackItemThunk.fulfilled, (s, { payload }) => {
         s.items = s.items.filter((i) => i.id !== payload.id);
       })
@@ -75,4 +87,5 @@ export const selectFeedbackItems      = (s) => s.feedback.items;
 export const selectFeedbackLoading    = (s) => s.feedback.isLoading;
 export const selectFeedbackProcessing = (s) => s.feedback.isProcessing;
 export const selectFeedbackRecommending = (s) => s.feedback.recommendingIds;
+export const selectFeedbackApplying   = (s) => s.feedback.isApplying;
 export const selectFeedbackError      = (s) => s.feedback.error;

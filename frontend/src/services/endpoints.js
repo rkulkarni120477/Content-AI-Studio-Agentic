@@ -115,6 +115,8 @@ export const FEEDBACK = {
   LIST:        '/api/v1/feedback',
   ANALYZE:     '/api/v1/feedback/analyze',
   RECOMMEND:   '/api/v1/feedback/recommend',
+  APPLY:       '/api/v1/feedback/apply',
+  UPDATE_ITEM: (id) => `/api/v1/feedback/items/${id}`,
   DELETE_ITEM: (id) => `/api/v1/feedback/items/${id}`,
   BULK_DELETE: '/api/v1/feedback/bulk-delete',
 };
@@ -198,6 +200,7 @@ export const BLOCKS = {
   REGENERATE:       (id)       => `/api/v1/${id}/regenerate`,
   REGENERATE_ITEM:  (id)       => `/api/v1/${id}/regenerate-item`,
   VERSIONS:         (id)       => `/api/v1/${id}/versions`,
+  GET_VERSION:      (id, v)    => `/api/v1/${id}/versions/${v}`,
   RESTORE_VERSION:  (id, v)    => `/api/v1/${id}/versions/${v}/restore`,
   SNAPSHOT:         (id)       => `/api/v1/${id}/snapshot`,
   SCORE:            (id)       => `/api/v1/${id}/score`,

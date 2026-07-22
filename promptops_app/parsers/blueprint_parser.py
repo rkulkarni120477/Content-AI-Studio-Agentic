@@ -160,7 +160,7 @@ def patch_item_in_section(original_text: str, item_index: int, new_item_text: st
     new_item_text = new_item_text.strip()
 
     if target["type"] == "paragraph":
-        paras = [p.strip() for p in _re_engine.split(r"\n{2,}", original_text)]
+        paras = [p.strip() for p in _re_engine.split(r"\n{2,}", original_text) if p.strip()]
         if item_index < len(paras):
             paras[item_index] = new_item_text
         return "\n\n".join(paras)

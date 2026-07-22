@@ -24,6 +24,10 @@
   gap: $space-3;
 }
 
+.scopeSelect {
+  max-width: 420px;
+}
+
 .processing {
   display: flex;
   align-items: center;
@@ -191,6 +195,7 @@
 
 .colCheck  { width: 38px; }
 .colId     { width: 40px; color: $color-gray-400; font-variant-numeric: tabular-nums; font-weight: $font-weight-semibold; }
+.colModule { width: 200px; min-width: 160px; }
 .colActions { width: 190px; text-align: right; }
 
 .rowActions {
@@ -198,6 +203,25 @@
   align-items: center;
   justify-content: flex-end;
   gap: $space-2;
+}
+
+.moduleSelect {
+  width: 100%;
+  max-width: 220px;
+  border: 1px solid $color-gray-200;
+  background: $color-white;
+  color: $color-gray-800;
+  border-radius: $radius-md;
+  padding: $space-1 $space-2;
+  font-family: inherit;
+  font-size: $font-size-xs;
+  cursor: pointer;
+
+  &:focus {
+    outline: 2px solid $color-primary;
+    outline-offset: -1px;
+    border-color: $color-primary;
+  }
 }
 
 .fbText {
@@ -385,6 +409,13 @@
   &__ai { color: $color-primary; }
 }
 
+.recHead__actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+}
+
 .recModel {
   font-size: $font-size-xs;
   font-family: $font-family-mono, monospace;
@@ -469,10 +500,11 @@
   align-items: center;
   gap: $space-3;
   margin-top: $space-3;
+
+  .linkBtn { margin-left: auto; }
 }
 
 .recTime {
-  margin-left: auto;
   font-size: $font-size-xs;
   color: $color-gray-400;
 }
@@ -551,4 +583,47 @@
   font-size: $font-size-sm;
   color: $color-danger;
   padding: $space-2 0;
+}
+
+/* ── Apply feedback modal ── */
+.applyBody {
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+}
+
+.applyLead {
+  margin: 0;
+  font-size: $font-size-sm;
+  color: $color-gray-700;
+  line-height: $line-height-normal;
+}
+
+.applyPreview {
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  background: $color-gray-50;
+  overflow: hidden;
+
+  &__label {
+    padding: $space-2 $space-3;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: $color-gray-500;
+    border-bottom: 1px solid $color-gray-200;
+  }
+
+  pre {
+    margin: 0;
+    padding: $space-3;
+    font-family: inherit;
+    font-size: $font-size-xs;
+    color: $color-gray-800;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow: auto;
+  }
 }
