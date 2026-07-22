@@ -62,14 +62,6 @@ dev = [
     "pre-commit>=4.0",
 ]
 
-# Streamlit kept as optional so the Streamlit app still runs during transition.
-# Remove once migration to React is complete (Phase 6).
-streamlit = [
-    "streamlit>=1.34",
-    "extra-streamlit-components>=0.1.7",
-    "plotly>=5.22",
-]
-
 # ---------------------------------------------------------------------------
 # Ruff — linter and formatter (replaces Black + Flake8 + isort)
 # ---------------------------------------------------------------------------

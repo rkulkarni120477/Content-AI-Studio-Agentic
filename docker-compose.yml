@@ -12,9 +12,6 @@
 #   View API logs:     docker-compose logs -f api
 #   View worker logs:  docker-compose logs -f celery-worker
 #   Stop all:          docker-compose down
-#
-# During Streamlit → FastAPI transition, the legacy Streamlit app can be
-# run manually on a separate port alongside this stack.
 # =============================================================================
 
 services:
@@ -62,24 +59,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
- 
- 
-  promptops:
-    build: .
- 
-    container_name: ${APP_CONTAINER_NAME}
- 
-    ports:
-      - "${APP_PORT}:8501"
- 
-    env_file:
-      - .env
- 
-    depends_on:
-      redis:
-        condition: service_healthy
- 
-    restart: unless-stopped
  
  
   celery_worker:
