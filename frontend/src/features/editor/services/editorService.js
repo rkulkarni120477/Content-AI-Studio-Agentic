@@ -68,6 +68,8 @@ export const editorService = {
 
   getBlockVersions: (id) => api.get(BLOCKS.VERSIONS(id)),
 
+  getBlockVersion: (id, versionId) => api.get(BLOCKS.GET_VERSION(id, versionId)),
+
   restoreVersion: (blockId, versionId) => api.post(BLOCKS.RESTORE_VERSION(blockId, versionId)),
 
   createSnapshot: (id, label) => api.post(BLOCKS.SNAPSHOT(id), { label: label || 'Manual snapshot' }),

@@ -145,6 +145,10 @@ class BlockVersionListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BlockVersionDetail(BlockVersionListItem):
+    content: str
+
+
 class BlockRestoreResponse(BaseModel):
     block_id: int
     restored_to_version: int

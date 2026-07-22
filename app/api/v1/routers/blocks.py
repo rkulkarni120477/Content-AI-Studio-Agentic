@@ -53,6 +53,7 @@ from app.schemas.block import (
     BlockSnapshotResponse,
     BlockUpdateRequest,
     BlockValidateResponse,
+    BlockVersionDetail,
     BlockVersionListItem,
     BlockVersionRead,
     GenerationValidateResponse,
@@ -73,6 +74,24 @@ def _get_block_or_404(db: Session, block_id: int):
     if block is None:
         raise NotFoundError("Block", block_id)
     return block
+
+
+def _version_fields(version) -> dict:
+    """Map a BlockVersion ORM row onto the API's version_id/version_number field names.
+
+    The ORM columns are `id`/`version_num` — `model_validate(orm_obj, from_attributes=True)`
+    can't bridge that rename, so build the dict explicitly instead.
+    """
+    return {
+        "version_id": version.id,
+        "version_number": str(version.version_num) if version.version_num is not None else None,
+        "change_source": version.change_source,
+        "change_note": version.change_note,
+        "created_by": version.created_by,
+        "created_at": version.created_at,
+        "word_count": version.word_count,
+        "workflow_state_at_save": version.workflow_state_at_save,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -365,11 +384,13 @@ def regenerate_block_item(
 
     Calls regen_single_item() from blueprint_parser.py.
     """
+    from promptops_app.core.constants import ChangeSource
     from promptops_app.parsers.blueprint_parser import (
         parse_items_from_section,
         patch_item_in_section,
         regen_single_item,
     )
+    from promptops_app.repositories.block_repo import save_block_version
 
     block = _get_block_or_404(db, block_id)
 
@@ -389,6 +410,15 @@ def regenerate_block_item(
         model_choice=request_body.model_choice,
     )
     updated_content = patch_item_in_section(original, item_index, new_item_text)
+
+    # Save pre-change content as a version before overwriting, same as full-block
+    # regenerate — otherwise item-level regens never show up in version history.
+    save_block_version(
+        db, block,
+        change_source=ChangeSource.ITEM_REGENERATION,
+        change_note=f"Item {item_index + 1} regenerated",
+        created_by=current_user.username,
+    )
 
     block.content = updated_content
     db.commit()
@@ -413,7 +443,28 @@ def list_block_versions(block_id: int, db: Session = Depends(get_db), current_us
     from promptops_app.repositories.block_repo import get_block_versions
     _get_block_or_404(db, block_id)
     versions = get_block_versions(db, block_id)
-    return [BlockVersionListItem.model_validate(v) for v in versions]
+    return [BlockVersionListItem(**_version_fields(v)) for v in versions]
+
+
+@router.get(
+    "/{block_id}/versions/{version_id}",
+    response_model=BlockVersionDetail,
+    summary="Get a single version's full content",
+)
+def get_block_version_detail(
+    block_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> BlockVersionDetail:
+    """Return the full stored content of one version, for side-by-side comparison."""
+    from promptops_app.repositories.block_repo import get_block_version
+
+    _get_block_or_404(db, block_id)
+    version = get_block_version(db, block_id, version_id)
+    if not version:
+        raise NotFoundError("BlockVersion", version_id)
+    return BlockVersionDetail(**_version_fields(version), content=version.content or "")
 
 
 @router.post(
