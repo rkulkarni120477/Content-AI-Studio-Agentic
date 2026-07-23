@@ -314,10 +314,10 @@ class ContextRetrievalService:
         # before this field existed have no course_id at all — those must stay
         # visible in every course rather than disappear, so an untagged doc
         # (src has no course_id) always passes regardless of the filter value.
-        course_id_filter = filters.get("course_id")
-        if course_id_filter not in (None, "") and str(course_id_filter).strip().lower() not in {"all", "*", "any"}:
+        course_id_filter = str(filters.get("course_id") or "").strip()
+        if course_id_filter and course_id_filter.lower() not in {"all", "*", "any"}:
             src_course_id = str(src.get("course_id") or "").strip()
-            if src_course_id and src_course_id != str(course_id_filter).strip():
+            if src_course_id and src_course_id != course_id_filter:
                 return False
         purpose = str(filters.get("purpose") or "").strip().lower()
         if purpose and purpose not in {"all", "*", "any"}:

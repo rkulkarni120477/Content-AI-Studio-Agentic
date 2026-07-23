@@ -228,6 +228,7 @@ async def scan_source_folder(
     resolved_client = _resolved_client(current_user, db, client_id=client_id or str(payload.get("client_id", "")), project_id=project_id, course_id=course_id)
     payload = dict(payload)
     payload["client_id"] = resolved_client
+    payload["course_id"] = str(course_id) if course_id is not None else ""
     return await dis_client.folder_scan(payload=payload, current_user=current_user, client_id=resolved_client)
 
 

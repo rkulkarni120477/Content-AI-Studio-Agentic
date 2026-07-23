@@ -1836,14 +1836,15 @@ def get_styles(db, project_id: int | None = None, course_id: int | None = None) 
 
     if course_id:
         course = db.query(Course).filter(Course.id == course_id).first()
-        if course:
-            if course.active_style_id:
-                style_ids.add(course.active_style_id)
-            resolved_project_id = project_id or course.project_id
-            if resolved_project_id:
-                proj = db.query(Project).filter(Project.id == resolved_project_id).first()
-                if proj and proj.active_style_id:
-                    style_ids.add(proj.active_style_id)
+        if course and course.active_style_id:
+            style_ids.add(course.active_style_id)
+        # Fall back to the project default even if the course row is missing/stale
+        # (e.g. a deleted course_id) as long as a project_id was actually given.
+        resolved_project_id = project_id or (course.project_id if course else None)
+        if resolved_project_id:
+            proj = db.query(Project).filter(Project.id == resolved_project_id).first()
+            if proj and proj.active_style_id:
+                style_ids.add(proj.active_style_id)
     elif project_id:
         proj = db.query(Project).filter(Project.id == project_id).first()
         if proj and proj.active_style_id:
