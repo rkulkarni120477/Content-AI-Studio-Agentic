@@ -110,6 +110,12 @@ export const DOCUMENTS = {
   STYLE_DOCS:       (styleId) => `/api/v1/styles/${styleId}/documents`,
 };
 
+// ─── Editor assets (image upload) ─────────────────────────────────────────────
+export const ASSETS = {
+  UPLOAD:           '/api/v1/assets/upload',
+  CLEANUP:          '/api/v1/assets/cleanup',
+};
+
 // ─── Reviewer Feedback ────────────────────────────────────────────────────────
 export const FEEDBACK = {
   LIST:        '/api/v1/feedback',

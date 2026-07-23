@@ -28,7 +28,7 @@ import { renderInlineMarkdown } from '@utils/markdownPreview';
 import { formatDateTime } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
-import MarkdownPreview from '@features/editor/components/MarkdownPreview/MarkdownPreview';
+import UnifiedBlockEditor from '@features/editor/components/UnifiedBlockEditor/UnifiedBlockEditor';
 import CompareVersionsModal from '@features/editor/components/CompareVersionsModal/CompareVersionsModal';
 import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
@@ -116,6 +116,9 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
 
   const autosaveTimer = useRef(null);
   const lastEditAt = useRef(null);
+  // Images uploaded during this editing session — used to clean up ones that
+  // were uploaded but never kept in saved content (orphan uploads).
+  const sessionUploadsRef = useRef(new Set());
 
   const changed = content.trim() !== (block.content || '').trim();
   const canEdit = [WORKFLOW_STATES.DRAFT, WORKFLOW_STATES.CHANGES_REQUESTED, WORKFLOW_STATES.REJECTED]
@@ -203,6 +206,22 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
     await loadVersions();
   }
 
+  async function cleanupAbandonedUploads(savedContent) {
+    const uploaded = [...sessionUploadsRef.current];
+    if (uploaded.length === 0) return;
+    // Any session-uploaded image not present in the just-saved content was
+    // uploaded then removed — ask the backend to delete it (it re-checks safety).
+    const abandoned = uploaded.filter((url) => !savedContent.includes(url));
+    // Keep only URLs that are still in the saved content for future comparisons.
+    sessionUploadsRef.current = new Set(uploaded.filter((url) => savedContent.includes(url)));
+    if (abandoned.length === 0) return;
+    try {
+      await editorService.cleanupAssets(abandoned);
+    } catch {
+      /* best-effort — never block the editor on cleanup */
+    }
+  }
+
   async function onSave() {
     setSaving(true);
     try {
@@ -212,6 +231,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
       })).unwrap();
       setAutosaveStatus('saved');
       setShowDraftRecovery(false);
+      await cleanupAbandonedUploads(content);
       await refreshBlocks();
       await loadVersions();
     } finally {
@@ -355,8 +375,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
         </div>
       </details>
 
-      <div className={styles.columns}>
-        <div className={styles.editCol}>
+      <div className={styles.editorSection}>
           {showDraftRecovery && block.draft_content && (
             <div className={styles.draftBanner}>
               <strong>📂 Unsaved draft found</strong>
@@ -368,13 +387,12 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
             </div>
           )}
 
-          <label className={styles.fieldLabel}>✏️ Edit Block (Markdown)</label>
-          <textarea
-            className={styles.textarea}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
+          <label className={styles.fieldLabel}>✏️ Edit Block</label>
+          <UnifiedBlockEditor
+            content={content}
+            onChange={setContent}
             disabled={!canEdit || autosaveLocked}
-            rows={16}
+            onAssetUploaded={(url) => sessionUploadsRef.current.add(url)}
           />
 
           {changed && canEdit && (
@@ -526,12 +544,6 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
           >
             {regenerating ? 'Regenerating…' : '🔄 Regenerate'}
           </button>
-        </div>
-
-        <div className={styles.previewCol}>
-          <p className={styles.previewCaption}>Live Preview</p>
-          <MarkdownPreview content={content} />
-        </div>
       </div>
 
       <details className={styles.stExpander} open={reviewOpen} onToggle={(e) => setReviewOpen(e.target.open)}>

@@ -255,12 +255,22 @@ def update_block(
     """
     from promptops_app.repositories.block_repo import save_block_version
     from promptops_app.core.constants import ChangeSource
+    from promptops_app.services.content_sanitizer import sanitize_stored_content
+    from app.services.asset_cleanup import cleanup_removed_assets
 
     block = _get_block_or_404(db, block_id)
+    old_content = block.content
     save_block_version(db, block, change_source=ChangeSource.EDIT, created_by=current_user.username)
-    block.content = request_body.content
+    new_content = sanitize_stored_content(request_body.content)
+    block.content = new_content
     db.commit()
     db.refresh(block)
+
+    # Reference-aware S3 cleanup for images removed from this block (best-effort).
+    try:
+        cleanup_removed_assets(db, old_content, new_content)
+    except Exception:  # noqa: BLE001 — cleanup must never fail the save
+        _log.exception("asset_cleanup_on_save_failed  block_id=%d", block_id)
 
     _log.info("block_edited  user=%s  block_id=%d", current_user.username, block_id)
     return BlockRead.model_validate(block)
@@ -285,6 +295,7 @@ def autosave_block(
     Skipped if the block is in an approved or published state.
     """
     from promptops_app.core.constants import WorkflowState
+    from promptops_app.services.content_sanitizer import sanitize_stored_content
 
     block = _get_block_or_404(db, block_id)
 
@@ -293,7 +304,7 @@ def autosave_block(
         from datetime import datetime, timezone
         return BlockAutosaveResponse(saved=False, saved_at=datetime.now(timezone.utc).isoformat())
 
-    block.content = request_body.content
+    block.content = sanitize_stored_content(request_body.content)
     db.commit()
 
     from datetime import datetime, timezone
@@ -350,7 +361,9 @@ def regenerate_block(
     versions = block.versions if hasattr(block, 'versions') else []
     version_label = f"v{len(versions) + 1}"
 
-    block.content = llm_result.text
+    from promptops_app.services.content_sanitizer import sanitize_stored_content
+    clean_content = sanitize_stored_content(llm_result.text)
+    block.content = clean_content
     db.commit()
 
     _log.info("block_regenerated  user=%s  block_id=%d  model=%s",
@@ -358,7 +371,7 @@ def regenerate_block(
 
     return BlockRegenerateResponse(
         block_id=block_id,
-        content=llm_result.text,
+        content=clean_content,
         model_used=llm_result.model or request_body.model_choice,
         tokens_used=(
             (llm_result.prompt_tokens or 0) + (llm_result.completion_tokens or 0)
@@ -409,7 +422,8 @@ def regenerate_block_item(
         custom_instruction=request_body.feedback or "",
         model_choice=request_body.model_choice,
     )
-    updated_content = patch_item_in_section(original, item_index, new_item_text)
+    from promptops_app.services.content_sanitizer import sanitize_stored_content
+    updated_content = sanitize_stored_content(patch_item_in_section(original, item_index, new_item_text))
 
     # Save pre-change content as a version before overwriting, same as full-block
     # regenerate — otherwise item-level regens never show up in version history.

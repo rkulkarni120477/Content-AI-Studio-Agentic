@@ -203,6 +203,7 @@ def permanently_delete_course(
     must be archived first via ``DELETE /courses/{id}``.
     """
     from promptops_app.repositories import course_repository
+    from app.services.asset_cleanup import collect_course_assets, delete_unreferenced
 
     course = _get_course_or_404(db, course_id)
     if course.is_active:
@@ -211,7 +212,17 @@ def permanently_delete_course(
             detail={"course_id": course_id, "is_active": True},
         )
 
+    # Snapshot the course's uploaded images before its blocks/versions are gone.
+    candidate_assets = collect_course_assets(db, course_id)
+
     course_repository.purge_course(db, course_id)
+
+    # After purge, delete any of those images now referenced nowhere (best-effort).
+    try:
+        delete_unreferenced(db, candidate_assets)
+    except Exception:  # noqa: BLE001 — cleanup must never fail the purge
+        _log.exception("asset_cleanup_on_purge_failed  course_id=%d", course_id)
+
     _log.info("course_purged  user=%s  course_id=%d", current_user.username, course_id)
 
 

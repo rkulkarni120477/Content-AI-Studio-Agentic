@@ -1812,11 +1812,17 @@ def add_files_to_style(db, style: "Style", new_doc_ids: list):
 def get_styles(db, project_id: int | None = None, course_id: int | None = None) -> list:
     """Return styles ordered by most recently updated.
 
-    When ``project_id`` and/or ``course_id`` is provided, restrict to styles that
-    belong to that tenant workspace:
-      * the course's ``active_style_id`` (if ``course_id`` given)
-      * the project's ``active_style_id``
-      * any ``active_style_id`` on courses in the same project
+    When ``course_id`` is given, restrict strictly to that course's own workspace:
+      * the course's ``active_style_id``
+      * the project's ``active_style_id`` (fallback default only)
+
+    Sibling courses' active styles are never included here — a course must only
+    ever see its own style plus the project-wide default, not what other courses
+    in the same project have activated.
+
+    When only ``project_id`` is given (no course_id — a project-wide view, not a
+    course-scoped one), the legacy behaviour of surfacing every course's active
+    style in that project is preserved.
 
     Styles are activation-scoped (no ownership columns on ``styles``), so this is
     the only reliable tenant filter without a schema change. Unscoped calls keep
@@ -1828,23 +1834,25 @@ def get_styles(db, project_id: int | None = None, course_id: int | None = None) 
 
     style_ids: set[int] = set()
 
-    resolved_project_id = project_id
     if course_id:
         course = db.query(Course).filter(Course.id == course_id).first()
-        if course:
-            if course.active_style_id:
-                style_ids.add(course.active_style_id)
-            if resolved_project_id is None:
-                resolved_project_id = course.project_id
-
-    if resolved_project_id:
-        proj = db.query(Project).filter(Project.id == resolved_project_id).first()
+        if course and course.active_style_id:
+            style_ids.add(course.active_style_id)
+        # Fall back to the project default even if the course row is missing/stale
+        # (e.g. a deleted course_id) as long as a project_id was actually given.
+        resolved_project_id = project_id or (course.project_id if course else None)
+        if resolved_project_id:
+            proj = db.query(Project).filter(Project.id == resolved_project_id).first()
+            if proj and proj.active_style_id:
+                style_ids.add(proj.active_style_id)
+    elif project_id:
+        proj = db.query(Project).filter(Project.id == project_id).first()
         if proj and proj.active_style_id:
             style_ids.add(proj.active_style_id)
         for sid in (
             db.query(Course.active_style_id)
             .filter(
-                Course.project_id == resolved_project_id,
+                Course.project_id == project_id,
                 Course.active_style_id.isnot(None),
             )
             .all()
