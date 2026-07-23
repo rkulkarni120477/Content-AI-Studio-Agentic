@@ -12,6 +12,25 @@ function renderOption(opt) {
   );
 }
 
+/**
+ * Native <optgroup> labels are OS-styled on macOS and often nearly invisible.
+ * Disabled options as section headers keep group titles readable on all platforms
+ * without changing selectable values / onChange behavior.
+ */
+function renderGroups(groups) {
+  return groups.flatMap((group) => [
+    <option
+      key={`__group__${group.label}`}
+      value={`__group__${group.label}`}
+      disabled
+      className={styles.field__groupTitle}
+    >
+      {group.label}
+    </option>,
+    ...group.options.map(renderOption),
+  ]);
+}
+
 const Select = forwardRef(function Select(
   { label, id, error, hint, required, options = [], groups, placeholder, wrapperClassName, className, ...rest },
   ref,
@@ -36,13 +55,7 @@ const Select = forwardRef(function Select(
           {...rest}
         >
           {placeholder && <option value="">{placeholder}</option>}
-          {groups
-            ? groups.map((group) => (
-              <optgroup key={group.label} label={group.label}>
-                {group.options.map(renderOption)}
-              </optgroup>
-            ))
-            : options.map(renderOption)}
+          {groups ? renderGroups(groups) : options.map(renderOption)}
         </select>
         <span className={styles.field__chevron} aria-hidden="true">▾</span>
       </div>
