@@ -1,6 +1,6 @@
 """CDD Repository — CourseDesignDocument and CDDVersion database access."""
 
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 
 from promptops_app.database import CourseDesignDocument, CDDVersion
 
@@ -21,23 +21,26 @@ def list_cdds_for_scope(
     course_id: int | None = None,
     limit: int = 200,
 ):
-    """List CDDs for a project (Streamlit parity), including legacy rows with null project_id on this course."""
+    """List CDDs for a project/course.
+
+    When ``course_id`` is given, it is always an AND filter — CDDs from other
+    courses in the same project must never leak in. Legacy rows with a null
+    ``project_id`` are matched by course_id alone rather than excluded.
+    """
     q = db.query(CourseDesignDocument)
-    if project_id is not None:
-        if course_id is not None:
+    if course_id is not None:
+        if project_id is not None:
             q = q.filter(
+                CourseDesignDocument.course_id == course_id,
                 or_(
                     CourseDesignDocument.project_id == project_id,
-                    and_(
-                        CourseDesignDocument.project_id.is_(None),
-                        CourseDesignDocument.course_id == course_id,
-                    ),
-                )
+                    CourseDesignDocument.project_id.is_(None),
+                ),
             )
         else:
-            q = q.filter(CourseDesignDocument.project_id == project_id)
-    elif course_id is not None:
-        q = q.filter(CourseDesignDocument.course_id == course_id)
+            q = q.filter(CourseDesignDocument.course_id == course_id)
+    elif project_id is not None:
+        q = q.filter(CourseDesignDocument.project_id == project_id)
     return (
         q.order_by(CourseDesignDocument.created_at.desc())
         .limit(limit)

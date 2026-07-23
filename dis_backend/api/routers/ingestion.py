@@ -29,6 +29,8 @@ _scans: Dict[str, Dict[str, Any]] = {}  # scan-level tracking for folder-scan
 class FolderScanRequest(BaseModel):
     folder_path: str = Field(..., description="Server-side folder path. For local testing, this is a Windows path on the machine running FastAPI, for example C:\\...\\DIS\\data")
     client_id: str = ""
+    course_id: str = ""
+    course_name: str = ""
     recursive: bool = True
     dry_run: bool = False
     skip_duplicates: bool = True
@@ -240,6 +242,7 @@ def _build_source_library_payload(
         "file_sha256": sha,
         "content_hash": hashlib.sha256(extracted.encode("utf-8", errors="ignore")).hexdigest(),
         "course_name": hints.get("course_name") or "",
+        "course_id": str(hints.get("course_id") or ""),
         "block": hints.get("block") or "",
         "day": hints.get("day") or "",
         "chapter": hints.get("chapter") or "",
@@ -405,6 +408,7 @@ async def upload_file(
     document_type: str = Form(""),
     visibility: str = Form("instructor"),
     course_name: str = Form(""),
+    course_id: str = Form(""),
     block: str = Form(""),
     day: str = Form(""),
     chapter: str = Form(""),
@@ -465,8 +469,8 @@ async def upload_file(
 
     metadata_hints = {
         "purpose": purpose, "document_type": document_type, "visibility": visibility,
-        "course_name": course_name, "block": block, "day": day, "chapter": chapter,
-        "module_name": module_name, "learning_objective": learning_objective,
+        "course_name": course_name, "course_id": course_id, "block": block, "day": day,
+        "chapter": chapter, "module_name": module_name, "learning_objective": learning_objective,
     }
 
     # Product behavior: Source Library must show the file immediately after upload.
@@ -509,8 +513,10 @@ async def batch_upload(
     request: Request, background_tasks: BackgroundTasks,
     _=Depends(require_role("client_admin")),
     files: List[UploadFile] = File(...), client_id: str = Form(""),
+    course_id: str = Form(""), course_name: str = Form(""),
 ):
     tenant_cfg: TenantConfig = get_current_tenant(request)
+    metadata_hints = {"course_id": course_id, "course_name": course_name}
     tenant_cfg, actual_client_id = _resolve_tenant_and_client_for_ingestion(request, tenant_cfg, client_id)
     client_cfg = tenant_cfg.get_client(actual_client_id)
     if not client_cfg:
@@ -549,7 +555,7 @@ async def batch_upload(
                     job_id=job_id, user_id=getattr(request.state, "user_id", "batch"),
                     filename=f.filename or "unnamed", content=content,
                     content_type=f.content_type or "application/octet-stream", raw_storage_url=storage_url,
-                    s3_key=s3_key, metadata_hints={},
+                    s3_key=s3_key, metadata_hints=metadata_hints,
                 )
                 payload_url = _write_source_library_payload(
                     tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload
@@ -564,6 +570,7 @@ async def batch_upload(
                 _process, job_id=job_id, tenant_cfg=tenant_cfg, client_id=actual_client_id,
                 user_id=getattr(request.state, "user_id", "batch"), namespace=namespace,
                 filename=f.filename or "unnamed", s3_key=s3_key, content=content, raw_storage_url=storage_url,
+                metadata_hints=metadata_hints,
             )
             results.append({"filename": f.filename, "job_id": job_id, "status": "accepted"})
         else:
@@ -648,6 +655,10 @@ async def folder_scan(request: Request, body: FolderScanRequest, background_task
     report_url = ArtifactWriter(tenant_cfg).write_json(report_key, initial_report)
     _scans[scan_id] = {**initial_report, "validation_report_url": report_url}
 
+    # CAS-supplied course scope, so folder-scanned documents get isolated to the
+    # course they were scanned for, same as single-file /ingest/upload.
+    metadata_hints = {"course_id": body.course_id, "course_name": body.course_name}
+
     background_tasks.add_task(
         _process_folder_scan_parallel,
         scan_id=scan_id,
@@ -661,6 +672,7 @@ async def folder_scan(request: Request, body: FolderScanRequest, background_task
         max_workers=max_workers,
         report_key=report_key,
         report_url=report_url,
+        metadata_hints=metadata_hints,
     )
 
     return {
@@ -678,7 +690,8 @@ async def folder_scan(request: Request, body: FolderScanRequest, background_task
 
 async def _process_folder_scan_parallel(
     *, scan_id: str, tenant_cfg: TenantConfig, client_id: str, user_id: str, namespace: str,
-    root: Path, files: List[Path], skip_duplicates: bool, max_workers: int, report_key: str, report_url: str
+    root: Path, files: List[Path], skip_duplicates: bool, max_workers: int, report_key: str, report_url: str,
+    metadata_hints: Optional[Dict[str, Any]] = None,
 ):
     """Process a folder scan with bounded local concurrency.
 
@@ -719,12 +732,14 @@ async def _process_folder_scan_parallel(
                     source_relative_path=rel_with_root,
                     source_root=str(root),
                     skip_duplicate=skip_duplicates,
+                    metadata_hints=metadata_hints,
                 )
                 await _process(
                     job_id=job_id, tenant_cfg=tenant_cfg, client_id=client_id, user_id=user_id,
                     namespace=namespace, filename=path.name, s3_key=_jobs[job_id]["s3_key"],
                     content=content, raw_storage_url=_jobs[job_id].get("storage_url", ""),
                     source_relative_path=rel_with_root, source_root=str(root),
+                    metadata_hints=metadata_hints,
                 )
                 status = _jobs.get(job_id, {}).get("status")
                 if status == JobStatus.COMPLETED:
@@ -784,7 +799,8 @@ async def _process_folder_scan_parallel(
 
 async def _create_job_record_and_upload(
     *, tenant_cfg: TenantConfig, client_id: str, user_id: str, namespace: str, filename: str,
-    content: bytes, content_type: str, source_relative_path: str, source_root: str, skip_duplicate: bool
+    content: bytes, content_type: str, source_relative_path: str, source_root: str, skip_duplicate: bool,
+    metadata_hints: Optional[Dict[str, Any]] = None,
 ) -> str:
     client_cfg = tenant_cfg.get_client(client_id)
     if not client_cfg:
@@ -830,7 +846,7 @@ async def _create_job_record_and_upload(
             job_id=job_id, user_id=user_id, filename=filename or "unnamed",
             content=content, content_type=content_type or "application/octet-stream",
             raw_storage_url=storage_url, s3_key=s3_key, source_relative_path=safe_rel_path,
-            source_root=source_root, metadata_hints={},
+            source_root=source_root, metadata_hints=metadata_hints or {},
         )
         payload_url = _write_source_library_payload(
             tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload
