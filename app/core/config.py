@@ -143,6 +143,32 @@ class AppSettings(BaseSettings):
         alias="BEDROCK_MODEL_ID",
     )
 
+    # ── Editor asset storage (S3) ─────────────────────────────────────────────
+    # Editor images live in the DIS S3 bucket. That bucket is in its own AWS
+    # account/region (us-east-1), which differs from the Bedrock AWS creds/region
+    # above (ap-south-1) — so assets get their OWN region + credentials, falling
+    # back to the main AWS ones only when left blank. Leave the bucket blank to
+    # disable upload (the editor still supports image URLs).
+    assets_s3_bucket: str = Field(default="", alias="DIS_S3_BUCKET")
+    assets_s3_base_prefix: str = Field(default="", alias="DIS_S3_BASE_PREFIX")
+    assets_s3_region: str = Field(default="", alias="DIS_S3_REGION")
+    assets_s3_access_key_id: SecretStr = Field(
+        default=SecretStr(""), alias="DIS_S3_ACCESS_KEY_ID",
+    )
+    assets_s3_secret_access_key: SecretStr = Field(
+        default=SecretStr(""), alias="DIS_S3_SECRET_ACCESS_KEY",
+    )
+    aws_endpoint_url: str = Field(default="", alias="AWS_ENDPOINT_URL")
+    assets_max_upload_mb: int = Field(
+        default=5, alias="CAS_ASSETS_MAX_UPLOAD_MB", gt=0,
+    )
+    # When True, uploads set a per-object public-read ACL. Leave False when the
+    # bucket serves the cas-assets/ prefix via a bucket POLICY (the case for the
+    # shared DIS bucket, which has ACLs disabled) — avoids a doomed ACL PutObject.
+    assets_s3_public_acl: bool = Field(
+        default=False, alias="CAS_ASSETS_PUBLIC_ACL",
+    )
+
     # ── LLM behaviour ─────────────────────────────────────────────────────────
     llm_timeout_seconds: int = Field(
         default=120,

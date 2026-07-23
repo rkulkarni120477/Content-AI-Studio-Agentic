@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { BLOCKS, EXPORT, GENERATE, PLAGIARISM, PROMPTS, USERS, WORKFLOW } from '@services/endpoints';
+import { ASSETS, BLOCKS, EXPORT, GENERATE, PLAGIARISM, PROMPTS, USERS, WORKFLOW } from '@services/endpoints';
 
 async function listAllPages(fetchPage) {
   const pageSize = 100;
@@ -89,6 +89,8 @@ export const editorService = {
   exportCourse: (courseId, format, template) => api.download(BLOCKS.EXPORT_COURSE(courseId), {
     params: { format, template: template || 'default' },
   }),
+
+  cleanupAssets: (urls) => api.post(ASSETS.CLEANUP, { urls }),
 
   triggerPlagiarism: (blockId) => api.post(PLAGIARISM.SCAN(blockId)),
 
