@@ -151,6 +151,7 @@ async def list_source_documents(
         "module_name": module_name,
         "learning_objective": learning_objective,
         "course_name": course_name,
+        "course_id": str(course_id) if course_id is not None else "",
         "limit": limit,
         "offset": offset,
     }

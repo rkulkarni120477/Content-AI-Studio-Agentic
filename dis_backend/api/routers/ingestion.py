@@ -240,6 +240,7 @@ def _build_source_library_payload(
         "file_sha256": sha,
         "content_hash": hashlib.sha256(extracted.encode("utf-8", errors="ignore")).hexdigest(),
         "course_name": hints.get("course_name") or "",
+        "course_id": str(hints.get("course_id") or ""),
         "block": hints.get("block") or "",
         "day": hints.get("day") or "",
         "chapter": hints.get("chapter") or "",
@@ -405,6 +406,7 @@ async def upload_file(
     document_type: str = Form(""),
     visibility: str = Form("instructor"),
     course_name: str = Form(""),
+    course_id: str = Form(""),
     block: str = Form(""),
     day: str = Form(""),
     chapter: str = Form(""),
@@ -465,8 +467,8 @@ async def upload_file(
 
     metadata_hints = {
         "purpose": purpose, "document_type": document_type, "visibility": visibility,
-        "course_name": course_name, "block": block, "day": day, "chapter": chapter,
-        "module_name": module_name, "learning_objective": learning_objective,
+        "course_name": course_name, "course_id": course_id, "block": block, "day": day,
+        "chapter": chapter, "module_name": module_name, "learning_objective": learning_objective,
     }
 
     # Product behavior: Source Library must show the file immediately after upload.

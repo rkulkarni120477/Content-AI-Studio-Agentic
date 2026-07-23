@@ -40,6 +40,7 @@ async def documents_library(
     module_name: str = Query(""),
     learning_objective: str = Query(""),
     course_name: str = Query(""),
+    course_id: str = Query("", description="CAS course ID. Isolates documents to the current course; blank/legacy-untagged documents remain visible everywhere."),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -60,6 +61,7 @@ async def documents_library(
         "chapter": chapter,
         "module_name": module_name,
         "course_name": course_name,
+        "course_id": course_id,
         "metadata_filters": {},
     }
     if learning_objective:
