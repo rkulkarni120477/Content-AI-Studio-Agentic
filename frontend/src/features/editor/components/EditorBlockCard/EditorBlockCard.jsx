@@ -108,7 +108,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
   const [itemRegenIdx, setItemRegenIdx] = useState(null);
   const [showDraftRecovery, setShowDraftRecovery] = useState(false);
   const [autosaveStatus, setAutosaveStatus] = useState('saved');
-  const [dashboardOpen, setDashboardOpen] = useState(true);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
   const [itemPanelOpen, setItemPanelOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -404,6 +404,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
             disabled={versions.length === 0}
             title={versions.length === 0 ? 'No previous version to compare yet' : undefined}
             onClick={() => setCompareOpen(true)}
+            className={styles.compareVersionsBtn}
           >
             🆚 Compare Versions
           </Button>

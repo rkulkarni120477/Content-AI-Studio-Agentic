@@ -172,6 +172,10 @@
   margin: 8px 0;
 }
 
+.compareVersionsBtn {
+  margin-top: 0.5rem;
+}
+
 .inlineInput {
   @include form-field-base;
   width: 100%;

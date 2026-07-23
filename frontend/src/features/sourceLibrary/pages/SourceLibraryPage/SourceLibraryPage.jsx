@@ -627,7 +627,7 @@ export default function SourceLibraryPage() {
       )}
 
       <div className={styles.grid}>
-        <aside className={styles.card}>
+        <aside className={`${styles.card} ${styles.filtersCard}`}>
           <div className={styles.cardBody}>
             <h2 className={styles.filtersTitle}>Filters</h2>
             <label className={styles.label}>Search</label>
@@ -649,8 +649,8 @@ export default function SourceLibraryPage() {
           </div>
         </aside>
 
-        <section className={styles.card}>
-          <div className={styles.cardBody}>
+        <section className={`${styles.card} ${styles.docsCard}`}>
+          <div className={`${styles.cardBody} ${styles.docsCardBody}`}>
             <h2 className={styles.filtersTitle}>Processed Documents {loading && !documents.length ? '…' : `(${displayedDocuments.length})`}</h2>
             <div className={styles.tableWrap}>
               <table className={styles.table}>

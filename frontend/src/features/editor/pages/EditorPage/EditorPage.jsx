@@ -451,36 +451,93 @@ export default function EditorPage() {
           subtitle="Review, edit, and refine generated blocks. Submit quality reviews, run AI evaluations, and export to Markdown, JSON, HTML, or DOCX."
         />
 
-        {moduleOptions.length > 0 && (
-          <div className={styles.moduleExportPanel}>
-            <p className={styles.moduleExportPanel__title}>
-              📦 Download all lessons from a module in one file
-            </p>
-            <Select
-              wrapperClassName={styles.moduleExportPanel__moduleSelect}
-              options={moduleOptions}
-              value={selectedModuleId}
-              onChange={(e) => setSelectedModuleId(e.target.value)}
-            />
-            {moduleExportError && (
-              <p className={styles.exportBlockErr}>⚠️ {moduleExportError}</p>
+        {(moduleOptions.length > 0 || displayGens.length > 0) && (
+          <div className={styles.topExportRow}>
+            {moduleOptions.length > 0 && (
+              <div className={styles.moduleExportPanel}>
+                <p className={styles.moduleExportPanel__title}>
+                  📦 Download all lessons from a module in one file
+                </p>
+                <Select
+                  wrapperClassName={styles.moduleExportPanel__moduleSelect}
+                  options={moduleOptions}
+                  value={selectedModuleId}
+                  onChange={(e) => setSelectedModuleId(e.target.value)}
+                />
+                {moduleExportError && (
+                  <p className={styles.exportBlockErr}>⚠️ {moduleExportError}</p>
+                )}
+                <div className={styles.exportGrid2}>
+                  <ExportTileButton
+                    format="md"
+                    label="Markdown"
+                    loading={moduleExporting}
+                    disabled={!selectedModuleId}
+                    onClick={() => onExportModuleLessons('md')}
+                  />
+                  <ExportTileButton
+                    format="docx"
+                    label="DOCX"
+                    loading={moduleExporting}
+                    disabled={!selectedModuleId}
+                    onClick={() => onExportModuleLessons('docx')}
+                  />
+                </div>
+              </div>
             )}
-            <div className={styles.exportGrid2}>
-              <ExportTileButton
-                format="md"
-                label="Markdown"
-                loading={moduleExporting}
-                disabled={!selectedModuleId}
-                onClick={() => onExportModuleLessons('md')}
-              />
-              <ExportTileButton
-                format="docx"
-                label="DOCX"
-                loading={moduleExporting}
-                disabled={!selectedModuleId}
-                onClick={() => onExportModuleLessons('docx')}
-              />
-            </div>
+
+            {displayGens.length > 0 && (
+              <div className={styles.genExportPanel}>
+                {exportBlockedByValidation && canExportGen && (
+                  <p className={styles.exportBlockErr}>
+                    ❌ Export blocked — {genValSum.errors} error(s) found. See validation below.
+                  </p>
+                )}
+                <Select
+                  label="Export template"
+                  options={Object.entries(EXPORT_TEMPLATES).map(([value, label]) => ({ value, label }))}
+                  value={genTemplate}
+                  onChange={(e) => setGenTemplate(e.target.value)}
+                  disabled={!canExportGenFinal}
+                />
+                <div className={styles.exportGrid5}>
+                  {[
+                    { fmt: 'md', label: 'MD' },
+                    { fmt: 'json', label: 'JSON' },
+                    { fmt: 'html', label: 'HTML' },
+                    { fmt: 'docx', label: 'DOCX' },
+                    { fmt: 'xlsx', label: 'XLSX' },
+                    { fmt: 'pdf', label: 'PDF' },
+                  ].map(({ fmt, label }) => (
+                    <ExportTileButton
+                      key={fmt}
+                      format={fmt}
+                      label={label}
+                      disabled={!canExportGenFinal}
+                      loading={isExporting}
+                      onClick={() => onExportGen(fmt)}
+                    />
+                  ))}
+                </div>
+                {pendingDownload && (
+                    <div className={styles.downloadRow}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          downloadBlob(pendingDownload.blob, pendingDownload.filename);
+                          setPendingDownload(null);
+                        }}
+                      >
+                        ⬇️ Download {pendingDownload.format.toUpperCase()}
+                      </Button>
+                      <Button variant="ghost" size="xs" onClick={() => setPendingDownload(null)}>
+                        Dismiss
+                      </Button>
+                    </div>
+                  )}
+              </div>
+            )}
           </div>
         )}
 
@@ -554,49 +611,16 @@ export default function EditorPage() {
               </p>
             )}
             {displayGens.length > 0 && (
-              <div className={styles.genExportPanel}>
-                <div className={styles.genExportPanel__row}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    loading={isValidating}
-                    onClick={() => dispatch(validateGenerationThunk(selectedGenId))}
-                  >
-                    🔍 Validate
-                  </Button>
-                  {genValidation && <ValidationPanel result={genValidation} compact />}
-                </div>
-                {exportBlockedByValidation && canExportGen && (
-                  <p className={styles.exportBlockErr}>
-                    ❌ Export blocked — {genValSum.errors} error(s) found. See validation above.
-                  </p>
-                )}
-                <Select
-                  label="Export template"
-                  options={Object.entries(EXPORT_TEMPLATES).map(([value, label]) => ({ value, label }))}
-                  value={genTemplate}
-                  onChange={(e) => setGenTemplate(e.target.value)}
-                  disabled={!canExportGenFinal}
-                />
-                <div className={styles.exportGrid5}>
-                  {[
-                    { fmt: 'md', label: 'MD' },
-                    { fmt: 'json', label: 'JSON' },
-                    { fmt: 'html', label: 'HTML' },
-                    { fmt: 'docx', label: 'DOCX' },
-                    { fmt: 'xlsx', label: 'XLSX' },
-                    { fmt: 'pdf', label: 'PDF' },
-                  ].map(({ fmt, label }) => (
-                    <ExportTileButton
-                      key={fmt}
-                      format={fmt}
-                      label={label}
-                      disabled={!canExportGenFinal}
-                      loading={isExporting}
-                      onClick={() => onExportGen(fmt)}
-                    />
-                  ))}
-                </div>
+              <div className={styles.genExportPanel__row}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  loading={isValidating}
+                  onClick={() => dispatch(validateGenerationThunk(selectedGenId))}
+                >
+                  🔍 Validate
+                </Button>
+                {genValidation && <ValidationPanel result={genValidation} compact />}
               </div>
             )}
           </div>
@@ -609,24 +633,6 @@ export default function EditorPage() {
             cddLabel={traceCdd}
             blueprintLabel={traceBp}
           />
-        )}
-
-        {pendingDownload && (
-          <div className={styles.downloadRow}>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => {
-                downloadBlob(pendingDownload.blob, pendingDownload.filename);
-                setPendingDownload(null);
-              }}
-            >
-              ⬇️ Download {pendingDownload.format.toUpperCase()}
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => setPendingDownload(null)}>
-              Dismiss
-            </Button>
-          </div>
         )}
 
         {errorMessage && (

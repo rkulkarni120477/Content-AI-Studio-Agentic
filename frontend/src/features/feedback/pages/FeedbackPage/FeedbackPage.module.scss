@@ -19,13 +19,52 @@
 
 /* ── Upload ─────────────────────────────── */
 .uploadCard {
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-xl;
+  box-shadow: $shadow-sm;
+  padding: $space-5;
   display: flex;
   flex-direction: column;
-  gap: $space-3;
+  gap: $space-4;
+}
+
+.uploadCard__row {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: $space-5;
+  align-items: stretch;
+
+  @media (max-width: $bp-md) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.uploadCard__scope {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: $space-3 $space-4;
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+}
+
+.uploadCard__drop {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+
+  // Let FileUpload fill the column height so the card feels balanced
+  > * {
+    flex: 1;
+  }
 }
 
 .scopeSelect {
-  max-width: 420px;
+  max-width: none;
+  margin-bottom: 0;
 }
 
 .processing {

@@ -334,26 +334,32 @@ export default function FeedbackPage() {
           points when regenerating that module&apos;s content.
         </p>
 
-        {/* Upload zone */}
+        {/* Upload zone — scope + dropzone side by side in one card */}
         <div className={styles.uploadCard}>
-          <Select
-            label="Feedback applies to"
-            id="feedback-upload-scope"
-            options={moduleOptions}
-            value={uploadScope}
-            onChange={(e) => setUploadScope(e.target.value)}
-            disabled={isProcessing}
-            hint="All extracted items inherit this mapping. You can remap rows later."
-            wrapperClassName={styles.scopeSelect}
-          />
-          <FileUpload
-            accept={ACCEPTED}
-            multiple={false}
-            disabled={isProcessing}
-            onChange={handleUpload}
-            label="Drop a feedback document here or click to browse"
-            hint="PPTX · DOCX · PDF · XLSX · TXT"
-          />
+          <div className={styles.uploadCard__row}>
+            <div className={styles.uploadCard__scope}>
+              <Select
+                label="Feedback applies to"
+                id="feedback-upload-scope"
+                options={moduleOptions}
+                value={uploadScope}
+                onChange={(e) => setUploadScope(e.target.value)}
+                disabled={isProcessing}
+                hint="All extracted items inherit this mapping. You can remap rows later."
+                wrapperClassName={styles.scopeSelect}
+              />
+            </div>
+            <div className={styles.uploadCard__drop}>
+              <FileUpload
+                accept={ACCEPTED}
+                multiple={false}
+                disabled={isProcessing}
+                onChange={handleUpload}
+                label="Drop a feedback document here or click to browse"
+                hint="PPTX · DOCX · PDF · XLSX · TXT"
+              />
+            </div>
+          </div>
           {isProcessing && (
             <div className={styles.processing}>
               <Loader size="sm" />
