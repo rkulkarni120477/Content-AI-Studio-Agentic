@@ -68,6 +68,13 @@
   font-size: 0.85rem;
 }
 
+.validateRow {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .caption { font-size: 0.8rem; color: #6b7280; margin: 8px 0; }
 .info { font-size: 0.85rem; color: #2563eb; margin: 8px 0; }
 

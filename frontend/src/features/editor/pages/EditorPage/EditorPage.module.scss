@@ -88,7 +88,8 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: $space-4;
-  margin-bottom: $space-4;
+  margin-bottom: 0;
+  margin-top: $space-3;
   align-items: stretch;
 
   > :only-child {
@@ -152,6 +153,23 @@
   }
 }
 
+.filterRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-4;
+  margin-bottom: $space-3;
+  align-items: end;
+
+  @include max-lg {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  &__col {
+    min-width: 0;
+  }
+}
+
 .searchRow {
   margin-bottom: $space-4;
 
@@ -170,11 +188,16 @@
   height: 38px;
 }
 
+.searchResults {
+  margin-bottom: $space-3;
+}
+
 .downloadRow {
   display: flex;
   align-items: center;
   gap: $space-3;
-  margin-bottom: $space-4;
+  margin-top: $space-3;
+  margin-bottom: 0;
 }
 
 .searchTable {
@@ -202,23 +225,14 @@
   span { font-weight: 400; }
 }
 
-.toolbar {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: $space-4;
-  margin-bottom: $space-2;
-  align-items: start;
-
-  @include max-lg { grid-template-columns: 1fr; }
-  &__col { min-width: 0; }
-}
-
 .genExportPanel {
   background: $color-white;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 14px 16px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 
   &__row {
     display: flex;

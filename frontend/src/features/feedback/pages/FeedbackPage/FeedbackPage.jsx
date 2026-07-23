@@ -507,9 +507,9 @@ export default function FeedbackPage() {
                     <th className={styles.colId}>#</th>
                     <th>Feedback</th>
                     <th className={styles.colModule}>Module</th>
-                    <th>Theme</th>
-                    <th>Sentiment</th>
-                    <th>Priority</th>
+                    <th className={styles.colTheme}>Theme</th>
+                    <th className={styles.colSentiment}>Sentiment</th>
+                    <th className={styles.colPriority}>Priority</th>
                     <th className={styles.colActions}>Action</th>
                   </tr>
                 </thead>
@@ -534,7 +534,7 @@ export default function FeedbackPage() {
                           </td>
                           <td className={styles.colId}>{idx + 1}</td>
                           <td className={styles.fbText}>
-                            <div>
+                            <div className={styles.fbBody} title={item.feedback_text}>
                               {item.feedback_text}
                               {hasRec && (
                                 <span className={styles.recDot} title="Has an AI recommendation" />
