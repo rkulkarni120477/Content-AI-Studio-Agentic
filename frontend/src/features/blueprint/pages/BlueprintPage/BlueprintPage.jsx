@@ -255,7 +255,7 @@ export default function BlueprintPage() {
 
   function onConfirmModule() {
     if (!selectedModuleOpt) {
-      toast.error('Select a module or course-end item first.');
+      toast.error('Select a module or title-end item first.');
       return;
     }
     setModuleConfirmed(true);
@@ -496,7 +496,7 @@ export default function BlueprintPage() {
     if (selectedModuleOpt.isCourseEnd) {
       return (
         <div className={styles.statusInfo}>
-          📋 Course-end item selected: <strong>{selectedModuleOpt.courseEndLabel}</strong>
+          📋 Title-end item selected: <strong>{selectedModuleOpt.courseEndLabel}</strong>
         </div>
       );
     }
@@ -541,7 +541,7 @@ export default function BlueprintPage() {
         <SectionBadge
           icon="🧩"
           title="Module Blueprint"
-          subtitle="Generates directly from the linked CDD — module structure, lessons, and all components are derived automatically. No need to re-enter course metadata."
+          subtitle="Generates directly from the linked CDD — module structure, lessons, and all components are derived automatically. No need to re-enter title metadata."
         />
 
         <div className={styles.configPanel}>
@@ -620,7 +620,7 @@ export default function BlueprintPage() {
 
               {moduleOptions.length > 0 ? (
                 <>
-                  <div className={styles.moduleLabel}>Select Module / Course-End Item</div>
+                  <div className={styles.moduleLabel}>Select Module / Title-End Item</div>
                   <Select
                     label=""
                     options={moduleOptions.map((o) => ({

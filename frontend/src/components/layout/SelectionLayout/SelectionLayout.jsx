@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { flushDeferredToasts } from '@utils/deferredToast';
+import IdentityBar from '@components/common/HeaderUser/IdentityBar';
 import SelectionSidebar from './SelectionSidebar';
 import styles from './SelectionLayout.module.scss';
 
@@ -10,7 +11,10 @@ export default function SelectionLayout({ sidebarProps, children }) {
   return (
     <div className={styles.layout}>
       <SelectionSidebar {...sidebarProps} />
-      <main className={styles.main}>{children}</main>
+      <main className={styles.main}>
+        <IdentityBar />
+        <div className={styles.mainBody}>{children}</div>
+      </main>
       <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
     </div>
   );

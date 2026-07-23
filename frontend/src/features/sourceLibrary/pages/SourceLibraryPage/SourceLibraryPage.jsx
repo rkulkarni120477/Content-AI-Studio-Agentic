@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { selectUser } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
+import PageContainer from '@components/layout/PageContainer/PageContainer';
 import styles from './SourceLibraryPage.module.scss';
 
 const CACHE_PREFIX = 'cas_dis_source_library_docs';
@@ -56,7 +57,7 @@ const PURPOSES = [
   ['style', 'Style'],
   ['cdd', 'CDD'],
   ['blueprint', 'Blueprint'],
-  ['course_generation', 'Course Generation'],
+  ['course_generation', 'Title Generation'],
   ['general_reference', 'General Reference'],
 ];
 
@@ -498,12 +499,13 @@ export default function SourceLibraryPage() {
   }, [documents, filters]);
 
   return (
-    <main className={styles.page}>
+    <PageContainer title="" breadcrumbs={[{ label: 'Source Library' }]} noPadding>
+    <div className={styles.page}>
       <div className={styles.header}>
         <div>
           <div className={styles.eyebrow}>Knowledge Sources</div>
           <h1 className={styles.title}>Source Library</h1>
-          <p className={styles.subtitle}>Upload, review, and trace source documents used by Style, CDD, Blueprint, and Course Generation. The list auto-loads from S3 whenever you reopen this page. Project client: <strong>{selectedClientId || 'auto'}</strong>.</p>
+          <p className={styles.subtitle}>Upload, review, and trace source documents used by Style, CDD, Blueprint, and Title Generation. The list auto-loads from S3 whenever you reopen this page. Project client: <strong>{selectedClientId || 'auto'}</strong>.</p>
         </div>
         <div className={styles.actions}>
           <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => setShowFolderScan((v) => !v)}>Scan Folder</button>
@@ -625,7 +627,7 @@ export default function SourceLibraryPage() {
       )}
 
       <div className={styles.grid}>
-        <aside className={styles.card}>
+        <aside className={`${styles.card} ${styles.filtersCard}`}>
           <div className={styles.cardBody}>
             <h2 className={styles.filtersTitle}>Filters</h2>
             <label className={styles.label}>Search</label>
@@ -647,8 +649,8 @@ export default function SourceLibraryPage() {
           </div>
         </aside>
 
-        <section className={styles.card}>
-          <div className={styles.cardBody}>
+        <section className={`${styles.card} ${styles.docsCard}`}>
+          <div className={`${styles.cardBody} ${styles.docsCardBody}`}>
             <h2 className={styles.filtersTitle}>Processed Documents {loading && !documents.length ? '…' : `(${displayedDocuments.length})`}</h2>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
@@ -716,6 +718,7 @@ export default function SourceLibraryPage() {
           </div>
         </section>
       </div>
-    </main>
+    </div>
+    </PageContainer>
   );
 }

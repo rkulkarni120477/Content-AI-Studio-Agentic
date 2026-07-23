@@ -68,7 +68,7 @@ export function buildPromptDownloadMd({
     `| **Project** | ${projectName || '—'} |`,
   ];
   if (clusterName) lines.push(`| **Cluster** | ${clusterName} |`);
-  if (courseName) lines.push(`| **Course** | ${courseName} |`);
+  if (courseName) lines.push(`| **Title** | ${courseName} |`);
   lines.push(
     `| **Component** | ${compLabel} |`,
     `| **Prompt Asset** | ${promptName || '—'} |`,

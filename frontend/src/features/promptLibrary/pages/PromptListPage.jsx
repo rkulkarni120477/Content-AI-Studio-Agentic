@@ -116,7 +116,7 @@ export default function PromptListPage() {
 
   const courseFilterOptions = useMemo(
     () => [
-      { value: '', label: 'All Courses' },
+      { value: '', label: 'All Titles' },
       ...scopeCourses.map(([id, name]) => ({ value: String(id), label: name })),
     ],
     [scopeCourses],
@@ -231,8 +231,8 @@ export default function PromptListPage() {
               />
               <CompactSelect
                 fitContent
-                aria-label="Filter by course"
-                title="Narrow to one course's effective prompt set"
+                aria-label="Filter by title"
+                title="Narrow to one title's effective prompt set"
                 value={scopeCourse}
                 onChange={setScopeCourse}
                 options={courseFilterOptions}

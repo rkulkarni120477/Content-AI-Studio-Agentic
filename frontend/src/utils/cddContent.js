@@ -6,9 +6,9 @@ import { parseCddFlat as parseFlatFromModules } from '@utils/blueprintModules';
 import { stripUiHiddenText } from '@utils/blueprintContent';
 
 export const CDD_UI_BLOCKS = [
-  { key: 'Course Details', label: '📋 Course Details' },
-  { key: 'Course Structure', label: '🗂️ Course Structure & Module Assessments' },
-  { key: 'Course Level Assessment', label: '🏆 Course Level Assessment' },
+  { key: 'Course Details', label: '📋 Title Details' },
+  { key: 'Course Structure', label: '🗂️ Title Structure & Module Assessments' },
+  { key: 'Course Level Assessment', label: '🏆 Title Level Assessment' },
 ];
 
 export function parseCddFlat(rawText) {

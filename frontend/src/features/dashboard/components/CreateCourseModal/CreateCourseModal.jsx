@@ -13,8 +13,8 @@ const WORKFLOW_OPTIONS = [
 /**
  * The create-course fork (reverse pipeline entry point).
  *
- * "New Course" reproduces today's exact scratch flow — it calls the same
- * `onCreateCourse(payload)` the sidebar form always called. "Import Course" is
+ * "New Title" reproduces today's exact scratch flow — it calls the same
+ * `onCreateCourse(payload)` the sidebar form always called. "Import Title" is
  * additive and gated by `importEnabled` (off in Session 0, wired to the backend
  * flag in Session 4). See reverse_cas.md.
  */
@@ -70,7 +70,7 @@ export default function CreateCourseModal({
           ← Back
         </Button>
         <Button variant="primary" onClick={handleCreate} loading={createLoading}>
-          Create Course
+          Create Title
         </Button>
       </>
     ) : (
@@ -81,7 +81,7 @@ export default function CreateCourseModal({
     <Modal
       open={open}
       onClose={onClose}
-      title={mode === 'new' ? 'New Course' : 'Create Course'}
+      title={mode === 'new' ? 'New Title' : 'Create Title'}
       size="sm"
       footer={footer}
     >
@@ -93,7 +93,7 @@ export default function CreateCourseModal({
             onClick={() => setMode('new')}
           >
             <span className={styles.choice__icon} aria-hidden="true">✨</span>
-            <span className={styles.choice__title}>New (Scratch) Course</span>
+            <span className={styles.choice__title}>New Title</span>
             <span className={styles.choice__desc}>
               Build from scratch — Style → CDD → Blueprint → Generate → Editor.
             </span>
@@ -109,7 +109,7 @@ export default function CreateCourseModal({
           >
             <span className={styles.choice__icon} aria-hidden="true">📥</span>
             <span className={styles.choice__title}>
-              Import Course{!importEnabled && <span className={styles.badge}>Coming soon</span>}
+              Import Title{!importEnabled && <span className={styles.badge}>Coming soon</span>}
             </span>
             <span className={styles.choice__desc}>
               Import an existing Canvas IMSCC package and reconstruct it in CAS.
@@ -119,7 +119,7 @@ export default function CreateCourseModal({
       ) : (
         <form onSubmit={handleCreate}>
           <Input
-            label="Course Name *"
+            label="Title Name *"
             value={name}
             onChange={(e) => setName(e.target.value)}
             required

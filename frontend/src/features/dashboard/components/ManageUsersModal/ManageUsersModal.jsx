@@ -105,7 +105,7 @@ export default function ManageUsersModal({
         <>
           {scope === 'course' && (
             <p className={styles.hint}>
-              Users assigned to the project are marked. Check to grant course-level access.
+              Users assigned to the project are marked. Check to grant title-level access.
             </p>
           )}
           {error && <p className={styles.error} role="alert">{error}</p>}

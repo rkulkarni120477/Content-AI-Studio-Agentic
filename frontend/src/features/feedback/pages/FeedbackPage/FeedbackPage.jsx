@@ -102,7 +102,7 @@ export default function FeedbackPage() {
   const [applyTarget, setApplyTarget] = useState(COURSE_WIDE);
 
   const moduleOptions = useMemo(() => {
-    const opts = [{ value: COURSE_WIDE, label: 'Entire course' }];
+    const opts = [{ value: COURSE_WIDE, label: 'Entire title' }];
     const sorted = [...(blueprints || [])].sort(
       (a, b) => (a.module_number ?? 0) - (b.module_number ?? 0),
     );
@@ -163,7 +163,7 @@ export default function FeedbackPage() {
     const rest = moduleOptions.filter((o) => o.value !== COURSE_WIDE);
     return [
       { value: '', label: 'All modules' },
-      { value: 'course', label: 'Entire course' },
+      { value: 'course', label: 'Entire title' },
       ...rest,
     ];
   }, [moduleOptions]);
@@ -330,30 +330,36 @@ export default function FeedbackPage() {
         <p className={styles.intro}>
           Upload a review document — PPTX, DOCX, PDF, XLSX or TXT — and let AI extract each
           piece of reviewer feedback into a structured, actionable table. Map uploads (and
-          individual items) to the entire course or a specific module, then apply selected
+          individual items) to the entire title or a specific module, then apply selected
           points when regenerating that module&apos;s content.
         </p>
 
-        {/* Upload zone */}
+        {/* Upload zone — scope + dropzone side by side in one card */}
         <div className={styles.uploadCard}>
-          <Select
-            label="Feedback applies to"
-            id="feedback-upload-scope"
-            options={moduleOptions}
-            value={uploadScope}
-            onChange={(e) => setUploadScope(e.target.value)}
-            disabled={isProcessing}
-            hint="All extracted items inherit this mapping. You can remap rows later."
-            wrapperClassName={styles.scopeSelect}
-          />
-          <FileUpload
-            accept={ACCEPTED}
-            multiple={false}
-            disabled={isProcessing}
-            onChange={handleUpload}
-            label="Drop a feedback document here or click to browse"
-            hint="PPTX · DOCX · PDF · XLSX · TXT"
-          />
+          <div className={styles.uploadCard__row}>
+            <div className={styles.uploadCard__scope}>
+              <Select
+                label="Feedback applies to"
+                id="feedback-upload-scope"
+                options={moduleOptions}
+                value={uploadScope}
+                onChange={(e) => setUploadScope(e.target.value)}
+                disabled={isProcessing}
+                hint="All extracted items inherit this mapping. You can remap rows later."
+                wrapperClassName={styles.scopeSelect}
+              />
+            </div>
+            <div className={styles.uploadCard__drop}>
+              <FileUpload
+                accept={ACCEPTED}
+                multiple={false}
+                disabled={isProcessing}
+                onChange={handleUpload}
+                label="Drop a feedback document here or click to browse"
+                hint="PPTX · DOCX · PDF · XLSX · TXT"
+              />
+            </div>
+          </div>
           {isProcessing && (
             <div className={styles.processing}>
               <Loader size="sm" />
@@ -386,7 +392,7 @@ export default function FeedbackPage() {
           <EmptyState
             icon="💬"
             title="No feedback yet"
-            message="Upload a reviewer document above to extract feedback for this course."
+            message="Upload a reviewer document above to extract feedback for this title."
           />
         ) : (
           <div className={styles.card}>
@@ -501,9 +507,9 @@ export default function FeedbackPage() {
                     <th className={styles.colId}>#</th>
                     <th>Feedback</th>
                     <th className={styles.colModule}>Module</th>
-                    <th>Theme</th>
-                    <th>Sentiment</th>
-                    <th>Priority</th>
+                    <th className={styles.colTheme}>Theme</th>
+                    <th className={styles.colSentiment}>Sentiment</th>
+                    <th className={styles.colPriority}>Priority</th>
                     <th className={styles.colActions}>Action</th>
                   </tr>
                 </thead>
@@ -528,7 +534,7 @@ export default function FeedbackPage() {
                           </td>
                           <td className={styles.colId}>{idx + 1}</td>
                           <td className={styles.fbText}>
-                            <div>
+                            <div className={styles.fbBody} title={item.feedback_text}>
                               {item.feedback_text}
                               {hasRec && (
                                 <span className={styles.recDot} title="Has an AI recommendation" />
@@ -611,10 +617,10 @@ export default function FeedbackPage() {
                                     <Loader size="sm" />
                                     <div>
                                       <div className={styles.recLoading__t}>
-                                        Analysing feedback against this course’s content…
+                                        Analysing feedback against this title’s content…
                                       </div>
                                       <div className={styles.recLoading__s}>
-                                        Loading course blocks → selecting relevant content → generating recommendation
+                                        Loading title blocks → selecting relevant content → generating recommendation
                                       </div>
                                     </div>
                                   </div>
@@ -660,7 +666,7 @@ export default function FeedbackPage() {
                                     />
                                     {item.recommendation_refs?.length > 0 && (
                                       <div className={styles.recRefs}>
-                                        <div className={styles.recRefs__l}>Referenced course content</div>
+                                        <div className={styles.recRefs__l}>Referenced title content</div>
                                         <div className={styles.recRefs__chips}>
                                           {item.recommendation_refs.map((r) => (
                                             <span key={r} className={styles.refChip}>📄 {r}</span>
@@ -713,8 +719,8 @@ export default function FeedbackPage() {
         title={pendingDelete?.mode === 'many' ? `Delete ${selected.size} feedback items?` : 'Delete this feedback item?'}
         message={
           pendingDelete?.mode === 'many'
-            ? 'The selected items will be removed from this course. This cannot be undone.'
-            : 'This item will be removed from this course. This cannot be undone.'
+            ? 'The selected items will be removed from this title. This cannot be undone.'
+            : 'This item will be removed from this title. This cannot be undone.'
         }
         confirmLabel="Delete"
         variant="danger"
@@ -755,7 +761,7 @@ export default function FeedbackPage() {
               groups={modelGroups()}
               value={regen.model}
               onChange={(e) => setRegen((r) => ({ ...r, model: e.target.value }))}
-              hint="Defaults to this course's model. Overriding applies to this run only."
+              hint="Defaults to this title's model. Overriding applies to this run only."
             />
           </div>
         )}
@@ -797,7 +803,7 @@ export default function FeedbackPage() {
             required={applyNeedsPicker}
             hint={
               applyNeedsPicker
-                ? 'Selected items are course-wide or span multiple modules — pick which module to regenerate.'
+                ? 'Selected items are title-wide or span multiple modules — pick which module to regenerate.'
                 : 'Pre-filled from the selected items’ module mapping.'
             }
           />

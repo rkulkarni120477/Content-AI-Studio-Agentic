@@ -58,7 +58,7 @@ export const createStyleThunk = createAsyncThunk(
         project_id: projectId ?? null,
       });
 
-      toast.success(`Style "${result.name}" created and activated for this course.`);
+      toast.success(`Style "${result.name}" created and activated for this title.`);
       await dispatch(fetchStylesThunk());
       await dispatch(fetchDocumentsThunk());
       return result;
@@ -81,7 +81,7 @@ export const activateStyleThunk = createAsyncThunk(
       }
       // scope === 'global' → empty body activates globally (admin only in UI)
       const result = await styleService.activateStyle(styleId, body);
-      const scopeLabel = scope === 'global' ? 'globally' : scope === 'project' ? 'for this project' : 'for this course';
+      const scopeLabel = scope === 'global' ? 'globally' : scope === 'project' ? 'for this project' : 'for this title';
       toast.success(`Style activated ${scopeLabel}.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }

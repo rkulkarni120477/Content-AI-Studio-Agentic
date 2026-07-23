@@ -59,6 +59,7 @@ export function findLegacyVarNames(content) {
 }
 
 export function toLabel(name) {
+  if (name === 'course_name') return 'Title Name';
   return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

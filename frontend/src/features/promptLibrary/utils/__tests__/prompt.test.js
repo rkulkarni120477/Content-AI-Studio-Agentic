@@ -78,7 +78,7 @@ describe('fillPromptContent', () => {
 
 describe('toLabel', () => {
   it('title-cases snake_case names', () => {
-    expect(toLabel('course_name')).toBe('Course Name');
+    expect(toLabel('course_name')).toBe('Title Name');
     expect(toLabel('x')).toBe('X');
   });
 });

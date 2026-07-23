@@ -10,9 +10,11 @@ import { selectActiveStyle } from '@features/style/styleSlice';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { useAuth } from '@hooks/useAuth';
-import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
+// ROLE_LABELS/ROLES were only used by the sidebar identity chip, now moved to the top header.
+import { ROUTES } from '@utils/constants';
 import TargetModelPanel from './TargetModelPanel';
-import GettingStartedGuide from '@components/layout/GettingStartedGuide/GettingStartedGuide';
+// GettingStartedGuide hidden per request — kept commented for easy restore.
+// import GettingStartedGuide from '@components/layout/GettingStartedGuide/GettingStartedGuide';
 import AppBrand from '@components/common/AppBrand/AppBrand';
 import SidebarToggle from '@components/layout/SidebarToggle/SidebarToggle';
 import { useSidebarCollapsed } from '@hooks/useSidebarCollapsed';
@@ -33,17 +35,18 @@ const NAV_ITEMS = [
   { label: 'Analytics', icon: '📊', segment: 'analytics' },
 ];
 
-const ROLE_COLORS = {
-  [ROLES.ADMIN]:    '#7c3aed',
-  [ROLES.REVIEWER]: '#0f766e',
-  [ROLES.AUTHOR]:   '#4338ca',
-};
+// ROLE_COLORS was used by the sidebar identity chip, now moved to the top header.
+// const ROLE_COLORS = {
+//   [ROLES.ADMIN]:    '#7c3aed',
+//   [ROLES.REVIEWER]: '#0f766e',
+//   [ROLES.AUTHOR]:   '#4338ca',
+// };
 
 export default function WorkspaceSidebar() {
   const { courseId } = useParams();
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const { user, role, logout } = useAuth();
+  const { logout } = useAuth();
   const proj = useAppSelector(selectSelectedProject);
   const cluster = useAppSelector(selectSelectedCluster);
   const course = useAppSelector(selectSelectedCourse);
@@ -89,7 +92,7 @@ export default function WorkspaceSidebar() {
     }
   }
 
-  const roleColor = ROLE_COLORS[role] ?? '#4338ca';
+  // const roleColor = ROLE_COLORS[role] ?? '#4338ca'; // identity moved to top header
   const styleLabel = activeStyle?.name || '—';
   const cddLabel = activeCdd
     ? `${activeCdd.title || activeCdd.course_title || 'CDD'} (${activeCdd.active_version || 'v1'})`
@@ -105,6 +108,8 @@ export default function WorkspaceSidebar() {
         <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
       </div>
 
+      {/* Identity (username + role) moved to the top header (HeaderUser) per request.
+          Kept commented for easy restore — no longer shown in the workspace sidebar.
       {collapsed ? (
         <div
           className={styles.userDot}
@@ -122,6 +127,7 @@ export default function WorkspaceSidebar() {
           </span>
         </div>
       )}
+      */}
 
       {!collapsed && (
         <div className={styles.contextPill}>
@@ -153,9 +159,9 @@ export default function WorkspaceSidebar() {
           type="button"
           className={styles.backBtn}
           onClick={goCourses}
-          title={collapsed ? 'Back to Courses' : undefined}
+          title={collapsed ? 'Back to Titles' : undefined}
         >
-          {collapsed ? '📖' : <>←<br />Courses</>}
+          {collapsed ? '📖' : <>←<br />Titles</>}
         </button>
       </div>
 
@@ -175,7 +181,9 @@ export default function WorkspaceSidebar() {
         </div>
       )}
 
+      {/* Getting Started guide hidden per request.
       {!collapsed && <GettingStartedGuide />}
+      */}
 
       {!collapsed && <TargetModelPanel />}
 

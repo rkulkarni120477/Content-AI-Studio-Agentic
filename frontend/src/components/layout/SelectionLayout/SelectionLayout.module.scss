@@ -7,10 +7,17 @@
 .main {
   flex: 1;
   overflow-y: auto;
-  padding: $space-8 $space-10;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mainBody {
+  flex: 1;
+  padding: $space-8 $space-10 !important;
   min-width: 0;
 }
 
 @media (max-width: $bp-lg) {
-  .main { padding: $space-6; }
+  .mainBody { padding: $space-6 !important; }
 }

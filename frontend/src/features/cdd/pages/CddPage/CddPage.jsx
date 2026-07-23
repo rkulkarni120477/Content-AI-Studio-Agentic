@@ -372,7 +372,7 @@ export default function CddPage() {
       <div className={styles.page}>
         <SectionBadge
           icon="📘"
-          title="Course Design Document (CDD)"
+          title="Title Design Document (CDD)"
           subtitle="Define learning objectives, tone, module structure, and quality standards. All downstream Blueprints and lessons inherit from this document automatically."
         />
 
@@ -411,7 +411,7 @@ export default function CddPage() {
 
               <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
                 <Input
-                  label="Course Title *"
+                  label="Title *"
                   required
                   placeholder="e.g. Foundations of Clinical Nursing"
                   error={generateForm.formState.errors.course_title?.message}
@@ -505,7 +505,7 @@ export default function CddPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>📂 Your Course Design Documents</summary>
+            <summary className={styles.accordion__summary}>📂 Your Title Design Documents</summary>
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
@@ -672,7 +672,7 @@ export default function CddPage() {
                 embedded
                 extraInstructions={extraInstructions}
                 onPromptsChange={setPromptConfig}
-                headerHint="📝 Fill in the course fields above, then configure the prompt and generate your CDD below."
+                headerHint="📝 Fill in the title fields above, then configure the prompt and generate your CDD below."
               />
 
               <div className={styles.generateRow}>

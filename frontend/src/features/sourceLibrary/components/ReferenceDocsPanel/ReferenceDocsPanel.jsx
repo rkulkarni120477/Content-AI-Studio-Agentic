@@ -5,7 +5,7 @@ const PURPOSE_LABELS = {
   style: 'Style reference documents',
   cdd: 'CDD reference documents',
   blueprint: 'Blueprint reference documents',
-  course_generation: 'Course generation reference documents',
+  course_generation: 'Title generation reference documents',
   general_reference: 'General reference documents',
 };
 

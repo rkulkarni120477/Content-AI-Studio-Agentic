@@ -205,7 +205,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
                     className={styles.textarea}
                     value={aiContext}
                     onChange={(e) => setAiContext(e.target.value)}
-                    placeholder="e.g. For clinical nursing courses. Focus on Bloom's levels 4–6."
+                    placeholder="e.g. For clinical nursing titles. Focus on Bloom's levels 4–6."
                   />
                 </label>
                 {aiMode === 'refine' && (
@@ -242,7 +242,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
           <form className={styles.form} onSubmit={handleCreate}>
             <Select
               label="Assign to Category"
-              hint="Optional. Prompt will be auto-injected into courses under the selected category."
+              hint="Optional. Prompt will be auto-injected into titles under the selected category."
               options={clusterOptions}
               value={assignClusterId}
               onChange={(e) => setAssignClusterId(e.target.value)}

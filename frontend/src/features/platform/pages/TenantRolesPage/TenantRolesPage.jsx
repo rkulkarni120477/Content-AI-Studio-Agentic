@@ -12,6 +12,9 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import AppBrand from '@components/common/AppBrand/AppBrand';
+import IdentityBar from '@components/common/HeaderUser/IdentityBar';
+// Sidebar UserPill moved to IdentityBar in the main header — keep import for easy restore.
+// import UserPill from '@components/common/UserPill/UserPill';
 import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/SelectionPageHeader';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import styles from './TenantRolesPage.module.scss';
@@ -186,11 +189,9 @@ export default function TenantRolesPage() {
     <div className={styles.layout}>
       <aside className={styles.sidebar} aria-label="Platform navigation">
         <AppBrand />
-        <div className={styles.userPill}>
-          <div className={styles.userPill__label}>Signed in as</div>
-          <div className={styles.userPill__name}>{user?.username || '—'}</div>
-          <span className={styles.userPill__role} style={{ background: roleColor }}>{signedInRoleLabel}</span>
-        </div>
+        {/* User identity moved to the top IdentityBar — kept for easy restore.
+        <UserPill username={user?.username} roleLabel={signedInRoleLabel} roleColor={roleColor} />
+        */}
         <div className={styles.navLabel}>Platform</div>
         <button type="button" className={styles.navBtn} onClick={() => navigate(ROUTES.TENANTS)}>
           ← Tenants
@@ -215,6 +216,8 @@ export default function TenantRolesPage() {
       </aside>
 
       <main className={styles.main}>
+        <IdentityBar username={user?.username} roleLabel={signedInRoleLabel} roleColor={roleColor} />
+        <div className={styles.mainBody}>
         {loading ? (
           <div className={styles.center}><Loader size="lg" /></div>
         ) : (
@@ -295,6 +298,7 @@ export default function TenantRolesPage() {
             )}
           </>
         )}
+        </div>
       </main>
 
       {/* Add role */}

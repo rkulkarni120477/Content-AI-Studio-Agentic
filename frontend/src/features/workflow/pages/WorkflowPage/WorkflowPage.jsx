@@ -444,16 +444,16 @@ export default function WorkflowPage() {
         <div className={styles.filters__row2}>
           {showCourseFilter ? (
             <Select
-              label="Course"
+              label="Title"
               options={[
-                { value: '', label: 'All courses' },
+                { value: '', label: 'All titles' },
                 ...projectCourses.map((c) => ({ value: String(c.id), label: c.name })),
               ]}
               value={filters.courseId != null ? String(filters.courseId) : ''}
               onChange={(e) => handleFilter('courseId', e.target.value ? Number(e.target.value) : null)}
             />
           ) : scopeProjId ? (
-            <p className={styles.filters__noCourses}>No courses in this project.</p>
+            <p className={styles.filters__noCourses}>No titles in this project.</p>
           ) : null}
         </div>
 
@@ -461,7 +461,7 @@ export default function WorkflowPage() {
         {!isAdmin && selProject && (
           <p className={styles.scopeCaption}>
             Your workflow — project <strong>{selProject.name}</strong>
-            {selCourse ? <> · course <strong>{selCourse.name}</strong></> : null}
+            {selCourse ? <> · title <strong>{selCourse.name}</strong></> : null}
           </p>
         )}
         {isAdmin && (

@@ -30,6 +30,7 @@ import { useAuth } from '@hooks/useAuth';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
 import UnifiedBlockEditor from '@features/editor/components/UnifiedBlockEditor/UnifiedBlockEditor';
 import CompareVersionsModal from '@features/editor/components/CompareVersionsModal/CompareVersionsModal';
+import ValidationPanel from '@features/editor/components/ValidationPanel/ValidationPanel';
 import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
 import styles from './EditorBlockCard.module.scss';
@@ -79,7 +80,16 @@ function ScopeRadios({ value, onChange, name }) {
   );
 }
 
-export default function EditorBlockCard({ block, generationId, genCreatedBy, onBlockUpdated }) {
+export default function EditorBlockCard({
+  block,
+  generationId,
+  genCreatedBy,
+  onBlockUpdated,
+  isValidating = false,
+  genValidation = null,
+  onValidate,
+  exportSlot = null,
+}) {
   const dispatch = useAppDispatch();
   const { user, isAdmin, isReviewer } = useAuth();
   const modelChoice = useAppSelector(selectModelChoice);
@@ -108,7 +118,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
   const [itemRegenIdx, setItemRegenIdx] = useState(null);
   const [showDraftRecovery, setShowDraftRecovery] = useState(false);
   const [autosaveStatus, setAutosaveStatus] = useState('saved');
-  const [dashboardOpen, setDashboardOpen] = useState(true);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
   const [itemPanelOpen, setItemPanelOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -361,6 +371,20 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
             ) : (
               <p className={styles.caption}>No evaluation data yet.</p>
             )}
+            {generationId && typeof onValidate === 'function' && (
+              <div className={styles.validateRow}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  fullWidth
+                  loading={isValidating}
+                  onClick={onValidate}
+                >
+                  🔍 Validate
+                </Button>
+                {genValidation && <ValidationPanel result={genValidation} compact />}
+              </div>
+            )}
           </div>
         </div>
         <hr className={styles.divider} />
@@ -422,6 +446,7 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
             disabled={versions.length === 0}
             title={versions.length === 0 ? 'No previous version to compare yet' : undefined}
             onClick={() => setCompareOpen(true)}
+            className={styles.compareVersionsBtn}
           >
             🆚 Compare Versions
           </Button>
@@ -673,6 +698,8 @@ export default function EditorBlockCard({ block, generationId, genCreatedBy, onB
         </Button>
         </div>
       </details>
+
+      {exportSlot}
 
       <hr className={styles.blockDivider} />
 

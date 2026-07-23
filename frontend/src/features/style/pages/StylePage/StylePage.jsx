@@ -376,7 +376,7 @@ export default function StylePage() {
           <div className={styles.clusterInjected__title}>⚡ Auto-Injected Cluster Prompts</div>
           <p className={styles.clusterInjected__desc}>
             These prompts are inherited from this cluster and automatically prepended
-            to the Style context for every course here.
+            to the Style context for every title here.
           </p>
           {clusterPrompts.length === 0 ? (
             <p className={styles.clusterEmpty}>No cluster prompts assigned to this cluster yet.</p>
@@ -838,7 +838,7 @@ export default function StylePage() {
         <p className={styles.scopeIntro}>Where should this style be active?</p>
         <div className={styles.scopeActions}>
           <Button variant="primary" fullWidth onClick={() => onActivateScope('course')}>
-            For This Course
+            For This Title
           </Button>
           <Button variant="secondary" fullWidth onClick={() => onActivateScope('project')}>
             For This Project

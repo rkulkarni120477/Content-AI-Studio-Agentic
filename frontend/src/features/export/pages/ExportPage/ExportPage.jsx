@@ -41,8 +41,8 @@ export default function ExportPage() {
       <div className={styles.page}>
         <SectionBadge
           icon="📦"
-          title="Course Export"
-          subtitle="Export published content as an IMS Common Cartridge package. Module structure and sequence follow the course CDD and Blueprints."
+          title="Title Export"
+          subtitle="Export published content as an IMS Common Cartridge package. Module structure and sequence follow the title CDD and Blueprints."
         />
         <PublishedTocPanel
           courseId={activeCourseId}
