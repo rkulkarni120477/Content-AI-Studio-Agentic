@@ -112,7 +112,7 @@ export default function ClustersPage() {
         <SelectionPageHeader
           eyebrow={`Project: ${selProj.name}`}
           title="Select Category"
-          subtitle="Choose a domain category to browse its courses."
+          subtitle="Choose a domain category to browse its titles."
         />
         {canManage && (
           <Button
@@ -141,7 +141,7 @@ export default function ClustersPage() {
               key={cluster.id}
               title={`🗂️ ${cluster.name}`}
               description={cluster.description}
-              footerLine={`${cluster.course_count ?? 0} course${cluster.course_count !== 1 ? 's' : ''}`}
+              footerLine={`${cluster.course_count ?? 0} title${cluster.course_count !== 1 ? 's' : ''}`}
               onOpen={() => handleOpen(cluster)}
               onEdit={() => setEditModal({ type: 'cluster', item: cluster })}
               onDelete={() => setDeleteTarget(cluster)}
@@ -160,7 +160,7 @@ export default function ClustersPage() {
       )}
 
       <EditEntityModal open={Boolean(editModal)} entityType="cluster" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchClustersThunk(pid))} />
-      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Category" message={`Delete "${deleteTarget?.name}"? Categories with active courses cannot be deleted.`} loading={deleteLoading} />
+      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Category" message={`Delete "${deleteTarget?.name}"? Categories with active titles cannot be deleted.`} loading={deleteLoading} />
     </SelectionLayout>
   );
 }

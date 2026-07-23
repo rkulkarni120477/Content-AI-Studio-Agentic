@@ -316,7 +316,7 @@ export default function GeneratePage() {
         <SectionBadge
           icon="⚙️"
           title="Content Generation"
-          subtitle="AI pipeline for generating lessons and course components. Context is auto-injected from the active CDD and Blueprint."
+          subtitle="AI pipeline for generating lessons and title components. Context is auto-injected from the active CDD and Blueprint."
         />
 
         {jobActive && (
@@ -547,7 +547,7 @@ export default function GeneratePage() {
 
             {showCourseGate && (
               <div className={styles.gateBlock}>
-                <strong>🚫 Course modules are incomplete</strong>
+                <strong>🚫 Title modules are incomplete</strong>
                 <p>
                   Complete all modules ({courseGate.generated_lessons}/{courseGate.total_lessons}) before generating{' '}
                   <strong>{selectedComponent.label}</strong>.

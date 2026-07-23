@@ -217,7 +217,7 @@ export default function PromptDetailPage() {
     const ok = window.confirm(
       `Promote "${prompt.title}" to an admin-managed ${slot.label} pipeline prompt?\n\n` +
         'It keeps its ID and version history. ' +
-        'Generation will NOT use it until you make it a component default or lock it to a scope on the Courses tab.' +
+        'Generation will NOT use it until you make it a component default or lock it to a scope on the Titles tab.' +
         varWarning,
     );
     if (!ok) return;
@@ -227,7 +227,7 @@ export default function PromptDetailPage() {
       setPromoteSlot('');
       await refetch();
       void listPromptFixings(prompt.id).then(setFixings).catch(() => setFixings([]));
-      show('Promoted to pipeline ✓ — make it a default or bind it in Courses to put it in use.');
+      show('Promoted to pipeline ✓ — make it a default or bind it in Titles to put it in use.');
     } catch (err) {
       show(err instanceof Error ? err.message : 'Promote failed');
     }
@@ -308,7 +308,7 @@ export default function PromptDetailPage() {
                 <span style={{ color: 'var(--muted)' }}>Used by:</span>
                 {pipe.is_default && (
                   <span className="badge badge-team" title="Resolves for every scope without a lock for this component">
-                    ★ All courses (component default)
+                    ★ All titles (component default)
                   </span>
                 )}
                 {fixings.map((f) => (
@@ -324,7 +324,7 @@ export default function PromptDetailPage() {
                 ))}
                 {!pipe.is_default && fixings.length === 0 && (
                   <span style={{ color: 'var(--muted)' }}>
-                    nowhere yet — not a default and no scope locks (bind one on the Courses tab)
+                    nowhere yet — not a default and no scope locks (bind one on the Titles tab)
                   </span>
                 )}
               </p>
@@ -401,7 +401,7 @@ export default function PromptDetailPage() {
             admin-managed pipeline prompt classified under the chosen CAS
             category. Promotion alone changes nothing for generation: the
             prompt is used only once it is made a component default or locked
-            to a scope on the Courses tab.
+            to a scope on the Titles tab.
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select value={promoteSlot} onChange={(e) => setPromoteSlot(e.target.value)}>

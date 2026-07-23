@@ -99,7 +99,7 @@ export default function CoursesPage() {
     setCreateLoading(true);
     try {
       await dashboardService.createCourse(pid, { ...data, cluster_id: cid });
-      toast.success('Course created');
+      toast.success('Title created');
       dispatch(fetchCoursesThunk(cid));
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -120,7 +120,7 @@ export default function CoursesPage() {
     setDeleteLoading(true);
     try {
       await dashboardService.deleteCourse(deleteTarget.id);
-      toast.success('Course archived');
+      toast.success('Title archived');
       setDeleteTarget(null);
       dispatch(fetchCoursesThunk(cid));
     } catch (e) {
@@ -135,7 +135,7 @@ export default function CoursesPage() {
     setDeleteLoading(true);
     try {
       await dashboardService.permanentlyDeleteCourse(purgeTarget.id);
-      toast.success('Course permanently deleted');
+      toast.success('Title permanently deleted');
       setPurgeTarget(null);
       dispatch(fetchCoursesThunk(cid));
     } catch (e) {
@@ -168,13 +168,13 @@ export default function CoursesPage() {
     >
       <SelectionPageHeader
         eyebrow={`${selProj.name} › ${selCluster.name}`}
-        title="Select Course"
-        subtitle="Choose a course to enter the workspace."
+        title="Select Title"
+        subtitle="Choose a title to enter the workspace."
       />
 
       {isLoadingCourses ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
-          <Loader size="sm" /> Loading courses…
+          <Loader size="sm" /> Loading titles…
         </div>
       ) : courses?.items?.length ? (
         <div className={gridStyles.grid}>
@@ -202,11 +202,11 @@ export default function CoursesPage() {
         </div>
       ) : coursesError ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '1.5rem 0', flexWrap: 'wrap' }}>
-          <span>⚠️ Couldn’t load courses.</span>
+          <span>⚠️ Couldn’t load titles.</span>
           <Button type="button" variant="ghost" onClick={() => dispatch(fetchCoursesThunk(cid))}>Try again</Button>
         </div>
       ) : (
-        <EmptyState title="No courses" message={canCreate ? 'Create a course using the sidebar panel.' : 'Ask an Admin or Lead to create courses.'} />
+        <EmptyState title="No titles" message={canCreate ? 'Create a title using the sidebar panel.' : 'Ask an Admin or Lead to create titles.'} />
       )}
 
       <CreateCourseModal
@@ -223,7 +223,7 @@ export default function CoursesPage() {
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
         onConfirm={handleDelete}
-        title="Archive Course"
+        title="Archive Title"
         message={`Archive "${deleteTarget?.name}"? You can permanently delete it later from the archived list.`}
         loading={deleteLoading}
       />
@@ -231,7 +231,7 @@ export default function CoursesPage() {
         open={Boolean(purgeTarget)}
         onClose={() => setPurgeTarget(null)}
         onConfirm={handlePermanentDelete}
-        title="Permanently Delete Course"
+        title="Permanently Delete Title"
         message={`Permanently delete "${purgeTarget?.name}" and all of its content (modules, generations, blocks, CDD, blueprints, imports)? This cannot be undone.`}
         loading={deleteLoading}
       />

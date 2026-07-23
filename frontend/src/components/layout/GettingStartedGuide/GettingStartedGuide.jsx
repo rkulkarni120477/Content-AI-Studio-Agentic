@@ -8,14 +8,14 @@ export default function GettingStartedGuide() {
 
   const steps = isAuthor
     ? [
-        '1. Open your course workspace (CDD tab).',
+        '1. Open your title workspace (CDD tab).',
         '2. Generate and pin a CDD.',
         '3. Create Blueprints per module.',
         '4. Launch generation, then edit blocks in Editor.',
         '5. Submit blocks for review via Workflow.',
       ]
     : [
-        '1. Select Project → Cluster → Course.',
+        '1. Select Project → Cluster → Title.',
         '2. Upload sources in Source Library and configure Style.',
         '3. Generate CDD → Blueprint → Content.',
         '4. Review and approve in Workflow.',

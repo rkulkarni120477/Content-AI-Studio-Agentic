@@ -30,7 +30,7 @@ export default function PromoteOverrideButton({ sourceType, artifactId, version,
         artifact_id: artifactId,
         version,
       });
-      toast.success(`Saved as prompt "${created.name}" — make it a default or bind it in Courses to put it in use.`);
+      toast.success(`Saved as prompt "${created.name}" — make it a default or bind it in Titles to put it in use.`);
       navigate(`/prompt-library/prompts/${created.id}`);
     } catch (err) {
       toast.error(extractErrorMessage(err));

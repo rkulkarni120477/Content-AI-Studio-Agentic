@@ -159,9 +159,9 @@ export default function WorkspaceSidebar() {
           type="button"
           className={styles.backBtn}
           onClick={goCourses}
-          title={collapsed ? 'Back to Courses' : undefined}
+          title={collapsed ? 'Back to Titles' : undefined}
         >
-          {collapsed ? '📖' : <>←<br />Courses</>}
+          {collapsed ? '📖' : <>←<br />Titles</>}
         </button>
       </div>
 

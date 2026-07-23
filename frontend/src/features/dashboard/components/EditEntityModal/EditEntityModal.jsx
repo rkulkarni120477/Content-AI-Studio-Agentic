@@ -92,7 +92,7 @@ export default function EditEntityModal({
     }
   }
 
-  const titles = { project: 'Edit Project', cluster: 'Edit Category', course: 'Edit Course' };
+  const titles = { project: 'Edit Project', cluster: 'Edit Category', course: 'Edit Title' };
 
   return (
     <Modal

@@ -99,7 +99,7 @@ export default function ProjectsPage() {
 
       <EditEntityModal open={Boolean(editModal)} entityType="project" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchProjectsThunk())} />
       <ManageUsersModal open={Boolean(usersModal)} onClose={() => setUsersModal(null)} scope="project" entityId={usersModal?.item?.id} entityName={usersModal?.item?.name} />
-      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Project" message={`Delete "${deleteTarget?.name}"? This will archive the project and its courses.`} loading={deleteLoading} />
+      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Project" message={`Delete "${deleteTarget?.name}"? This will archive the project and its titles.`} loading={deleteLoading} />
     </SelectionLayout>
   );
 }

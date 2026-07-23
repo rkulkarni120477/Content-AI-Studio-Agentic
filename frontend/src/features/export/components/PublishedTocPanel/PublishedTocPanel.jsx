@@ -400,7 +400,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
   if (!courseId) {
     return (
       <p className={styles.hint}>
-        Open a course workspace to manage the published table of contents.
+        Open a title workspace to manage the published table of contents.
       </p>
     );
   }
@@ -420,7 +420,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           <p className={styles.subtitle}>
             {courseName ? (
               <>
-                Course: <strong>{courseName}</strong> — modules and sequence follow the CDD /
+                Title: <strong>{courseName}</strong> — modules and sequence follow the CDD /
                 Blueprint. Preview or regenerate Canvas HTML, then export IMS CC.
               </>
             ) : (
@@ -447,7 +447,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
       ) : blockCount === 0 ? (
         <div className={styles.hint}>
           <p>
-            No published blocks in <strong>{courseName || `course #${courseId}`}</strong> yet.
+            No published blocks in <strong>{courseName || `title #${courseId}`}</strong> yet.
           </p>
           <p>
             Publish blocks from the <strong>Workflow</strong> page after generating content from
@@ -455,7 +455,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           </p>
           {projectCourses.length > 1 && (
             <p className={styles.hintCourses}>
-              Courses in this project: {projectCourses.map((c) => c.name).join(', ')}
+              Titles in this project: {projectCourses.map((c) => c.name).join(', ')}
             </p>
           )}
         </div>

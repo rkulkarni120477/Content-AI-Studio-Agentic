@@ -42,7 +42,7 @@ import styles from './AnalyticsPage.module.scss';
 
 const MAIN_TABS = ['Dashboard', 'LLM Cost', 'Audit Trail', 'User Management'];
 const HISTORY_TABS = ['Generations', 'Registry Commits', 'Document Uploads', 'CDD & Blueprint Log'];
-const COST_TABS = ['By Model', 'Monthly Trend', 'By Project', 'By Course', 'By User'];
+const COST_TABS = ['By Model', 'Monthly Trend', 'By Project', 'By Title', 'By User'];
 const FEEDBACK_FILTERS = [
   { value: 'learning', label: 'Learning signals only' },
   { value: 'one_time', label: 'One-time only' },
@@ -295,7 +295,7 @@ export default function AnalyticsPage() {
         {!isAdmin && !isAuthor && selProject && (
           <p className={styles.scopeCaption}>
             Showing your metrics for project <strong>{selProject.name}</strong>
-            {selCourse ? <> → course <strong>{selCourse.name}</strong></> : null}.
+            {selCourse ? <> → title <strong>{selCourse.name}</strong></> : null}.
           </p>
         )}
         {isAdmin && <p className={styles.scopeCaption}>Admin view — cross-project metrics.</p>}
@@ -756,7 +756,7 @@ export default function AnalyticsPage() {
                       llmCost.by_project?.length > 0 ? <Table columns={Object.keys(llmCost.by_project[0] || {}).map((k) => ({ key: k, header: k }))} rows={llmCost.by_project} rowKey="Project" pagination={false} /> : <p className={styles.emptyHint}>No project-level data yet.</p>
                     ) : <p className={styles.emptyHint}>Project-level breakdown is available to Admin only.</p>)}
                     {costTab === 3 && (
-                      llmCost.by_course?.length > 0 ? <Table columns={Object.keys(llmCost.by_course[0] || {}).map((k) => ({ key: k, header: k }))} rows={llmCost.by_course} rowKey="Course" pagination={false} /> : <p className={styles.emptyHint}>No course-level data yet.</p>
+                      llmCost.by_course?.length > 0 ? <Table columns={Object.keys(llmCost.by_course[0] || {}).map((k) => ({ key: k, header: k }))} rows={llmCost.by_course} rowKey="Course" pagination={false} /> : <p className={styles.emptyHint}>No title-level data yet.</p>
                     )}
                     {costTab === 4 && (isAdmin ? (
                       llmCost.by_user?.length > 0 ? <Table columns={Object.keys(llmCost.by_user[0] || {}).map((k) => ({ key: k, header: k }))} rows={llmCost.by_user} rowKey="User" pagination={false} /> : <p className={styles.emptyHint}>No per-user data yet.</p>

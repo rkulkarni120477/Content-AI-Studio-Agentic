@@ -232,7 +232,7 @@ export default function LoginPage() {
           <AppBrand variant="hero" showTag={false} className={styles.hero__brand} />
           <p className={styles.hero__desc}>
             The centralised platform for AI-powered eLearning content creation.
-            Manage prompts as code, enforce brand consistency, and generate production-ready courses at scale.
+            Manage prompts as code, enforce brand consistency, and generate production-ready titles at scale.
           </p>
         </div>
       </main>

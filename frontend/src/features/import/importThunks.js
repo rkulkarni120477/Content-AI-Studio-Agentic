@@ -55,7 +55,7 @@ export const pollImportJobThunk = createAsyncThunk(
         return status;
       }
       if (status.status === JOB_STATUSES.COMPLETED) {
-        toast.success('Course imported!');
+        toast.success('Title imported!');
       } else if (status.status === JOB_STATUSES.FAILED) {
         toast.error(status.error_message || 'Import failed.');
       }

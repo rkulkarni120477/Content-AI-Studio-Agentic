@@ -331,7 +331,7 @@ export default function SelectionSidebar({
                 label="Choose Category Prompts"
                 hint={
                   clusterPromptApiReady
-                    ? 'Select category prompts to auto-inject into the Style context for every course in this category. Optional.'
+                    ? 'Select category prompts to auto-inject into the Style context for every title in this category. Optional.'
                     : `${CLUSTER_PROMPT_API_MESSAGE} Selection is preserved in UI only until APIs are available.`
                 }
                 options={promptOptions}
@@ -400,7 +400,7 @@ export default function SelectionSidebar({
         <button
           type="button"
           className={cn(styles.navBtn, styles.iconOnly)}
-          title="Create Course"
+          title="Create Title"
           onClick={onRequestCreateCourse ? onRequestCreateCourse : () => expandWith(setShowNewCourse)}
         >
           ➕
@@ -414,7 +414,7 @@ export default function SelectionSidebar({
       {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && onRequestCreateCourse && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={onRequestCreateCourse}>
-            ➕ Create Course
+            ➕ Create Title
           </button>
         </div>
       )}
@@ -422,11 +422,11 @@ export default function SelectionSidebar({
       {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && !onRequestCreateCourse && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCourse((v) => !v)}>
-            ➕ New Course {showNewCourse ? '▾' : '▸'}
+            ➕ New Title {showNewCourse ? '▾' : '▸'}
           </button>
           {showNewCourse && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Course Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label="Title Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
@@ -438,7 +438,7 @@ export default function SelectionSidebar({
                 value={form.workflow}
                 onChange={(e) => setForm((f) => ({ ...f, workflow: e.target.value }))}
               />
-              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Course</Button>
+              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Title</Button>
             </form>
           )}
         </div>

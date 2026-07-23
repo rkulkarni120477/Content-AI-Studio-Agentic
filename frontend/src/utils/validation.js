@@ -41,7 +41,7 @@ export const createStyleSchema = z.object({
 
 // ─── CDD Schemas ─────────────────────────────────────────────────────────────
 export const createCddSchema = z.object({
-  course_title:    requiredString('Course title'),
+  course_title:    requiredString('Title'),
   document_title:  optionalString(),
   duration_hours:  positiveInt('Duration').optional(),
   style_id:        z.number().nullable().optional(),

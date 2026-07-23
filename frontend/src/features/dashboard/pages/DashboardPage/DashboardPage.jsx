@@ -130,12 +130,12 @@ export default function DashboardPage() {
           <section className={styles.panel}>
             <div className={styles.panel__header}>
               <h2 className={styles.panel__title}>
-                Courses — <span className={styles.panel__subtitle}>{selCluster.name}</span>
+                Titles — <span className={styles.panel__subtitle}>{selCluster.name}</span>
               </h2>
             </div>
             <div className={styles.panel__list}>
               {courses?.items?.length === 0 ? (
-                <EmptyState title="No courses" message={`No courses found in ${selCluster.name}.`} />
+                <EmptyState title="No titles" message={`No titles found in ${selCluster.name}.`} />
               ) : (
                 courses?.items?.map((course) => (
                   <button

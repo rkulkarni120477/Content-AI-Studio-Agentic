@@ -106,7 +106,7 @@ export default function ImportWizardPage() {
 
   function handleOpenEditor() {
     if (!resolvedCourseId) {
-      toast.error('Course is not ready yet.');
+      toast.error('Title is not ready yet.');
       return;
     }
     // Workspace Editor: /workspace/:courseId/editor
@@ -115,7 +115,7 @@ export default function ImportWizardPage() {
 
   function handleFeedbackImport() {
     if (!resolvedCourseId) {
-      toast.error('Course is not ready yet.');
+      toast.error('Title is not ready yet.');
       return;
     }
     navigate(ROUTES.FEEDBACK(resolvedCourseId));
@@ -126,11 +126,11 @@ export default function ImportWizardPage() {
       <div className={styles.card}>
         <header className={styles.header}>
           <button type="button" className={styles.back} onClick={() => navigate(coursesRoute)}>
-            ← Courses
+            ← Titles
           </button>
-          <h1 className={styles.title}>Import a Course / Title</h1>
+          <h1 className={styles.title}>Import a Title</h1>
           <p className={styles.subtitle}>
-            Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS course.
+            Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS title.
           </p>
         </header>
 
@@ -138,7 +138,7 @@ export default function ImportWizardPage() {
           <div className={styles.body}>
             <FileUpload
               accept=".imscc,.zip,.xml"
-              label="Drop a course package here or click to browse"
+              label="Drop a title package here or click to browse"
               hint="Canvas IMSCC (.imscc / .zip) or Cengage CendocXML (.zip / .xml)"
               onChange={handleFile}
               error={validateError || undefined}
@@ -169,7 +169,7 @@ export default function ImportWizardPage() {
                   </p>
                 )}
                 <Input
-                  label="Course Name *"
+                  label="Title Name *"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
@@ -227,8 +227,8 @@ export default function ImportWizardPage() {
               </p>
               <p className={styles.progress__hint}>
                 {contentReady
-                  ? 'Course content is in the Editor. Design artifacts (Blueprint / CDD / Style) are still finishing — you can continue below.'
-                  : 'Reconstructing modules, pages and quizzes. This can take a moment for large courses.'}
+                  ? 'Title content is in the Editor. Design artifacts (Blueprint / CDD / Style) are still finishing — you can continue below.'
+                  : 'Reconstructing modules, pages and quizzes. This can take a moment for large titles.'}
               </p>
             </div>
 
@@ -260,7 +260,7 @@ export default function ImportWizardPage() {
               <p className={styles.done__text}>
                 {importWarnings.length > 0
                   ? 'Import complete — a few items were flagged for review.'
-                  : 'Import complete — your course content is ready.'}
+                  : 'Import complete — your title content is ready.'}
               </p>
               <p className={styles.done__hint}>
                 Open the Editor to review lessons, or continue to Reviewer Feedback.
@@ -300,7 +300,7 @@ export default function ImportWizardPage() {
           <div className={styles.body}>
             <p role="alert" className={styles.error}>{error || 'Something went wrong.'}</p>
             <div className={styles.actions}>
-              <Button variant="ghost" onClick={() => navigate(coursesRoute)}>Back to Courses</Button>
+              <Button variant="ghost" onClick={() => navigate(coursesRoute)}>Back to Titles</Button>
               <Button variant="primary" onClick={handleRetry}>Try Again</Button>
             </div>
           </div>

@@ -23,7 +23,7 @@ export const MAIN_NAV = [
   // editor (absorbed from the retired Flow view). Any reader can see what
   // each course resolves and bind approved prompts by reference — the
   // approved-only rule for non-admins is server-enforced.
-  { to: plCourses, label: 'Courses', icon: '🎓', visible: (u) => canReadLibrary(u) },
+  { to: plCourses, label: 'Titles', icon: '🎓', visible: (u) => canReadLibrary(u) },
   // Regular users see their own requests; managers get the full admin queue below.
   { to: plRequests, label: 'Requests', icon: '📬', visible: (u) => canReadLibrary(u) && !canReadAllRequests(u) },
   { to: plAdminRequests, label: 'Requests', icon: '📬', visible: (u) => canReadAllRequests(u) },

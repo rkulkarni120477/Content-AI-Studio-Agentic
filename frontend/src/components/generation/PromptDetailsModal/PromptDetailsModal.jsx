@@ -57,7 +57,7 @@ export default function PromptDetailsModal({
     const parts = [];
     if (projectName) parts.push({ label: 'Project', value: projectName });
     if (clusterName) parts.push({ label: 'Cluster', value: clusterName });
-    if (courseName) parts.push({ label: 'Course', value: courseName });
+    if (courseName) parts.push({ label: 'Title', value: courseName });
     return parts;
   }, [projectName, clusterName, courseName]);
 

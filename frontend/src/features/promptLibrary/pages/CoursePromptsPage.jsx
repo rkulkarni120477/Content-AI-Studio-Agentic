@@ -29,7 +29,7 @@ import { componentCategoryLabel } from '../utils/prompt';
 import { plPrompt } from '../paths';
 
 const SOURCE_BADGES = {
-  course_lock: { className: 'badge-global', text: '🔒 Course lock' },
+  course_lock: { className: 'badge-global', text: '🔒 Title lock' },
   cluster_lock: { className: 'badge-global', text: '🔒 Cluster lock' },
   project_lock: { className: 'badge-global', text: '🔒 Project lock' },
   global_lock: { className: 'badge-global', text: '🔒 Global lock' },
@@ -148,7 +148,7 @@ function SlotRow({ slot, group, canOpen, pool, busy, onLoadPool, onBind, onUnbin
           <div className="field" style={{ margin: 0 }}>
             <label style={{ fontSize: '.72rem' }}>Scope</label>
             <select value={scope} onChange={(e) => setScope(e.target.value)}>
-              <option value="course">Course</option>
+              <option value="course">Title</option>
               <option value="cluster" disabled={!group.cluster_id}>
                 Cluster
               </option>
@@ -195,7 +195,7 @@ export default function CoursePromptsPage() {
       .then((items) => {
         if (alive) setGroups(items);
       })
-      .catch(() => show('Could not load the course-grouped view.'))
+      .catch(() => show('Could not load the title-grouped view.'))
       .finally(() => {
         if (alive) setLoading(false);
       });
@@ -285,12 +285,12 @@ export default function CoursePromptsPage() {
   return (
     <div>
       <div className="page-card" style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>Prompts by course</h2>
+        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>Prompts by title</h2>
         <p style={{ margin: '6px 0 10px', fontSize: '.85rem', color: 'var(--muted)' }}>
-          Each course is listed with the prompt every category currently uses. A shared
-          default can appear under many courses, but it is one prompt — edit it once and
-          every course that uses it gets the update. To give a course its own prompt,
-          use “Change…” on a row to lock a different prompt to that course, its cluster,
+          Each title is listed with the prompt every category currently uses. A shared
+          default can appear under many titles, but it is one prompt — edit it once and
+          every title that uses it gets the update. To give a title its own prompt,
+          use “Change…” on a row to lock a different prompt to that title, its cluster,
           its project, or globally — locks show a 🔒 badge, and the most specific one
           wins. Non-admins can only lock prompts whose active version is approved.
         </p>
@@ -309,7 +309,7 @@ export default function CoursePromptsPage() {
 
       {loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
       {!loading && visible.length === 0 && (
-        <p style={{ color: 'var(--muted)' }}>No courses found.</p>
+        <p style={{ color: 'var(--muted)' }}>No titles found.</p>
       )}
 
       {visible.map((g) => {

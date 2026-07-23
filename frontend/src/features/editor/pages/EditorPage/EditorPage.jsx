@@ -484,8 +484,8 @@ export default function EditorPage() {
           <div className={styles.completionBanner}>
             <div className={styles.completionBanner__icon}>🎉</div>
             <div className={styles.completionBanner__body}>
-              <strong>Course Generation Complete!</strong>
-              <p>All blocks are approved. Validate content below before downloading the full course package.</p>
+              <strong>Title Generation Complete!</strong>
+              <p>All blocks are approved. Validate content below before downloading the full title package.</p>
               <div className={styles.completionBanner__valRow}>
                 <Button
                   variant="primary"
@@ -613,7 +613,7 @@ export default function EditorPage() {
         {scopeLabel && (
           <div className={styles.scopeBanner}>
             <strong>{scopeLabel}</strong>
-            <span> — the file list below includes lessons from every module in this course.</span>
+            <span> — the file list below includes lessons from every module in this title.</span>
           </div>
         )}
 
