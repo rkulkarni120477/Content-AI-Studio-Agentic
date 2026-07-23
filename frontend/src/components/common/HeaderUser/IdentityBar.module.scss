@@ -6,7 +6,7 @@
   justify-content: flex-end;
   align-items: center;
   min-height: $header-height;
-  padding: 0 $space-10;
+  padding: 0 $space-10 !important;
   border-bottom: 1px solid $color-gray-200;
   background: #ffffff;
   flex-shrink: 0;
@@ -17,6 +17,6 @@
 
 @include max-lg {
   .identityBar {
-    padding: 0 $space-6;
+    padding: 0 $space-6 !important;
   }
 }

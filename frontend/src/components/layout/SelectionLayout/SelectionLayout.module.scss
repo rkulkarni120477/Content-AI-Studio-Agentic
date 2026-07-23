@@ -14,10 +14,10 @@
 
 .mainBody {
   flex: 1;
-  padding: $space-8 $space-10;
+  padding: $space-8 $space-10 !important;
   min-width: 0;
 }
 
 @media (max-width: $bp-lg) {
-  .mainBody { padding: $space-6; }
+  .mainBody { padding: $space-6 !important; }
 }
