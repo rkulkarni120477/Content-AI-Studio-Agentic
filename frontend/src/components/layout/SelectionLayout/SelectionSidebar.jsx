@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppDispatch } from '@app/hooks';
 import { setSelectedProject, setSelectedCluster, setSelectedCourse } from '@features/dashboard/dashboardSlice';
 import { useAuth } from '@hooks/useAuth';
-import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
+// ROLE_LABELS/ROLES were only used by the sidebar identity chip, now moved to the top header.
+import { ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
@@ -33,11 +34,12 @@ const CLIENT_OPTIONS = [
   { value: 'demo', label: 'Demo' },
 ];
 
-const ROLE_COLORS = {
-  [ROLES.ADMIN]:    '#7c3aed',
-  [ROLES.REVIEWER]: '#0f766e',
-  [ROLES.AUTHOR]:   '#4338ca',
-};
+// ROLE_COLORS was used by the sidebar identity chip, now moved to the top header.
+// const ROLE_COLORS = {
+//   [ROLES.ADMIN]:    '#7c3aed',
+//   [ROLES.REVIEWER]: '#0f766e',
+//   [ROLES.AUTHOR]:   '#4338ca',
+// };
 
 export default function SelectionSidebar({
   variant = 'project',
@@ -52,7 +54,7 @@ export default function SelectionSidebar({
   createLoading,
 }) {
   const dispatch = useAppDispatch();
-  const { user, role, logout, isAdmin, hasPermission } = useAuth();
+  const { role, logout, isAdmin, hasPermission } = useAuth();
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -165,8 +167,9 @@ export default function SelectionSidebar({
     resetForm();
   }
 
-  const roleColor = ROLE_COLORS[role] ?? '#4338ca';
-  const roleLabel = ROLE_LABELS[role] ?? role;
+  // Identity (roleColor/roleLabel) moved to the top header (HeaderUser).
+  // const roleColor = ROLE_COLORS[role] ?? '#4338ca';
+  // const roleLabel = ROLE_LABELS[role] ?? role;
 
   return (
     <aside
@@ -178,6 +181,7 @@ export default function SelectionSidebar({
         <SidebarToggle collapsed={collapsed} onToggle={toggleCollapsed} />
       </div>
 
+      {/*
       {collapsed ? (
         <div
           className={styles.userDot}
@@ -191,8 +195,9 @@ export default function SelectionSidebar({
           <div className={styles.userPill__label}>Signed in as</div>
           <div className={styles.userPill__name}>{user?.username}</div>
           <span className={styles.userPill__role} style={{ background: roleColor }}>{roleLabel}</span>
-        </div>
+      </div>
       )}
+      */}
 
       {!collapsed && (variant === 'cluster' || variant === 'course') && projectName && (
         <div className={styles.contextPill}>

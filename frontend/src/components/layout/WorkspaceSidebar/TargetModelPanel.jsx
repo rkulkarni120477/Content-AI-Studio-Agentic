@@ -21,7 +21,7 @@ export default function TargetModelPanel() {
   const config = useAppSelector(selectWorkspaceConfig);
   const models = useAppSelector(selectModels);
   const course = useAppSelector(selectSelectedCourse);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     model: config.modelChoice,
     domain: config.expertDomain,

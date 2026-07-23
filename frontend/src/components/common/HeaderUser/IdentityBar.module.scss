@@ -1,0 +1,22 @@
+// Sticky top header strip for pages that don't use the shared <Header />.
+// Place as the first child of a padding-free `.main`; put page padding on a
+// sibling content wrapper so this bar spans edge-to-edge.
+.identityBar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: $header-height;
+  padding: 0 $space-10;
+  border-bottom: 1px solid $color-gray-200;
+  background: #ffffff;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: $z-sticky;
+}
+
+@include max-lg {
+  .identityBar {
+    padding: 0 $space-6;
+  }
+}

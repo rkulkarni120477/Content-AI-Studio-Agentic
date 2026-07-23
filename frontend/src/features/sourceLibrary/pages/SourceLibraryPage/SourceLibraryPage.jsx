@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { selectUser } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
+import PageContainer from '@components/layout/PageContainer/PageContainer';
 import styles from './SourceLibraryPage.module.scss';
 
 const CACHE_PREFIX = 'cas_dis_source_library_docs';
@@ -498,7 +499,8 @@ export default function SourceLibraryPage() {
   }, [documents, filters]);
 
   return (
-    <main className={styles.page}>
+    <PageContainer title="" breadcrumbs={[{ label: 'Source Library' }]} noPadding>
+    <div className={styles.page}>
       <div className={styles.header}>
         <div>
           <div className={styles.eyebrow}>Knowledge Sources</div>
@@ -716,6 +718,7 @@ export default function SourceLibraryPage() {
           </div>
         </section>
       </div>
-    </main>
+    </div>
+    </PageContainer>
   );
 }

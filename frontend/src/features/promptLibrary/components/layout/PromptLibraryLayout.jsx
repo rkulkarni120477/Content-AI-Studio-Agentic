@@ -13,6 +13,7 @@ import { fetchClustersThunk } from '@features/dashboard/dashboardThunks';
 import { selectSelectedProject } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionSidebar from '@components/layout/SelectionLayout/SelectionSidebar';
+import IdentityBar from '@components/common/HeaderUser/IdentityBar';
 import { ROUTES } from '@utils/constants';
 import { cn, extractErrorMessage } from '@utils/helpers';
 import { ToastProvider } from '../../context/ToastContext';
@@ -58,13 +59,16 @@ export default function PromptLibraryLayout() {
       {/* `.pl-root` scopes the ported feature CSS (incl. its element reset) to
           the content pane only — the sidebar is host chrome and must stay out. */}
       <main className={cn(styles.main, 'pl-root')}>
-        <ToastProvider>
-          <div className={styles.content}>
-            <PageView>
-              <Outlet />
-            </PageView>
-          </div>
-        </ToastProvider>
+        <IdentityBar />
+        <div className={styles.mainBody}>
+          <ToastProvider>
+            <div className={styles.content}>
+              <PageView>
+                <Outlet />
+              </PageView>
+            </div>
+          </ToastProvider>
+        </div>
       </main>
 
       <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
