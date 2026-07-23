@@ -115,6 +115,12 @@ function Toolbar({ editor, disabled, onImageClick, onEmbedClick }) {
   );
 }
 
+/** Whitespace-collapsed markdown, for comparing "did the content really change?"
+ *  without being fooled by serialization/whitespace differences. */
+function normMd(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
 async function uploadImageFile(file, onProgress) {
   const form = new FormData();
   form.append('file', file);
@@ -127,10 +133,16 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
   const [imageDialog, setImageDialog] = useState({ open: false, editing: false, initial: null });
   const [embedOpen, setEmbedOpen] = useState(false);
 
-  // Markdown the editor last emitted — lets us tell user edits apart from
-  // external content changes (regenerate / restore / draft recovery) so we
-  // never fire onChange for a change we didn't originate.
+  // `lastEmitted` = the last markdown we handed the parent (or the loaded prop).
+  // Used by the reload effect to tell external content changes (regenerate /
+  // restore / draft recovery) apart from our own edits, and to avoid loops.
   const lastEmitted = useRef(content);
+  // `baseline` = the editor's own serialization of the currently-loaded content.
+  // An update whose serialization equals the baseline changed nothing real
+  // (initial mount / programmatic setContent normalization), so we swallow it —
+  // this prevents phantom autosaves WITHOUT relying on focus, so genuine edits
+  // (typing, toolbar, and dialog image/video inserts) always propagate.
+  const baseline = useRef(htmlToMd(mdToHtml(content)));
 
   const editor = useEditor({
     extensions: EXTENSIONS,
@@ -144,13 +156,20 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
         'aria-multiline': 'true',
       },
     },
+    onCreate: ({ editor: ed }) => {
+      baseline.current = htmlToMd(ed.getHTML());
+    },
     onUpdate: ({ editor: ed }) => {
-      // Only user edits should propagate. TipTap emits an update on initial load
-      // and on programmatic setContent — both happen while the editor is NOT
-      // focused, so ignoring unfocused updates prevents phantom autosaves / diffs
-      // (real typing, pasting, and toolbar commands all run with focus).
-      if (!ed.isFocused) return;
       const md = htmlToMd(ed.getHTML());
+      // Compare normalized (whitespace-collapsed): the mount / programmatic-load
+      // normalization is semantically identical to the baseline (only list
+      // serialization / whitespace differs) → swallow it and re-anchor. A real
+      // edit (typing, toolbar, image/video insert) changes the text → propagate.
+      if (normMd(md) === normMd(baseline.current)) {
+        baseline.current = md;
+        return;
+      }
+      baseline.current = md;
       lastEmitted.current = md;
       onChange?.(md);
     },
@@ -162,6 +181,7 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
     if (content !== lastEmitted.current) {
       lastEmitted.current = content;
       editor.commands.setContent(mdToHtml(content), false);
+      baseline.current = htmlToMd(editor.getHTML());
     }
   }, [content, editor]);
 
