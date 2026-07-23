@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.core.dependencies import get_db, require_permission
 from app.core.exceptions import ValidationError
 from app.schemas.asset import AssetCleanupRequest, AssetCleanupResponse, AssetUploadResponse
-from app.services.asset_storage import ALLOWED_IMAGE_TYPES, upload_image
+from app.services.asset_storage import ALLOWED_IMAGE_TYPES, sniff_image_type, upload_image
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,6 +54,13 @@ async def upload_asset(
             f"Image is too large ({len(data) // 1024} KB). "
             f"Maximum is {settings.assets_max_upload_mb} MB."
         )
+
+    # Verify the actual bytes are an image — don't trust the client's header.
+    # The sniffed type is authoritative for storage.
+    sniffed = sniff_image_type(data)
+    if sniffed is None:
+        raise ValidationError("File content is not a valid PNG, JPEG, GIF, or WebP image.")
+    content_type = sniffed
 
     url = upload_image(data, content_type)
     _log.info("asset_uploaded  user=%s  type=%s  bytes=%d",
