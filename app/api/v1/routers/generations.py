@@ -291,13 +291,16 @@ def list_generations(
     )
     total = len(generations)
     start = (page - 1) * page_size
+    page_gens = generations[start: start + page_size]
+
+    # Count blocks for the whole page in ONE grouped query rather than one
+    # COUNT round-trip per generation (crippling over a remote DB at page_size=500).
+    counts = generation_repository.count_blocks_for_generations(db, [g.id for g in page_gens])
 
     items = []
-    for g in generations[start: start + page_size]:
+    for g in page_gens:
         item = GenerationListItem.model_validate(g)
-        # Count blocks without loading them all.
-        from promptops_app.repositories import generation_repository as _gr
-        item.block_count = _gr.count_blocks_for_generation(db, g.id)
+        item.block_count = counts.get(g.id, 0)
         items.append(item)
 
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)

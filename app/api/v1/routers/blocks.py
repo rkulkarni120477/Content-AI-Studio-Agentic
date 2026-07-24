@@ -181,7 +181,9 @@ def list_course_blocks(
 
     gens = generation_repository.list_course_generations(db, course_id=course_id)
     gen_ids = [g.id for g in gens]
-    all_blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
+    # Lightweight column-only query: preview + has_html are computed in SQL so the
+    # large content/content_html text columns are never pulled over the wire.
+    all_blocks = generation_repository.list_course_block_summaries(db, gen_ids)
 
     if workflow_state:
         all_blocks = [b for b in all_blocks if b.workflow_state.lower() == workflow_state.lower()]
@@ -191,10 +193,10 @@ def list_course_blocks(
     items = [
         BlockListItem(
             id=b.id, block_label=b.block_label,
-            content_preview=(b.content or "")[:300],
+            content_preview=b.content_preview,
             workflow_state=b.workflow_state, position=b.position or 0, rating=b.rating,
             generation_id=b.generation_id,
-            has_html=bool(getattr(b, "content_html", None) and b.content_html.strip()),
+            has_html=bool(b.has_html),
         )
         for b in all_blocks[start: start + page_size]
     ]

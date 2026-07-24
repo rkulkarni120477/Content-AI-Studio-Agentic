@@ -3,6 +3,8 @@
 import re
 from datetime import datetime, timezone
 
+from sqlalchemy import func
+
 from promptops_app.database import (
     Block,
     CourseModule,
@@ -94,8 +96,21 @@ def list_editor_generations(
     cdd_id: int | None = None,
     limit: int = 200,
 ):
-    """Editor page list — mirrors Streamlit list_generations_scoped + course context."""
-    q = db.query(Generation).order_by(Generation.created_at.desc())
+    """Editor page list — mirrors Streamlit list_generations_scoped + course context.
+
+    Selects only the columns the dropdown needs; notably it skips the large
+    ``output_text`` column, which would otherwise transfer the full generated
+    lesson text for every generation just to render a picker.
+    """
+    q = db.query(
+        Generation.id,
+        Generation.topic,
+        Generation.prompt_name,
+        Generation.prompt_version,
+        Generation.blueprint_id,
+        Generation.cdd_id,
+        Generation.created_at,
+    ).order_by(Generation.created_at.desc())
     if course_id is not None:
         q = q.filter(Generation.course_id == course_id)
     if project_id is not None:
@@ -165,6 +180,53 @@ def list_blocks_for_generation(db, gen_id: int):
 
 def count_blocks_for_generation(db, gen_id: int) -> int:
     return db.query(Block).filter(Block.generation_id == gen_id).count()
+
+
+def count_blocks_for_generations(db, gen_ids: list) -> dict:
+    """Block counts for many generations in a SINGLE grouped query.
+
+    Replaces calling count_blocks_for_generation() in a loop, which issued one
+    round-trip per generation — crippling on a remote DB when a course has
+    hundreds of generations (e.g. imported courses).
+    """
+    if not gen_ids:
+        return {}
+    rows = (
+        db.query(Block.generation_id, func.count(Block.id))
+        .filter(Block.generation_id.in_(gen_ids))
+        .group_by(Block.generation_id)
+        .all()
+    )
+    return {gen_id: count for gen_id, count in rows}
+
+
+def list_course_block_summaries(db, gen_ids: list, limit: int = 500):
+    """Lightweight block rows for list/summary views.
+
+    Selects ONLY the columns list views need and computes the content preview
+    and has_html flag in SQL, so the large text columns (content, content_html,
+    eval_report, …) are never transferred from the DB. Materialising full Block
+    rows for a whole course pulls megabytes over a remote connection; this keeps
+    the payload tiny. Returns SQLAlchemy Row objects with named attributes.
+    """
+    if not gen_ids:
+        return []
+    return (
+        db.query(
+            Block.id,
+            Block.block_label,
+            Block.workflow_state,
+            Block.position,
+            Block.rating,
+            Block.generation_id,
+            func.substr(func.coalesce(Block.content, ""), 1, 300).label("content_preview"),
+            (func.coalesce(func.length(func.trim(Block.content_html)), 0) > 0).label("has_html"),
+        )
+        .filter(Block.generation_id.in_(gen_ids))
+        .order_by(*_block_sort_order())
+        .limit(limit)
+        .all()
+    )
 
 
 def list_blocks_for_gen_ids(db, gen_ids: list, limit: int = 500):
