@@ -36,6 +36,15 @@ describe('UnifiedBlockEditor', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('does not fire onChange when entering Edit mode (editor mounts without a phantom autosave)', () => {
+    // The editor is created lazily on the first switch to Edit mode; that mount
+    // must not be mistaken for a user edit.
+    const onChange = vi.fn();
+    render(<UnifiedBlockEditor content={SAMPLE} onChange={onChange} />);
+    fireEvent.click(screen.getByRole('button', { name: /Edit/i }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('renders an empty-state placeholder for blank content in Preview', () => {
     render(<UnifiedBlockEditor content="" onChange={() => {}} />);
     expect(screen.getByText('(empty)')).toBeTruthy();

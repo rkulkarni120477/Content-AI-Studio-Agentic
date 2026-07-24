@@ -111,6 +111,12 @@ class AIMClientProfile(BaseClientProfile):
             "course_id": meta.get("course_id") or self.aim_rules.get("default_course_id", "general_science_i"),
             "document_type": content_type,
             "content_type": content_type,
+            # Deterministic, not LLM-guessed: metadata_extraction_agent's "block"
+            # field is unreliable even with the filename in its prompt (observed
+            # wrong/blank/hallucinated on 6 of 7 Block 6 project files). block_number
+            # above is derived reliably from filename/content, so prefer it whenever
+            # known instead of trusting the LLM guess.
+            "block": f"Block {block_number}" if block_number else (meta.get("block") or ""),
             "block_id": block_id,
             "block_number": block_number,
             "day_id": day_id,
@@ -175,7 +181,7 @@ class AIMClientProfile(BaseClientProfile):
             return "quiz_answer_key" if is_quiz_ctx else "project_instructor_guide"
         if "instructor guide" in low_name:
             return "project_instructor_guide"
-        if "final exam" in low_name:
+        if "final exam" in low_name or "cumulative exam" in low_name:
             return "final_exam"
         if is_quiz_ctx or doc_type == "quiz_exam":
             return "quiz"

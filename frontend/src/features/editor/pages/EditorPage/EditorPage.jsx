@@ -107,6 +107,9 @@ export default function EditorPage() {
   const [selectedModuleId, setSelectedModuleId] = useState('');
   const [moduleExporting, setModuleExporting] = useState(false);
   const [moduleExportError, setModuleExportError] = useState(null);
+  // Reviewer list is identical for every block, so fetch it once here and pass
+  // it down — previously each block card re-fetched it on mount (N calls).
+  const [reviewers, setReviewers] = useState([]);
 
   const numericCourseId = Number(courseId);
 
@@ -168,6 +171,14 @@ export default function EditorPage() {
     dispatch(fetchGenerationBlocksThunk(selectedGenId));
     editorService.getGeneration(selectedGenId).then(setGenDetail).catch(() => setGenDetail(null));
   }, [selectedGenId, courseId, dispatch]);
+
+  useEffect(() => {
+    editorService.listReviewers().then((list) => {
+      const arr = Array.isArray(list) ? list : (list?.items || []);
+      const names = arr.map((u) => (typeof u === 'string' ? u : u.username)).filter(Boolean);
+      setReviewers(names);
+    }).catch(() => setReviewers([]));
+  }, []);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -657,6 +668,7 @@ export default function EditorPage() {
             block={block}
             generationId={selectedGenId}
             genCreatedBy={genDetail?.created_by}
+            reviewers={reviewers}
             onBlockUpdated={() => dispatch(fetchGenerationBlocksThunk(selectedGenId))}
             isValidating={isValidating}
             genValidation={genValidation}
