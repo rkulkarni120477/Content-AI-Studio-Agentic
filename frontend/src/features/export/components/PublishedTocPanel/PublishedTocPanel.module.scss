@@ -22,6 +22,80 @@
   gap: $space-2;
   flex-shrink: 0;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.exportSelect {
+  position: relative;
+  min-width: 160px;
+}
+
+.exportSelect__btn {
+  @include form-field-base;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-2;
+  width: 100%;
+  min-width: 160px;
+  height: 38px;
+  padding: 0 $space-3;
+  font-weight: $font-weight-semibold;
+  color: #fff;
+  background-color: $color-primary;
+  border-color: $color-primary;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: $color-primary-dark;
+    background-color: $color-primary-dark;
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgb(79 70 229 / 0.25);
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+.exportSelect__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.12);
+}
+
+.exportSelect__option {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: $color-gray-900;
+  font: inherit;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    background: #eef2ff;
+    color: $color-primary-dark;
+    outline: none;
+  }
 }
 
 .title {
