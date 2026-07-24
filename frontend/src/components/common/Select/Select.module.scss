@@ -25,11 +25,24 @@
     height: 38px;
     padding-right: $space-8;
     cursor: pointer;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: none;
 
     &--error {
       border-color: $color-danger;
       &:focus { box-shadow: 0 0 0 3px rgb(220 38 38 / 0.15); }
     }
+  }
+
+  // Group titles use value prefix __group__. Force dark text — macOS often
+  // washes out native <optgroup> / disabled labels until they are unreadable.
+  &__select option[value^='__group__'] {
+    color: #0f172a !important;
+    -webkit-text-fill-color: #0f172a !important;
+    font-weight: 700;
+    opacity: 1 !important;
   }
 
   &__chevron {
