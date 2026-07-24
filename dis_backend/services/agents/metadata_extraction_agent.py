@@ -51,7 +51,7 @@ class MetadataExtractionAgent(BasePipelineAgent):
                         fields.append(f'"{f.name}": {f.type}')
                 field_text = '\n'.join(fields) or 'title, language, course_name, topic'
                 sample = (state.get('raw_text', '') or '')[:1500]
-                prompt = f'Extract client metadata. Return JSON only.\nClient fields:\n{field_text}\nAlways include title, language, word_count.\nDocument excerpt:\n{sample}'
+                prompt = f'Extract client metadata. Return JSON only.\nClient fields:\n{field_text}\nAlways include title, language, word_count.\nFilename: {state.get("filename", "")}\nDocument excerpt:\n{sample}'
                 resp, inp, out = call_llm(ctx.models.metadata_extraction, prompt, max_tokens=350)
                 ctx.guard.record_usage(inp + out, 'metadata_extraction')
                 meta = safe_json(resp)

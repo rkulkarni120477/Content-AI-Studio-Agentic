@@ -94,6 +94,12 @@ def extract_pdf(content: bytes, vision_fn=None, options: dict | None = None) -> 
 # ── DOCX ──────────────────────────────────────────────────────────────────────
 
 def extract_docx(content: bytes, vision_fn=None, options: dict | None = None) -> ExtractionResult:
+    # python-docx only reads the modern zip/OOXML format. Legacy binary
+    # "Composite Document File V2" .doc files (pre-2007 Word) are a different
+    # container entirely and raise here, so route those to antiword instead
+    # of silently returning empty text.
+    if content[:4] == b"\xd0\xcf\x11\xe0":
+        return _extract_legacy_doc(content)
     try:
         import docx as python_docx
         doc = python_docx.Document(io.BytesIO(content))
@@ -113,7 +119,38 @@ def extract_docx(content: bytes, vision_fn=None, options: dict | None = None) ->
         full_text = "\n".join(parts)
         return ExtractionResult(text=full_text, page_count=max(1, len(full_text) // 3000), tables=tables)
     except Exception as exc:
-        log.error("[DOCX] Failed: %s", exc)
+        log.warning("[DOCX] python-docx failed (%s), trying legacy .doc extraction", exc)
+        return _extract_legacy_doc(content)
+
+
+def _extract_legacy_doc(content: bytes) -> ExtractionResult:
+    """Extract text from pre-2007 binary OLE2 .doc files via antiword.
+
+    antiword is a small, purpose-built CLI for this exact legacy format;
+    python-docx and pandoc do not support it. Requires `antiword` on PATH
+    (apt package `antiword`).
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("antiword"):
+        log.error("[DOCX] Legacy .doc file but antiword is not installed; returning empty text")
+        return ExtractionResult(text="")
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".doc") as tmp:
+            tmp.write(content)
+            tmp.flush()
+            proc = subprocess.run(
+                ["antiword", tmp.name], capture_output=True, timeout=60,
+            )
+        if proc.returncode != 0:
+            log.error("[DOCX] antiword failed (rc=%s): %s", proc.returncode, proc.stderr.decode("utf-8", errors="ignore")[:500])
+            return ExtractionResult(text="")
+        text = proc.stdout.decode("utf-8", errors="ignore")
+        return ExtractionResult(text=text, page_count=max(1, len(text) // 3000))
+    except Exception as exc:
+        log.error("[DOCX] Legacy .doc extraction failed: %s", exc)
         return ExtractionResult(text="")
 
 

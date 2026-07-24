@@ -23,6 +23,7 @@ from services.indexing import (
     opensearch_upsert as do_opensearch_upsert,
 )
 from services.token_guard import TokenLimitError
+from services.source_library import write_source_content_and_index
 
 
 class ProcessedStorageAgent(BasePipelineAgent):
@@ -50,6 +51,17 @@ class ProcessedStorageAgent(BasePipelineAgent):
         if state.get('project_structure'):
             urls['project_structure'] = ctx.writer.write_json(f'{prefix}/extracted/project_structure.json', state.get('project_structure', {}))
         urls['studio_payload'] = ctx.writer.write_json(f'{prefix}/studio_payload/payload.json', state.get('studio_payload', {}))
+
+        # Refresh the compact source index/content with the FINAL, fully-classified
+        # metadata. Upload-time (upload_file/_create_job_record_and_upload) writes an
+        # immediate placeholder record before this pipeline runs, so it carries empty
+        # block/content_type/day_number/document_type even after classification finishes.
+        # Source Library's list/filter/selector endpoints read only this compact index,
+        # not the studio_payload, so without this refresh every ingested file shows
+        # stale pre-classification metadata there forever.
+        client_id = state.get('client_id')
+        if client_id:
+            write_source_content_and_index(ctx.cfg, client_id, state.get('studio_payload', {}), payload_key=urls['studio_payload'])
         return ctx.step_done(state, 'processed_storage')
 
         # =============================================================================

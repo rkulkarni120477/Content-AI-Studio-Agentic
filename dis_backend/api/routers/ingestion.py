@@ -124,19 +124,11 @@ def _extract_text_for_source_library(filename: str, content: bytes) -> str:
                     continue
             return _clean_reading_text("\n\n".join(parts))
         if suffix in {"docx", "doc"}:
-            from io import BytesIO
-            from docx import Document
-            doc = Document(BytesIO(content))
-            parts = []
-            for para in doc.paragraphs:
-                if para.text and para.text.strip():
-                    parts.append(para.text)
-            for table in doc.tables:
-                for row in table.rows:
-                    cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
-                    if cells:
-                        parts.append(" | ".join(cells))
-            return _clean_reading_text("\n".join(parts))
+            # Delegates to the pipeline's own docx/doc extractor so legacy
+            # binary .doc (pre-2007, OLE2) files get the antiword fallback
+            # too, instead of duplicating docx-only logic here.
+            from services.pipeline.extractors import extract_docx
+            return _clean_reading_text(extract_docx(content).text)
         if suffix in {"pptx", "ppt"}:
             from io import BytesIO
             from pptx import Presentation
@@ -406,7 +398,15 @@ async def upload_file(
     source_root: str = Form(""),
     purpose: str = Form(""),
     document_type: str = Form(""),
-    visibility: str = Form("instructor"),
+    # Empty by default, NOT "instructor": this same dict feeds metadata_hints,
+    # whose override loop treats any non-empty value as an explicit correction
+    # that clobbers aim.py's deterministic content_type-based visibility. A
+    # non-empty default here silently forced every single-file upload to
+    # visibility="instructor" regardless of true classification (e.g. student-
+    # visible projects/exams), hiding them from student-facing retrieval.
+    # _build_source_library_payload still falls back to "instructor" on its
+    # own for the immediate pre-classification Source Library preview.
+    visibility: str = Form(""),
     course_name: str = Form(""),
     course_id: str = Form(""),
     block: str = Form(""),
