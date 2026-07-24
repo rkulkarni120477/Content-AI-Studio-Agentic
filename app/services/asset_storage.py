@@ -31,6 +31,25 @@ ALLOWED_IMAGE_TYPES: dict[str, str] = {
 _ASSET_PREFIX = "cas-assets"
 
 
+def sniff_image_type(data: bytes) -> str | None:
+    """
+    Detect the real image type from magic bytes, independent of the client's
+    Content-Type header. Returns a content type from ALLOWED_IMAGE_TYPES, or None
+    if the bytes are not a recognized/allowed image.
+    """
+    if not data:
+        return None
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _join_prefix(base_prefix: str, key: str) -> str:
     """Join the optional S3 base prefix with a key (mirrors DIS's _join_prefix)."""
     p = (base_prefix or "").strip().strip("/")

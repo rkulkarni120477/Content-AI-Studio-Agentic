@@ -4,19 +4,22 @@ Backend content sanitization (defense-in-depth).
 Two entry points, matching the requirement's "sanitize before saving and before
 rendering":
 
-* ``sanitize_html(html)`` — authoritative allowlist sanitizer for **generated
-  HTML** (Canvas/LMS, export). Built on ``nh3`` (Rust/ammonia) with a whitelist
-  mirroring the frontend editor, plus YouTube-only ``<iframe>`` src enforcement,
+* ``sanitize_html(html)`` — allowlist sanitizer for **generated HTML**. Built on
+  ``nh3`` (Rust/ammonia) with a whitelist mirroring the frontend editor (plus
+  layout ``class``/``id``), YouTube-only ``<iframe>`` src enforcement,
   ``data:image`` restricted to ``<img>``, and ``style`` reduced to ``text-align``.
+  Wired into ``canvas_html_service.build_canvas_html_from_markdown`` — it cleans
+  the content fragment before the trusted single-column layout/``<style>`` is
+  added, so it is the authoritative barrier on the LMS/export render path while
+  leaving that trusted layout intact.
 
 * ``sanitize_stored_content(markdown)`` — a **Markdown-safe** scrub applied on
   save. Stored block content is Markdown with small inline-HTML islands, so we
   must NOT run an HTML sanitizer over the whole string (it would HTML-escape
   prose like ``a < b`` and ``A & B``). Instead this strips only unambiguously
   dangerous, tag-shaped constructs and leaves plain Markdown untouched (with a
-  fast path for the common pure-Markdown case). The allowlist enforcement above
-  is the authoritative layer; this is hardening for content written directly
-  through the API.
+  fast path for the common pure-Markdown case). Defense-in-depth on the write
+  path; the render-time ``sanitize_html`` above is the authoritative barrier.
 """
 
 from __future__ import annotations
@@ -27,7 +30,10 @@ from urllib.parse import urlparse
 import nh3
 
 # ---------------------------------------------------------------------------
-# Allowlist (mirrors frontend src/utils/markdownHtml.js)
+# Allowlist.
+# KEEP IN SYNC with the frontend allowlist in `frontend/src/utils/markdownHtml.js`
+# (ALLOWED_TAGS / ALLOWED_ATTR / ALLOWED_EMBED_HOSTS). Changes on one side should
+# be mirrored on the other.
 # ---------------------------------------------------------------------------
 
 ALLOWED_TAGS: set[str] = {
@@ -47,7 +53,10 @@ ALLOWED_ATTRS: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
     "img": {"src", "alt", "title", "width", "height"},
     "iframe": {"src", "width", "height", "allow", "allowfullscreen", "frameborder"},
-    "*": {"style", "align", "colspan", "rowspan"},
+    # class/id are needed so generated export/Canvas layout classes (objectives,
+    # check, cas-lesson, placeholder, code highlight) survive sanitization. They
+    # carry no execution risk.
+    "*": {"style", "align", "colspan", "rowspan", "class", "id"},
 }
 
 URL_SCHEMES: set[str] = {"http", "https", "mailto", "tel", "data"}

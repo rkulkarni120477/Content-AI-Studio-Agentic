@@ -24,7 +24,10 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 
 // ---------------------------------------------------------------------------
-// Sanitization allowlist (Phase 1). Extended in later phases for media/embeds.
+// Sanitization allowlist.
+// KEEP IN SYNC with the backend allowlist in
+// `promptops_app/services/content_sanitizer.py` (ALLOWED_TAGS / ALLOWED_ATTRS /
+// ALLOWED_EMBED_HOSTS). If you change tags/attrs/hosts here, mirror them there.
 // ---------------------------------------------------------------------------
 
 const ALLOWED_TAGS = [
@@ -149,10 +152,14 @@ marked.setOptions({
 /**
  * Convert Markdown (with optional inline-HTML islands) to sanitized HTML for the
  * editor / preview. Returns '' for empty input.
+ *
+ * `breaks`: when true, a single newline becomes a <br> (matches the legacy
+ * content-preview look used across CDD/Blueprint/Generate/Feedback screens). The
+ * editor uses the default (false) so the Markdown round-trip stays stable.
  */
-export function mdToHtml(markdown) {
+export function mdToHtml(markdown, { breaks = false } = {}) {
   if (!markdown || !String(markdown).trim()) return '';
-  const rawHtml = marked.parse(String(markdown));
+  const rawHtml = marked.parse(String(markdown), { breaks });
   return sanitizeHtml(rawHtml);
 }
 

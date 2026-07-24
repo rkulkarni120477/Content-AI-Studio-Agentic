@@ -49,6 +49,20 @@ describe('UnifiedBlockEditor', () => {
     expect(screen.getByLabelText(/Alternative text/i)).toBeTruthy();
   });
 
+  it('propagates an inserted image to onChange (not dependent on editor focus)', () => {
+    const onChange = vi.fn();
+    render(<UnifiedBlockEditor content="Hello world." onChange={onChange} />);
+    fireEvent.click(screen.getByRole('button', { name: /Edit/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Insert or edit image' }));
+    fireEvent.change(screen.getByLabelText(/image URL/i), {
+      target: { value: 'https://cdn.example.com/pic.png' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Insert' }));
+
+    const emitted = onChange.mock.calls.map((c) => c[0]).join('\n');
+    expect(emitted).toContain('cdn.example.com/pic.png');
+  });
+
   it('opens the video embed dialog and validates YouTube URLs', () => {
     render(<UnifiedBlockEditor content={SAMPLE} onChange={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Edit/i }));

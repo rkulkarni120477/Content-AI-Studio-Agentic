@@ -167,11 +167,8 @@ def build_canvas_html_from_markdown(label: str, content: str) -> str:
     """
     from promptops_app.exporters.markdown_html import markdown_to_html
     from promptops_app.services.canvas_html_layout import lock_single_column_html
+    from promptops_app.services.content_sanitizer import sanitize_html
 
-    # Content is sanitized at the save boundary (sanitize_stored_content), so this
-    # trusted, system-generated document is built from already-clean Markdown. We
-    # deliberately do NOT run the editor allowlist over the final HTML here — it
-    # would strip the layout classes / <style> this document depends on.
     rewritten = _rewrite_media_specs(content or "")
     body_html = markdown_to_html(rewritten)
     body_html = _strip_duplicate_page_titles(body_html, label or "")
@@ -179,6 +176,11 @@ def build_canvas_html_from_markdown(label: str, content: str) -> str:
     body_html = _wrap_activity_sections(body_html)
 
     fragment = f'<div class="cas-lesson">\n{body_html}\n</div>'
+    # Allowlist-sanitize the content fragment (removes scripts, event handlers,
+    # javascript: URLs, and non-YouTube iframes) BEFORE the trusted single-column
+    # layout + <style> is applied — layout classes are allowlisted, so styling
+    # survives while any unsafe authored/generated HTML is stripped.
+    fragment = sanitize_html(fragment)
     return lock_single_column_html(fragment)
 
 
