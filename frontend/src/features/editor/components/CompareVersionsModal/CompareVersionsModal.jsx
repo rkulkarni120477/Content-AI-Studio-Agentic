@@ -33,7 +33,7 @@ function DiffPane({ parts, side }) {
 }
 
 export default function CompareVersionsModal({
-  open, onClose, blockId, versions, currentContent, onRestore,
+  open, onClose, blockId, versions, loading = false, currentContent, onRestore,
 }) {
   const [selectedVersionId, setSelectedVersionId] = useState('');
   const [leftContent, setLeftContent] = useState(null);
@@ -95,35 +95,43 @@ export default function CompareVersionsModal({
         </>
       )}
     >
-      <div className={styles.toolbar}>
-        <Select
-          label="Comparing against"
-          options={versions.map((v) => ({ value: String(v.version_id), label: versionLabel(v) }))}
-          value={selectedVersionId}
-          onChange={(e) => setSelectedVersionId(e.target.value)}
-          wrapperClassName={styles.toolbar__select}
-        />
-        <div className={styles.legend}>
-          <span><i className={styles.removed}>abc</i> removed</span>
-          <span><i className={styles.added}>abc</i> added</span>
-        </div>
-      </div>
-      <div className={styles.grid}>
-        <div className={styles.pane}>
-          <p className={styles.pane__header}>
-            {selectedMeta ? `v${selectedMeta.version_number || selectedMeta.version_id}` : 'Selected version'}
-            <span className={styles.pane__sub}>{selectedMeta?.change_source || ''}</span>
-          </p>
-          <DiffPane parts={parts} side="left" />
-        </div>
-        <div className={styles.pane}>
-          <p className={styles.pane__header}>
-            Current
-            <span className={styles.pane__sub}>Live editor content</span>
-          </p>
-          <DiffPane parts={parts} side="right" />
-        </div>
-      </div>
+      {loading ? (
+        <p className={styles.loading}>Loading version history…</p>
+      ) : versions.length === 0 ? (
+        <p className={styles.loading}>No previous versions to compare yet.</p>
+      ) : (
+        <>
+          <div className={styles.toolbar}>
+            <Select
+              label="Comparing against"
+              options={versions.map((v) => ({ value: String(v.version_id), label: versionLabel(v) }))}
+              value={selectedVersionId}
+              onChange={(e) => setSelectedVersionId(e.target.value)}
+              wrapperClassName={styles.toolbar__select}
+            />
+            <div className={styles.legend}>
+              <span><i className={styles.removed}>abc</i> removed</span>
+              <span><i className={styles.added}>abc</i> added</span>
+            </div>
+          </div>
+          <div className={styles.grid}>
+            <div className={styles.pane}>
+              <p className={styles.pane__header}>
+                {selectedMeta ? `v${selectedMeta.version_number || selectedMeta.version_id}` : 'Selected version'}
+                <span className={styles.pane__sub}>{selectedMeta?.change_source || ''}</span>
+              </p>
+              <DiffPane parts={parts} side="left" />
+            </div>
+            <div className={styles.pane}>
+              <p className={styles.pane__header}>
+                Current
+                <span className={styles.pane__sub}>Live editor content</span>
+              </p>
+              <DiffPane parts={parts} side="right" />
+            </div>
+          </div>
+        </>
+      )}
     </Modal>
   );
 }

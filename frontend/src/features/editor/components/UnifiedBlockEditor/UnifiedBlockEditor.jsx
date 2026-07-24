@@ -128,8 +128,17 @@ async function uploadImageFile(file, onProgress) {
   return res.url;
 }
 
-export default function UnifiedBlockEditor({ content = '', onChange, disabled = false, onAssetUploaded }) {
-  const [mode, setMode] = useState('preview');
+/**
+ * The heavyweight half: a full TipTap/ProseMirror instance plus its toolbar and
+ * dialogs. It is mounted ONLY while the block is in Edit mode, so opening a
+ * lesson with many blocks (all in Preview) no longer pays the editor cost N
+ * times up front. Preview renders from `mdToHtml(content)` alone.
+ *
+ * Content is never lost across a Preview⇄Edit switch: `content` (owned by the
+ * parent card) is the source of truth and every keystroke flows back out via
+ * `onChange`, so re-entering Edit rebuilds the editor from the latest content.
+ */
+function BlockRichEditor({ content, onChange, disabled, onAssetUploaded }) {
   const [imageDialog, setImageDialog] = useState({ open: false, editing: false, initial: null });
   const [embedOpen, setEmbedOpen] = useState(false);
 
@@ -142,7 +151,16 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
   // (initial mount / programmatic setContent normalization), so we swallow it —
   // this prevents phantom autosaves WITHOUT relying on focus, so genuine edits
   // (typing, toolbar, and dialog image/video inserts) always propagate.
-  const baseline = useRef(htmlToMd(mdToHtml(content)));
+  //
+  // It MUST hold the loaded content's serialization from the very first render:
+  // an initial normalization `onUpdate` can fire before `onCreate` re-anchors it,
+  // and a null/empty baseline would misread that as a real edit (phantom save).
+  // We seed it lazily so the marked→DOMPurify→turndown round-trip runs once on
+  // mount, not on every re-render.
+  const baseline = useRef(null);
+  if (baseline.current === null) {
+    baseline.current = htmlToMd(mdToHtml(content));
+  }
 
   const editor = useEditor({
     extensions: EXTENSIONS,
@@ -189,8 +207,6 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
     editor?.setEditable(!disabled);
   }, [disabled, editor]);
 
-  const previewHtml = useMemo(() => mdToHtml(content), [content]);
-
   function openImageDialog() {
     const editing = editor?.isActive('image');
     setImageDialog({
@@ -232,6 +248,43 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
   }
 
   return (
+    <>
+      <Toolbar
+        editor={editor}
+        disabled={disabled}
+        onImageClick={openImageDialog}
+        onEmbedClick={() => setEmbedOpen(true)}
+      />
+
+      <div className={styles.editArea}>
+        <EditorContent editor={editor} />
+      </div>
+
+      <ImageDialog
+        open={imageDialog.open}
+        editing={imageDialog.editing}
+        initial={imageDialog.initial}
+        onUpload={handleImageUpload}
+        onSubmit={submitImage}
+        onRemove={removeImage}
+        onClose={closeImageDialog}
+      />
+
+      <EmbedDialog
+        open={embedOpen}
+        onSubmit={submitEmbed}
+        onClose={() => setEmbedOpen(false)}
+      />
+    </>
+  );
+}
+
+export default function UnifiedBlockEditor({ content = '', onChange, disabled = false, onAssetUploaded }) {
+  const [mode, setMode] = useState('preview');
+
+  const previewHtml = useMemo(() => mdToHtml(content), [content]);
+
+  return (
     <div className={styles.wrapper}>
       <div className={styles.modeBar}>
         <div className={styles.segmented} role="group" aria-label="Editor mode">
@@ -257,44 +310,20 @@ export default function UnifiedBlockEditor({ content = '', onChange, disabled = 
         </span>
       </div>
 
-      {mode === 'edit' && (
-        <Toolbar
-          editor={editor}
+      {mode === 'edit' ? (
+        <BlockRichEditor
+          content={content}
+          onChange={onChange}
           disabled={disabled}
-          onImageClick={openImageDialog}
-          onEmbedClick={() => setEmbedOpen(true)}
+          onAssetUploaded={onAssetUploaded}
         />
-      )}
-
-      {/* The editor instance stays mounted in both modes so switching never
-          reloads or loses unsaved content; we only toggle visibility. */}
-      <div className={mode === 'edit' ? styles.editArea : styles.hidden}>
-        <EditorContent editor={editor} />
-      </div>
-
-      {mode === 'preview' && (
+      ) : (
         <div
           className={`${styles.preview} markdown-content`}
           // Content is sanitized by mdToHtml before it reaches the DOM.
           dangerouslySetInnerHTML={{ __html: previewHtml || '<p class="empty">(empty)</p>' }}
         />
       )}
-
-      <ImageDialog
-        open={imageDialog.open}
-        editing={imageDialog.editing}
-        initial={imageDialog.initial}
-        onUpload={handleImageUpload}
-        onSubmit={submitImage}
-        onRemove={removeImage}
-        onClose={closeImageDialog}
-      />
-
-      <EmbedDialog
-        open={embedOpen}
-        onSubmit={submitEmbed}
-        onClose={() => setEmbedOpen(false)}
-      />
     </div>
   );
 }

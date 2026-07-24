@@ -84,6 +84,7 @@ export default function EditorBlockCard({
   block,
   generationId,
   genCreatedBy,
+  reviewers = [],
   onBlockUpdated,
   isValidating = false,
   genValidation = null,
@@ -102,7 +103,6 @@ export default function EditorBlockCard({
   const [regenScope, setRegenScope] = useState(FEEDBACK_SCOPES.ONE_TIME);
   const [itemInstr, setItemInstr] = useState('');
   const [itemScope, setItemScope] = useState(FEEDBACK_SCOPES.ONE_TIME);
-  const [reviewers, setReviewers] = useState([]);
   const [selectedReviewer, setSelectedReviewer] = useState('');
   const [revScore, setRevScore] = useState(3);
   const [revApproved, setRevApproved] = useState(false);
@@ -111,6 +111,10 @@ export default function EditorBlockCard({
   const [aiReviewText, setAiReviewText] = useState(null);
   const [requestingReview, setRequestingReview] = useState(false);
   const [versions, setVersions] = useState([]);
+  // Versions are fetched lazily (only when the History/Compare UI opens), so
+  // this tracks whether that fetch has completed for the current block — used
+  // to tell "not loaded yet" apart from "genuinely has none".
+  const [versionsLoaded, setVersionsLoaded] = useState(false);
   const [restoreVerId, setRestoreVerId] = useState('');
   const [snapNote, setSnapNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -163,14 +167,11 @@ export default function EditorBlockCard({
     setShowDraftRecovery(Boolean(block.draft_content && block.draft_content !== block.content));
   }, [block.id, block.content, block.draft_content]);
 
+  // Keep the selected reviewer valid as the (page-provided) list arrives or
+  // changes, defaulting to the first reviewer.
   useEffect(() => {
-    editorService.listReviewers().then((list) => {
-      const arr = Array.isArray(list) ? list : (list?.items || []);
-      const names = arr.map((u) => (typeof u === 'string' ? u : u.username)).filter(Boolean);
-      setReviewers(names);
-      if (names[0]) setSelectedReviewer(names[0]);
-    }).catch(() => setReviewers([]));
-  }, []);
+    setSelectedReviewer((cur) => (cur && reviewers.includes(cur) ? cur : (reviewers[0] || '')));
+  }, [reviewers]);
 
   useEffect(() => {
     if (!changed || !canEdit || autosaveLocked) return undefined;
@@ -204,11 +205,24 @@ export default function EditorBlockCard({
   async function loadVersions() {
     const list = await editorService.getBlockVersions(block.id);
     setVersions(list || []);
+    setVersionsLoaded(true);
   }
 
+  // Drop any previously-loaded versions when the block changes so the lazy
+  // loader re-fetches for the new block instead of showing stale history.
   useEffect(() => {
-    loadVersions();
+    setVersions([]);
+    setVersionsLoaded(false);
   }, [block.id]);
+
+  // Lazy-load version history only when the user actually opens the History or
+  // Compare UI — avoids one getBlockVersions call per block on page load.
+  useEffect(() => {
+    if ((versionOpen || compareOpen) && !versionsLoaded) {
+      loadVersions().catch(() => setVersionsLoaded(true));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [versionOpen, compareOpen, versionsLoaded, block.id]);
 
   async function handleRestoreVersion(versionId) {
     await dispatch(restoreBlockVersionThunk({ blockId: block.id, versionId })).unwrap();
@@ -443,8 +457,8 @@ export default function EditorBlockCard({
             variant="secondary"
             size="sm"
             fullWidth
-            disabled={versions.length === 0}
-            title={versions.length === 0 ? 'No previous version to compare yet' : undefined}
+            disabled={versionsLoaded && versions.length === 0}
+            title={versionsLoaded && versions.length === 0 ? 'No previous version to compare yet' : undefined}
             onClick={() => setCompareOpen(true)}
             className={styles.compareVersionsBtn}
           >
@@ -635,7 +649,9 @@ export default function EditorBlockCard({
       <details className={styles.stExpander} open={versionOpen} onToggle={(e) => setVersionOpen(e.target.open)}>
         <summary className={styles.stExpander__summary}>⏱️ Version History — Block #{block.id}</summary>
         <div className={styles.stExpander__body}>
-        {versions.length === 0 ? (
+        {!versionsLoaded ? (
+          <p className={styles.caption}>Loading version history…</p>
+        ) : versions.length === 0 ? (
           <p className={styles.caption}>
             No snapshots yet. Click Save Snapshot below to capture the current content, or use Regenerate to auto-save.
           </p>
@@ -708,6 +724,7 @@ export default function EditorBlockCard({
         onClose={() => setCompareOpen(false)}
         blockId={block.id}
         versions={versions}
+        loading={!versionsLoaded}
         currentContent={content}
         onRestore={handleRestoreVersion}
       />
