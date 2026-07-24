@@ -87,6 +87,23 @@ def list_course_generations(
     return q.order_by(Generation.created_at.desc()).limit(limit).all()
 
 
+def list_course_generation_ids(db, course_id: int, limit: int = 200) -> list:
+    """Generation IDs for a course, cheaply.
+
+    Mirrors list_course_generations(course_id=...) row selection but selects only
+    the id column, so the large output_text is never loaded when the caller just
+    needs the IDs (e.g. to then fetch block summaries).
+    """
+    rows = (
+        db.query(Generation.id)
+        .filter(Generation.course_id == course_id)
+        .order_by(Generation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [r.id for r in rows]
+
+
 def list_editor_generations(
     db,
     *,

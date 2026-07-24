@@ -179,8 +179,9 @@ def list_course_blocks(
     """Return all blocks for a course, optionally filtered by workflow state."""
     from promptops_app.repositories import generation_repository
 
-    gens = generation_repository.list_course_generations(db, course_id=course_id)
-    gen_ids = [g.id for g in gens]
+    # IDs only — avoids loading full Generation rows (incl. the large output_text)
+    # just to read their ids.
+    gen_ids = generation_repository.list_course_generation_ids(db, course_id)
     # Lightweight column-only query: preview + has_html are computed in SQL so the
     # large content/content_html text columns are never pulled over the wire.
     all_blocks = generation_repository.list_course_block_summaries(db, gen_ids)
