@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@services/apiClient';
 import { BLOCKS, MODULES } from '@services/endpoints';
 import { WORKFLOW_STATES } from '@utils/constants';
@@ -8,6 +8,11 @@ import Loader from '@components/common/Loader/Loader';
 import Modal from '@components/common/Modal/Modal';
 import toast from 'react-hot-toast';
 import styles from './PublishedTocPanel.module.scss';
+
+const EXPORT_FORMAT_OPTIONS = [
+  { value: 'imscc', label: 'IMSCC' },
+  { value: 'cendocxml', label: 'CendocXML' },
+];
 
 function htmlFilename(block) {
   const base = (block.block_label || `block_${block.id}`)
@@ -81,6 +86,9 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
   const [unassigned, setUnassigned] = useState([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState('');
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportRef = useRef(null);
   /** Block IDs currently regenerating — each request is independent. */
   const [regenIds, setRegenIds] = useState(() => new Set());
   const [downloadId, setDownloadId] = useState(null);
@@ -328,6 +336,32 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
     }
   }
 
+  async function handleExportPick(format) {
+    setExportOpen(false);
+    if (format === 'imscc') {
+      setExportFormat('');
+      await handleExportImscc();
+      return;
+    }
+    setExportFormat(format);
+  }
+
+  useEffect(() => {
+    if (!exportOpen) return undefined;
+    const onPointerDown = (e) => {
+      if (exportRef.current && !exportRef.current.contains(e.target)) setExportOpen(false);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setExportOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [exportOpen]);
+
   async function handlePreviewHtml(block) {
     setPreview({ block, html: null, at: null, loading: true });
     try {
@@ -432,13 +466,37 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           <Button variant="secondary" onClick={handleLaunchPrintWorkflow}>
             🖨️ Launch Print Workflow
           </Button>
-          <Button
-            variant="primary"
-            disabled={exporting || !blockCount}
-            onClick={handleExportImscc}
-          >
-            {exporting ? 'Exporting…' : '📦 Export IMSCC'}
-          </Button>
+          <div className={styles.exportSelect} ref={exportRef}>
+            <button
+              type="button"
+              className={styles.exportSelect__btn}
+              disabled={exporting || !blockCount}
+              aria-haspopup="listbox"
+              aria-expanded={exportOpen}
+              aria-label="Export format"
+              onClick={() => setExportOpen((o) => !o)}
+            >
+              {exporting
+                ? 'Exporting…'
+                : (EXPORT_FORMAT_OPTIONS.find((o) => o.value === exportFormat)?.label || 'Export')}
+              <span aria-hidden="true">▾</span>
+            </button>
+            {exportOpen && (
+              <ul className={styles.exportSelect__menu} role="listbox">
+                {EXPORT_FORMAT_OPTIONS.map((opt) => (
+                  <li key={opt.value} role="option" aria-selected={exportFormat === opt.value}>
+                    <button
+                      type="button"
+                      className={styles.exportSelect__option}
+                      onClick={() => handleExportPick(opt.value)}
+                    >
+                      {opt.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       </div>
 
