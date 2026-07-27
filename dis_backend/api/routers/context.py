@@ -40,7 +40,7 @@ async def documents_library(
     module_name: str = Query(""),
     learning_objective: str = Query(""),
     course_name: str = Query(""),
-    course_id: str = Query("", description="CAS course ID. Isolates documents to the current course; blank/legacy-untagged documents remain visible everywhere."),
+    course_id: str = Query("", description="CAS course ID. Isolates documents to the current course; only documents explicitly tagged with this course_id are returned."),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
