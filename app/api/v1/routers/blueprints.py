@@ -59,14 +59,15 @@ from app.schemas.blueprint import (
 )
 from app.schemas.common import PaginatedResponse
 from app.core.dis_client import dis_client
+from app.core.dis_access import resolve_course_dis_client
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str) -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
     try:
-        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user)
+        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
         units = result.get("source_units") or result.get("sources") or []
         if ctx:
@@ -203,6 +204,11 @@ def generate_blueprint(
         },
         current_user,
         "BLUEPRINT CONTEXT",
+        # Scope retrieval to the COURSE's own Source Library (its project's
+        # client), independent of who runs the generation.
+        client_id=resolve_course_dis_client(
+            db, course_id=request_body.course_id, project_id=request_body.project_id,
+        ),
     )
 
     # Build prompt.
@@ -630,17 +636,79 @@ def get_blueprint_components(
     Calls parse_blueprint_components() from blueprint_parser.py — the same
     function used in the Streamlit Generate page to build the Content Type dropdown.
     """
-    from promptops_app.parsers.blueprint_parser import parse_blueprint_components
+    from promptops_app.parsers.blueprint_parser import (
+        parse_blueprint_components, is_dlu_blueprint,
+    )
     from promptops_app.repositories import blueprint_repository
 
     bp = _get_blueprint_or_404(db, blueprint_id)
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version) if bp.active_version else None
+
+    # DLU course: the Content Type dropdown lists EVERY generated DLU day for
+    # the course (one entry per day, latest blueprint wins), so any day's
+    # content can be generated from one place. Standard blueprints are
+    # unaffected — they fall through to the per-blueprint parse below.
+    if ver and is_dlu_blueprint(ver) and bp.course_id:
+        dlu_components = _list_dlu_day_components(db, bp.course_id)
+        if dlu_components:
+            return BlueprintComponentsResponse(
+                blueprint_id=blueprint_id,
+                components=[BlueprintComponent(**c) for c in dlu_components],
+            )
 
     components = parse_blueprint_components(ver) if ver else []
     return BlueprintComponentsResponse(
         blueprint_id=blueprint_id,
         components=[BlueprintComponent(**c) for c in components],
     )
+
+
+def _list_dlu_day_components(db: Session, course_id: int) -> list[dict]:
+    """Aggregate a course's DLU day-blueprints into Content Type dropdown items.
+
+    One entry per day — the latest blueprint for that day wins (regenerating a
+    day creates a new blueprint row). Each option carries its own
+    ``blueprint_id`` in metadata so generation targets that specific day.
+    Returns [] for non-DLU courses (caller then uses the standard parse).
+    """
+    from datetime import datetime
+    from promptops_app.parsers.blueprint_parser import is_dlu_blueprint, parse_day_and_title
+    from promptops_app.repositories import blueprint_repository
+
+    blueprints = blueprint_repository.list_blueprints_for_course(db, course_id=course_id)
+    by_day: dict[int, dict] = {}
+    for mb in blueprints:
+        ver = (
+            blueprint_repository.get_blueprint_version(db, mb.id, mb.active_version)
+            if mb.active_version else None
+        )
+        if not ver or not is_dlu_blueprint(ver):
+            continue
+        day, topic = parse_day_and_title(mb.title, mb.module_number)
+        if day is None:
+            continue
+        sort_key = (mb.created_at or datetime.min, mb.id)   # latest wins
+        prev = by_day.get(day)
+        if prev is None or sort_key > prev["sort_key"]:
+            by_day[day] = {"sort_key": sort_key, "bp_id": mb.id, "topic": topic}
+
+    components: list[dict] = []
+    for day in sorted(by_day):
+        entry = by_day[day]
+        topic = entry["topic"]
+        label = f"Day {day}: {topic}" if topic else f"Day {day}"
+        components.append({
+            "label":    label,
+            "value":    f"dlu_day::{entry['bp_id']}",
+            "type":     "lesson",
+            "metadata": {
+                "structure":    "dlu",
+                "day_number":   day,
+                "blueprint_id": entry["bp_id"],
+                "topic":        topic,
+            },
+        })
+    return components
 
 
 @router.get(

@@ -27,6 +27,8 @@ import { selectIsAdmin } from '@features/auth/authSlice';
 import { adminService } from '@features/admin/services/adminService';
 import {
   buildModuleOptions,
+  buildDayOptions,
+  detectDluCdd,
   existingModuleNumbersForCdd,
   buildExtraInstructionsBlock,
 } from '@utils/blueprintModules';
@@ -114,9 +116,14 @@ export default function BlueprintPage() {
     [blueprints, linkedCddId],
   );
 
+  // DLU/day-based CDDs list Days instead of Modules; standard CDDs are unchanged.
+  const isDluCdd = useMemo(() => detectDluCdd(cddContent), [cddContent]);
+
   const moduleOptions = useMemo(
-    () => buildModuleOptions(cddContent, existingNums),
-    [cddContent, existingNums],
+    () => (isDluCdd
+      ? buildDayOptions(cddContent, existingNums)
+      : buildModuleOptions(cddContent, existingNums)),
+    [isDluCdd, cddContent, existingNums],
   );
 
   const selectedModuleOpt = moduleOptions.find(
@@ -255,11 +262,11 @@ export default function BlueprintPage() {
 
   function onConfirmModule() {
     if (!selectedModuleOpt) {
-      toast.error('Select a module or title-end item first.');
+      toast.error(isDluCdd ? 'Select a day first.' : 'Select a module or title-end item first.');
       return;
     }
     setModuleConfirmed(true);
-    toast.success('Module selection confirmed.');
+    toast.success(isDluCdd ? 'Day selection confirmed.' : 'Module selection confirmed.');
   }
 
   async function onGenerate() {
@@ -278,6 +285,8 @@ export default function BlueprintPage() {
       isCourseEnd: mod.isCourseEnd,
       courseEndLabel: mod.courseEndLabel,
       moduleNum: mod.key,
+      isDay: mod.isDay,
+      dayTitle: mod.title,
       extraInstructions,
     });
 
@@ -447,6 +456,8 @@ export default function BlueprintPage() {
       isCourseEnd: mod?.isCourseEnd,
       courseEndLabel: mod?.courseEndLabel,
       moduleNum: mod?.key ?? 1,
+      isDay: mod?.isDay,
+      dayTitle: mod?.title,
       extraInstructions,
     });
     const md = buildPromptDownloadMd({
@@ -501,16 +512,17 @@ export default function BlueprintPage() {
       );
     }
     const num = selectedModuleOpt.key;
+    const unit = selectedModuleOpt.isDay ? 'Day' : 'Module';
     if (existingNums.has(num)) {
       return (
         <div className={styles.statusWarn}>
-          ⚠️ Blueprint already exists for Module {num}. Generating again will create a new version.
+          ⚠️ Blueprint already exists for {unit} {num}. Generating again will create a new version.
         </div>
       );
     }
     return (
       <div className={styles.statusOk}>
-        ✅ Ready to generate Module {num} Blueprint.
+        ✅ Ready to generate {unit} {num} Blueprint.
       </div>
     );
   };
@@ -620,7 +632,7 @@ export default function BlueprintPage() {
 
               {moduleOptions.length > 0 ? (
                 <>
-                  <div className={styles.moduleLabel}>Select Module / Title-End Item</div>
+                  <div className={styles.moduleLabel}>{isDluCdd ? 'Select Day' : 'Select Module / Title-End Item'}</div>
                   <Select
                     label=""
                     options={moduleOptions.map((o) => ({
@@ -634,7 +646,7 @@ export default function BlueprintPage() {
                     }}
                   />
                   {moduleConfirmed ? (
-                    <div className={styles.confirmOk}>✅ Module selection confirmed.</div>
+                    <div className={styles.confirmOk}>✅ {isDluCdd ? 'Day' : 'Module'} selection confirmed.</div>
                   ) : (
                     moduleStatusBanner()
                   )}
@@ -649,7 +661,7 @@ export default function BlueprintPage() {
                 label="Blueprint Title (optional)"
                 placeholder={
                   selectedModuleOpt
-                    ? `e.g. Module ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
+                    ? `e.g. ${selectedModuleOpt.isDay ? 'Day' : 'Module'} ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
                     : 'e.g. Module 1 — Patient Assessment Blueprint'
                 }
                 value={documentTitle}
@@ -657,7 +669,7 @@ export default function BlueprintPage() {
               />
 
               <Button variant="secondary" className={styles.requestChangeBtn} type="button" onClick={onConfirmModule}>
-                Confirm Module Selection
+                {isDluCdd ? 'Confirm Day Selection' : 'Confirm Module Selection'}
               </Button>
 
               <div className={styles.extraSection}>

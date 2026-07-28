@@ -28,6 +28,7 @@ from app.core.http import content_disposition
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.core.dis_client import dis_client
+from app.core.dis_access import resolve_course_dis_client
 from app.schemas.generation import (
     CompletionStatusResponse,
     GenerationLaunchRequest,
@@ -40,9 +41,9 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str) -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
     try:
-        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user)
+        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
         units = result.get("source_units") or result.get("sources") or []
         if ctx:
@@ -139,6 +140,12 @@ def launch_generation(
         },
         current_user,
         "COURSE GENERATION CONTEXT",
+        # Scope retrieval to the COURSE's own Source Library (its project's
+        # client), so it reads the right client's documents regardless of who
+        # runs the generation. Empty -> falls back to per-user default.
+        client_id=resolve_course_dis_client(
+            db, course_id=request_body.course_id, project_id=request_body.project_id,
+        ),
     )
 
     # Build the request params dict (matches the structure used by generation_jobs.py).
