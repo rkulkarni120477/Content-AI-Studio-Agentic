@@ -67,15 +67,16 @@ from app.schemas.cdd import (
 from app.schemas.common import PaginatedResponse
 from app.api.v1.cdd_response import build_cdd_read
 from app.core.dis_client import dis_client
+from app.core.dis_access import resolve_course_dis_client
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str) -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
     try:
-        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user)
+        result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
         units = result.get("source_units") or result.get("sources") or []
         if ctx:
@@ -255,6 +256,12 @@ def generate_cdd(
         },
         current_user,
         "CDD CONTEXT",
+        # Scope retrieval to the COURSE's own Source Library (its project's
+        # client), independent of who runs the generation.
+        client_id=resolve_course_dis_client(
+            db, course_id=request_body.course_id,
+            project_id=getattr(request_body, "project_id", None),
+        ),
     )
 
     # ── Step 1: Build prompts ──────────────────────────────────────────────────

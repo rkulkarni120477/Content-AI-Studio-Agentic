@@ -251,6 +251,29 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         if context:
             context = trim_generation_context(context)
 
+        # DLU day blueprints expose a single "Full DLU" component whose design
+        # plan lives in the blueprint itself. The user generates each DLU section
+        # by picking a section prompt that may not reference {{context_injection}},
+        # so inject the day's plan into the always-appended `context` here (after
+        # the trim, so it is guaranteed present in full). Gated strictly on the
+        # `dlu_day` component value — no standard generation is affected.
+        if selected_component.get("value") == "dlu_day" and eff_bp_id:
+            try:
+                _dlu_ver = get_active_blueprint_version(db, eff_bp_id)
+                _dlu_plan = (_dlu_ver.full_content or "").strip() if _dlu_ver else ""
+                if _dlu_plan:
+                    context = (
+                        "\n\n--- DLU DAY BLUEPRINT (design plan for this day — "
+                        "generate the requested section directly from this) ---\n"
+                        f"{_dlu_plan}\n"
+                        "--- END DLU DAY BLUEPRINT ---\n"
+                    ) + context
+            except Exception as _dlu_exc:
+                _log.warning(
+                    "Job %s could not load DLU day blueprint context (non-fatal): %s",
+                    job_id, _dlu_exc,
+                )
+
         # ── Stage 2 — Prompt assembly ─────────────────────────────────
         set_running(db, job, *STAGE_PROMPT)
 

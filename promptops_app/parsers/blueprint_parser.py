@@ -251,17 +251,121 @@ def is_component_type_course_level(comp_value: str) -> bool:
     return comp_value in {"project_work", "summative_assessments", "learning_activities"}
 
 
+# ---------------------------------------------------------------------------
+# DLU (Daily Learning Unit) blueprints
+#
+# Day-based ("Block") curricula produce a per-day DLU blueprint instead of a
+# module→lessons blueprint. Its content is organised as five DLU sections
+# (Today's Mission, Learn It, Quick Check, Up Next in Class, Day Reflection)
+# under a "DLU OUTLINE" header — it has no "Lesson N" or "Module Assessment"
+# headings, so the standard parser finds nothing. Detection is additive and
+# content-based: a standard blueprint never matches, so it keeps the exact
+# module/lesson behaviour below.
+# ---------------------------------------------------------------------------
+
+_DLU_SECTION_MARKERS = (
+    "today's mission",
+    "learn it",
+    "quick check",
+    "up next in class",
+    "day reflection",
+)
+
+
+def is_dlu_blueprint(bp_version) -> bool:
+    """Return True when a blueprint is a day-based DLU outline.
+
+    Signal (either):
+      - an explicit ``DLU OUTLINE`` header, OR
+      - at least two of the five canonical DLU section markers.
+    A standard module/lesson blueprint has none of these.
+    """
+    if not bp_version:
+        return False
+    text = (getattr(bp_version, "full_content", "") or "").lower()
+    if not text:
+        return False
+    if "dlu outline" in text:
+        return True
+    hits = sum(1 for marker in _DLU_SECTION_MARKERS if marker in text)
+    return hits >= 2
+
+
+def _parse_dlu_day(bp_version) -> tuple:
+    """Best-effort (day_number, topic) from a DLU blueprint's content.
+
+    Returns (day_number:str|"", topic:str|""). Never raises.
+    """
+    text = getattr(bp_version, "full_content", "") or ""
+    day = ""
+    topic = ""
+    m = re.search(r"\bday\s*(?:number)?\s*[:\-]?\s*(\d+)", text, re.IGNORECASE)
+    if m:
+        day = m.group(1)
+    tm = re.search(r"(?im)^\s*\*{0,2}topic\*{0,2}\s*[:\-]\s*(.+)$", text)
+    if tm:
+        topic = tm.group(1).strip().strip("*").strip()
+        topic = re.split(r"\s{2,}|\|", topic)[0].strip()[:80]
+    return day, topic
+
+
+def parse_day_and_title(blueprint_title: str, module_number=None) -> tuple:
+    """Derive ``(day_number:int|None, topic:str)`` from a DLU blueprint's title.
+
+    DLU day blueprints created via the Blueprint "Select Day" dropdown are
+    titled ``"Day N: <topic> Blueprint"``. Older DLU blueprints predate that
+    dropdown and are titled ``"Module N Blueprint"``; for those we fall back to
+    ``module_number`` for the day and leave the topic blank. Pure string
+    parsing — no DB access — so it stays in this module.
+    """
+    title = (blueprint_title or "").strip()
+    m = re.match(r"(?i)^\s*day\s+(\d+)\s*[:\-–—.]?\s*(.*)$", title)
+    if m:
+        day = int(m.group(1))
+        topic = m.group(2).strip()
+        topic = re.sub(r"(?i)\s*blueprint\s*$", "", topic).strip()
+        topic = topic.strip(":-–— ").strip()
+        return day, topic
+    # No "Day N" prefix (older DLU blueprint) — fall back to the module number.
+    try:
+        day = int(module_number) if module_number is not None else None
+    except (TypeError, ValueError):
+        day = None
+    return day, ""
+
+
 def parse_blueprint_components(bp_version) -> list:
     """Parse a BlueprintVersion ORM object into generatable dropdown components.
 
-    Returns ONLY:
+    Standard (module) blueprints return ONLY:
       1. Lessons — all lessons in blueprint order (e.g. 'Lesson 1.1 What Is a Robot?')
       2. Module Assessment — the single module-level assessment for this blueprint
 
-    Everything else is excluded to keep the Content Type dropdown scoped to this module.
+    DLU (day-based) blueprints instead return a single "Full DLU" component for
+    the day, so the Generate page's Content Type dropdown is populated. The user
+    then generates each DLU section by picking the matching section prompt.
+
+    Everything else is excluded to keep the Content Type dropdown scoped.
     """
     if not bp_version:
         return []
+
+    # DLU blueprints have no Lesson/Module-Assessment headings — expose the day
+    # itself as one generatable unit. Standard blueprints skip this entirely.
+    if is_dlu_blueprint(bp_version):
+        day, topic = _parse_dlu_day(bp_version)
+        if day and topic:
+            label = f"Full DLU — Day {day}: {topic}"
+        elif day:
+            label = f"Full DLU — Day {day}"
+        else:
+            label = "Full DLU (this day)"
+        return [{
+            "label":    label,
+            "value":    "dlu_day",
+            "type":     "lesson",
+            "metadata": {"day_number": day, "topic": topic, "structure": "dlu"},
+        }]
 
     _MODULE_ASSESSMENT_KEYS = {
         "module assessment", "module-level assessment",

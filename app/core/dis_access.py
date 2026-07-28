@@ -182,6 +182,33 @@ def _normalize_client_name(value: Any) -> str:
     return _CLIENT_NAME_ALIASES.get(v, v)
 
 
+def resolve_course_dis_client(db: Any, *, course_id: Any = None, project_id: Any = None) -> str:
+    """Return the normalized DIS client_id for a course/project.
+
+    Derived from the project's ``client_name`` (e.g. project "AIM" -> "aim").
+    This lets generation retrieval read from the COURSE'S OWN Source Library
+    regardless of who runs it — a super-admin (or any user) no longer falls back
+    to their personal default client and pulls another client's documents.
+
+    Returns "" when the client can't be determined, so callers fall back to the
+    previous per-user default resolution unchanged (fully additive/safe).
+    """
+    try:
+        from promptops_app.database import Course, Project
+        proj = None
+        if course_id is not None:
+            course = db.get(Course, int(course_id))
+            if course is not None and getattr(course, "project_id", None):
+                proj = db.get(Project, int(course.project_id))
+        if proj is None and project_id is not None:
+            proj = db.get(Project, int(project_id))
+        if proj is not None:
+            return _normalize_client_name(getattr(proj, "client_name", "") or "")
+    except Exception:
+        return ""
+    return ""
+
+
 def _membership_clients(current_user: Any) -> list[tuple[str, str]]:
     """Return [(client_id, membership_role)] from the user's active project
     memberships, newest membership first.

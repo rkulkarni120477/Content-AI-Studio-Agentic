@@ -254,12 +254,21 @@ export default function GeneratePage() {
     if (launchDisabled || !selProject?.id) return;
 
     const supplementary_files = Object.values(suppFiles).filter(Boolean);
+
+    // DLU day components carry their own blueprint_id (each day is a separate
+    // blueprint) and normalise to the 'dlu_day' value the backend uses to
+    // inject that day's plan as context. Standard components are unchanged.
+    const dluBpId = selectedComponent.metadata?.blueprint_id;
+    const isDluComponent = selectedComponent.metadata?.structure === 'dlu'
+      || String(selectedComponent.value || '').startsWith('dlu_day');
+    const genBlueprintId = isDluComponent && dluBpId ? Number(dluBpId) : effBpId;
+
     const payload = {
       course_id: Number(courseId),
       project_id: selProject.id,
       cdd_id: effCddId,
-      blueprint_id: effBpId,
-      component_value: selectedComponent.value,
+      blueprint_id: genBlueprintId,
+      component_value: isDluComponent ? 'dlu_day' : selectedComponent.value,
       component_label: selectedComponent.label,
       component_type: selectedComponent.type || 'lesson',
       model_choice: modelChoice,
@@ -443,7 +452,8 @@ export default function GeneratePage() {
                     />
                     {selectedComponent && (
                       <p className={styles.compCaption}>
-                        🧩 {activeBlueprint?.module_number ? `M${activeBlueprint.module_number} — ` : ''}
+                        🧩 {(selectedComponent.metadata?.structure !== 'dlu' && activeBlueprint?.module_number)
+                          ? `M${activeBlueprint.module_number} — ` : ''}
                         {selectedComponent.label} · type: <code>{selectedComponent.type}</code>
                       </p>
                     )}
