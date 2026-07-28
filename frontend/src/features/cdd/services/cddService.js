@@ -10,6 +10,7 @@ function mapGeneratePayload(data) {
     estimated_duration_hours: data.estimated_duration_hours ?? data.duration_hours ?? 8,
     extra_instructions: data.extra_instructions || '',
     style_id: data.style_id ?? null,
+    reference_document_ids: data.reference_document_ids || [],
     model_choice: data.model_choice,
     target_audience: data.target_audience || '',
     expert_domain: data.expert_domain || '',

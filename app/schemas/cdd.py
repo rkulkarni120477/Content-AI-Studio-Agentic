@@ -83,6 +83,15 @@ class CDDGenerateRequest(BaseModel):
             "If None, the CDD is generated without style constraints."
         ),
     )
+    reference_document_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DIS Source Library document/job IDs picked in the 'Reference Documents' "
+            "selector. Retrieved as an extra, explicitly-pinned context block on top "
+            "of the automatic purpose=cdd retrieval. Per-generation only — not stored "
+            "on the CDD."
+        ),
+    )
 
     # ── Sidebar config (passed from the React workspace state) ────────────────
     model_choice: str = Field(

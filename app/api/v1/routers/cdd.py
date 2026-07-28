@@ -92,6 +92,30 @@ def _dis_context_block(purpose: str, payload: dict, current_user, label: str, cl
     return "", []
 
 
+def _merge_source_units(primary: list, extra: list) -> list:
+    """Append `extra` source units to `primary`, dropping ones already present.
+
+    Units are DIS payloads (usually dicts, occasionally plain ids), so identity is
+    keyed off whichever id-ish field is available and falls back to the repr —
+    provenance must never raise and break a generation that already succeeded.
+    """
+    def key(unit):
+        if isinstance(unit, dict):
+            for field in ("unit_id", "chunk_id", "id", "document_id", "job_id"):
+                if unit.get(field):
+                    return f"{field}:{unit[field]}"
+        return repr(unit)
+
+    merged = list(primary or [])
+    seen = {key(u) for u in merged}
+    for unit in extra or []:
+        unit_key = key(unit)
+        if unit_key not in seen:
+            seen.add(unit_key)
+            merged.append(unit)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Helper — load CDD or raise 404
 # ---------------------------------------------------------------------------
@@ -233,18 +257,26 @@ def generate_cdd(
         request_body.course_title, request_body.model_choice,
     )
 
+    dis_query = " ".join(str(x or "") for x in [
+        request_body.course_title,
+        request_body.document_title,
+        request_body.target_audience,
+        request_body.expert_domain,
+        request_body.audience_category,
+        request_body.extra_instructions,
+    ])
+    # Scope retrieval to the COURSE's own Source Library (its project's
+    # client), independent of who runs the generation.
+    dis_client_id = resolve_course_dis_client(
+        db, course_id=request_body.course_id,
+        project_id=getattr(request_body, "project_id", None),
+    )
+
     dis_context_block, dis_source_units = _dis_context_block(
         "cdd",
         {
             "purpose": "cdd",
-            "query": " ".join(str(x or "") for x in [
-                request_body.course_title,
-                request_body.document_title,
-                request_body.target_audience,
-                request_body.expert_domain,
-                request_body.audience_category,
-                request_body.extra_instructions,
-            ]),
+            "query": dis_query,
             "filters": {
                 "purpose": "cdd",
                 # No hard document_types filter: fixed type names did not match real
@@ -256,13 +288,43 @@ def generate_cdd(
         },
         current_user,
         "CDD CONTEXT",
-        # Scope retrieval to the COURSE's own Source Library (its project's
-        # client), independent of who runs the generation.
-        client_id=resolve_course_dis_client(
-            db, course_id=request_body.course_id,
-            project_id=getattr(request_body, "project_id", None),
-        ),
+        client_id=dis_client_id,
     )
+
+    # Documents the user explicitly picked in "Reference Documents" on the Create
+    # New CDD form. Retrieved as an ADDITIONAL block pinned to those ids, on top
+    # of the automatic purpose=cdd retrieval above — when nothing is selected the
+    # pipeline is byte-for-byte what it was before.
+    selected_ref_ids = [
+        str(x).strip() for x in (request_body.reference_document_ids or []) if str(x).strip()
+    ]
+    if selected_ref_ids:
+        pinned_block, pinned_units = _dis_context_block(
+            "cdd",
+            {
+                "purpose": "cdd",
+                "query": dis_query,
+                "document_ids": selected_ref_ids,
+                # Only pin by id here. The selector lists every processed document,
+                # not just purpose=cdd ones, so re-applying the purpose filter would
+                # silently drop documents the user deliberately attached.
+                "filters": {"document_ids": selected_ref_ids},
+                # The pool is already narrowed to the user's picks, so pull a deeper
+                # slice than the broad auto-retrieval above.
+                "retrieval": {"top_k": 24, "token_budget": 20000},
+            },
+            current_user,
+            "USER-SELECTED REFERENCE DOCUMENTS",
+            client_id=dis_client_id,
+        )
+        if pinned_block:
+            dis_context_block = f"{dis_context_block}{pinned_block}"
+            dis_source_units = _merge_source_units(dis_source_units, pinned_units)
+        _log.info(
+            "cdd_generate_reference_docs  user=%s  course=%d  selected=%d  retrieved=%s",
+            current_user.username, request_body.course_id,
+            len(selected_ref_ids), bool(pinned_block),
+        )
 
     # ── Step 1: Build prompts ──────────────────────────────────────────────────
     # Use the custom override if the user edited the prompt in the UI,
