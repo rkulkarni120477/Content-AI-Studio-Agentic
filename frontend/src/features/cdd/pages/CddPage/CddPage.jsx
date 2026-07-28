@@ -20,6 +20,7 @@ import {
 import { selectStyles, selectActiveStyle } from '@features/style/styleSlice';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { adminService } from '@features/admin/services/adminService';
+import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { createCddSchema, commitVersionSchema } from '@utils/validation';
 import { downloadBlob, formatDate } from '@utils/helpers';
@@ -32,12 +33,19 @@ import { patchCddBlock } from '@utils/cddContent';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
+import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
 import styles from './CddPage.module.scss';
+
+const REF_DOCS_HINT = 'All processed DIS Source Library documents are shown here. Whatever you select is retrieved and passed to the model as reference context when you click "Generate CDD with AI".';
+
+function docLabel(doc) {
+  return doc?.source_file_name || doc?.title || `Source ${doc?.job_id || doc?.document_id}`;
+}
 
 export default function CddPage() {
   const { courseId } = useParams();
@@ -59,6 +67,10 @@ export default function CddPage() {
   const error = useAppSelector(selectCddError);
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
+  const [refDocIds, setRefDocIds] = useState([]);
+  const [sourceDocs, setSourceDocs] = useState([]);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceError, setSourceError] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
   const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
   const [savedInstrs, setSavedInstrs] = useState([]);
@@ -112,6 +124,46 @@ export default function CddPage() {
       setSelectedStyleId(activeStyle.id);
     }
   }, [activeStyle, selectedStyleId]);
+
+  // Reference-document selector options. Same source as the Style tab: every
+  // ingested Source Library document for this course's client (DIS `status` is a
+  // review axis, not a processing flag, so filtering on it returns nothing).
+  // Polls like the Style form so a document uploaded in another tab shows up.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSourceDocs() {
+      setSourceLoading(true);
+      try {
+        const params = {};
+        if (selCourse?.id || courseId) params.course_id = selCourse?.id || courseId;
+        else if (projectId) params.project_id = projectId;
+        const res = await sourceLibraryApi.listDocuments(params);
+        const list = res.documents || res.sources || [];
+        if (!cancelled) {
+          setSourceDocs(list);
+          setSourceError('');
+        }
+      } catch {
+        // Never block CDD generation on Source Library being reachable — the
+        // selector just stays empty and generation falls back to the automatic
+        // context retrieval it has always used.
+        if (!cancelled) setSourceError('Source Library is unavailable right now. Upload or retry from Source Library.');
+      } finally {
+        if (!cancelled) setSourceLoading(false);
+      }
+    }
+    loadSourceDocs();
+    const interval = window.setInterval(loadSourceDocs, 30000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [selCourse?.id, projectId, courseId]);
+
+  const refDocOptions = useMemo(
+    () => (sourceDocs || []).map((d) => ({
+      value: d.job_id || d.document_id,
+      label: docLabel(d),
+    })),
+    [sourceDocs],
+  );
 
   useEffect(() => {
     if (activeCdd?.id) {
@@ -181,6 +233,7 @@ export default function CddPage() {
       estimated_duration_hours: data.duration_hours || 8,
       extra_instructions: extraInstructions,
       style_id: selectedStyleId || null,
+      reference_document_ids: refDocIds,
       model_choice: modelChoice,
       target_audience: targetAudience,
       expert_domain: expertDomain,
@@ -408,6 +461,33 @@ export default function CddPage() {
                   ℹ️ No styles created yet. Go to the <strong>Style</strong> tab to create one.
                 </div>
               )}
+
+              <div className={styles.sectionLabel}>📎 CDD Reference Documents</div>
+
+              <div className={styles.fieldRow}>
+                <label className={styles.fieldLabel} htmlFor="cdd-ref-docs">
+                  Select processed Source Library documents
+                  <span className={styles.helpIcon} title={REF_DOCS_HINT} aria-label={REF_DOCS_HINT}>?</span>
+                </label>
+                <MultiSelect
+                  placeholder={sourceLoading && !refDocOptions.length
+                    ? 'Loading Source Library documents…'
+                    : 'Choose reference documents'}
+                  options={refDocOptions}
+                  value={refDocIds}
+                  onChange={setRefDocIds}
+                  disabled={!refDocOptions.length}
+                  hint={sourceError || (!refDocOptions.length && !sourceLoading
+                    ? 'No processed documents found. Upload them in Source Library first.'
+                    : undefined)}
+                />
+                {refDocIds.length > 0 && (
+                  <div className={styles.refDocsBanner}>
+                    📎 <strong>{refDocIds.length}</strong> document{refDocIds.length === 1 ? '' : 's'} will be
+                    passed as reference context to this CDD generation.
+                  </div>
+                )}
+              </div>
 
               <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
                 <Input
