@@ -72,6 +72,17 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         provider="bedrock",
         api_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
     ),
+    ModelDef(
+        display_name="Claude Opus 4.8 (Bedrock)",
+        description=(
+            "Anthropic Claude Opus 4.8 on AWS Bedrock — the most capable "
+            "Opus-tier model, for the hardest reasoning and long-horizon "
+            "content generation tasks."
+        ),
+        tags=("reasoning", "premium"),
+        provider="bedrock",
+        api_model_id="global.anthropic.claude-opus-4-8",
+    ),
 )
 
 # ── Convenience lookups ────────────────────────────────────────────────────
