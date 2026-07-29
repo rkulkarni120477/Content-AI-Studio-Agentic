@@ -95,7 +95,20 @@ export function replaceWorksheet(csText, key, newContent) {
   if (key === 'overview') {
     return _reconstruct(newContent, worksheets);
   }
-  const next = worksheets.map((w) => (w.key === key ? { ...w, content: newContent } : w));
+  const next = worksheets.map((w) => {
+    if (w.key !== key) return w;
+    let content = (newContent || '').trim();
+    // Preserve the worksheet's own "## WORKSHEET N: TITLE" boundary heading.
+    // The section-regenerate prompt returns body-only content (no heading);
+    // without re-prepending it the boundary marker is lost and worksheets merge
+    // on the next split/export. Manual edits already carry the heading, so this
+    // is a no-op there.
+    if (!/^#{1,3}\s*WORKSHEET\s+\d+\b/i.test(content)) {
+      const origHeading = (w.content.match(/^#{1,3}\s*WORKSHEET\s+\d+\b[^\n]*/i) || [''])[0];
+      if (origHeading) content = content ? `${origHeading}\n\n${content}` : origHeading;
+    }
+    return { ...w, content };
+  });
   return _reconstruct(overview, next);
 }
 

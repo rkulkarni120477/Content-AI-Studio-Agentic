@@ -107,7 +107,8 @@ def _safe_sheet_name(base: str, used: set) -> str:
         cut = name[:31]
         sp = cut.rfind(" ")
         name = (cut[:sp] if sp >= 15 else cut).strip()
-    name = name or "Sheet"
+    # Excel also rejects sheet names that start or end with a single quote.
+    name = name.strip("'").strip() or "Sheet"
     if name in used:
         i = 2
         stem = name[:28]
