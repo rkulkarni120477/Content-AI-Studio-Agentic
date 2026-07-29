@@ -2,8 +2,9 @@
 
 Regression tests for the leak where every document uploaded under a tenant
 was visible from every course, because course_id was never stored or matched
-as a filter. Untagged documents (uploaded before this field existed) must
-stay visible everywhere rather than disappear once filtering is enforced.
+as a filter. A course-scoped request must only return documents tagged with
+that course; untagged/legacy documents are excluded rather than shown
+everywhere, so they no longer leak across courses.
 """
 
 from services.context_retrieval import ContextRetrievalService
@@ -35,12 +36,12 @@ def test_course_filter_excludes_sibling_course():
     assert svc._source_matches(sibling, {"course_id": "101"}) is False
 
 
-def test_course_filter_keeps_legacy_untagged_docs_visible():
+def test_course_filter_excludes_untagged_legacy_docs():
     svc = _svc()
     legacy = {"course_id": "", "document_type": "pdf"}
 
-    assert svc._source_matches(legacy, {"course_id": "101"}) is True
-    assert svc._source_matches(legacy, {"course_id": "202"}) is True
+    assert svc._source_matches(legacy, {"course_id": "101"}) is False
+    assert svc._source_matches(legacy, {"course_id": "202"}) is False
 
 
 def test_course_filter_wildcard_values_disable_filtering():
