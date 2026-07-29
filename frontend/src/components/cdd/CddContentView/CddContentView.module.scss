@@ -57,6 +57,11 @@
   line-height: 1.55;
   color: $color-gray-800;
   font-family: inherit;
+  // Long sections (e.g. DLU worksheets, the 20-day map) scroll within a
+  // bounded height instead of stretching the accordion down the page.
+  max-height: 460px;
+  overflow-y: auto;
+  @include custom-scrollbar;
 }
 
 .editLabel {
@@ -190,4 +195,15 @@
   max-height: 480px;
   overflow-y: auto;
   @include custom-scrollbar;
+}
+
+/* Wide worksheet tables (DLU day map, ACS registry) scroll horizontally
+   inside the section body instead of stretching the page. */
+.section__preview {
+  :global(.markdown-content) table,
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
 }
