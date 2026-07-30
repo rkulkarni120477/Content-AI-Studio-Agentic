@@ -310,13 +310,14 @@ class ContextRetrievalService:
         for field in ("document_type", "source_file_type", "block", "course_name", "day", "chapter", "module_name", "lesson_name", "visibility", "status"):
             if not eq(field, filters.get(field)):
                 return False
-        # course_id isolates documents per CAS course. A course-scoped request
-        # only matches documents explicitly tagged with that course, including
-        # untagged/legacy documents — they no longer leak into every course.
+        # course_id isolates documents per CAS course. "-1" is the global
+        # sentinel for documents intentionally shared across every course (e.g.
+        # style guides, reference books). Anything else — including an empty/
+        # untagged course_id — must match the requested course exactly.
         course_id_filter = str(filters.get("course_id") or "").strip()
         if course_id_filter and course_id_filter.lower() not in {"all", "*", "any"}:
             src_course_id = str(src.get("course_id") or "").strip()
-            if src_course_id != course_id_filter:
+            if src_course_id not in ("-1", course_id_filter):
                 return False
         purpose = str(filters.get("purpose") or "").strip().lower()
         if purpose and purpose not in {"all", "*", "any"}:
