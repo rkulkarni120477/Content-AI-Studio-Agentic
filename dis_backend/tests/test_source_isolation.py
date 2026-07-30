@@ -1,10 +1,11 @@
 """Course-level isolation for Source Library document listing.
 
-Regression tests for the leak where every document uploaded under a tenant
-was visible from every course, because course_id was never stored or matched
-as a filter. A course-scoped request must only return documents tagged with
-that course; untagged/legacy documents are excluded rather than shown
-everywhere, so they no longer leak across courses.
+A course-scoped request matches only documents tagged with that exact
+course_id, plus documents tagged "-1" — the global sentinel for content
+intentionally shared across every course (style guides, reference books).
+Untagged documents (course_id="") are NOT visible under a course filter;
+they only appear once backfilled with a real course_id or the global
+sentinel.
 """
 
 from services.context_retrieval import ContextRetrievalService
@@ -42,6 +43,14 @@ def test_course_filter_excludes_untagged_legacy_docs():
 
     assert svc._source_matches(legacy, {"course_id": "101"}) is False
     assert svc._source_matches(legacy, {"course_id": "202"}) is False
+
+
+def test_course_filter_keeps_global_sentinel_docs_visible():
+    svc = _svc()
+    global_doc = {"course_id": "-1", "document_type": "pdf"}
+
+    assert svc._source_matches(global_doc, {"course_id": "101"}) is True
+    assert svc._source_matches(global_doc, {"course_id": "202"}) is True
 
 
 def test_course_filter_wildcard_values_disable_filtering():

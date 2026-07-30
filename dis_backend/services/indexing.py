@@ -261,6 +261,26 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
         return {"status": "failed", "error": str(exc)}
 
 
+def opensearch_delete_by_job(tenant_cfg: TenantConfig, job_id: str) -> Dict[str, Any]:
+    """Delete every indexed chunk for one job_id. Used by Source Library document delete."""
+    cfg = tenant_cfg.vector_store
+    if not cfg.enabled:
+        return {"status": "skipped", "reason": "vector_store.enabled=false"}
+    try:
+        client = _vector_store_read_client(cfg)
+        if not client.indices.exists(index=cfg.index_name):
+            return {"status": "skipped", "reason": "index does not exist", "index_name": cfg.index_name}
+        resp = client.delete_by_query(
+            index=cfg.index_name,
+            body={"query": {"term": {"job_id": job_id}}},
+            refresh=True,
+        )
+        return {"status": "completed", "index_name": cfg.index_name, "deleted": resp.get("deleted", 0)}
+    except Exception as exc:
+        log.exception("OpenSearch delete_by_query failed for job_id=%s", job_id)
+        return {"status": "failed", "error": str(exc)}
+
+
 def ensure_index(client, index_name: str, dimension: int):
     """Create OpenSearch index with common DIS fields + dynamic metadata fields.
 

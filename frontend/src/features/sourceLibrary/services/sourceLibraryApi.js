@@ -11,6 +11,7 @@ export const sourceLibraryApi = {
   getUnits: (jobId, params = {}) => api.get(SOURCE_LIBRARY.UNITS(jobId), { params }),
   getUnitDetail: (jobId, unitId, params = {}) => api.get(SOURCE_LIBRARY.UNIT_DETAIL(jobId, unitId), { params }),
   searchSource: (jobId, params = {}) => api.get(SOURCE_LIBRARY.SEARCH(jobId), { params }),
+  deleteDocument: (jobId, params = {}) => api.delete(SOURCE_LIBRARY.DELETE_DOCUMENT(jobId), { params }),
   uploadDocument: (formData, onProgress) => api.upload(SOURCE_LIBRARY.UPLOAD, formData, onProgress),
   scanFolder: (payload, params = {}) => api.post(SOURCE_LIBRARY.FOLDER_SCAN, payload, { params }),
   retrieve: (purpose, payload) => api.post(SOURCE_LIBRARY.RETRIEVE(purpose), payload),

@@ -122,6 +122,7 @@ async def list_source_documents(
     client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
     project_id: int | None = Query(default=None),
     course_id: int | None = Query(default=None),
+    all_courses: bool = Query(False, description="Admin override: bypass course scoping and return every document for the resolved client."),
     purpose: str = Query(""),
     document_type: str = Query(""),
     visibility: str = Query(""),
@@ -138,6 +139,8 @@ async def list_source_documents(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
+    if all_courses and str(getattr(current_user, "role", "") or "").lower() != "admin":
+        raise HTTPException(403, "Only admins can view all courses' documents")
     resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     params = {
         "purpose": purpose,
@@ -151,7 +154,7 @@ async def list_source_documents(
         "module_name": module_name,
         "learning_objective": learning_objective,
         "course_name": course_name,
-        "course_id": str(course_id) if course_id is not None else "",
+        "course_id": "all" if all_courses else (str(course_id) if course_id is not None else ""),
         "limit": limit,
         "offset": offset,
     }
@@ -169,6 +172,22 @@ async def get_source_structure(
 ) -> Dict[str, Any]:
     resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_structure(job_id=job_id, current_user=current_user, client_id=resolved_client)
+
+
+@router.delete("/documents/{job_id}")
+async def delete_source_document(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Permanently delete one Source Library document (S3 + OpenSearch + index). Irreversible."""
+    if str(getattr(current_user, "role", "") or "").lower() != "admin":
+        raise HTTPException(403, "Only admins can delete Source Library documents")
+    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.delete_source(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
 @router.post("/documents/upload")

@@ -115,6 +115,9 @@ class DISClient:
     async def source_structure(self, job_id: str, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
         return await self.request("GET", f"/context/sources/{job_id}/structure", current_user=current_user, client_id=client_id)
 
+    async def delete_source(self, job_id: str, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
+        return await self.request("DELETE", f"/context/sources/{job_id}", current_user=current_user, client_id=client_id)
+
     async def retrieve_context(self, purpose: str, payload: Dict[str, Any], current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
         return await self.request("POST", f"/context/retrieve/{purpose}", json=payload, current_user=current_user, client_id=client_id)
 

@@ -298,6 +298,52 @@ def upsert_source_record(tenant_cfg: TenantConfig, client_id: str, record: Dict[
     return write_source_index(tenant_cfg, client_id, index)
 
 
+async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> Dict[str, Any]:
+    """Permanently delete one Source Library document: its raw upload, every
+    processed artifact under its job_id prefix, its OpenSearch chunks, and its
+    entry in the source index. Irreversible — callers must confirm first.
+    """
+    from services.indexing import opensearch_delete_by_job
+    from storage.provider import get_storage_provider
+
+    index = read_source_index(tenant_cfg, client_id)
+    sources = index.get("sources", [])
+    record = next((r for r in sources if str(r.get("job_id")) == str(job_id)), None)
+    if not record:
+        raise FileNotFoundError(f"No source found for job_id '{job_id}'")
+
+    provider = get_storage_provider(tenant_cfg)
+    writer = ArtifactWriter(tenant_cfg)
+    namespace = tenant_cfg.get_namespace(client_id)
+    job_folder = f"processed/{namespace}/{get_settings().environment}/{job_id}/"
+
+    keys_to_delete = list(writer.list_keys(job_folder))
+    raw_key = record.get("raw_key") or ""
+    if raw_key:
+        keys_to_delete.append(raw_key)
+
+    deleted, errors = [], []
+    for key in keys_to_delete:
+        try:
+            await provider.delete(key)
+            deleted.append(key)
+        except Exception as exc:
+            errors.append({"key": key, "error": str(exc)})
+
+    opensearch_result = opensearch_delete_by_job(tenant_cfg, job_id)
+
+    index["sources"] = [r for r in sources if str(r.get("job_id")) != str(job_id)]
+    write_source_index(tenant_cfg, client_id, index)
+
+    return {
+        "job_id": job_id,
+        "deleted": True,
+        "s3_objects_deleted": len(deleted),
+        "s3_errors": errors,
+        "opensearch": opensearch_result,
+    }
+
+
 def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, payload: Dict[str, Any], payload_key: Optional[str] = None) -> Dict[str, str]:
     writer = ArtifactWriter(tenant_cfg)
     job_id = str(payload.get("job_id"))

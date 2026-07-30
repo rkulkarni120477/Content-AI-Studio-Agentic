@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from api.middleware.auth import get_current_tenant
 from services.context_retrieval import ContextRetrievalService
+from services.source_library import delete_source_document
 from config.settings import get_tenant_config
 from storage.provider import get_storage_provider
 
@@ -40,7 +41,7 @@ async def documents_library(
     module_name: str = Query(""),
     learning_objective: str = Query(""),
     course_name: str = Query(""),
-    course_id: str = Query("", description="CAS course ID. Isolates documents to the current course; only documents explicitly tagged with this course_id are returned."),
+    course_id: str = Query("", description="CAS course ID. Isolates documents to the current course; only documents tagged with this course_id or the global sentinel course_id=-1 are returned."),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -179,6 +180,23 @@ async def source_download_url(
         "download_url": url,
         "expires_in": expires,
     }
+
+
+@router.delete("/sources/{job_id}")
+async def delete_source(job_id: str, request: Request):
+    """Permanently delete one Source Library document: raw upload, all processed
+    artifacts, OpenSearch chunks, and its source-index entry. Irreversible.
+    Restricted to client_admin/super_admin — a normal user cannot delete sources.
+    """
+    tenant = get_current_tenant(request)
+    role = getattr(request.state, "role", "user")
+    if role == "user":
+        raise HTTPException(403, "Only admins can delete Source Library documents")
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    try:
+        return await delete_source_document(tenant, client_id, job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
 
 
 

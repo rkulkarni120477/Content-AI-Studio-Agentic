@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { useParams } from 'react-router-dom';
-import { selectUser } from '@features/auth/authSlice';
+import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
@@ -31,8 +31,8 @@ function writeUploadQueue(key, items) {
   }
 }
 
-function cacheKey({ courseId, projectId, clientId }) {
-  return `${CACHE_PREFIX}:${courseId || projectId || 'global'}:${clientId || 'auto'}`;
+function cacheKey({ courseId, projectId, clientId, allCourses }) {
+  return `${CACHE_PREFIX}:${allCourses ? 'all' : (courseId || projectId || 'global')}:${clientId || 'auto'}`;
 }
 
 function readCachedDocuments(key) {
@@ -82,6 +82,7 @@ function formatFileSize(doc = {}) {
 
 export default function SourceLibraryPage() {
   const currentUser = useSelector(selectUser);
+  const isAdmin = useSelector(selectIsAdmin);
   const { courseId } = useParams();
   const selectedProject = useSelector(selectSelectedProject);
   const selectedCourse = useSelector(selectSelectedCourse);
@@ -117,17 +118,20 @@ export default function SourceLibraryPage() {
   const [uploadStatusFilters, setUploadStatusFilters] = useState({ status: '', purpose: '', document_type: '' });
   const [isShowingCached, setIsShowingCached] = useState(false);
   const [silentRetryTick, setSilentRetryTick] = useState(0);
+  const [showAllCourses, setShowAllCourses] = useState(false);
+  const [deletingId, setDeletingId] = useState('');
 
   const purposeLabels = uiConfig?.purpose_labels || {};
   const effectiveAccess = access || uiConfig?.access || currentUser || {};
   const selectedClientId = activeClientId || selectedProject?.client_name || effectiveAccess?.client_id || '';
-  const docsCacheKey = useMemo(() => cacheKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId }), [scopedCourseId, scopedProjectId, selectedClientId]);
+  const docsCacheKey = useMemo(() => cacheKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId, allCourses: isAdmin && showAllCourses }), [scopedCourseId, scopedProjectId, selectedClientId, isAdmin, showAllCourses]);
   const uploadCacheKey = useMemo(() => uploadQueueKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId }), [scopedCourseId, scopedProjectId, selectedClientId]);
 
   function withScope(params = {}) {
     const next = { ...params };
     if (scopedCourseId) next.course_id = scopedCourseId;
     else if (scopedProjectId) next.project_id = scopedProjectId;
+    if (isAdmin && showAllCourses) next.all_courses = true;
     return next;
   }
 
@@ -229,7 +233,7 @@ export default function SourceLibraryPage() {
   useEffect(() => {
     loadConfig(selectedClientId);
     loadDocuments(filters);
-  }, [scopedCourseId, scopedProjectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scopedCourseId, scopedProjectId, showAllCourses]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function updateFilter(key, value) {
     const next = { ...filters, [key]: value };
@@ -297,6 +301,33 @@ export default function SourceLibraryPage() {
       setSelectedUnit({ title: 'Error', text: errorMessage(e, 'Could not load content unit.') });
     } finally {
       setSectionLoading(false);
+    }
+  }
+
+  async function handleDeleteDocument(doc) {
+    const jobId = doc.job_id || doc.document_id;
+    if (!jobId) return;
+    const name = doc.title || doc.source_file_name || jobId;
+    if (!window.confirm(`Permanently delete "${name}"? This removes it from S3 and OpenSearch and cannot be undone.`)) {
+      return;
+    }
+    setDeletingId(jobId);
+    setError('');
+    try {
+      await sourceLibraryApi.deleteDocument(jobId, withScope({}));
+      if (selected && (selected.job_id || selected.document_id) === jobId) {
+        setSelected(null);
+        setStructure(null);
+        setOverview(null);
+        setPages(null);
+        setUnits(null);
+        setSelectedUnit(null);
+      }
+      await loadDocuments(filters);
+    } catch (e) {
+      setError(errorMessage(e, 'Could not delete this document.'));
+    } finally {
+      setDeletingId('');
     }
   }
 
@@ -651,7 +682,18 @@ export default function SourceLibraryPage() {
 
         <section className={`${styles.card} ${styles.docsCard}`}>
           <div className={`${styles.cardBody} ${styles.docsCardBody}`}>
-            <h2 className={styles.filtersTitle}>Processed Documents {loading && !documents.length ? '…' : `(${displayedDocuments.length})`}</h2>
+            <div className={styles.docsCardTitleRow}>
+              <h2 className={styles.filtersTitle}>Processed Documents {loading && !documents.length ? '…' : `(${displayedDocuments.length})`}</h2>
+              {isAdmin && (
+                <button
+                  type="button"
+                  className={`${styles.viewAllToggle} ${showAllCourses ? styles.viewAllToggleActive : ''}`}
+                  onClick={() => setShowAllCourses((v) => !v)}
+                >
+                  {showAllCourses ? '✓ Viewing all documents' : 'View all documents'}
+                </button>
+              )}
+            </div>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
                 <thead><tr><th>Document</th><th>Type</th><th>Size</th><th>Purpose</th><th>Status</th><th /></tr></thead>
@@ -663,7 +705,25 @@ export default function SourceLibraryPage() {
                       <td>{formatFileSize(doc)}</td>
                       <td>{doc.purpose || '—'}</td>
                       <td>{doc.status || 'processed'}</td>
-                      <td><button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button></td>
+                      <td>
+                        <div className={styles.rowActions}>
+                          <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              className={styles.iconButton}
+                              disabled={deletingId === (doc.job_id || doc.document_id)}
+                              onClick={() => handleDeleteDocument(doc)}
+                              aria-label="Delete document"
+                              title={deletingId === (doc.job_id || doc.document_id) ? 'Deleting…' : 'Delete document'}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                                <path d="M2.5 4h11M6 4V2.5h4V4M6.5 7.5v4M9.5 7.5v4M3.5 4l.6 8.4a1 1 0 0 0 1 .93h5.8a1 1 0 0 0 1-.93l.6-8.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {!displayedDocuments.length && <tr><td colSpan="6" className={styles.empty}>No source documents found.</td></tr>}

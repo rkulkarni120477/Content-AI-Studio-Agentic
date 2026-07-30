@@ -138,6 +138,7 @@ export const SOURCE_LIBRARY = {
   UNITS:            (jobId) => `/api/v1/source-library/documents/${jobId}/content/units`,
   UNIT_DETAIL:      (jobId, unitId) => `/api/v1/source-library/documents/${jobId}/content/units/${unitId}`,
   SEARCH:           (jobId) => `/api/v1/source-library/documents/${jobId}/search`,
+  DELETE_DOCUMENT:  (jobId) => `/api/v1/source-library/documents/${jobId}`,
   UPLOAD:           '/api/v1/source-library/documents/upload',
   FOLDER_SCAN:      '/api/v1/source-library/folder-scan',
   RETRIEVE:         (purpose) => `/api/v1/source-library/retrieve/${purpose}`,
