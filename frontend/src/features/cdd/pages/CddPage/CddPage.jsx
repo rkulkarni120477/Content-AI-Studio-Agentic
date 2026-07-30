@@ -30,6 +30,7 @@ import InlinePromptControls from '@components/generation/InlinePromptControls/In
 import PromoteOverrideButton from '@components/generation/PromoteOverrideButton/PromoteOverrideButton';
 import CddContentView from '@components/cdd/CddContentView/CddContentView';
 import { patchCddBlock } from '@utils/cddContent';
+import { replaceWorksheet } from '@utils/cddWorksheets';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
@@ -330,7 +331,7 @@ export default function CddPage() {
     dispatch(fetchCddsThunk(courseId));
   }
 
-  async function onRegenerateCddSection({ blockKey, instruction }) {
+  async function onRegenerateCddSection({ blockKey, instruction, dluWorksheetKey, dluCourseStructure }) {
     if (!displayCdd?.id) return;
     const res = await dispatch(regenerateCddSectionThunk({
       cddId: displayCdd.id,
@@ -342,11 +343,19 @@ export default function CddPage() {
       const reason = instruction
         ? `AI regenerated ${blockKey}: ${instruction}`
         : `AI regenerated ${blockKey}`;
-      await commitRegeneratedBlock(blockKey, res.updated_content, reason);
+      if (dluWorksheetKey) {
+        // DLU: splice the regenerated worksheet back into Course Structure.
+        const newCs = replaceWorksheet(dluCourseStructure, dluWorksheetKey, res.updated_content);
+        await commitRegeneratedBlock('Course Structure', newCs, reason);
+      } else {
+        await commitRegeneratedBlock(blockKey, res.updated_content, reason);
+      }
     }
   }
 
-  async function onRegenerateCddItem({ blockKey, sectionContent, itemIndex, instruction }) {
+  async function onRegenerateCddItem({
+    blockKey, sectionContent, itemIndex, instruction, dluWorksheetKey, dluCourseStructure,
+  }) {
     if (!displayCdd?.id) return;
     const res = await dispatch(regenerateCddItemThunk({
       cddId: displayCdd.id,
@@ -360,7 +369,14 @@ export default function CddPage() {
       const reason = instruction
         ? `AI regenerated ${blockKey} item ${itemIndex + 1}: ${instruction}`
         : `AI regenerated ${blockKey} item ${itemIndex + 1}`;
-      await commitRegeneratedBlock(blockKey, res.updated_content, reason);
+      if (dluWorksheetKey) {
+        // DLU: res.updated_content is the worksheet with the item patched —
+        // splice it back into Course Structure before committing.
+        const newCs = replaceWorksheet(dluCourseStructure, dluWorksheetKey, res.updated_content);
+        await commitRegeneratedBlock('Course Structure', newCs, reason);
+      } else {
+        await commitRegeneratedBlock(blockKey, res.updated_content, reason);
+      }
     }
   }
 

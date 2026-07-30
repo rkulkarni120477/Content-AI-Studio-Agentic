@@ -114,6 +114,70 @@ def parse_cdd_flat(raw_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# DLU (worksheet-based) CDD helpers
+#
+# A DLU CDD stores everything under "Course Structure" as a title/metadata
+# header followed by several "## WORKSHEET N: TITLE" blocks. These helpers
+# split that blob so the XLSX export can emit one sheet per worksheet.
+# Standard CDDs have no WORKSHEET headings, so is_dlu_cdd() returns False.
+# ---------------------------------------------------------------------------
+
+_WORKSHEET_MARK_RE = _re.compile(r"(^|\n)(#{1,3}\s*WORKSHEET\s+(\d+)\b[^\n]*)", _re.IGNORECASE)
+
+
+def is_dlu_cdd(full_content: str) -> bool:
+    """True when the CDD content is worksheet-based (DLU)."""
+    if not full_content:
+        return False
+    return bool(_re.search(r"(^|\n)#{1,3}\s*WORKSHEET\s+\d+\b", full_content, _re.IGNORECASE))
+
+
+_WS_ACRONYMS = {"ACS", "DLU", "FAA", "PPE", "SDS", "BOM", "IPC", "CDD"}
+
+
+def _title_word(word: str) -> str:
+    bare = _re.sub(r"[^A-Za-z]", "", word)
+    if bare.upper() in _WS_ACRONYMS:
+        return word.upper()
+    return word.capitalize()
+
+
+def _short_worksheet_label(num: int, full_title: str) -> str:
+    """A short, human-readable label for a worksheet (used as the sheet name)."""
+    short = _re.sub(r"^WORKSHEET\s+\d+\s*[:\-–—.]?\s*", "", full_title, flags=_re.IGNORECASE).strip()
+    if not short:
+        return f"Worksheet {num}"
+    titled = " ".join(_title_word(w) for w in short.split())
+    return f"{num} {titled}"
+
+
+def split_cdd_worksheets(cs_text: str) -> list:
+    """Split a DLU "Course Structure" blob into (label, content) sections.
+
+    Returns an "Overview" section first (the title/metadata before Worksheet 1),
+    then one section per worksheet in order. Returns [] when no worksheet
+    headings are present (i.e. not a DLU CDD).
+    """
+    text = cs_text or ""
+    marks = []
+    for m in _WORKSHEET_MARK_RE.finditer(text):
+        marks.append((int(m.group(3)), m.group(2).strip(), m.start() + len(m.group(1))))
+    if not marks:
+        return []
+
+    out = []
+    overview = text[:marks[0][2]].strip()
+    if overview:
+        out.append(("Overview", overview))
+    for i, (num, heading, start) in enumerate(marks):
+        end = marks[i + 1][2] if i + 1 < len(marks) else len(text)
+        content = text[start:end].strip()
+        full_title = _re.sub(r"^#{1,3}\s*", "", heading).strip()
+        out.append((_short_worksheet_label(num, full_title), content))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # UI filtering helpers
 # ---------------------------------------------------------------------------
 

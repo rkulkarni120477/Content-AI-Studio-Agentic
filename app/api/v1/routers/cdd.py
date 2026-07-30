@@ -950,7 +950,9 @@ def export_cdd(
     Calls ``export_service.export_content()`` with the same parameters as the
     Streamlit "⬇️ Word (.docx)" download button.
     """
-    from promptops_app.parsers.cdd_parser import _strip_ui_hidden_text, parse_cdd_flat
+    from promptops_app.parsers.cdd_parser import (
+        _strip_ui_hidden_text, parse_cdd_flat, is_dlu_cdd, split_cdd_worksheets,
+    )
     from promptops_app.repositories import cdd_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
@@ -965,6 +967,31 @@ def export_cdd(
 
     # Build export blocks — same logic as the Streamlit download button.
     parsed = parse_cdd_flat(version_record.full_content or "")
+
+    # DLU CDD + XLSX → one sheet per worksheet (Overview + Worksheet 1..N).
+    # Standard CDDs and every other format fall through to the shared export path
+    # below, unchanged.
+    if format == "xlsx" and is_dlu_cdd(version_record.full_content or ""):
+        from promptops_app.exporters.xlsx_exporter import build_xlsx_worksheets
+
+        cs_text = parsed.get("Course Structure", "") or (version_record.full_content or "")
+        sheets = []
+        for label, content in split_cdd_worksheets(cs_text):
+            clean = _strip_ui_hidden_text(content)
+            if (clean or "").strip():
+                sheets.append((label, clean))
+        if sheets:
+            buf = build_xlsx_worksheets(cdd.title, sheets)
+            fname = f"CDD_{cdd.title.replace(' ', '_')}_{cdd.active_version}.xlsx"
+            _log.info(
+                "cdd_exported_dlu_xlsx  user=%s  cdd_id=%d  sheets=%d",
+                current_user.username, cdd_id, len(sheets),
+            )
+            return Response(
+                content=buf.read(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": content_disposition(fname)},
+            )
     export_blocks = []
     for section_key, section_label in [
         ("Course Details",          "Course Details"),
