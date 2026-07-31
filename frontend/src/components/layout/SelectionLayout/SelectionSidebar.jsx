@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppDispatch } from '@app/hooks';
 import { setSelectedProject, setSelectedCluster, setSelectedCourse } from '@features/dashboard/dashboardSlice';
 import { useAuth } from '@hooks/useAuth';
+import { useLabels } from '@hooks/useLabels';
 // ROLE_LABELS/ROLES were only used by the sidebar identity chip, now moved to the top header.
 import { ROUTES } from '@utils/constants';
 import Button from '@components/common/Button/Button';
@@ -55,6 +56,7 @@ export default function SelectionSidebar({
 }) {
   const dispatch = useAppDispatch();
   const { role, logout, isAdmin, hasPermission } = useAuth();
+  const L = useLabels();
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -331,7 +333,7 @@ export default function SelectionSidebar({
                 label="Choose Category Prompts"
                 hint={
                   clusterPromptApiReady
-                    ? 'Select category prompts to auto-inject into the Style context for every title in this category. Optional.'
+                    ? `Select category prompts to auto-inject into the ${L.style} context for every ${L.titleLower} in this category. Optional.`
                     : `${CLUSTER_PROMPT_API_MESSAGE} Selection is preserved in UI only until APIs are available.`
                 }
                 options={promptOptions}
@@ -400,7 +402,7 @@ export default function SelectionSidebar({
         <button
           type="button"
           className={cn(styles.navBtn, styles.iconOnly)}
-          title="Create Title"
+          title={`Create ${L.title}`}
           onClick={onRequestCreateCourse ? onRequestCreateCourse : () => expandWith(setShowNewCourse)}
         >
           ➕
@@ -414,7 +416,7 @@ export default function SelectionSidebar({
       {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && onRequestCreateCourse && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={onRequestCreateCourse}>
-            ➕ Create Title
+            ➕ Create {L.title}
           </button>
         </div>
       )}
@@ -422,11 +424,11 @@ export default function SelectionSidebar({
       {(hasPermission('course.create') || isAdmin) && variant === 'course' && !collapsed && !onRequestCreateCourse && (
         <div className={styles.expander}>
           <button type="button" className={styles.expander__toggle} onClick={() => setShowNewCourse((v) => !v)}>
-            ➕ New Title {showNewCourse ? '▾' : '▸'}
+            ➕ New {L.title} {showNewCourse ? '▾' : '▸'}
           </button>
           {showNewCourse && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Title Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label={`${L.title} Name *`} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
@@ -438,7 +440,7 @@ export default function SelectionSidebar({
                 value={form.workflow}
                 onChange={(e) => setForm((f) => ({ ...f, workflow: e.target.value }))}
               />
-              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create Title</Button>
+              <Button type="submit" variant="primary" size="sm" fullWidth loading={createLoading}>Create {L.title}</Button>
             </form>
           )}
         </div>

@@ -9,7 +9,7 @@ Endpoints
 ---------
   GET    /platform/tenants                      list all tenants (+ usage)
   POST   /platform/tenants                      create tenant + initial admin
-  PUT    /platform/tenants/{id}                 update name/status/license/azure
+  PUT    /platform/tenants/{id}                 update name/status/license/azure/labels
   GET    /platform/tenants/{id}/usage           active_users / max_users
   GET    /platform/tenants/{id}/users           list members
   POST   /platform/tenants/{id}/users           add a member (username+password)
@@ -43,6 +43,7 @@ from app.schemas.tenant import (
     TenantUpdateRequest,
     TenantUsageResponse,
 )
+from app.schemas.ui_labels import dump_ui_labels
 from app.services import tenant_service
 
 _log = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def _tenant_read(db: Session, project) -> TenantRead:
         active_users=tenant_service.active_member_count(db, project.id),
         created_at=project.created_at,
         created_by=project.created_by,
+        ui_labels=getattr(project, "ui_labels", None),
     )
 
 
@@ -201,6 +203,11 @@ def update_tenant(
         if role and role not in tenant_service.TENANT_ASSIGNABLE_ROLES:
             raise ValidationError("azure_new_user_role must be admin, reviewer, or author.")
         project.azure_new_user_role = role
+    if body.ui_labels is not None:
+        # Full replace: the Configuration form always submits every box, so a
+        # cleared box must actually clear the override. dump_ui_labels drops
+        # blanks and unknown keys, and stores NULL when nothing is left.
+        project.ui_labels = dump_ui_labels(body.ui_labels)
 
     db.commit()
     db.refresh(project)

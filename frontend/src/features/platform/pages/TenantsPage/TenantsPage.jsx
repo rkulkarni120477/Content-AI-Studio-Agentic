@@ -18,6 +18,8 @@ import IdentityBar from '@components/common/HeaderUser/IdentityBar';
 import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/SelectionPageHeader';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
+import TenantLabelsPanel from '@features/platform/components/TenantLabelsPanel/TenantLabelsPanel';
+import { describeOverrides } from '@config/tenantLabels';
 import styles from './TenantsPage.module.scss';
 
 const EMPTY_FORM = {
@@ -54,14 +56,18 @@ export default function TenantsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  const [view, setView] = useState('tenants'); // 'tenants' | 'audit'
+  const [view, setView] = useState('tenants'); // 'tenants' | 'audit' | 'config'
   const [auditItems, setAuditItems] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [expandedAuditId, setExpandedAuditId] = useState(null);
   const [viewContentEvent, setViewContentEvent] = useState(null);
+  // Which tenant's labels are being edited; null shows the organization list.
+  const [configTenantId, setConfigTenantId] = useState(null);
 
   const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
   const roleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
+  // Read from the loaded list so a save + reload refreshes the editor in place.
+  const configTenant = tenants.find((t) => t.id === configTenantId) || null;
 
   useEffect(() => { load(); }, []);
 
@@ -130,6 +136,11 @@ export default function TenantsPage() {
     }
   }
 
+  function openConfiguration() {
+    setView('config');
+    setConfigTenantId(null);
+  }
+
   function toggleAuditDetail(id) {
     setExpandedAuditId((cur) => (cur === id ? null : id));
   }
@@ -165,6 +176,13 @@ export default function TenantsPage() {
           onClick={openAuditLog}
         >
           📜 Audit Log
+        </button>
+        <button
+          type="button"
+          className={`${styles.navBtn} ${view === 'config' ? styles.navBtnActive : ''}`}
+          onClick={openConfiguration}
+        >
+          ⚙️ Configuration
         </button>
         <div className={styles.sidebarSpacer} />
         <button type="button" className={styles.signOut} onClick={handleSignOut}>
@@ -248,6 +266,88 @@ export default function TenantsPage() {
               </div>
             )}
           </>
+        ) : view === 'config' ? (
+          configTenant ? (
+            <TenantLabelsPanel
+              tenant={configTenant}
+              onBack={() => setConfigTenantId(null)}
+              onSaved={load}
+            />
+          ) : (
+            <>
+              <div className={styles.headerRow}>
+                <SelectionPageHeader
+                  eyebrow="Platform Admin"
+                  title="Configuration"
+                  subtitle="Rename the pipeline stages each organization sees."
+                />
+              </div>
+
+              <SectionBadge
+                icon="⚙️"
+                title="Label Overrides"
+                subtitle="Pick an organization to rename what its members call Title, Style, CDD and Blueprint. Everyone in that organization sees the new wording."
+              />
+
+              {loading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : tenants.length === 0 ? (
+                <EmptyState
+                  icon="🏢"
+                  title="No tenants yet"
+                  message="Create an organization first, then you can rename its labels."
+                />
+              ) : (
+                <div className={styles.card}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Code</th>
+                        <th>Client</th>
+                        <th>Renamed labels</th>
+                        <th>Status</th>
+                        <th className={styles.actionsCol}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tenants.map((t) => {
+                        const renamed = describeOverrides(t.ui_labels);
+                        return (
+                          <tr key={t.id}>
+                            <td className={styles.name}>{t.name}</td>
+                            <td><code className={styles.code}>{t.slug}</code></td>
+                            <td>{t.client_name || '—'}</td>
+                            <td>
+                              {renamed.length === 0 ? (
+                                <span className={styles.labelDefault}>Using defaults</span>
+                              ) : (
+                                renamed.map((r) => (
+                                  <span key={r.key} className={styles.labelChip}>
+                                    {r.from} → {r.to}
+                                  </span>
+                                ))
+                              )}
+                            </td>
+                            <td>
+                              <span className={t.status === 'active' ? styles.statusActive : styles.statusSuspended}>
+                                {t.status === 'active' ? '● Active' : '○ Suspended'}
+                              </span>
+                            </td>
+                            <td className={styles.actions}>
+                              <Button variant="ghost" size="xs" onClick={() => setConfigTenantId(t.id)}>
+                                Configure
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )
         ) : (
           <>
             <div className={styles.headerRow}>

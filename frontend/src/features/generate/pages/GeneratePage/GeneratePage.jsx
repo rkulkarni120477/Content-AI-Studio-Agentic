@@ -42,6 +42,7 @@ import FileUpload from '@components/common/FileUpload/FileUpload';
 import Loader from '@components/common/Loader/Loader';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { useLabels } from '@hooks/useLabels';
 import styles from './GeneratePage.module.scss';
 
 const SUPP_UPLOADS = [
@@ -53,6 +54,7 @@ const SUPP_UPLOADS = [
 export default function GeneratePage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
+  const L = useLabels();
 
   const isGenerating = useAppSelector(selectIsGenerating);
   const activeJobId = useAppSelector(selectActiveJobId);
@@ -117,24 +119,24 @@ export default function GeneratePage() {
 
   const cddOverrideOptions = useMemo(
     () => [
-      { value: '', label: '— Use pinned CDD —' },
+      { value: '', label: `— Use pinned ${L.cdd} —` },
       ...overrideCdds.map((c) => ({
         value: String(c.id),
-        label: `${c.title || c.course_title || `CDD ${c.id}`} (${c.active_version || 'v1'})`,
+        label: `${c.title || c.course_title || `${L.cdd} ${c.id}`} (${c.active_version || 'v1'})`,
       })),
     ],
-    [overrideCdds],
+    [overrideCdds, L.cdd],
   );
 
   const bpOverrideOptions = useMemo(
     () => [
-      { value: '', label: '— Use pinned Blueprint —' },
+      { value: '', label: `— Use pinned ${L.blueprint} —` },
       ...overrideBps.map((b) => ({
         value: String(b.id),
-        label: `${b.title || `Blueprint ${b.id}`} (${b.active_version || 'v1'})`,
+        label: `${b.title || `${L.blueprint} ${b.id}`} (${b.active_version || 'v1'})`,
       })),
     ],
-    [overrideBps],
+    [overrideBps, L.blueprint],
   );
 
   const showAssessmentGate = shouldShowAssessmentOverride(moduleGate, selectedComponent);
@@ -325,7 +327,7 @@ export default function GeneratePage() {
         <SectionBadge
           icon="⚙️"
           title="Content Generation"
-          subtitle="AI pipeline for generating lessons and title components. Context is auto-injected from the active CDD and Blueprint."
+          subtitle={`AI pipeline for generating lessons and ${L.titleLower} components. Context is auto-injected from the active ${L.cdd} and ${L.blueprint}.`}
         />
 
         {jobActive && (
@@ -357,8 +359,8 @@ export default function GeneratePage() {
         <>
         <div className={styles.stepper}>
           {[
-            { icon: '📘', label: 'Pin CDD', done: Boolean(activeCdd) },
-            { icon: '🧩', label: 'Pin Blueprint', done: Boolean(activeBlueprint) },
+            { icon: '📘', label: `Pin ${L.cdd}`, done: Boolean(activeCdd) },
+            { icon: '🧩', label: `Pin ${L.blueprint}`, done: Boolean(activeBlueprint) },
             { icon: '⚙️', label: 'Generate', done: Boolean(activeCdd && activeBlueprint) },
             { icon: '✏️', label: 'Edit', done: false },
           ].map((step, i, arr) => (
@@ -402,19 +404,19 @@ export default function GeneratePage() {
 
         <div className={styles.sectionStack}>
         <details className={styles.overridePanel}>
-          <summary>🔀 Override Active CDD / Blueprint (optional)</summary>
+          <summary>🔀 Override Active {L.cdd} / {L.blueprint} (optional)</summary>
           <p className={styles.overridePanel__caption}>
-            By default the pinned CDD and Blueprint are used. Change here for this generation only — does not affect the pin.
+            By default the pinned {L.cdd} and {L.blueprint} are used. Change here for this generation only — does not affect the pin.
           </p>
           <div className={styles.overridePanel__grid}>
             <Select
-              label="CDD Override"
+              label={`${L.cdd} Override`}
               options={cddOverrideOptions}
               value={cddOverrideId}
               onChange={(e) => setCddOverrideId(e.target.value)}
             />
             <Select
-              label="Blueprint Override"
+              label={`${L.blueprint} Override`}
               options={bpOverrideOptions}
               value={bpOverrideId}
               onChange={(e) => setBpOverrideId(e.target.value)}
@@ -424,7 +426,7 @@ export default function GeneratePage() {
 
         {components.length > 0 && (
           <div className={styles.compOk}>
-            ✅ <strong>{components.length} component(s)</strong> loaded from Blueprint — Content Type dropdown auto-populated.
+            ✅ <strong>{components.length} component(s)</strong> loaded from {L.blueprint} — Content Type dropdown auto-populated.
           </div>
         )}
 
@@ -460,11 +462,11 @@ export default function GeneratePage() {
                   </>
                 ) : effBpId ? (
                   <div className={styles.compWarn}>
-                    ⚠️ <strong>Blueprint has no sections yet.</strong> Generate or edit it in the Blueprint tab first.
+                    ⚠️ <strong>{L.blueprint} has no sections yet.</strong> Generate or edit it in the {L.blueprint} tab first.
                   </div>
                 ) : (
                   <div className={styles.compWarn}>
-                    ⚠️ <strong>No Blueprint pinned.</strong> Pin a Blueprint via the Blueprint tab first.
+                    ⚠️ <strong>No {L.blueprint} pinned.</strong> Pin a {L.blueprint} via the {L.blueprint} tab first.
                     The Content Type dropdown will auto-populate from lessons and components defined in it.
                   </div>
                 )}
@@ -482,7 +484,7 @@ export default function GeneratePage() {
               >
                 <summary>📂 Supplementary File Uploads (optional)</summary>
                 <p className={styles.suppPanel__caption}>
-                  Upload extra reference files in addition to CDD/Blueprint context.
+                  Upload extra reference files in addition to {L.cdd}/{L.blueprint} context.
                 </p>
                 <div className={styles.suppPanel__grid}>
                   {SUPP_UPLOADS.map(({ key, label, accept, sourceType }) => (
@@ -557,7 +559,7 @@ export default function GeneratePage() {
 
             {showCourseGate && (
               <div className={styles.gateBlock}>
-                <strong>🚫 Title modules are incomplete</strong>
+                <strong>🚫 {L.title} modules are incomplete</strong>
                 <p>
                   Complete all modules ({courseGate.generated_lessons}/{courseGate.total_lessons}) before generating{' '}
                   <strong>{selectedComponent.label}</strong>.
@@ -588,7 +590,7 @@ export default function GeneratePage() {
         {!activeJobId && latestBlocks.length === 0 && (
           components.length > 0 ? (
             <div className={styles.readyState}>
-              ✅ <strong>Blueprint loaded</strong> — {components.length} component(s) ready.
+              ✅ <strong>{L.blueprint} loaded</strong> — {components.length} component(s) ready.
               Select a component and click <strong>🚀 Generate</strong>.
             </div>
           ) : (
@@ -596,8 +598,8 @@ export default function GeneratePage() {
               <span className={styles.configureEmpty__icon} aria-hidden="true">⚙️</span>
               <h3 className={styles.configureEmpty__title}>Configure your generation</h3>
               <p className={styles.configureEmpty__text}>
-                Pin a <strong>CDD</strong> and <strong>Blueprint</strong> using the tabs above,
-                then the Content Type dropdown will auto-populate with all Blueprint components.
+                Pin a <strong>{L.cdd}</strong> and <strong>{L.blueprint}</strong> using the tabs above,
+                then the Content Type dropdown will auto-populate with all {L.blueprint} components.
               </p>
             </div>
           )

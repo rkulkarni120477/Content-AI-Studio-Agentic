@@ -7,6 +7,7 @@ import { PROJECTS } from '@services/endpoints';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import PublishedTocPanel from '@features/export/components/PublishedTocPanel/PublishedTocPanel';
+import { useLabels } from '@hooks/useLabels';
 import styles from './ExportPage.module.scss';
 
 function normalizeList(data) {
@@ -16,6 +17,7 @@ function normalizeList(data) {
 }
 
 export default function ExportPage() {
+  const L = useLabels();
   const { courseId: routeCourseId } = useParams();
   const workspaceCourseId = routeCourseId ? Number(routeCourseId) : null;
   const selCourse = useAppSelector(selectSelectedCourse);
@@ -41,8 +43,8 @@ export default function ExportPage() {
       <div className={styles.page}>
         <SectionBadge
           icon="📦"
-          title="Title Export"
-          subtitle="Export published content as an IMS Common Cartridge package. Module structure and sequence follow the title CDD and Blueprints."
+          title={`${L.title} Export`}
+          subtitle={`Export published content as an IMS Common Cartridge package. Module structure and sequence follow the ${L.titleLower} ${L.cdd} and ${L.blueprints}.`}
         />
         <PublishedTocPanel
           courseId={activeCourseId}

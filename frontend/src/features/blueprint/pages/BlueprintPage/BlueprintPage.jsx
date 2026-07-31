@@ -50,6 +50,7 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { useLabels } from '@hooks/useLabels';
 import styles from './BlueprintPage.module.scss';
 
 const NONE_CDD = '';
@@ -57,6 +58,7 @@ const NONE_CDD = '';
 export default function BlueprintPage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
+  const L = useLabels();
   const blueprints = useAppSelector(selectBlueprints);
   const activeBlueprint = useAppSelector(selectActiveBlueprint);
   const versions = useAppSelector(selectBlueprintVersions);
@@ -274,7 +276,7 @@ export default function BlueprintPage() {
     const mod = selectedModuleOpt;
     if (!mod) return;
     if (!linkedCddId && !cddContent) {
-      toast.error('Link a CDD for best results, or continue with standalone generation.');
+      toast.error(`Link a ${L.cdd} for best results, or continue with standalone generation.`);
     }
 
     const moduleRef = mod.isCourseEnd
@@ -499,7 +501,7 @@ export default function BlueprintPage() {
   const styleOk = Boolean(activeStyle);
   const cddLabel = activeCdd
     ? `${activeCdd.title || activeCdd.course_title}`
-  : 'None — no CDD pinned';
+  : `None — no ${L.cdd} pinned`;
   const cddOk = Boolean(activeCdd);
 
   const moduleStatusBanner = () => {
@@ -516,13 +518,13 @@ export default function BlueprintPage() {
     if (existingNums.has(num)) {
       return (
         <div className={styles.statusWarn}>
-          ⚠️ Blueprint already exists for {unit} {num}. Generating again will create a new version.
+          ⚠️ {L.blueprint} already exists for {unit} {num}. Generating again will create a new version.
         </div>
       );
     }
     return (
       <div className={styles.statusOk}>
-        ✅ Ready to generate {unit} {num} Blueprint.
+        ✅ Ready to generate {unit} {num} {L.blueprint}.
       </div>
     );
   };
@@ -546,14 +548,14 @@ export default function BlueprintPage() {
   return (
     <PageContainer
       title=""
-      breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'Blueprint' }]}
+      breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: L.blueprint }]}
       noPadding
     >
       <div className={styles.page}>
         <SectionBadge
           icon="🧩"
-          title="Module Blueprint"
-          subtitle="Generates directly from the linked CDD — module structure, lessons, and all components are derived automatically. No need to re-enter title metadata."
+          title={`Module ${L.blueprint}`}
+          subtitle={`Generates directly from the linked ${L.cdd} — module structure, lessons, and all components are derived automatically. No need to re-enter ${L.titleLower} metadata.`}
         />
 
         <div className={styles.configPanel}>
@@ -583,12 +585,12 @@ export default function BlueprintPage() {
         {!isAdmin && (
           activeCdd ? (
             <div className={styles.ctaBanner}>
-              👇 <strong>Generate Blueprint from Approved CDD:</strong>
-              {' '}Use the form below to create a new module blueprint based on the pinned CDD above.
+              👇 <strong>Generate {L.blueprint} from Approved {L.cdd}:</strong>
+              {' '}Use the form below to create a new module {L.blueprintLower} based on the pinned {L.cdd} above.
             </div>
           ) : (
             <div className={styles.warnBanner}>
-              No CDD is pinned yet. Create and pin a CDD in the CDD tab first, then return here to generate blueprints.
+              No {L.cdd} is pinned yet. Create and pin a {L.cdd} in the {L.cdd} tab first, then return here to generate {L.blueprintsLower}.
             </div>
           )
         )}
@@ -619,7 +621,7 @@ export default function BlueprintPage() {
             <summary className={styles.accordion__summary}>➕ Create New Blueprint</summary>
             <div className={styles.accordion__body}>
               <Select
-                label="📘 Source CDD"
+                label={`📘 Source ${L.cdd}`}
                 options={cddOptions}
                 value={linkedCddId != null ? String(linkedCddId) : NONE_CDD}
                 onChange={(e) => {
@@ -653,16 +655,16 @@ export default function BlueprintPage() {
                 </>
               ) : (
                 <p className={styles.configPanel__item}>
-                  ℹ️ Module number will be 1 (no module structure detected in CDD).
+                  ℹ️ Module number will be 1 (no module structure detected in {L.cdd}).
                 </p>
               )}
 
               <Input
-                label="Blueprint Title (optional)"
+                label={`${L.blueprint} Title (optional)`}
                 placeholder={
                   selectedModuleOpt
                     ? `e.g. ${selectedModuleOpt.isDay ? 'Day' : 'Module'} ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
-                    : 'e.g. Module 1 — Patient Assessment Blueprint'
+                    : `e.g. Module 1 — Patient Assessment ${L.blueprint}`
                 }
                 value={documentTitle}
                 onChange={(e) => setDocumentTitle(e.target.value)}
@@ -754,13 +756,13 @@ export default function BlueprintPage() {
                 <div className={styles.center}><Loader size="lg" /></div>
               ) : blueprints.length === 0 ? (
                 <EmptyState
-                  title="No Blueprints yet"
-                  message="Create your first Blueprint using the form above."
+                  title={`No ${L.blueprints} yet`}
+                  message={`Create your first ${L.blueprint} using the form above.`}
                 />
               ) : (
                 <>
                   <Select
-                    label="Select Blueprint to View/Edit"
+                    label={`Select ${L.blueprint} to View/Edit`}
                     options={blueprints.map((bp) => ({
                       value: String(bp.id),
                       label: `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
@@ -798,7 +800,7 @@ export default function BlueprintPage() {
                         if (!bpCdd) return null;
                         return (
                           <div className={styles.cddLink}>
-                            🔗 Linked to CDD: <strong>{bpCdd.title || bpCdd.course_title}</strong>
+                            🔗 Linked to {L.cdd}: <strong>{bpCdd.title || bpCdd.course_title}</strong>
                             {' '}({bpCdd.active_version || 'v1'})
                           </div>
                         );
@@ -878,7 +880,7 @@ export default function BlueprintPage() {
                                 {...versionForm.register('reason')}
                               />
                               <Button type="submit" variant="primary" size="sm">
-                                💾 Commit New Blueprint Version
+                                💾 Commit New {L.blueprint} Version
                               </Button>
                             </form>
                           </div>
@@ -891,7 +893,7 @@ export default function BlueprintPage() {
                         onClick={() => onPin(displayBp.id)}
                         disabled={activeBlueprint?.id === displayBp.id}
                       >
-                        📌 Set as Active Blueprint for Generation
+                        📌 Set as Active {L.blueprint} for Generation
                       </Button>
 
                       <div className={styles.downloadBlock}>
@@ -924,12 +926,12 @@ export default function BlueprintPage() {
                 extraInstructions={extraInstructions}
                 showExtraInstructions={false}
                 onPromptsChange={setPromptConfig}
-                headerHint="📝 Select the source CDD and module above, then configure the prompt and generate your Blueprint below."
+                headerHint={`📝 Select the source ${L.cdd} and module above, then configure the prompt and generate your ${L.blueprint} below.`}
               />
 
               {activeStyle && (
                 <div className={styles.styleBanner}>
-                  🎨 <strong>Style &quot;{activeStyle.name}&quot;</strong> will be applied to this Blueprint.
+                  🎨 <strong>{L.style} &quot;{activeStyle.name}&quot;</strong> will be applied to this {L.blueprint}.
                 </div>
               )}
 
@@ -941,7 +943,7 @@ export default function BlueprintPage() {
                   loading={isGenerating}
                   onClick={onGenerate}
                 >
-                  {isGenerating ? 'Generating Blueprint…' : '🤖 Generate Blueprint with AI'}
+                  {isGenerating ? `Generating ${L.blueprint}…` : `🤖 Generate ${L.blueprint} with AI`}
                 </Button>
                 <Button variant="secondary" size="md" onClick={handleDownloadPrompt}>
                   ⬇️ Download Prompt

@@ -21,6 +21,7 @@ import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import Loader from '@components/common/Loader/Loader';
 import Button from '@components/common/Button/Button';
 import { useAuth } from '@hooks/useAuth';
+import { useLabels } from '@hooks/useLabels';
 import { ROUTES, ROLES } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import gridStyles from '@features/dashboard/styles/selectionGrid.module.scss';
@@ -30,6 +31,7 @@ export default function CoursesPage() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const { hasPermission, isAdmin, role } = useAuth();
+  const L = useLabels();
   const courses = useAppSelector(selectCourses);
   const selProj = useAppSelector(selectSelectedProject);
   const selCluster = useAppSelector(selectSelectedCluster);
@@ -99,7 +101,7 @@ export default function CoursesPage() {
     setCreateLoading(true);
     try {
       await dashboardService.createCourse(pid, { ...data, cluster_id: cid });
-      toast.success('Title created');
+      toast.success(`${L.title} created`);
       dispatch(fetchCoursesThunk(cid));
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -120,7 +122,7 @@ export default function CoursesPage() {
     setDeleteLoading(true);
     try {
       await dashboardService.deleteCourse(deleteTarget.id);
-      toast.success('Title archived');
+      toast.success(`${L.title} archived`);
       setDeleteTarget(null);
       dispatch(fetchCoursesThunk(cid));
     } catch (e) {
@@ -135,7 +137,7 @@ export default function CoursesPage() {
     setDeleteLoading(true);
     try {
       await dashboardService.permanentlyDeleteCourse(purgeTarget.id);
-      toast.success('Title permanently deleted');
+      toast.success(`${L.title} permanently deleted`);
       setPurgeTarget(null);
       dispatch(fetchCoursesThunk(cid));
     } catch (e) {
@@ -168,13 +170,13 @@ export default function CoursesPage() {
     >
       <SelectionPageHeader
         eyebrow={`${selProj.name} › ${selCluster.name}`}
-        title="Select Title"
-        subtitle="Choose a title to enter the workspace."
+        title={`Select ${L.title}`}
+        subtitle={`Choose a ${L.titleLower} to enter the workspace.`}
       />
 
       {isLoadingCourses ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
-          <Loader size="sm" /> Loading titles…
+          <Loader size="sm" /> Loading {L.titlesLower}…
         </div>
       ) : courses?.items?.length ? (
         <div className={gridStyles.grid}>
@@ -202,11 +204,16 @@ export default function CoursesPage() {
         </div>
       ) : coursesError ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '1.5rem 0', flexWrap: 'wrap' }}>
-          <span>⚠️ Couldn’t load titles.</span>
+          <span>⚠️ Couldn’t load {L.titlesLower}.</span>
           <Button type="button" variant="ghost" onClick={() => dispatch(fetchCoursesThunk(cid))}>Try again</Button>
         </div>
       ) : (
-        <EmptyState title="No titles" message={canCreate ? 'Create a title using the sidebar panel.' : 'Ask an Admin or Lead to create titles.'} />
+        <EmptyState
+          title={`No ${L.titlesLower}`}
+          message={canCreate
+            ? `Create a ${L.titleLower} using the sidebar panel.`
+            : `Ask an Admin or Lead to create ${L.titlesLower}.`}
+        />
       )}
 
       <CreateCourseModal
@@ -223,7 +230,7 @@ export default function CoursesPage() {
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
         onConfirm={handleDelete}
-        title="Archive Title"
+        title={`Archive ${L.title}`}
         message={`Archive "${deleteTarget?.name}"? You can permanently delete it later from the archived list.`}
         loading={deleteLoading}
       />
@@ -231,8 +238,8 @@ export default function CoursesPage() {
         open={Boolean(purgeTarget)}
         onClose={() => setPurgeTarget(null)}
         onConfirm={handlePermanentDelete}
-        title="Permanently Delete Title"
-        message={`Permanently delete "${purgeTarget?.name}" and all of its content (modules, generations, blocks, CDD, blueprints, imports)? This cannot be undone.`}
+        title={`Permanently Delete ${L.title}`}
+        message={`Permanently delete "${purgeTarget?.name}" and all of its content (modules, generations, blocks, ${L.cdd}, ${L.blueprintsLower}, imports)? This cannot be undone.`}
         loading={deleteLoading}
       />
     </SelectionLayout>

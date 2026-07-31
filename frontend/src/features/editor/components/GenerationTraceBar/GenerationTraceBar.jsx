@@ -1,6 +1,8 @@
+import { useLabels } from '@hooks/useLabels';
 import styles from './GenerationTraceBar.module.scss';
 
 export default function GenerationTraceBar({ promptName, promptVersion, cddLabel, blueprintLabel }) {
+  const L = useLabels();
   return (
     <div className={styles.bar}>
       <span className={styles.bar__icon} aria-hidden>🔗</span>
@@ -10,9 +12,9 @@ export default function GenerationTraceBar({ promptName, promptVersion, cddLabel
         <code className={styles.pillPrompt}>
           {promptName || '—'} / {promptVersion || '—'}
         </code>
-        {' · '}CDD{' '}
+        {' · '}{L.cdd}{' '}
         <code className={styles.pillCdd}>{cddLabel || 'None'}</code>
-        {' · '}Blueprint{' '}
+        {' · '}{L.blueprint}{' '}
         <code className={styles.pillBp}>{blueprintLabel || 'None'}</code>
       </span>
     </div>

@@ -117,19 +117,118 @@ def parse_cdd_flat(raw_text: str) -> dict:
 # DLU (worksheet-based) CDD helpers
 #
 # A DLU CDD stores everything under "Course Structure" as a title/metadata
-# header followed by several "## WORKSHEET N: TITLE" blocks. These helpers
-# split that blob so the XLSX export can emit one sheet per worksheet.
-# Standard CDDs have no WORKSHEET headings, so is_dlu_cdd() returns False.
+# header followed by several worksheet blocks. These helpers split that blob so
+# the XLSX export can emit one sheet per worksheet. Standard CDDs have no
+# worksheet labels, so is_dlu_cdd() returns False.
+#
+# Boundary detection is deliberately decoration-blind. The output format is
+# dictated by whichever prompt generated the CDD, not by CAS, and prompts get
+# rewritten — the same prompt has emitted "## WORKSHEET 1: X" one day and
+# "**Worksheet 1: X**" the next. Matching only markdown headings silently
+# demoted those CDDs to a flat blob (and a single-sheet XLSX), so we strip the
+# decoration and match the label itself.
+#
+# Mirrored in frontend/src/utils/cddWorksheets.js — the two must agree or the
+# screen and the export disagree about where worksheets start. Shared fixtures
+# live in tests/characterization/test_dlu_cdd_export.py and
+# frontend/src/utils/__tests__/cddWorksheets.test.js.
 # ---------------------------------------------------------------------------
 
-_WORKSHEET_MARK_RE = _re.compile(r"(^|\n)(#{1,3}\s*WORKSHEET\s+(\d+)\b[^\n]*)", _re.IGNORECASE)
+# Leading noise: blockquote markers, list bullets, and markdown heading hashes.
+# Group 1 captures the hashes so a real heading can be told from a bare label.
+_WS_LEAD_RE = _re.compile(r"^[\s>]*(?:[-*+]\s+)?(?:(#{1,6})\s*)?")
+_WS_LABEL_RE = _re.compile(
+    r"^(?:worksheet|work\s*sheet|sheet|ws)\s*#?\s*(\d{1,2})\b\s*[:\-–—.]?\s*(.*)$",
+    _re.IGNORECASE,
+)
+# A boundary label is a short line. Anything longer is prose that merely
+# mentions a worksheet ("...as recorded in Worksheet 2 of the prior block").
+_WS_MAX_LABEL_LEN = 120
+
+
+def _worksheet_mark(line: str) -> dict | None:
+    """Parse a worksheet boundary label out of *line*, ignoring decoration.
+
+    Accepts every form the models have actually produced: ``## WORKSHEET 1: X``,
+    ``### Worksheet 1: X``, ``**Worksheet 1: X**``, ``Worksheet 1 — X``,
+    ``- **Sheet 1: X**``. Returns None for anything else.
+    """
+    lead = _WS_LEAD_RE.match(line)
+    is_heading = bool(lead.group(1))
+    text = line[lead.end():].strip()
+    # Emphasis wrappers, then a trailing colon left behind by "**Worksheet 1:**".
+    text = _re.sub(r"^(\*{1,2}|_{1,2})", "", text)
+    text = _re.sub(r"(\*{1,2}|_{1,2})\s*:?\s*$", "", text).strip()
+    text = text.rstrip(":").strip()
+    if not text or len(text) > _WS_MAX_LABEL_LEN:
+        return None
+    match = _WS_LABEL_RE.match(text)
+    if not match:
+        return None
+    return {
+        "num": int(match.group(1)),
+        "title": match.group(2).strip(),
+        "label": text,
+        "is_heading": is_heading,
+    }
+
+
+def _dedupe_worksheet_marks(marks: list, text_len: int) -> list:
+    """Keep one mark per worksheet number — whichever has the most content.
+
+    A model that prints a table of contents ("- **Worksheet 1: ...**", one per
+    line) before the real worksheets would otherwise split the document at the
+    TOC entries and emit a run of near-empty worksheets. Preferring the
+    occurrence with the largest body picks the real section every time.
+    """
+    best: dict = {}
+    for i, mark in enumerate(marks):
+        end = marks[i + 1]["start"] if i + 1 < len(marks) else text_len
+        body = end - mark["start"]
+        current = best.get(mark["num"])
+        if current is None or body > current[0]:
+            best[mark["num"]] = (body, mark)
+    return sorted((mark for _, mark in best.values()), key=lambda m: m["start"])
+
+
+def _find_worksheet_marks(text: str) -> list:
+    """All worksheet boundary marks in *text*, with their line start offsets.
+
+    Splits on "\\n" (rather than str.splitlines) so the offsets match the
+    JS implementation exactly — splitlines also breaks on form feeds and the
+    Unicode line separators, which would drift the two apart.
+    """
+    marks = []
+    pos = 0
+    for line in (text or "").split("\n"):
+        mark = _worksheet_mark(line)
+        if mark:
+            marks.append({**mark, "start": pos})
+        pos += len(line) + 1  # +1 for the consumed newline
+    return _dedupe_worksheet_marks(marks, len(text or ""))
+
+
+def _dlu_worksheet_marks(text: str) -> list:
+    """Worksheet marks when *text* is a DLU CDD, else []."""
+    marks = _find_worksheet_marks(text)
+    if not marks:
+        return []
+    # A markdown-heading marker is unambiguous on its own. This is the original
+    # rule, kept intact so nothing that renders as DLU today can stop doing so.
+    if any(m["is_heading"] for m in marks):
+        return marks
+    # Bold/plain labels are weaker evidence, so require two distinct worksheet
+    # numbers before reshaping the document — one stray mention is not a DLU CDD.
+    if len({m["num"] for m in marks}) >= 2:
+        return marks
+    return []
 
 
 def is_dlu_cdd(full_content: str) -> bool:
     """True when the CDD content is worksheet-based (DLU)."""
     if not full_content:
         return False
-    return bool(_re.search(r"(^|\n)#{1,3}\s*WORKSHEET\s+\d+\b", full_content, _re.IGNORECASE))
+    return bool(_dlu_worksheet_marks(full_content))
 
 
 _WS_ACRONYMS = {"ACS", "DLU", "FAA", "PPE", "SDS", "BOM", "IPC", "CDD"}
@@ -156,24 +255,24 @@ def split_cdd_worksheets(cs_text: str) -> list:
 
     Returns an "Overview" section first (the title/metadata before Worksheet 1),
     then one section per worksheet in order. Returns [] when no worksheet
-    headings are present (i.e. not a DLU CDD).
+    labels are present (i.e. not a DLU CDD).
+
+    Each section keeps its own boundary label line verbatim, so the model's
+    original formatting survives a split/rebuild round trip.
     """
     text = cs_text or ""
-    marks = []
-    for m in _WORKSHEET_MARK_RE.finditer(text):
-        marks.append((int(m.group(3)), m.group(2).strip(), m.start() + len(m.group(1))))
+    marks = _dlu_worksheet_marks(text)
     if not marks:
         return []
 
     out = []
-    overview = text[:marks[0][2]].strip()
+    overview = text[:marks[0]["start"]].strip()
     if overview:
         out.append(("Overview", overview))
-    for i, (num, heading, start) in enumerate(marks):
-        end = marks[i + 1][2] if i + 1 < len(marks) else len(text)
-        content = text[start:end].strip()
-        full_title = _re.sub(r"^#{1,3}\s*", "", heading).strip()
-        out.append((_short_worksheet_label(num, full_title), content))
+    for i, mark in enumerate(marks):
+        end = marks[i + 1]["start"] if i + 1 < len(marks) else len(text)
+        content = text[mark["start"]:end].strip()
+        out.append((_short_worksheet_label(mark["num"], mark["title"]), content))
     return out
 
 

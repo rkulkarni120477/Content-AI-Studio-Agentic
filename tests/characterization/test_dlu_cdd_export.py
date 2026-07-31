@@ -40,11 +40,110 @@ A standard CDD.
 Module 1: Intro
 Module 2: Advanced"""
 
+# ── Shared format fixtures ────────────────────────────────────────────────────
+# The worksheet label format is set by whichever prompt generated the CDD, so
+# detection must not depend on markdown heading syntax. These mirror the cases
+# in frontend/src/utils/__tests__/cddWorksheets.test.js — keep the two in sync.
+
+# Real shape produced by the "Block Blueprint" prompt from 2026-07-30 (CDDs
+# 74-77): bold labels, zero markdown headings. Used to render as a flat blob.
+BOLD_CS = """**Block Blueprint for Block 2: Aircraft Drawings**
+
+---
+
+**Worksheet 1: Block Overview**
+
+- **Block Title:** Aircraft Drawings
+- **Domain:** General Studies
+
+---
+
+**Worksheet 2: Source File Inventory**
+
+- **Course Syllabus/Calendar:** Available
+- **ACS Codes:** Available
+
+---
+
+**Worksheet 3: ACS Code Registry**
+
+- **AM.I.E.S6:** Skill-type ACS code"""
+
+PLAIN_CS = """Block Overview Document
+
+Worksheet 1 — Block Overview
+Body one.
+
+Worksheet 2 . Source File Inventory
+Body two."""
+
+# A standard CDD that merely mentions a worksheet in prose must not flip to DLU.
+PROSE_MENTION_CS = """## Course Structure
+Module 1: Intro. Learners complete Worksheet 1 before the lab session, as
+recorded in Worksheet 1 of the prior block.
+Module 2: Advanced"""
+
+# Table of contents printed before the real worksheets — naive splitting would
+# emit near-empty worksheets at the TOC lines.
+TOC_CS = """# Block Blueprint
+
+- **Worksheet 1: Block Overview**
+- **Worksheet 2: Source File Inventory**
+
+---
+
+**Worksheet 1: Block Overview**
+
+The real overview body, which is substantially longer than the TOC entry.
+
+**Worksheet 2: Source File Inventory**
+
+The real inventory body, also substantially longer than its TOC entry."""
+
 
 def test_is_dlu_cdd_detection():
     assert is_dlu_cdd(DLU_CS) is True
     assert is_dlu_cdd(STANDARD_CS) is False
     assert is_dlu_cdd("") is False
+
+
+def test_is_dlu_cdd_accepts_non_heading_label_formats():
+    """Bold and plain labels are DLU too — the prompt decides the format."""
+    assert is_dlu_cdd(BOLD_CS) is True
+    assert is_dlu_cdd(PLAIN_CS) is True
+
+
+def test_is_dlu_cdd_ignores_prose_mentions():
+    """One mid-sentence mention must not reshape a standard CDD."""
+    assert is_dlu_cdd(PROSE_MENTION_CS) is False
+    # A single bold label on its own is still not enough evidence.
+    assert is_dlu_cdd("Intro text\n\n**Worksheet 1: Only One**\n\nBody.") is False
+    # ...but a single markdown heading is (the original, unchanged rule).
+    assert is_dlu_cdd("Intro text\n\n## WORKSHEET 1: ONLY ONE\n\nBody.") is True
+
+
+def test_split_cdd_worksheets_bold_labels():
+    sections = split_cdd_worksheets(BOLD_CS)
+    labels = [lbl for lbl, _ in sections]
+    assert labels[0] == "Overview"
+    assert len(sections) == 4  # Overview + 3 worksheets
+    assert labels[1].startswith("1 ")
+    assert any("ACS" in lbl for lbl in labels)
+    # The model's own bold label line is preserved verbatim in the body.
+    assert sections[1][1].startswith("**Worksheet 1: Block Overview**")
+    # Content is split at the right boundaries.
+    assert "Aircraft Drawings" in sections[1][1]
+    assert "Course Syllabus/Calendar" in sections[2][1]
+    assert "AM.I.E.S6" in sections[3][1]
+
+
+def test_split_cdd_worksheets_prefers_real_section_over_toc():
+    sections = split_cdd_worksheets(TOC_CS)
+    # Two worksheets, not four — the TOC lines are discarded.
+    assert len([lbl for lbl, _ in sections if lbl != "Overview"]) == 2
+    bodies = {lbl: content for lbl, content in sections}
+    assert any("real overview body" in c for c in bodies.values())
+    assert any("real inventory body" in c for c in bodies.values())
 
 
 def test_split_cdd_worksheets_overview_first_then_worksheets():

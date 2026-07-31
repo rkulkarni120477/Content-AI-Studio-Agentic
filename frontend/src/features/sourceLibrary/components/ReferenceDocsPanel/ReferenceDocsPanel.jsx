@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
+import { useLabels } from '@hooks/useLabels';
 
-const PURPOSE_LABELS = {
-  style: 'Style reference documents',
-  cdd: 'CDD reference documents',
-  blueprint: 'Blueprint reference documents',
-  course_generation: 'Title generation reference documents',
+const purposeLabels = (L) => ({
+  style: `${L.style} reference documents`,
+  cdd: `${L.cdd} reference documents`,
+  blueprint: `${L.blueprint} reference documents`,
+  course_generation: `${L.title} generation reference documents`,
   general_reference: 'General reference documents',
-};
+});
 
 function cacheKey({ courseId, projectId, purpose }) {
   return `cas_dis_reference_docs:${courseId || projectId || 'global'}:${purpose || 'all'}`;
@@ -37,6 +38,7 @@ export default function ReferenceDocsPanel({
   title = '',
   compact = false,
 }) {
+  const L = useLabels();
   const key = useMemo(() => cacheKey({ courseId, projectId, purpose }), [courseId, projectId, purpose]);
   const [docs, setDocs] = useState(() => readCache(key));
   const [loading, setLoading] = useState(false);
@@ -92,7 +94,7 @@ export default function ReferenceDocsPanel({
     <section style={{ border: '1px solid #e2e8f0', borderRadius: 14, padding: 14, background: '#fff', margin: '14px 0' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 10 }}>
         <div>
-          <div style={{ fontWeight: 800, color: '#0f172a' }}>📎 {title || PURPOSE_LABELS[purpose] || 'Reference documents'}</div>
+          <div style={{ fontWeight: 800, color: '#0f172a' }}>📎 {title || purposeLabels(L)[purpose] || 'Reference documents'}</div>
           <div style={{ color: '#64748b', fontSize: 13 }}>
             {loading ? 'Checking Source Library…' : `${filtered.length} processed document(s) available`}
           </div>

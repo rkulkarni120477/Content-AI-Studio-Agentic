@@ -12,10 +12,11 @@ import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi'
 import Input from '@components/common/Input/Input';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Button from '@components/common/Button/Button';
+import { useLabels } from '@hooks/useLabels';
 import styles from './CreateStyleForm.module.scss';
 
-const REF_DOCS_HINT = 'All processed DIS Source Library documents are shown here. Select whichever documents should guide this style.';
-const INSTR_HINT = 'These instructions are stored with the style and injected into every generation.';
+const REF_DOCS_HINT = (L) => `All processed DIS Source Library documents are shown here. Select whichever documents should guide this ${L.styleLower}.`;
+const INSTR_HINT = (L) => `These instructions are stored with the ${L.styleLower} and injected into every generation.`;
 
 function docLabel(doc) {
   return doc?.source_file_name || doc?.title || `Source ${doc?.job_id || doc?.document_id}`;
@@ -44,6 +45,7 @@ function writeCachedStyleDocs(key, documents) {
 
 export default function CreateStyleForm({ embedded = false }) {
   const dispatch = useAppDispatch();
+  const L = useLabels();
   const isCreating = useAppSelector(selectStyleCreating);
   const canModify = useAppSelector(selectIsReviewer);
   const { courseId } = useParams();
@@ -135,10 +137,10 @@ export default function CreateStyleForm({ embedded = false }) {
       <section className={embedded ? styles.panelEmbedded : styles.panel}>
         <div className={styles.restricted}>
           <div className={styles.restricted__icon} aria-hidden="true">🔒</div>
-          <div className={styles.restricted__title}>Style Creation Restricted</div>
+          <div className={styles.restricted__title}>{L.style} Creation Restricted</div>
           <p className={styles.restricted__text}>
-            Only Admins and Leads can create or modify Styles. Contact your Lead or Admin
-            to update Style configuration.
+            Only Admins and Leads can create or modify {L.styles}. Contact your Lead or Admin
+            to update {L.style} configuration.
           </p>
         </div>
       </section>
@@ -149,31 +151,31 @@ export default function CreateStyleForm({ embedded = false }) {
     <section className={embedded ? styles.panelEmbedded : styles.panel}>
       {!embedded && (
         <header className={styles.header}>
-          <h2 className={styles.header__title}>➕ Create New Style</h2>
+          <h2 className={styles.header__title}>➕ Create New {L.style}</h2>
           <p className={styles.header__intro}>
-            A Style defines writing tone, rules, and structure. It will be automatically
-            applied to CDD, Blueprint, and content generation.
+            A {L.style} defines writing tone, rules, and structure. It will be automatically
+            applied to {L.cdd}, {L.blueprint}, and content generation.
           </p>
         </header>
       )}
       {embedded && (
         <p className={styles.header__intro}>
-          A Style defines writing tone, rules, and structure. Upload source documents in
+          A {L.style} defines writing tone, rules, and structure. Upload source documents in
           Source Library, then select the processed references here.
         </p>
       )}
 
       <form onSubmit={handleSubmit(onSubmit)} className={styles.form}>
         <Input
-          label="Style Name"
+          label={`${L.style} Name`}
           required
-          placeholder="e.g. Cengage Authoring Style"
+          placeholder={`e.g. Cengage Authoring ${L.style}`}
           error={errors.name?.message}
           {...register('name')}
         />
         <Input
           label="Description"
-          placeholder="Brief description of this style's purpose"
+          placeholder={`Brief description of this ${L.styleLower}'s purpose`}
           error={errors.description?.message}
           {...register('description')}
         />
@@ -183,7 +185,7 @@ export default function CreateStyleForm({ embedded = false }) {
         <div className={styles.fieldRow}>
           <label className={styles.fieldLabel} htmlFor="style-lib-docs">
             Select processed Source Library documents
-            <span className={styles.helpIcon} title={REF_DOCS_HINT} aria-label={REF_DOCS_HINT}>?</span>
+            <span className={styles.helpIcon} title={REF_DOCS_HINT(L)} aria-label={REF_DOCS_HINT(L)}>?</span>
           </label>
           <MultiSelect
             placeholder={libraryOptions.length ? 'Choose reference documents' : (sourceLoading ? 'Loading Source Library documents…' : 'Choose reference documents')}
@@ -191,18 +193,18 @@ export default function CreateStyleForm({ embedded = false }) {
             value={selectedLibDocIds}
             onChange={setSelectedLibDocIds}
             disabled={!libraryOptions.length}
-            hint={sourceError || (!libraryOptions.length ? 'No Style-purpose documents found. Upload them in Source Library with Purpose = Style.' : undefined)}
+            hint={sourceError || (!libraryOptions.length ? `No ${L.style}-purpose documents found. Upload them in Source Library with Purpose = ${L.style}.` : undefined)}
           />
         </div>
 
-        <p className={styles.fieldHint}>Style documents are managed only in Source Library. This page links processed DIS documents and generates/refines style understanding.</p>
+        <p className={styles.fieldHint}>{L.style} documents are managed only in Source Library. This page links processed DIS documents and generates/refines {L.styleLower} understanding.</p>
 
         <div className={styles.sectionLabel}>✍️ Custom Instructions</div>
 
         <div className={styles.fieldRow}>
           <label className={styles.fieldLabel} htmlFor="style-custom-instructions">
-            Custom instructions / rules for this style
-            <span className={styles.helpIcon} title={INSTR_HINT} aria-label={INSTR_HINT}>?</span>
+            Custom instructions / rules for this {L.styleLower}
+            <span className={styles.helpIcon} title={INSTR_HINT(L)} aria-label={INSTR_HINT(L)}>?</span>
           </label>
           <textarea
             id="style-custom-instructions"
@@ -218,7 +220,7 @@ export default function CreateStyleForm({ embedded = false }) {
 
         <div className={styles.saveRow}>
           <Button type="submit" variant="primary" size="md" loading={isCreating} className={styles.saveBtn}>
-            💾 Save Style
+            💾 Save {L.style}
           </Button>
         </div>
       </form>

@@ -40,9 +40,10 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { useLabels } from '@hooks/useLabels';
 import styles from './CddPage.module.scss';
 
-const REF_DOCS_HINT = 'All processed DIS Source Library documents are shown here. Whatever you select is retrieved and passed to the model as reference context when you click "Generate CDD with AI".';
+const REF_DOCS_HINT = (L) => `All processed DIS Source Library documents are shown here. Whatever you select is retrieved and passed to the model as reference context when you click "Generate ${L.cdd} with AI".`;
 
 function docLabel(doc) {
   return doc?.source_file_name || doc?.title || `Source ${doc?.job_id || doc?.document_id}`;
@@ -51,6 +52,7 @@ function docLabel(doc) {
 export default function CddPage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
+  const L = useLabels();
   const cdds = useAppSelector(selectCdds);
   const activeCdd = useAppSelector(selectActiveCdd);
   const versions = useAppSelector(selectCddVersions);
@@ -435,19 +437,19 @@ export default function CddPage() {
   return (
     <PageContainer
       title=""
-      breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: 'CDD' }]}
+      breadcrumbs={[{ label: 'Dashboard', to: '/dashboard' }, { label: L.cdd }]}
       noPadding
     >
       <div className={styles.page}>
         <SectionBadge
           icon="📘"
-          title="Title Design Document (CDD)"
-          subtitle="Define learning objectives, tone, module structure, and quality standards. All downstream Blueprints and lessons inherit from this document automatically."
+          title={L.phrase('cdd', 'Title Design Document (CDD)')}
+          subtitle={`Define learning objectives, tone, module structure, and quality standards. All downstream ${L.blueprints} and lessons inherit from this document automatically.`}
         />
 
         <div className={styles.layout}>
           <details className={styles.accordion} open>
-            <summary className={styles.accordion__summary}>➕ Create New CDD</summary>
+            <summary className={styles.accordion__summary}>➕ Create New {L.cdd}</summary>
             <div className={styles.accordion__body}>
               <p className={styles.requiredHint}>
                 Fields marked <span className={styles.requiredMark}>*</span> are required.
@@ -456,7 +458,7 @@ export default function CddPage() {
               {stylesList.length > 0 ? (
                 <>
                   <Select
-                    label="🎨 Style for this CDD"
+                    label={`🎨 ${L.style} for this ${L.cdd}`}
                     options={styleOptions}
                     value={selectedStyleId != null ? String(selectedStyleId) : ''}
                     onChange={(e) => setSelectedStyleId(e.target.value ? Number(e.target.value) : null)}
@@ -468,13 +470,13 @@ export default function CddPage() {
                     </div>
                   ) : (
                     <div className={styles.styleBannerWarn}>
-                      ⚠️ No style selected — CDD will be generated without style constraints.
+                      ⚠️ No {L.styleLower} selected — {L.cdd} will be generated without {L.styleLower} constraints.
                     </div>
                   )}
                 </>
               ) : (
                 <div className={styles.styleBannerInfo}>
-                  ℹ️ No styles created yet. Go to the <strong>Style</strong> tab to create one.
+                  ℹ️ No {L.stylesLower} created yet. Go to the <strong>{L.style}</strong> tab to create one.
                 </div>
               )}
 
@@ -483,7 +485,7 @@ export default function CddPage() {
               <div className={styles.fieldRow}>
                 <label className={styles.fieldLabel} htmlFor="cdd-ref-docs">
                   Select processed Source Library documents
-                  <span className={styles.helpIcon} title={REF_DOCS_HINT} aria-label={REF_DOCS_HINT}>?</span>
+                  <span className={styles.helpIcon} title={REF_DOCS_HINT(L)} aria-label={REF_DOCS_HINT(L)}>?</span>
                 </label>
                 <MultiSelect
                   placeholder={sourceLoading && !refDocOptions.length
@@ -500,14 +502,14 @@ export default function CddPage() {
                 {refDocIds.length > 0 && (
                   <div className={styles.refDocsBanner}>
                     📎 <strong>{refDocIds.length}</strong> document{refDocIds.length === 1 ? '' : 's'} will be
-                    passed as reference context to this CDD generation.
+                    passed as reference context to this {L.cdd} generation.
                   </div>
                 )}
               </div>
 
               <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
                 <Input
-                  label="Title *"
+                  label={`${L.title} *`}
                   required
                   placeholder="e.g. Foundations of Clinical Nursing"
                   error={generateForm.formState.errors.course_title?.message}
@@ -515,7 +517,7 @@ export default function CddPage() {
                 />
                 <Input
                   label="Document Title"
-                  placeholder="e.g. Nursing Foundations CDD v1"
+                  placeholder={`e.g. Nursing Foundations ${L.cdd} v1`}
                   {...generateForm.register('document_title')}
                 />
                 <Input
@@ -608,12 +610,12 @@ export default function CddPage() {
               ) : cdds.length === 0 ? (
                 <EmptyState
                   title="No CDDs yet"
-                  message="Create your first CDD using the form above."
+                  message={`Create your first ${L.cdd} using the form above.`}
                 />
               ) : (
                 <>
                   <Select
-                    label="Select CDD to View/Edit"
+                    label={`Select ${L.cdd} to View/Edit`}
                     options={cdds.map((c) => ({
                       value: String(c.id),
                       label: `${c.title || c.course_title} (ID: ${c.id})`,
@@ -751,7 +753,7 @@ export default function CddPage() {
                         onClick={() => onSetActive(displayCdd.id)}
                         disabled={activeCdd?.id === displayCdd.id}
                       >
-                        📌 Set as Active CDD for Generation
+                        📌 Set as Active {L.cdd} for Generation
                       </Button>
                     </>
                   )}
@@ -768,7 +770,7 @@ export default function CddPage() {
                 embedded
                 extraInstructions={extraInstructions}
                 onPromptsChange={setPromptConfig}
-                headerHint="📝 Fill in the title fields above, then configure the prompt and generate your CDD below."
+                headerHint={`📝 Fill in the ${L.titleLower} fields above, then configure the prompt and generate your ${L.cdd} below.`}
               />
 
               <div className={styles.generateRow}>
@@ -779,7 +781,7 @@ export default function CddPage() {
                   loading={isGenerating}
                   onClick={onGenerate}
                 >
-                  {isGenerating ? 'Generating CDD…' : '🤖 Generate CDD with AI'}
+                  {isGenerating ? `Generating ${L.cdd}…` : `🤖 Generate ${L.cdd} with AI`}
                 </Button>
                 <Button variant="secondary" size="md" onClick={handleDownloadPrompt}>
                   ⬇️ Download Prompt
