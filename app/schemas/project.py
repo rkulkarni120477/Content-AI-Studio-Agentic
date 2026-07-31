@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.ui_labels import parse_ui_labels
 
 
 CLIENT_OPTIONS = ('cengage', 'aim', 'academian', 'demo')
@@ -48,8 +50,17 @@ class ProjectRead(BaseModel):
         return normalize_client_id(self.client_name)
     description: Optional[str] = None
     created_at: Optional[datetime] = None
+    # A project IS the tenant, so its display-label overrides ride along here.
+    # This is how every member (not just platform admins) receives them: the
+    # frontend already fetches this project on workspace load.
+    ui_labels: dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("ui_labels", mode="before")
+    @classmethod
+    def _parse_ui_labels(cls, value):
+        return parse_ui_labels(value)
 
 
 class ProjectListItem(BaseModel):

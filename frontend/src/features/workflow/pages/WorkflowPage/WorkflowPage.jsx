@@ -31,6 +31,7 @@ import Button from '@components/common/Button/Button';
 import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Loader from '@components/common/Loader/Loader';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
+import { useLabels } from '@hooks/useLabels';
 import styles from './WorkflowPage.module.scss';
 
 const KANBAN_COLUMNS = [
@@ -104,6 +105,7 @@ function filterBlocks(blocks, filters) {
 }
 
 export default function WorkflowPage() {
+  const L = useLabels();
   const { courseId: routeCourseId } = useParams();
   const workspaceCourseId = routeCourseId ? Number(routeCourseId) : null;
   const dispatch = useAppDispatch();
@@ -444,9 +446,9 @@ export default function WorkflowPage() {
         <div className={styles.filters__row2}>
           {showCourseFilter ? (
             <Select
-              label="Title"
+              label={L.title}
               options={[
-                { value: '', label: 'All titles' },
+                { value: '', label: `All ${L.titlesLower}` },
                 ...projectCourses.map((c) => ({ value: String(c.id), label: c.name })),
               ]}
               value={filters.courseId != null ? String(filters.courseId) : ''}

@@ -1,0 +1,213 @@
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: $space-3;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: #4338ca;
+
+  &:hover { text-decoration: underline; }
+}
+
+.headerRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: $space-4;
+  margin-bottom: $space-4;
+  flex-wrap: wrap;
+}
+
+.eyebrow {
+  font-size: $font-size-xs;
+  font-weight: $font-weight-bold;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #4338ca;
+  margin-bottom: 5px;
+}
+
+.title {
+  font-size: 1.7rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin: 0 0 5px;
+  color: $color-gray-900;
+}
+
+.subtitle {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: $space-5;
+  align-items: start;
+
+  @include max-lg {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  @include card;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* ── left column: the four boxes ───────────────────────────────────────── */
+.fields {
+  @include flex-col;
+  gap: $space-4;
+  padding: $space-5;
+}
+
+/* Input renders its own label/hint stack; the Reset button sits beside the
+   box itself, so align to the input row rather than the whole field. */
+.field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: $space-2;
+  align-items: center;
+}
+
+.resetBtn {
+  align-self: center;
+  margin-top: 4px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: $space-3;
+  padding: $space-4 $space-5;
+  border-top: 1px solid $color-gray-100;
+  background: $color-gray-50;
+}
+
+/* ── right column: live preview ────────────────────────────────────────── */
+.previewHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  background: $color-gray-50;
+  border-bottom: 1px solid $color-gray-200;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-bold;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: $color-gray-500;
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.62rem;
+  color: #059669;
+  letter-spacing: 0.04em;
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: $radius-full;
+    background: #059669;
+  }
+}
+
+.previewBody {
+  @include flex-col;
+  gap: $space-4;
+  padding: $space-4;
+}
+
+.group {
+  @include flex-col;
+  gap: 6px;
+}
+
+.cap {
+  font-size: 0.63rem;
+  font-weight: $font-weight-bold;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+/* Mini workspace sidebar — mirrors WorkspaceSidebar's dark indigo ground. */
+.miniNav {
+  background: #1e1b4b;
+  border-radius: $radius-md;
+  padding: 9px;
+  @include flex-col;
+  gap: 4px;
+}
+
+.miniItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: $font-weight-semibold;
+  color: #e0e7ff;
+}
+
+.miniItemOn {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.previewLine {
+  background: $color-gray-50;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  padding: 9px 11px;
+  font-size: 0.82rem;
+  color: $color-gray-700;
+  line-height: 1.5;
+}
+
+.crumb {
+  font-size: 0.63rem;
+  font-weight: $font-weight-bold;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #4338ca;
+  margin-bottom: 3px;
+}
+
+.previewH1 {
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: $color-gray-900;
+}
+
+.rows {
+  @include flex-col;
+  gap: 5px;
+}
+
+.row {
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  padding: 8px 11px;
+  background: $color-white;
+  font-size: 0.8rem;
+  font-weight: $font-weight-semibold;
+  color: $color-gray-900;
+  word-break: break-word;
+}

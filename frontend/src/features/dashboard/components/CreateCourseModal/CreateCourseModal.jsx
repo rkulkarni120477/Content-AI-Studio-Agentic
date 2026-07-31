@@ -3,6 +3,7 @@ import Modal from '@components/common/Modal/Modal';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
+import { useLabels } from '@hooks/useLabels';
 import styles from './CreateCourseModal.module.scss';
 
 const WORKFLOW_OPTIONS = [
@@ -26,6 +27,7 @@ export default function CreateCourseModal({
   importEnabled = false,
   onImport,
 }) {
+  const L = useLabels();
   const [mode, setMode] = useState('choice');   // 'choice' | 'new'
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -81,7 +83,7 @@ export default function CreateCourseModal({
     <Modal
       open={open}
       onClose={onClose}
-      title={mode === 'new' ? 'New Title' : 'Create Title'}
+      title={mode === 'new' ? `New ${L.title}` : `Create ${L.title}`}
       size="sm"
       footer={footer}
     >
@@ -119,7 +121,7 @@ export default function CreateCourseModal({
       ) : (
         <form onSubmit={handleCreate}>
           <Input
-            label="Title Name *"
+            label={`${L.title} Name *`}
             value={name}
             onChange={(e) => setName(e.target.value)}
             required

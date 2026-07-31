@@ -43,9 +43,8 @@ import {
   DOCUMENT_SOURCE_TYPE_OPTIONS,
   DEFAULT_DOCUMENT_SOURCE_TYPE,
 } from '@utils/documentRegistry';
+import { useLabels } from '@hooks/useLabels';
 import styles from './StylePage.module.scss';
-
-const TABS = ['Style Management'];
 
 function documentPreviewText(preview) {
   if (!preview) return '';
@@ -54,6 +53,8 @@ function documentPreviewText(preview) {
 
 export default function StylePage() {
   const dispatch    = useAppDispatch();
+  const L           = useLabels();
+  const TABS        = [`${L.style} Management`];
   const stylesList  = useAppSelector(selectStyles);
   const documents   = useAppSelector(selectDocuments);
   const documentStats = useAppSelector(selectDocumentStats);
@@ -370,13 +371,13 @@ export default function StylePage() {
     });
 
   return (
-    <PageContainer title="Style Management" breadcrumbs={[{ label: 'Style' }]}>
+    <PageContainer title={`${L.style} Management`} breadcrumbs={[{ label: L.style }]}>
       {selCluster?.id && clusterPromptApiReady && (
         <div className={styles.clusterInjected} role="note">
           <div className={styles.clusterInjected__title}>⚡ Auto-Injected Cluster Prompts</div>
           <p className={styles.clusterInjected__desc}>
             These prompts are inherited from this cluster and automatically prepended
-            to the Style context for every title here.
+            to the {L.style} context for every {L.titleLower} here.
           </p>
           {clusterPrompts.length === 0 ? (
             <p className={styles.clusterEmpty}>No cluster prompts assigned to this cluster yet.</p>
@@ -394,7 +395,7 @@ export default function StylePage() {
       )}
       {!activeStyle && (
         <div className={styles.noActiveBanner} role="status">
-          ⚠️ No active style. Create and activate a Style below for consistent tone and structure across all generations.
+          ⚠️ No active {L.styleLower}. Create and activate a {L.style} below for consistent tone and structure across all generations.
         </div>
       )}
       {/* Tab Bar */}
@@ -418,24 +419,24 @@ export default function StylePage() {
         <div className={styles.layout}>
           {!canModify && (
             <div className={styles.readOnlyBanner} role="status">
-              🔒 <strong>Read-only access.</strong> Only Admins and Leads can create or modify styles.
+              🔒 <strong>Read-only access.</strong> Only Admins and Leads can create or modify {L.stylesLower}.
             </div>
           )}
           {error && (
             <ErrorState message={error} onRetry={() => dispatch(fetchStylesThunk())} />
           )}
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>➕ Create New Style</summary>
+            <summary className={styles.accordion__summary}>➕ Create New {L.style}</summary>
             <div className={styles.accordion__body}>
               <CreateStyleForm embedded />
             </div>
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>🗂️ Generated Styles</summary>
+            <summary className={styles.accordion__summary}>🗂️ Generated {L.styles}</summary>
             <div className={`${styles.accordion__body} ${styles.panelLibrary}`}>
               <p className={styles.muted}>
-                Recent first. Generated style bodies are copied to DIS/S3 and this list auto-loads whenever you reopen the workflow.
+                Recent first. Generated {L.styleLower} bodies are copied to DIS/S3 and this list auto-loads whenever you reopen the workflow.
               </p>
               <div className={styles.docFilters} style={{ marginBottom: 12 }}>
                 <Select
@@ -453,7 +454,7 @@ export default function StylePage() {
                   <SearchBar
                     value={styleSearch}
                     onChange={setStyleSearch}
-                    placeholder="Search style name, #id, summary…"
+                    placeholder={`Search ${L.styleLower} name, #id, summary…`}
                   />
                 </div>
               </div>
@@ -466,10 +467,10 @@ export default function StylePage() {
                 <div className={styles.center}><Loader size="lg" /></div>
               ) : filteredStyles.length === 0 ? (
                 <EmptyState
-                  title="No styles yet"
+                  title={`No ${L.stylesLower} yet`}
                   message={styleSearch
-                    ? 'No generated styles match your search.'
-                    : 'Create your first style using the form above.'}
+                    ? `No generated ${L.stylesLower} match your search.`
+                    : `Create your first ${L.styleLower} using the form above.`}
                 />
               ) : (
                 <ul className={styles.list}>
@@ -540,13 +541,13 @@ export default function StylePage() {
 
           {canModify && (
             <details className={styles.accordion}>
-              <summary className={styles.accordion__summary}>🎯 Style Prompts</summary>
+              <summary className={styles.accordion__summary}>🎯 {L.style} Prompts</summary>
               <div className={styles.accordion__body}>
                 <InlinePromptControls
                   component="style"
                   embedded
                   onPromptsChange={setStylePromptConfig}
-                  headerHint="Applied when you click Understand on a style above."
+                  headerHint={`Applied when you click Understand on a ${L.styleLower} above.`}
                 />
               </div>
             </details>
@@ -587,7 +588,7 @@ export default function StylePage() {
           <section className={styles.docUpload}>
             <div className={styles.docUpload__body}>
               Source documents are now uploaded and managed from <strong>Source Library</strong>.
-              Use Style only to select existing processed reference documents and generate/refine style understanding.
+              Use {L.style} only to select existing processed reference documents and generate/refine {L.styleLower} understanding.
             </div>
           </section>
 
@@ -687,7 +688,7 @@ export default function StylePage() {
       <Modal
         open={Boolean(viewStyleId)}
         onClose={() => { setViewStyleId(null); setViewStyle(null); }}
-        title={`Style Details${viewStyle?.name ? ` — ${viewStyle.name}` : ''}`}
+        title={`${L.style} Details${viewStyle?.name ? ` — ${viewStyle.name}` : ''}`}
         size="lg"
         footer={
           <>
@@ -708,7 +709,7 @@ export default function StylePage() {
       <Modal
         open={Boolean(refineStyle)}
         onClose={() => { setRefineStyle(null); setRefineCorrections(''); }}
-        title={`Refine Style Understanding${refineStyle?.name ? ` — ${refineStyle.name}` : ''}`}
+        title={`Refine ${L.style} Understanding${refineStyle?.name ? ` — ${refineStyle.name}` : ''}`}
         size="md"
         footer={
           <>
@@ -753,7 +754,7 @@ export default function StylePage() {
       <Modal
         open={Boolean(filesStyleId)}
         onClose={closeAddFilesModal}
-        title={`Add Files to Style${filesStyleName ? ` — ${filesStyleName}` : ''}`}
+        title={`Add Files to ${L.style}${filesStyleName ? ` — ${filesStyleName}` : ''}`}
         size="md"
         footer={
           <>
@@ -773,9 +774,9 @@ export default function StylePage() {
         ) : (
           <div className={styles.addFilesPanel}>
             <p className={styles.addFilesIntro}>
-              Attach reference documents to this style. Upload a file from your computer, or
+              Attach reference documents to this {L.styleLower}. Upload a file from your computer, or
               pick already-processed documents from the Source Library. After appending, click
-              <strong> Understand</strong> to regenerate the style with the new references.
+              <strong> Understand</strong> to regenerate the {L.styleLower} with the new references.
             </p>
 
             <FileUpload
@@ -794,7 +795,7 @@ export default function StylePage() {
 
             <MultiSelect
               label="Add from document library"
-              hint="Only documents not already linked to this style are shown."
+              hint={`Only documents not already linked to this ${L.styleLower} are shown.`}
               placeholder="Choose options"
               options={librarySelectOptions}
               value={selectedLibDocIds}
@@ -822,8 +823,8 @@ export default function StylePage() {
         open={Boolean(deleteStyleId)}
         onClose={() => setDeleteStyleId(null)}
         onConfirm={() => { dispatch(deleteStyleThunk(deleteStyleId)); setDeleteStyleId(null); }}
-        title="Delete Style"
-        message="Delete this style? This cannot be undone."
+        title={`Delete ${L.style}`}
+        message={`Delete this ${L.styleLower}? This cannot be undone.`}
         confirmLabel="Delete"
         variant="danger"
       />

@@ -7,6 +7,7 @@ import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import Modal from '@components/common/Modal/Modal';
 import toast from 'react-hot-toast';
+import { useLabels } from '@hooks/useLabels';
 import styles from './PublishedTocPanel.module.scss';
 
 const EXPORT_FORMAT_OPTIONS = [
@@ -82,6 +83,7 @@ function BlockRow({
 }
 
 export default function PublishedTocPanel({ courseId, courseName, projectCourses = [] }) {
+  const L = useLabels();
   const [modules, setModules] = useState([]);
   const [unassigned, setUnassigned] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -458,7 +460,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
                 Blueprint. Preview or regenerate Canvas HTML, then export IMS CC.
               </>
             ) : (
-              <>Modules follow the Blueprint structure. Export as an IMS CC package for LMS import.</>
+              <>Modules follow the {L.blueprint} structure. Export as an IMS CC package for LMS import.</>
             )}
           </p>
         </div>

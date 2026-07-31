@@ -13,6 +13,7 @@ import Input from '@components/common/Input/Input';
 import FileUpload from '@components/common/FileUpload/FileUpload';
 import Loader from '@components/common/Loader/Loader';
 import { ROUTES } from '@utils/constants';
+import { useLabels } from '@hooks/useLabels';
 import styles from './ImportWizardPage.module.scss';
 
 const COUNT_LABELS = [
@@ -30,6 +31,7 @@ const COUNT_LABELS = [
  * Pre-course flow at /projects/:projectId/import (cluster via ?cluster_id=).
  */
 export default function ImportWizardPage() {
+  const L = useLabels();
   const { projectId } = useParams();
   const [searchParams] = useSearchParams();
   const dispatch = useAppDispatch();
@@ -106,7 +108,7 @@ export default function ImportWizardPage() {
 
   function handleOpenEditor() {
     if (!resolvedCourseId) {
-      toast.error('Title is not ready yet.');
+      toast.error(`${L.title} is not ready yet.`);
       return;
     }
     // Workspace Editor: /workspace/:courseId/editor
@@ -115,7 +117,7 @@ export default function ImportWizardPage() {
 
   function handleFeedbackImport() {
     if (!resolvedCourseId) {
-      toast.error('Title is not ready yet.');
+      toast.error(`${L.title} is not ready yet.`);
       return;
     }
     navigate(ROUTES.FEEDBACK(resolvedCourseId));
@@ -169,7 +171,7 @@ export default function ImportWizardPage() {
                   </p>
                 )}
                 <Input
-                  label="Title Name *"
+                  label={`${L.title} Name *`}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required

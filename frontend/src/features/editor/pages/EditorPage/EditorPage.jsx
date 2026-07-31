@@ -52,6 +52,7 @@ import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
 import Loader from '@components/common/Loader/Loader';
 import EditorBlockCard from '@features/editor/components/EditorBlockCard/EditorBlockCard';
+import { useLabels } from '@hooks/useLabels';
 import styles from './EditorPage.module.scss';
 
 const LAST_GEN_KEY = (courseId) => `content_ai_last_gen_${courseId}`;
@@ -74,6 +75,7 @@ function normalizeList(data) {
 export default function EditorPage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
+  const L = useLabels();
   const { isAdmin } = useAuth();
 
   const generations = useAppSelector(selectGenerations);
@@ -226,19 +228,19 @@ export default function EditorPage() {
   const traceCdd = useMemo(() => {
     if (!genDetail?.cdd_id) return 'None';
     if (activeCdd?.id === genDetail.cdd_id) {
-      const t = activeCdd.title || activeCdd.course_title || 'CDD';
+      const t = activeCdd.title || activeCdd.course_title || L.cdd;
       return `${t} (${genDetail.cdd_version || activeCdd.active_version || 'v1'})`;
     }
-    return `CDD #${genDetail.cdd_id}${genDetail.cdd_version ? ` (${genDetail.cdd_version})` : ''}`;
-  }, [genDetail, activeCdd]);
+    return `${L.cdd} #${genDetail.cdd_id}${genDetail.cdd_version ? ` (${genDetail.cdd_version})` : ''}`;
+  }, [genDetail, activeCdd, L.cdd]);
 
   const traceBp = useMemo(() => {
     if (!genDetail?.blueprint_id) return 'None';
     if (activeBlueprint?.id === genDetail.blueprint_id) {
       return `${activeBlueprint.title} (${genDetail.blueprint_version || activeBlueprint.active_version || 'v1'})`;
     }
-    return `Blueprint #${genDetail.blueprint_id}${genDetail.blueprint_version ? ` (${genDetail.blueprint_version})` : ''}`;
-  }, [genDetail, activeBlueprint]);
+    return `${L.blueprint} #${genDetail.blueprint_id}${genDetail.blueprint_version ? ` (${genDetail.blueprint_version})` : ''}`;
+  }, [genDetail, activeBlueprint, L.blueprint]);
 
   function onGenChange(e) {
     const id = Number(e.target.value);
@@ -495,7 +497,7 @@ export default function EditorPage() {
           <div className={styles.completionBanner}>
             <div className={styles.completionBanner__icon}>🎉</div>
             <div className={styles.completionBanner__body}>
-              <strong>Title Generation Complete!</strong>
+              <strong>{L.title} Generation Complete!</strong>
               <p>All blocks are approved. Validate content below before downloading the full title package.</p>
               <div className={styles.completionBanner__valRow}>
                 <Button
@@ -652,7 +654,7 @@ export default function EditorPage() {
 
         {!isLoadingBlocks && selectedGenId && blocks.length === 0 && !errorMessage && (
           <div className={styles.tip}>
-            💡 <strong>Tip:</strong> No blocks here yet. Go to the <strong>Generate Title</strong> tab, create content, and it will appear here for editing.
+            💡 <strong>Tip:</strong> No blocks here yet. Go to the <strong>Generate {L.title}</strong> tab, create content, and it will appear here for editing.
           </div>
         )}
 

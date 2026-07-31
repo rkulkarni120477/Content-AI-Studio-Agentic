@@ -5,6 +5,7 @@ import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
+import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
 
 const CACHE_PREFIX = 'cas_dis_source_library_docs';
@@ -52,12 +53,15 @@ function writeCachedDocuments(key, documents) {
   }
 }
 
-const PURPOSES = [
+// The first element of each pair is the API purpose value and never changes;
+// the second is only a display fallback used when the server's
+// uiConfig.purpose_labels has no entry, so it follows the tenant's wording.
+const purposes = (L) => [
   ['', 'All purposes'],
-  ['style', 'Style'],
-  ['cdd', 'CDD'],
-  ['blueprint', 'Blueprint'],
-  ['course_generation', 'Title Generation'],
+  ['style', L.style],
+  ['cdd', L.cdd],
+  ['blueprint', L.blueprint],
+  ['course_generation', `${L.title} Generation`],
   ['general_reference', 'General Reference'],
 ];
 
@@ -121,6 +125,7 @@ export default function SourceLibraryPage() {
   const [showAllCourses, setShowAllCourses] = useState(false);
   const [deletingId, setDeletingId] = useState('');
 
+  const L = useLabels();
   const purposeLabels = uiConfig?.purpose_labels || {};
   const effectiveAccess = access || uiConfig?.access || currentUser || {};
   const selectedClientId = activeClientId || selectedProject?.client_name || effectiveAccess?.client_id || '';
@@ -583,7 +588,7 @@ export default function SourceLibraryPage() {
               <div>
                 <label className={styles.label}>Purpose</label>
                 <select className={styles.select} name="purpose" defaultValue="general_reference">
-                  {PURPOSES.slice(1).map(([v, l]) => <option key={v} value={v}>{purposeLabels[v] || l}</option>)}
+                  {purposes(L).slice(1).map(([v, l]) => <option key={v} value={v}>{purposeLabels[v] || l}</option>)}
                 </select>
               </div>
               <div>
@@ -665,7 +670,7 @@ export default function SourceLibraryPage() {
             <input className={styles.input} value={filters.search || ''} onChange={(e) => updateFilter('search', e.target.value)} placeholder="File or title" />
             <label className={styles.label}>Purpose</label>
             <select className={styles.select} value={filters.purpose || ''} onChange={(e) => updateFilter('purpose', e.target.value)}>
-              {PURPOSES.map(([v, l]) => <option key={v || 'all'} value={v}>{v ? (purposeLabels[v] || l) : l}</option>)}
+              {purposes(L).map(([v, l]) => <option key={v || 'all'} value={v}>{v ? (purposeLabels[v] || l) : l}</option>)}
             </select>
             <label className={styles.label}>Document Type</label>
             <select className={styles.select} value={filters.document_type || ''} onChange={(e) => updateFilter('document_type', e.target.value)}>

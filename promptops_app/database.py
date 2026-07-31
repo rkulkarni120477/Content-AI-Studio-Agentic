@@ -1045,6 +1045,10 @@ class Project(Base):
     azure_client_secret    = Column(String(512), nullable=True)
     azure_new_user_role    = Column(String(32), nullable=True)
     allowed_email_domains  = Column(String(500), nullable=True)
+    # Per-tenant UI wording overrides, e.g. {"style": "Design Guide", "title": "Block"}.
+    # Display-only: the frontend substitutes these into on-screen labels. Nothing on
+    # the server reads them, so a NULL/blank value simply means "use the defaults".
+    ui_labels              = Column(Text, nullable=True)
     clusters         = relationship("Cluster", back_populates="project", cascade="all, delete-orphan")
     courses          = relationship("Course", back_populates="project", cascade="all, delete-orphan")
     assignments      = relationship("ProjectUserAssignment", back_populates="project", cascade="all, delete-orphan")
@@ -1524,6 +1528,7 @@ def _run_legacy_ddl():
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_client_secret VARCHAR(512)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS azure_new_user_role VARCHAR(32)",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS allowed_email_domains VARCHAR(500)",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS ui_labels TEXT",
         # feedback — module (blueprint) scope
         "ALTER TABLE feedback_documents ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
         "ALTER TABLE feedback_items ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",

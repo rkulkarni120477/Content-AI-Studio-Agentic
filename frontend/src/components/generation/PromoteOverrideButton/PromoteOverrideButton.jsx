@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useLabels } from '@hooks/useLabels';
 import toast from 'react-hot-toast';
 import { api } from '@services/apiClient';
 import { extractErrorMessage } from '@utils/helpers';
@@ -18,6 +19,7 @@ function parseParams(raw) {
 // inert for generation until made a default or scope-locked.
 export default function PromoteOverrideButton({ sourceType, artifactId, version, generationParams }) {
   const navigate = useNavigate();
+  const L = useLabels();
   const [busy, setBusy] = useState(false);
   const params = parseParams(generationParams);
   if (params.prompt_source !== 'override' || !artifactId || !version) return null;
@@ -30,7 +32,7 @@ export default function PromoteOverrideButton({ sourceType, artifactId, version,
         artifact_id: artifactId,
         version,
       });
-      toast.success(`Saved as prompt "${created.name}" — make it a default or bind it in Titles to put it in use.`);
+      toast.success(`Saved as prompt "${created.name}" — make it a default or bind it in ${L.titles} to put it in use.`);
       navigate(`/prompt-library/prompts/${created.id}`);
     } catch (err) {
       toast.error(extractErrorMessage(err));

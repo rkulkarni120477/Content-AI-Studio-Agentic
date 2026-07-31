@@ -10,6 +10,7 @@ import { selectActiveStyle } from '@features/style/styleSlice';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { useAuth } from '@hooks/useAuth';
+import { useLabels } from '@hooks/useLabels';
 // ROLE_LABELS/ROLES were only used by the sidebar identity chip, now moved to the top header.
 import { ROUTES } from '@utils/constants';
 import TargetModelPanel from './TargetModelPanel';
@@ -22,11 +23,14 @@ import { cn } from '@utils/helpers';
 import { flushDeferredToasts } from '@utils/deferredToast';
 import styles from './WorkspaceSidebar.module.scss';
 
+// `segment` is the URL and never changes; `labelKey` picks the tenant's word for
+// the three renameable stages (see @config/tenantLabels). Items without a
+// labelKey keep their fixed label.
 const NAV_ITEMS = [
   { label: 'Source Library', icon: '📚', segment: 'sources' },
-  { label: 'Style',     icon: '🎨', segment: 'style' },
-  { label: 'CDD',       icon: '📘', segment: 'cdd' },
-  { label: 'Blueprint', icon: '🧩', segment: 'blueprint' },
+  { labelKey: 'style',     icon: '🎨', segment: 'style' },
+  { labelKey: 'cdd',       icon: '📘', segment: 'cdd' },
+  { labelKey: 'blueprint', icon: '🧩', segment: 'blueprint' },
   { label: 'Generate',  icon: '⚙️', segment: 'generate' },
   { label: 'Editor',    icon: '✏️', segment: 'editor' },
   { label: 'Feedback',  icon: '💬', segment: 'feedback' },
@@ -47,6 +51,7 @@ export default function WorkspaceSidebar() {
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
   const { logout } = useAuth();
+  const L = useLabels();
   const proj = useAppSelector(selectSelectedProject);
   const cluster = useAppSelector(selectSelectedCluster);
   const course = useAppSelector(selectSelectedCourse);
@@ -95,7 +100,7 @@ export default function WorkspaceSidebar() {
   // const roleColor = ROLE_COLORS[role] ?? '#4338ca'; // identity moved to top header
   const styleLabel = activeStyle?.name || '—';
   const cddLabel = activeCdd
-    ? `${activeCdd.title || activeCdd.course_title || 'CDD'} (${activeCdd.active_version || 'v1'})`
+    ? `${activeCdd.title || activeCdd.course_title || L.cdd} (${activeCdd.active_version || 'v1'})`
     : '—';
 
   return (
@@ -159,9 +164,9 @@ export default function WorkspaceSidebar() {
           type="button"
           className={styles.backBtn}
           onClick={goCourses}
-          title={collapsed ? 'Back to Titles' : undefined}
+          title={collapsed ? `Back to ${L.titles}` : undefined}
         >
-          {collapsed ? '📖' : <>←<br />Titles</>}
+          {collapsed ? '📖' : <>←<br />{L.titles}</>}
         </button>
       </div>
 
@@ -172,11 +177,11 @@ export default function WorkspaceSidebar() {
           <div className={styles.statePill__label}>Global State</div>
           <div className={styles.statePill__row}>
             <span className={styles.statePill__dot} style={{ background: activeStyle ? '#10b981' : '#9ca3af' }} />
-            🎨 Style: <strong>{styleLabel}</strong>
+            🎨 {L.style}: <strong>{styleLabel}</strong>
           </div>
           <div className={styles.statePill__row}>
             <span className={styles.statePill__dot} style={{ background: activeCdd ? '#10b981' : '#9ca3af' }} />
-            📘 CDD: <strong>{cddLabel}</strong>
+            📘 {L.cdd}: <strong>{cddLabel}</strong>
           </div>
         </div>
       )}
@@ -191,21 +196,24 @@ export default function WorkspaceSidebar() {
 
       {!collapsed && <div className={styles.navLabel}>Navigation</div>}
       <nav className={styles.nav}>
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.segment}
-            to={`/workspace/${cid}/${item.segment}`}
-            className={({ isActive }) => cn(
-              styles.nav__item,
-              collapsed && styles['nav__item--collapsed'],
-              isActive && styles['nav__item--active'],
-            )}
-            title={collapsed ? item.label : undefined}
-          >
-            <span>{item.icon}</span>
-            {!collapsed && ` ${item.label}`}
-          </NavLink>
-        ))}
+        {NAV_ITEMS.map((item) => {
+          const itemLabel = item.labelKey ? L[item.labelKey] : item.label;
+          return (
+            <NavLink
+              key={item.segment}
+              to={`/workspace/${cid}/${item.segment}`}
+              className={({ isActive }) => cn(
+                styles.nav__item,
+                collapsed && styles['nav__item--collapsed'],
+                isActive && styles['nav__item--active'],
+              )}
+              title={collapsed ? itemLabel : undefined}
+            >
+              <span>{item.icon}</span>
+              {!collapsed && ` ${itemLabel}`}
+            </NavLink>
+          );
+        })}
       </nav>
 
       <div className={styles.footer}>

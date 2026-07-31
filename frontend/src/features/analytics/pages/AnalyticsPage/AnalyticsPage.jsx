@@ -38,11 +38,12 @@ import Input from '@components/common/Input/Input';
 import Table from '@components/common/Table/Table';
 import Modal from '@components/common/Modal/Modal';
 import Loader from '@components/common/Loader/Loader';
+import { useLabels } from '@hooks/useLabels';
 import styles from './AnalyticsPage.module.scss';
 
 const MAIN_TABS = ['Dashboard', 'LLM Cost', 'Audit Trail', 'User Management'];
-const HISTORY_TABS = ['Generations', 'Registry Commits', 'Document Uploads', 'CDD & Blueprint Log'];
-const COST_TABS = ['By Model', 'Monthly Trend', 'By Project', 'By Title', 'By User'];
+const historyTabs = (L) => ['Generations', 'Registry Commits', 'Document Uploads', `${L.cdd} & ${L.blueprint} Log`];
+const costTabs = (L) => ['By Model', 'Monthly Trend', 'By Project', `By ${L.title}`, 'By User'];
 const FEEDBACK_FILTERS = [
   { value: 'learning', label: 'Learning signals only' },
   { value: 'one_time', label: 'One-time only' },
@@ -59,6 +60,9 @@ function stars(score) {
 
 export default function AnalyticsPage() {
   const dispatch = useAppDispatch();
+  const L = useLabels();
+  const HISTORY_TABS = historyTabs(L);
+  const COST_TABS = costTabs(L);
   const { isAdmin, isReviewer, isAuthor, user, canManageUsers, canClearDb, hasPermission } = useAuth();
   const canViewAudit = isAdmin || isReviewer;
 
@@ -338,7 +342,7 @@ export default function AnalyticsPage() {
                   { label: 'Prompt Assets', value: formatNumber(summary?.prompt_assets), icon: '📚' },
                   { label: 'Documents', value: formatNumber(summary?.documents), icon: '📄' },
                   { label: 'CDDs', value: formatNumber(summary?.cdds), icon: '📋' },
-                  { label: 'Blueprints', value: formatNumber(summary?.blueprints), icon: '🗂️' },
+                  { label: L.blueprints, value: formatNumber(summary?.blueprints), icon: '🗂️' },
                 ].map((kpi) => (
                   <div key={kpi.label} className={styles.kpiCard}>
                     <span className={styles.kpiCard__icon} aria-hidden="true">{kpi.icon}</span>
@@ -360,7 +364,7 @@ export default function AnalyticsPage() {
                       { key: 'generations', header: 'Generations', align: 'right' },
                       { key: 'blocks', header: 'Blocks', align: 'right' },
                       { key: 'cdds', header: 'CDDs', align: 'right' },
-                      { key: 'blueprints', header: 'Blueprints', align: 'right' },
+                      { key: 'blueprints', header: L.blueprints, align: 'right' },
                     ]}
                     rows={projectRows}
                     rowKey="project_id"

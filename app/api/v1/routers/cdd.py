@@ -116,6 +116,25 @@ def _merge_source_units(primary: list, extra: list) -> list:
     return merged
 
 
+# Generic source-retrieval intent appended to every CDD retrieval query.
+#
+# A CDD / Block Blueprint is built from the course's planning documents, but a
+# title-only query ("<course title> <extra instructions>") is too thin to match
+# them semantically. Investigation (course "Aircraft maintenance Test 3"): the
+# title-only query returned 3 sparse calendar rows and the model flagged most
+# cells MISSING_SOURCE; adding the document kinds a blueprint actually needs
+# surfaced the syllabus (score 1.0) and the full day-by-day calendar (~18 units).
+#
+# The terms are domain-neutral, so they help BOTH the standard CDD pipeline and
+# the DLU (worksheet/day-based) pipeline without biasing toward any one course —
+# irrelevant kinds simply don't match and are not retrieved.
+_CDD_RETRIEVAL_INTENT = (
+    "course syllabus course calendar day-by-day schedule learning objectives "
+    "topics and modules projects and activities assessments and quizzes "
+    "instructor guide reference materials"
+)
+
+
 # ---------------------------------------------------------------------------
 # Helper — load CDD or raise 404
 # ---------------------------------------------------------------------------
@@ -257,6 +276,22 @@ def generate_cdd(
         request_body.course_title, request_body.model_choice,
     )
 
+    # Fold the selected (or inline-overridden) prompt's own USER template into the
+    # retrieval query. That template names the exact source documents the CDD is
+    # built from — "day-by-day course calendar", "syllabus", "ACS codes", "SME
+    # review notes", etc. — which is far stronger retrieval signal than the course
+    # title alone: with it the search returns the syllabus + the full calendar,
+    # without it just a stray day. Read-only and best-effort; any lookup failure
+    # leaves the base query unchanged so generation never breaks.
+    prompt_query_text = request_body.user_prompt_override or ""
+    if not prompt_query_text and getattr(request_body, "prompt_id", None):
+        try:
+            from promptops_app.repositories.prompt_repository import get_active_version
+            _pv = get_active_version(db, int(request_body.prompt_id))
+            prompt_query_text = (_pv.user_prompt_template or "") if _pv else ""
+        except Exception:
+            prompt_query_text = ""
+
     dis_query = " ".join(str(x or "") for x in [
         request_body.course_title,
         request_body.document_title,
@@ -264,6 +299,12 @@ def generate_cdd(
         request_body.expert_domain,
         request_body.audience_category,
         request_body.extra_instructions,
+        # The selected prompt's own wording (names the source docs it consumes).
+        prompt_query_text,
+        # Name the planning-document kinds a CDD/blueprint is built from so
+        # semantic search surfaces the syllabus + full calendar, not just a
+        # title match. Applies to standard and DLU alike (see constant above).
+        _CDD_RETRIEVAL_INTENT,
     ])
     # Scope retrieval to the COURSE's own Source Library (its project's
     # client), independent of who runs the generation.
@@ -284,7 +325,12 @@ def generate_cdd(
                 # returning zero. Retrieval relies on purpose + semantic ranking;
                 # the security allow-set still applies.
             },
-            "retrieval": {"top_k": 12, "token_budget": 12000},
+            # A blueprint needs the whole picture — a 20-day calendar plus the
+            # syllabus is already ~18 units. top_k=12 truncated that; 24 fits the
+            # full schedule + syllabus while token_budget caps total size so the
+            # prompt never bloats. Calendar rows are tiny (~80 tokens), so 24000
+            # comfortably holds them alongside the larger syllabus sections.
+            "retrieval": {"top_k": 24, "token_budget": 24000},
         },
         current_user,
         "CDD CONTEXT",

@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.ui_labels import MAX_LABEL_LENGTH, UI_LABEL_KEYS, parse_ui_labels
 
 
 class TenantRead(BaseModel):
@@ -22,8 +24,17 @@ class TenantRead(BaseModel):
     active_users: int = 0
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
+    # Display-only wording overrides, e.g. {"style": "Design Guide"}. Empty dict
+    # means this tenant uses the standard labels.
+    ui_labels: dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("ui_labels", mode="before")
+    @classmethod
+    def _parse_ui_labels(cls, value):
+        # The column stores a JSON string; from_attributes hands it to us raw.
+        return parse_ui_labels(value)
 
 
 class TenantCreateRequest(BaseModel):
@@ -50,6 +61,24 @@ class TenantUpdateRequest(BaseModel):
     azure_client_id: Optional[str] = Field(default=None, max_length=64)
     azure_client_secret: Optional[str] = Field(default=None, max_length=512)
     azure_new_user_role: Optional[str] = Field(default=None, max_length=32)
+    # Send the full object to replace it; `{}` clears every override back to the
+    # default wording. Unknown keys and blank values are dropped, not rejected,
+    # so a partially-filled form is always a valid save.
+    ui_labels: Optional[dict[str, str]] = Field(
+        default=None,
+        description=f"Display-label overrides. Known keys: {', '.join(UI_LABEL_KEYS)}.",
+    )
+
+    @field_validator("ui_labels")
+    @classmethod
+    def _check_label_lengths(cls, value):
+        if value:
+            for key, word in value.items():
+                if isinstance(word, str) and len(word.strip()) > MAX_LABEL_LENGTH:
+                    raise ValueError(
+                        f"ui_labels.{key} must be {MAX_LABEL_LENGTH} characters or fewer."
+                    )
+        return value
 
 
 class TenantUsageResponse(BaseModel):

@@ -3,22 +3,104 @@
  *
  * A DLU (day-based "Block") CDD stores all of its content under the single
  * "Course Structure" section, internally organised as a title/metadata header
- * followed by several `## WORKSHEET N: TITLE` blocks. This util splits that blob
- * into an Overview block + one block per worksheet (for tabbed rendering) and
- * can splice an edited/regenerated worksheet back into the full blob so the
+ * followed by several worksheet blocks. This util splits that blob into an
+ * Overview block + one block per worksheet (for tabbed rendering) and can
+ * splice an edited/regenerated worksheet back into the full blob so the
  * existing single-section save/patch path can commit it unchanged.
  *
- * Standard (module/lesson) CDDs have no `## WORKSHEET` headings, so
+ * Standard (module/lesson) CDDs have no worksheet labels, so
  * detectDluCddContent returns false and none of this applies.
+ *
+ * Boundary detection is deliberately decoration-blind. The output format comes
+ * from whichever prompt generated the CDD, not from CAS, and prompts get
+ * rewritten — the same prompt has emitted `## WORKSHEET 1: X` one day and
+ * `**Worksheet 1: X**` the next. Matching only markdown headings silently
+ * demoted those CDDs to a flat blob, so we strip decoration and match the label.
+ *
+ * Mirrored in promptops_app/parsers/cdd_parser.py — the two must agree or the
+ * screen and the XLSX export disagree about where worksheets start. Shared
+ * fixtures live in this util's test file and tests/characterization/
+ * test_dlu_cdd_export.py.
  */
 import { parseCddFlat } from '@utils/cddContent';
 
-const WORKSHEET_HEADING_RE = /(^|\n)(#{1,3}\s*WORKSHEET\s+(\d+)\b[^\n]*)/gi;
+// Leading noise: blockquote markers, list bullets, markdown heading hashes.
+// Group 1 captures the hashes so a real heading can be told from a bare label.
+const WS_LEAD_RE = /^[\s>]*(?:[-*+]\s+)?(?:(#{1,6})\s*)?/;
+const WS_LABEL_RE = /^(?:worksheet|work\s*sheet|sheet|ws)\s*#?\s*(\d{1,2})\b\s*[:\-–—.]?\s*(.*)$/i;
+// A boundary label is a short line. Anything longer is prose that merely
+// mentions a worksheet ("...as recorded in Worksheet 2 of the prior block").
+const WS_MAX_LABEL_LEN = 120;
+
+/**
+ * Parse a worksheet boundary label out of one line, ignoring decoration.
+ * Accepts `## WORKSHEET 1: X`, `### Worksheet 1: X`, `**Worksheet 1: X**`,
+ * `Worksheet 1 — X`, `- **Sheet 1: X**`. Returns null for anything else.
+ */
+function worksheetMark(line) {
+  const lead = WS_LEAD_RE.exec(line || '');
+  const isHeading = Boolean(lead && lead[1]);
+  let text = (line || '').slice(lead ? lead[0].length : 0).trim();
+  // Emphasis wrappers, then a trailing colon left behind by "**Worksheet 1:**".
+  text = text.replace(/^(\*{1,2}|_{1,2})/, '');
+  text = text.replace(/(\*{1,2}|_{1,2})\s*:?\s*$/, '').trim();
+  text = text.replace(/:+$/, '').trim();
+  if (!text || text.length > WS_MAX_LABEL_LEN) return null;
+  const m = WS_LABEL_RE.exec(text);
+  if (!m) return null;
+  return {
+    num: parseInt(m[1], 10),
+    title: (m[2] || '').trim(),
+    label: text,
+    isHeading,
+  };
+}
+
+/**
+ * Keep one mark per worksheet number — whichever has the most content.
+ * A table of contents printed before the real worksheets would otherwise split
+ * the document at the TOC entries and emit a run of near-empty worksheets.
+ */
+function dedupeWorksheetMarks(marks, textLen) {
+  const best = new Map();
+  marks.forEach((mark, i) => {
+    const end = i + 1 < marks.length ? marks[i + 1].start : textLen;
+    const body = end - mark.start;
+    const current = best.get(mark.num);
+    if (!current || body > current.body) best.set(mark.num, { body, mark });
+  });
+  return [...best.values()].map((e) => e.mark).sort((a, b) => a.start - b.start);
+}
+
+/** All worksheet boundary marks in `text`, with their line start offsets. */
+function findWorksheetMarks(text) {
+  const marks = [];
+  let pos = 0;
+  (text || '').split('\n').forEach((line) => {
+    const mark = worksheetMark(line);
+    if (mark) marks.push({ ...mark, start: pos });
+    pos += line.length + 1; // +1 for the consumed newline
+  });
+  return dedupeWorksheetMarks(marks, (text || '').length);
+}
+
+/** Worksheet marks when `text` is a DLU CDD, else []. */
+function dluWorksheetMarks(text) {
+  const marks = findWorksheetMarks(text);
+  if (marks.length === 0) return [];
+  // A markdown-heading marker is unambiguous on its own. This is the original
+  // rule, kept intact so nothing that renders as DLU today can stop doing so.
+  if (marks.some((m) => m.isHeading)) return marks;
+  // Bold/plain labels are weaker evidence, so require two distinct worksheet
+  // numbers before reshaping the document — one stray mention is not a DLU CDD.
+  if (new Set(marks.map((m) => m.num)).size >= 2) return marks;
+  return [];
+}
 
 /** True when the CDD content is worksheet-based (DLU). */
 export function detectDluCddContent(fullContent) {
   if (!fullContent) return false;
-  return /(^|\n)#{1,3}\s*WORKSHEET\s+\d+\b/i.test(fullContent);
+  return dluWorksheetMarks(fullContent).length > 0;
 }
 
 /** Return the "Course Structure" text that holds the worksheets. */
@@ -50,13 +132,7 @@ function _titleCaseShort(s) {
  */
 export function parseCddWorksheets(csText) {
   const text = csText || '';
-  const marks = [];
-  let m;
-  const re = new RegExp(WORKSHEET_HEADING_RE.source, WORKSHEET_HEADING_RE.flags);
-  while ((m = re.exec(text)) !== null) {
-    const headingStart = m.index + m[1].length; // skip the leading newline
-    marks.push({ num: parseInt(m[3], 10), heading: m[2].trim(), start: headingStart });
-  }
+  const marks = dluWorksheetMarks(text);
 
   if (marks.length === 0) {
     return { overview: text.trim(), worksheets: [] };
@@ -65,13 +141,13 @@ export function parseCddWorksheets(csText) {
   const overview = text.slice(0, marks[0].start).trim();
   const worksheets = marks.map((mk, i) => {
     const end = i + 1 < marks.length ? marks[i + 1].start : text.length;
+    // Content keeps the model's original label line verbatim, decoration and
+    // all, so a split/rebuild round trip preserves the source formatting.
     const content = text.slice(mk.start, end).trim();
-    const fullTitle = mk.heading.replace(/^#{1,3}\s*/, '').trim(); // "WORKSHEET 1: BLOCK OVERVIEW"
-    const shortName = fullTitle
-      .replace(/^WORKSHEET\s+\d+\s*[:\-–—.]?\s*/i, '')
-      .trim();
-    const label = shortName ? `${mk.num}. ${_titleCaseShort(shortName)}` : `Worksheet ${mk.num}`;
-    return { key: `worksheet_${mk.num}`, num: mk.num, title: fullTitle, label, content };
+    const label = mk.title ? `${mk.num}. ${_titleCaseShort(mk.title)}` : `Worksheet ${mk.num}`;
+    // `title` is the decoration-stripped label line ("WORKSHEET 1: BLOCK
+    // OVERVIEW") — it is sent as the section key when regenerating.
+    return { key: `worksheet_${mk.num}`, num: mk.num, title: mk.label, label, content };
   });
 
   return { overview, worksheets };
@@ -98,13 +174,13 @@ export function replaceWorksheet(csText, key, newContent) {
   const next = worksheets.map((w) => {
     if (w.key !== key) return w;
     let content = (newContent || '').trim();
-    // Preserve the worksheet's own "## WORKSHEET N: TITLE" boundary heading.
-    // The section-regenerate prompt returns body-only content (no heading);
-    // without re-prepending it the boundary marker is lost and worksheets merge
-    // on the next split/export. Manual edits already carry the heading, so this
-    // is a no-op there.
-    if (!/^#{1,3}\s*WORKSHEET\s+\d+\b/i.test(content)) {
-      const origHeading = (w.content.match(/^#{1,3}\s*WORKSHEET\s+\d+\b[^\n]*/i) || [''])[0];
+    // Preserve the worksheet's own boundary label line. The section-regenerate
+    // prompt returns body-only content (no label); without re-prepending it the
+    // boundary marker is lost and worksheets merge on the next split/export.
+    // Manual edits already carry the label, so this is a no-op there.
+    if (!worksheetMark(content.split('\n')[0] || '')) {
+      const firstLine = (w.content.split('\n')[0] || '').trim();
+      const origHeading = worksheetMark(firstLine) ? firstLine : '';
       if (origHeading) content = content ? `${origHeading}\n\n${content}` : origHeading;
     }
     return { ...w, content };
