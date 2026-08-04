@@ -82,7 +82,7 @@ from promptops_app.database import (
     engine, SessionLocal, Base,
     User, Document, Style, StyleDocument, Prompt, PromptVersion,
     Generation, Block, BlockComment, BlockVersion, WorkflowEvent,
-    ABTestRun, Review, SystemLog, FeedbackSignal,
+    Review, SystemLog, FeedbackSignal,
     CourseDesignDocument, CDDVersion, ModuleBlueprint, BlueprintVersion,
     Project, Cluster, ClusterPrompt, Course, ProjectUserAssignment, CourseUserAssignment,
     get_cluster_prompts, create_cluster_prompt,
