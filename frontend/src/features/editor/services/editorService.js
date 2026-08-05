@@ -66,6 +66,10 @@ export const editorService = {
 
   regenerateBlockItem: (id, data) => api.post(BLOCKS.REGENERATE_ITEM(id), data),
 
+  // Item regeneration is now a background job (P4.5): poll this until the job
+  // reaches a terminal state, then refetch the block for the updated content.
+  getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId)),
+
   getBlockVersions: (id) => api.get(BLOCKS.VERSIONS(id)),
 
   getBlockVersion: (id, versionId) => api.get(BLOCKS.GET_VERSION(id, versionId)),

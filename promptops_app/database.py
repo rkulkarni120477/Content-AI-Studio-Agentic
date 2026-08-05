@@ -551,6 +551,13 @@ class Generation(Base):
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
     created_by = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Idempotency key for background generation (P4.1). Stamped with the
+    # originating GenerationJob.id so a task retried after a worker crash
+    # (Celery at-least-once delivery) can detect its own prior output and
+    # adopt it instead of creating a duplicate Generation/Block set or
+    # double-charging usage. Nullable: rows created outside the job path
+    # (or before this column existed) simply carry no job_id.
+    job_id = Column(String(64), nullable=True, index=True)
     blocks = relationship("Block", back_populates="generation", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -667,19 +674,6 @@ class WorkflowEvent(Base):
     action = Column(String(80), nullable=False)
     actor = Column(String(100))
     comment = Column(Text, default="")  # review comment / reason stored with each transition
-    created_at = Column(DateTime, default=datetime.utcnow)
-    def __init__(self, **kwargs): super().__init__(**kwargs)
-
-class ABTestRun(Base):
-    __tablename__ = "ab_test_runs"
-    id = Column(Integer, primary_key=True)
-    prompt_name = Column(String(150), nullable=False)
-    variant_a = Column(String(50), nullable=False)
-    variant_b = Column(String(50), nullable=False)
-    topic = Column(String(255), nullable=False)
-    output_a = Column(Text, nullable=False)
-    output_b = Column(Text, nullable=False)
-    created_by = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -897,21 +891,6 @@ class LLMUsageLog(Base):
     status          = Column(String(30),  nullable=False)  # success|retry_success|fallback_success|error
     error_message   = Column(Text,        nullable=True)
     created_at      = Column(DateTime,    default=datetime.utcnow, index=True)
-
-    def __init__(self, **kwargs): super().__init__(**kwargs)
-
-
-class DocumentChunk(Base):
-    """Searchable document chunk used to avoid injecting whole files into prompts."""
-    __tablename__ = "document_chunks"
-
-    id = Column(Integer, primary_key=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
-    chunk_index = Column(Integer, nullable=False)
-    content = Column(Text, nullable=False)
-    token_estimate = Column(Integer, default=0)
-    embedding_json = Column(Text, nullable=True)  # optional future pgvector/embedding storage
-    created_at = Column(DateTime, default=datetime.utcnow)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -1407,6 +1386,9 @@ def _run_legacy_ddl():
         # generations (v18)
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS course_id INTEGER",
+        # generations — background-job idempotency key (P4.1 Celery migration)
+        "ALTER TABLE generations ADD COLUMN IF NOT EXISTS job_id VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS idx_generations_job_id ON generations(job_id)",
         # projects — scoped style activation (v19)
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS active_style_id INTEGER",
         # courses (v19)
@@ -1572,7 +1554,6 @@ def _run_legacy_ddl():
             "CREATE INDEX IF NOT EXISTS idx_uph_component_course ON user_prompt_history(component, course_id)",
             "CREATE INDEX IF NOT EXISTS idx_uph_name_component ON user_prompt_history(name, component)",
             "CREATE INDEX IF NOT EXISTS idx_job_metrics_job_id ON job_metrics(job_id)",
-            "CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id)",
             # Phase 2
             "CREATE INDEX IF NOT EXISTS idx_block_versions_block_id ON block_versions(block_id, version_num DESC)",
             "CREATE INDEX IF NOT EXISTS idx_blocks_assigned_reviewer ON blocks(assigned_reviewer)",

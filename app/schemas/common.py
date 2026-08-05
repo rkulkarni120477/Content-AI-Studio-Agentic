@@ -113,6 +113,14 @@ class JobStatusResponse(BaseModel):
         default=None,
         description="User-safe error description. Populated on failure.",
     )
+    queue_position: Optional[int] = Field(
+        default=None,
+        description=(
+            "For a queued job: number of still-active jobs (queued or running) "
+            "ahead of it. 0 means it is next / about to start. None once the job "
+            "is no longer queued. Backend-agnostic (ThreadPoolExecutor or Celery)."
+        ),
+    )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

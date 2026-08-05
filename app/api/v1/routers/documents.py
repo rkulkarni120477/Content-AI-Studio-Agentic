@@ -100,7 +100,7 @@ async def parse_uploaded_file(
     summary="Upload a reference document to the library",
     description="Accepts PDF, DOCX, TXT, or XLSX. The file is parsed and stored as text.",
 )
-async def upload_document(
+def upload_document(
     file: UploadFile = File(...),
     source_type: str = Form(default="reference", description="reference | guidelines | chapter"),
     db: Session = Depends(get_db),
@@ -111,12 +111,18 @@ async def upload_document(
 
     Replicates the file uploader in the Streamlit Style tab document registry.
     Uses the existing file_parser._parse_uploaded_file() for extraction.
+
+    Defined as a *sync* route (P4.2/F6): the file parse and the blocking sync
+    DB commit below would otherwise run directly on the event loop. FastAPI
+    runs sync routes in its worker threadpool, so the blocking work no longer
+    stalls the loop. The upload bytes are read via the underlying spooled file
+    (``file.file.read()``) rather than the async ``await file.read()``.
     """
     import io
     from promptops_app.database import Document
     from promptops_app.parsers.file_parser import _parse_uploaded_file
 
-    raw_bytes = await file.read()
+    raw_bytes = file.file.read()
 
     class _NamedBytesIO(io.BytesIO):
         def __init__(self, data, name):

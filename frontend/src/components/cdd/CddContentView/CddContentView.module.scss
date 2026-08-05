@@ -58,9 +58,11 @@
   color: $color-gray-800;
   font-family: inherit;
   // Long sections (e.g. DLU worksheets, the 20-day map) scroll within a
-  // bounded height instead of stretching the accordion down the page.
+  // bounded height instead of stretching the accordion down the page; wide
+  // tables scroll left-right rather than collapsing their columns.
   max-height: 460px;
   overflow-y: auto;
+  overflow-x: auto;
   @include custom-scrollbar;
 }
 
@@ -197,13 +199,45 @@
   @include custom-scrollbar;
 }
 
-/* Wide worksheet tables (DLU day map, ACS registry) scroll horizontally
-   inside the section body instead of stretching the page. */
+/* Wide worksheet tables (DLU day map, ACS registry, source inventory) render as
+   readable grids and scroll left-right within the section (via .section__preview's
+   overflow-x) instead of collapsing into one-character columns. */
 .section__preview {
-  :global(.markdown-content) table,
   table {
-    display: block;
-    max-width: 100%;
-    overflow-x: auto;
+    // `width: auto` + a per-cell min-width lets columns size to content and the
+    // table overflow the container (triggering horizontal scroll) rather than
+    // being squeezed to 100% and collapsing. min-width:100% keeps a small table
+    // filling the width.
+    width: auto;
+    min-width: 100%;
+    border-collapse: collapse;
+    margin: $space-2 0;
+    font-size: 0.82rem;
+  }
+
+  th,
+  td {
+    border: 1px solid $color-gray-200;
+    padding: $space-2 $space-3;
+    min-width: 96px;   // no more 1-character columns
+    max-width: 340px;  // long cells wrap here instead of running off-screen
+    vertical-align: top;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  th {
+    white-space: nowrap;   // headers stay on one line, not letter-by-letter
+    background: $color-gray-50;
+    color: $color-gray-800;
+    font-weight: $font-weight-semibold;
+    position: sticky;      // header stays visible while scrolling the rows
+    top: 0;
+    z-index: 1;
+  }
+
+  tbody tr:nth-child(even) td {
+    background: $color-gray-50;   // subtle zebra striping for readability
   }
 }

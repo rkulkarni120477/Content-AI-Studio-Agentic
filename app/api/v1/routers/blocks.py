@@ -42,7 +42,6 @@ from app.schemas.block import (
     BlockRatingRequest,
     BlockRead,
     BlockRegenerateItemRequest,
-    BlockRegenerateItemResponse,
     BlockRegenerateRequest,
     BlockRegenerateResponse,
     BlockReorderRequest,
@@ -61,7 +60,7 @@ from app.schemas.block import (
     PlagiarismTriggerResponse,
     ValidationIssue,
 )
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -386,67 +385,70 @@ def regenerate_block(
 
 @router.post(
     "/{block_id}/regenerate-item",
-    response_model=BlockRegenerateItemResponse,
-    summary="Regenerate a single item within a block",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Queue single-item regeneration as a background job",
 )
 def regenerate_block_item(
     block_id: int,
     request_body: BlockRegenerateItemRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("editor.edit")),
-) -> BlockRegenerateItemResponse:
+) -> JobAcceptedResponse:
     """
-    Regenerate one bullet, question, or item within a block.
+    Regenerate one bullet, question, or item within a block — asynchronously.
 
-    Calls regen_single_item() from blueprint_parser.py.
+    Previously this ran the LLM call inline in the request, holding a shared
+    FastAPI worker thread for the full call; a burst of regenerations could
+    starve unrelated endpoints (P4.5/F18). Now it queues a background job (the
+    ThreadPoolExecutor today, Celery when ``PROMPTOPS_USE_CELERY=1``) and returns
+    a ``job_id`` immediately. Poll ``GET /jobs/{job_id}`` to completion, then
+    refetch the block (``GET /blocks/{id}``) for the regenerated content —
+    matching the main generation UX.
+
+    The item index is validated up front so an obviously-bad request fails fast
+    with 404 rather than being queued only to fail in the worker.
     """
-    from promptops_app.core.constants import ChangeSource
-    from promptops_app.parsers.blueprint_parser import (
-        parse_items_from_section,
-        patch_item_in_section,
-        regen_single_item,
-    )
-    from promptops_app.repositories.block_repo import save_block_version
+    from promptops_app.jobs import dispatch, regen_jobs
+    from promptops_app.parsers.blueprint_parser import parse_items_from_section
+    from promptops_app.repositories import job_repository
 
     block = _get_block_or_404(db, block_id)
 
-    original = block.content or ""
     item_index = request_body.item_index
-    items = parse_items_from_section(original)
+    items = parse_items_from_section(block.content or "")
     if not items or item_index < 0 or item_index >= len(items):
         raise NotFoundError(f"Item index {item_index} not found in block {block_id}.")
 
-    target = items[item_index]
-    new_item_text = regen_single_item(
-        section_title=request_body.section_key or (block.block_label or "content"),
-        section_content=original,
-        item_index=item_index,
-        item_text=target["text"],
-        custom_instruction=request_body.feedback or "",
-        model_choice=request_body.model_choice,
+    # Best-effort scope for the job row (from the block's generation, if loaded).
+    gen = getattr(block, "generation", None)
+    project_id = getattr(gen, "project_id", None) if gen is not None else None
+    course_id = getattr(gen, "course_id", None) if gen is not None else None
+
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params={
+            "block_id": block_id,
+            "item_index": item_index,
+            "section_key": request_body.section_key,
+            "feedback": request_body.feedback or "",
+            "model_choice": request_body.model_choice,
+            "user_name": current_user.username,
+        },
+        project_id=project_id,
+        course_id=course_id,
+        job_type="regenerate_item",
     )
-    from promptops_app.services.content_sanitizer import sanitize_stored_content
-    updated_content = sanitize_stored_content(patch_item_in_section(original, item_index, new_item_text))
+    dispatch.submit(regen_jobs.run_regenerate_item_job, job_id)
 
-    # Save pre-change content as a version before overwriting, same as full-block
-    # regenerate — otherwise item-level regens never show up in version history.
-    save_block_version(
-        db, block,
-        change_source=ChangeSource.ITEM_REGENERATION,
-        change_note=f"Item {item_index + 1} regenerated",
-        created_by=current_user.username,
-    )
+    _log.info("block_item_regenerate_queued  user=%s  block_id=%d  item=%d  job=%s",
+              current_user.username, block_id, item_index, job_id)
 
-    block.content = updated_content
-    db.commit()
-
-    _log.info("block_item_regenerated  user=%s  block_id=%d  item=%d",
-              current_user.username, block_id, item_index)
-
-    return BlockRegenerateItemResponse(
-        block_id=block_id,
-        updated_content=updated_content,
-        patched_item=new_item_text or "",
+    return JobAcceptedResponse(
+        job_id=job_id,
+        status="queued",
+        status_url=f"/api/v1/jobs/{job_id}",
     )
 
 

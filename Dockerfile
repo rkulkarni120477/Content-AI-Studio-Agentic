@@ -59,5 +59,15 @@ COPY . .
 
 EXPOSE 8000
 
-# Uvicorn with 2 workers. For high-traffic: increase --workers or use Gunicorn.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers"]
+# Uvicorn worker count is env-configurable (P4.4): tune per environment / CPU
+# from real load numbers without rebuilding the image. Default stays 2 to preserve
+# current behaviour. Now that generation/import jobs run on Celery (P4.1 — the
+# separate `celery_worker` service) rather than an in-process ThreadPoolExecutor
+# bound to a single uvicorn worker, the API workers are stateless request handlers,
+# so this can be raised toward the box's CPU count (a common starting point is
+# (2 x vCPU) + 1) without fragmenting an in-process job queue. Heavy LLM/generation
+# throughput scales by adding Celery worker replicas, not by this number.
+#
+# `exec` keeps uvicorn as PID 1 so it still receives SIGTERM for graceful shutdown
+# (shell form is required for ${VAR} expansion; exec avoids leaving it as a child).
+CMD exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2} --proxy-headers

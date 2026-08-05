@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
@@ -51,6 +52,19 @@ def _resolved_client(current_user: Any, db: Session, *, client_id: str = "", pro
     if scoped_client:
         return _allowed_client_for_user(current_user, scoped_client)
     return _allowed_client_for_user(current_user, client_id)
+
+async def _resolved_client_async(current_user: Any, db: Session, *, client_id: str = "", project_id: int | None = None, course_id: int | None = None) -> str:
+    """Async wrapper for :func:`_resolved_client` (P4.2/F6).
+
+    The DIS proxy routes below are genuinely async (they ``await`` httpx calls
+    into DIS), but ``_resolved_client`` runs blocking sync DB queries
+    (``_client_from_scope``). Calling it inline would block the event loop.
+    Offload it to FastAPI's worker threadpool instead so the loop stays free.
+    """
+    return await run_in_threadpool(
+        _resolved_client, current_user, db,
+        client_id=client_id, project_id=project_id, course_id=course_id,
+    )
 
 def _allowed_client_for_user(current_user: Any, client_id: str = "") -> str:
     access = get_dis_access_for_user(current_user, requested_client_id=client_id or None)
@@ -113,7 +127,7 @@ async def get_source_ui_config(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.ui_config(current_user=current_user, client_id=resolved_client)
 
 
@@ -141,7 +155,7 @@ async def list_source_documents(
 ) -> Dict[str, Any]:
     if all_courses and str(getattr(current_user, "role", "") or "").lower() != "admin":
         raise HTTPException(403, "Only admins can view all courses' documents")
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     params = {
         "purpose": purpose,
         "document_type": document_type,
@@ -170,7 +184,7 @@ async def get_source_structure(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_structure(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -186,7 +200,7 @@ async def delete_source_document(
     """Permanently delete one Source Library document (S3 + OpenSearch + index). Irreversible."""
     if str(getattr(current_user, "role", "") or "").lower() != "admin":
         raise HTTPException(403, "Only admins can delete Source Library documents")
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.delete_source(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -215,7 +229,7 @@ async def upload_source_document(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     form_fields = {
         "client_id": resolved_client,
         "purpose": purpose,
@@ -244,7 +258,7 @@ async def scan_source_folder(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id or str(payload.get("client_id", "")), project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id or str(payload.get("client_id", "")), project_id=project_id, course_id=course_id)
     payload = dict(payload)
     payload["client_id"] = resolved_client
     payload["course_id"] = str(course_id) if course_id is not None else ""
@@ -261,7 +275,7 @@ async def retrieve_source_context(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.retrieve_context(purpose=purpose, payload=payload, current_user=current_user, client_id=resolved_client)
 
 
@@ -278,7 +292,7 @@ async def list_generated_documents(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.generated_list(
         params={"generated_type": generated_type, "search": search, "active": active, "limit": limit, "offset": offset},
         current_user=current_user,
@@ -295,7 +309,7 @@ async def get_generated_document(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.generated_get(generated_doc_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -308,7 +322,7 @@ async def activate_generated_document(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.generated_activate(generated_doc_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -321,7 +335,7 @@ async def delete_generated_document(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.generated_delete(generated_doc_id, current_user=current_user, client_id=resolved_client)
 
 @router.get("/documents/{job_id}/overview")
@@ -333,7 +347,7 @@ async def get_source_overview(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_overview(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -348,7 +362,7 @@ async def get_source_pages(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_pages(job_id=job_id, params={"page": page, "page_size": page_size}, current_user=current_user, client_id=resolved_client)
 
 
@@ -361,7 +375,7 @@ async def get_source_units(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_units(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -375,7 +389,7 @@ async def get_source_unit_detail(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_unit_detail(job_id=job_id, unit_id=unit_id, current_user=current_user, client_id=resolved_client)
 
 
@@ -390,5 +404,5 @@ async def search_source_document(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    resolved_client = _resolved_client(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_search(job_id=job_id, params={"q": q, "limit": limit}, current_user=current_user, client_id=resolved_client)

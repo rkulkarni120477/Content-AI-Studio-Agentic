@@ -149,6 +149,45 @@ marked.setOptions({
   mangle: false,
 });
 
+// Count a markdown table row's cells (outer pipes stripped).
+function _tableCellCount(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').length;
+}
+
+// A GFM delimiter row: only pipes, dashes, optional alignment colons, spaces.
+const _DELIM_ROW_RE = /^\s*\|?\s*:?-{1,}:?\s*(?:\|\s*:?-{1,}:?\s*)*\|?\s*$/;
+
+/**
+ * Repair markdown tables whose delimiter row has a different cell count than the
+ * header. GFM requires them to match; LLM output frequently emits a delimiter
+ * that is one cell short, which makes `marked` reject the whole table and render
+ * it as raw text (literal pipes). We rebuild only genuine delimiter rows to match
+ * their header — well-formed tables and all non-table content pass through
+ * untouched. Render/editor-load only; it never rewrites stored content.
+ */
+export function normalizeMarkdownTables(md) {
+  const lines = String(md).split('\n');
+  for (let i = 1; i < lines.length; i += 1) {
+    const header = lines[i - 1];
+    const delim = lines[i];
+    if (
+      delim.includes('-')
+      && _DELIM_ROW_RE.test(delim)
+      && header.includes('|')
+      && !_DELIM_ROW_RE.test(header)
+    ) {
+      const nHeader = _tableCellCount(header);
+      if (nHeader >= 2 && nHeader !== _tableCellCount(delim)) {
+        lines[i] = `| ${Array(nHeader).fill('---').join(' | ')} |`;
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
 /**
  * Convert Markdown (with optional inline-HTML islands) to sanitized HTML for the
  * editor / preview. Returns '' for empty input.
@@ -159,7 +198,7 @@ marked.setOptions({
  */
 export function mdToHtml(markdown, { breaks = false } = {}) {
   if (!markdown || !String(markdown).trim()) return '';
-  const rawHtml = marked.parse(String(markdown), { breaks });
+  const rawHtml = marked.parse(normalizeMarkdownTables(String(markdown)), { breaks });
   return sanitizeHtml(rawHtml);
 }
 
