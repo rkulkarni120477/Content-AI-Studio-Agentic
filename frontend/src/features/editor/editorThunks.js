@@ -239,18 +239,47 @@ export const validateCourseThunk = createAsyncThunk(
   },
 );
 
+const REGEN_ITEM_POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
+const REGEN_ITEM_MAX_POLLS = 150; // ~5 min at 2s — generous ceiling for a single item
+
 export const regenerateBlockItemThunk = createAsyncThunk(
   'editor/regenerateBlockItem',
   async ({ blockId, itemIndex, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      const result = await editorService.regenerateBlockItem(blockId, {
+      // Item regeneration is now a background job (P4.5/F18): submit, poll the
+      // shared /jobs/{id} endpoint to a terminal state, then refetch the block.
+      const accepted = await editorService.regenerateBlockItem(blockId, {
         item_index: itemIndex,
         section_key: sectionKey,
         feedback: feedback || '',
         model_choice: modelChoice,
       });
-      toast.success('Item regenerated.');
-      return result;
+
+      // Backwards-safe: if the server ever returns the old synchronous shape.
+      if (accepted?.updated_content && !accepted?.job_id) {
+        toast.success('Item regenerated.');
+        return accepted;
+      }
+
+      const jobId = accepted?.job_id;
+      if (!jobId) {
+        return rejectWithValue('Regeneration did not return a job id.');
+      }
+
+      for (let i = 0; i < REGEN_ITEM_MAX_POLLS; i += 1) {
+        const status = await editorService.getJobStatus(jobId);
+        if (status.status === 'completed') {
+          const block = await editorService.getBlock(blockId);
+          toast.success('Item regenerated.');
+          // Return the shape the slice/component already consume.
+          return { block_id: blockId, updated_content: block.content, patched_item: '' };
+        }
+        if (status.status === 'failed' || status.status === 'cancelled') {
+          return rejectWithValue(status.error_message || 'Item regeneration failed.');
+        }
+        await new Promise((resolve) => { setTimeout(resolve, REGEN_ITEM_POLL_INTERVAL_MS); });
+      }
+      return rejectWithValue('Item regeneration timed out. Please try again.');
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
     }

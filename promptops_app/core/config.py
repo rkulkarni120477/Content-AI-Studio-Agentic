@@ -155,6 +155,18 @@ class AppSettings(BaseSettings):
         gt=0,
         le=20,
     )
+    # Route generation/import jobs through Celery instead of the in-process
+    # ThreadPoolExecutor (job_runner). Default False keeps the historical
+    # behaviour; flipping this to True (PROMPTOPS_USE_CELERY=1) enqueues jobs
+    # onto Celery so they survive restarts and scale across worker replicas.
+    # Doubles as a runtime kill switch: if Celery misbehaves, unset the env var
+    # (no code change) and jobs fall straight back to the threadpool. The
+    # dispatch layer (promptops_app/jobs/dispatch.py) also falls back
+    # automatically if the broker is unreachable at submit time.
+    use_celery: bool = Field(
+        default=False,
+        alias="PROMPTOPS_USE_CELERY",
+    )
 
     # ── Quality checks ────────────────────────────────────────────────────────
     sync_quality_checks: bool = Field(

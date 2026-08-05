@@ -76,6 +76,14 @@ def run_import_job(job_id: str) -> None:
         if job.status == JobStatus.CANCELLED:
             _log.info("Import job %s cancelled before start", job_id)
             return
+        # Idempotency (P4.1): Celery at-least-once delivery can re-run this task.
+        # An already-completed import must not be rebuilt (would duplicate the
+        # reconstructed course). This guards the common re-delivery-after-
+        # completion case; deeper mid-run idempotency for the reconstruction
+        # stages themselves is tracked as a follow-up.
+        if job.status == JobStatus.COMPLETED:
+            _log.info("Import job %s already completed — skipping duplicate run", job_id)
+            return
 
         params = json.loads(job.request_json)
         import_id = params["import_id"]
@@ -158,6 +166,11 @@ def run_reverse_gen_job(job_id: str) -> None:
             _log.error("Reverse-gen job %s not found", job_id)
             return
         if job.status == JobStatus.CANCELLED:
+            return
+        # Idempotency (P4.1): skip an already-completed reverse-gen retry so a
+        # re-delivered task doesn't regenerate design artifacts twice.
+        if job.status == JobStatus.COMPLETED:
+            _log.info("Reverse-gen job %s already completed — skipping duplicate run", job_id)
             return
 
         params = json.loads(job.request_json)

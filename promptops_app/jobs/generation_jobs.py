@@ -181,6 +181,27 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             _log.info("Job %s was cancelled before it started", job_id)
             return
 
+        # ── Idempotency guard (P4.1) ──────────────────────────────────
+        # Celery delivers at-least-once (acks_late + reject_on_worker_lost),
+        # so a worker crash re-runs this task. Detect this job's own prior
+        # output — keyed by Generation.job_id — and adopt it instead of
+        # regenerating, which would duplicate the Generation/Blocks and
+        # double-charge LLM usage. Checked BEFORE the LLM call so a retry
+        # never pays for a second generation.
+        if job.status == JobStatus.COMPLETED:
+            _log.info("Job %s already completed — skipping duplicate run", job_id)
+            return
+        _existing_gen = (
+            db.query(Generation).filter(Generation.job_id == job_id).first()
+        )
+        if _existing_gen is not None:
+            _log.warning(
+                "Job %s already produced generation %s on a prior attempt — "
+                "adopting it, not regenerating", job_id, _existing_gen.id,
+            )
+            set_completed(db, job, _existing_gen.id)
+            return
+
         params = json.loads(job.request_json)
 
         topic              = params["topic"]
@@ -500,6 +521,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             blueprint_version=used_bp_ver,
             project_id=project_id,
             course_id=course_id,
+            job_id=job_id,   # idempotency key — see the guard at job start (P4.1)
         )
         db.add(g_entry)
         db.commit()

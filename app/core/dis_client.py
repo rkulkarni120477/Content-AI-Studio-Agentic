@@ -5,6 +5,7 @@ bearer token and forwards the resolved CAS user/tenant/client context in headers
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 import httpx
@@ -24,6 +25,40 @@ class DISClient:
         self.base_url = str(_get_setting("dis_api_base_url", "http://127.0.0.1:8010/v1")).rstrip("/")
         self.timeout = float(_get_setting("dis_api_timeout_seconds", 300))
         # Service token is read at request time so .env / process env changes are picked up after restart.
+        # Reused httpx clients (P4.3/F7) — one connection pool instead of a new
+        # client (and TCP/TLS handshake) per call. The async client is bound to
+        # the event loop it was created on, so it is cached per-loop and rebuilt
+        # if the loop changes/closes (the test suite runs many short-lived loops;
+        # production has a single long-lived loop → exactly one reused client).
+        self._async_client: httpx.AsyncClient | None = None
+        self._async_loop: Any = None
+        self._sync_client: httpx.Client | None = None
+
+    def _get_async_client(self) -> httpx.AsyncClient:
+        loop = asyncio.get_running_loop()
+        client = self._async_client
+        if client is None or client.is_closed or self._async_loop is not loop:
+            client = httpx.AsyncClient(timeout=self.timeout)
+            self._async_client = client
+            self._async_loop = loop
+        return client
+
+    def _get_sync_client(self) -> httpx.Client:
+        client = self._sync_client
+        if client is None or client.is_closed:
+            client = httpx.Client(timeout=self.timeout)
+            self._sync_client = client
+        return client
+
+    async def aclose(self) -> None:
+        """Release the reused connection pools — called from the app lifespan."""
+        if self._async_client is not None and not self._async_client.is_closed:
+            await self._async_client.aclose()
+        self._async_client = None
+        self._async_loop = None
+        if self._sync_client is not None and not self._sync_client.is_closed:
+            self._sync_client.close()
+        self._sync_client = None
 
     def _resolve_access(self, current_user: Any = None, client_id: str = "") -> DISAccessContext:
         return get_dis_access_for_user(current_user, requested_client_id=client_id or None)
@@ -54,10 +89,10 @@ class DISClient:
             return {"enabled": False, "documents": [], "sources": [], "combined_context": "", "source_units": []}
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
-                response.raise_for_status()
-                return response.json()
+            client = self._get_async_client()
+            response = await client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
+            response.raise_for_status()
+            return response.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             raise HTTPException(exc.response.status_code, f"DIS error: {detail}") from exc
@@ -77,10 +112,10 @@ class DISClient:
             return {"enabled": False, "documents": [], "sources": [], "combined_context": "", "source_units": []}
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
-                response.raise_for_status()
-                return response.json()
+            client = self._get_sync_client()
+            response = client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
+            response.raise_for_status()
+            return response.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             raise HTTPException(exc.response.status_code, f"DIS error: {detail}") from exc

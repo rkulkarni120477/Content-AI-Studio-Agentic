@@ -114,7 +114,7 @@ async def start_import(
         PackageValidationError,
         detect_package_format,
     )
-    from promptops_app.jobs import import_jobs, job_runner
+    from promptops_app.jobs import dispatch, import_jobs
     from promptops_app.repositories import job_repository
 
     raw_bytes = await file.read()
@@ -181,7 +181,7 @@ async def start_import(
         course_id=course.id,
         job_type="import",
     )
-    job_runner.submit(import_jobs.run_import_job, job_id)
+    dispatch.submit(import_jobs.run_import_job, job_id)
 
     _log.info(
         "import_started  user=%s  project_id=%d  course_id=%d  import_id=%d  job=%s  "
@@ -252,7 +252,7 @@ def retry_import(
 ) -> ImportStartResponse:
     """Enqueue a reverse-generation-only job for an existing import."""
     from promptops_app.database import CourseImport
-    from promptops_app.jobs import import_jobs, job_runner
+    from promptops_app.jobs import dispatch, import_jobs
     from promptops_app.repositories import job_repository
 
     record = db.get(CourseImport, import_id)
