@@ -36,12 +36,9 @@ from app.schemas.analytics import (
     LlmCostDashboardResponse,
     LlmCostSummary,
     ProjectAnalyticsRow,
-    PromptPerformanceItem,
     PromptVersionHistoryRow,
-    QualityTrendsResponse,
     ReviewAnalyticsResponse,
     ReviewItemRead,
-    SystemLogRead,
     UsageByModelItem,
     UsageSummaryResponse,
 )
@@ -115,86 +112,6 @@ def get_project_analytics(
             blueprints=analytics_repository.count_project_blueprints(db, p.id),
         ))
     return rows
-
-
-@router.get(
-    "/prompt-performance",
-    response_model=list[PromptPerformanceItem],
-    summary="Prompt performance leaderboard",
-    description="Average quality rating per prompt template, computed from reviewer ratings.",
-)
-def get_prompt_performance(
-    project_id: int | None = Query(default=None),
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("analytics.view_own")),
-) -> list[PromptPerformanceItem]:
-    """Compute the prompt leaderboard from block ratings."""
-    from promptops_app.repositories import generation_repository
-
-    scope = dict(
-        user_name=current_user.username,
-        project_id=project_id,
-        is_admin=(current_user.role == "admin"),
-    )
-
-    all_gens = generation_repository.list_generations_all_scoped(db, **scope)
-    if not all_gens:
-        return []
-
-    gen_ids = [g.id for g in all_gens]
-    rated_blocks = generation_repository.list_rated_blocks_for_gen_ids(db, gen_ids)
-
-    # Group blocks by generation to get prompt name.
-    blocks_by_gen = {}
-    for b in rated_blocks:
-        blocks_by_gen.setdefault(b.generation_id, []).append(b)
-
-    perf: dict[str, dict] = {}
-    for gen in all_gens:
-        gen_blocks = blocks_by_gen.get(gen.id, [])
-        if gen_blocks:
-            avg = sum(b.rating for b in gen_blocks) / len(gen_blocks)
-            key = f"{gen.prompt_name} ({gen.prompt_version})"
-            if key not in perf:
-                perf[key] = {"total": 0.0, "count": 0}
-            perf[key]["total"] += avg
-            perf[key]["count"] += 1
-
-    result = [
-        PromptPerformanceItem(
-            prompt=k,
-            avg_rating=round(v["total"] / v["count"], 2),
-            samples=v["count"],
-        )
-        for k, v in perf.items()
-    ]
-    result.sort(key=lambda x: x.avg_rating, reverse=True)
-    return result
-
-
-@router.get(
-    "/quality-trends",
-    response_model=QualityTrendsResponse,
-    summary="Block quality rating trend",
-    description="Returns raw rating values in chronological order for the area chart.",
-)
-def get_quality_trends(
-    project_id: int | None = Query(default=None),
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("analytics.view_own")),
-) -> QualityTrendsResponse:
-    """Return the sequence of block quality ratings for trend visualisation."""
-    from promptops_app.repositories import generation_repository
-
-    ratings = generation_repository.get_block_ratings_scoped(
-        db,
-        user_name=current_user.username,
-        project_id=project_id,
-        is_admin=(current_user.role == "admin"),
-    )
-    return QualityTrendsResponse(
-        ratings=[r[0] for r in ratings if r[0] is not None and r[0] > 0]
-    )
 
 
 @router.get(
@@ -628,26 +545,6 @@ def get_review_analytics(
             for r in reviews
         ],
     )
-
-
-@router.get(
-    "/system-logs",
-    response_model=PaginatedResponse[SystemLogRead],
-    summary="System event log (observability)",
-)
-def list_system_logs(
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=100),
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("system.analytics")),
-) -> PaginatedResponse[SystemLogRead]:
-    from promptops_app.repositories import analytics_repository
-
-    total = analytics_repository.count_system_logs(db)
-    offset = (page - 1) * page_size
-    logs = analytics_repository.list_system_logs(db, limit=page_size, offset=offset)
-    items = [SystemLogRead.model_validate(log) for log in logs]
-    return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get(

@@ -18,6 +18,7 @@ import IdentityBar from '@components/common/HeaderUser/IdentityBar';
 import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/SelectionPageHeader';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
+import Pagination from '@components/common/Pagination/Pagination';
 import TenantLabelsPanel from '@features/platform/components/TenantLabelsPanel/TenantLabelsPanel';
 import { describeOverrides } from '@config/tenantLabels';
 import styles from './TenantsPage.module.scss';
@@ -59,6 +60,9 @@ export default function TenantsPage() {
   const [view, setView] = useState('tenants'); // 'tenants' | 'audit' | 'config'
   const [auditItems, setAuditItems] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const AUDIT_PAGE_SIZE = 25;
   const [expandedAuditId, setExpandedAuditId] = useState(null);
   const [viewContentEvent, setViewContentEvent] = useState(null);
   // Which tenant's labels are being edited; null shows the organization list.
@@ -123,12 +127,14 @@ export default function TenantsPage() {
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
-  async function openAuditLog() {
+  async function openAuditLog(page = 1) {
     setView('audit');
     setAuditLoading(true);
     try {
-      const res = await analyticsService.getAuditTrail({ page: 1, page_size: 25 });
+      const res = await analyticsService.getAuditTrail({ page, page_size: AUDIT_PAGE_SIZE });
       setAuditItems(res?.items || []);
+      setAuditPage(page);
+      setAuditTotal(res?.total ?? 0);
     } catch (e) {
       toast.error(extractErrorMessage(e));
     } finally {
@@ -173,7 +179,7 @@ export default function TenantsPage() {
         <button
           type="button"
           className={`${styles.navBtn} ${view === 'audit' ? styles.navBtnActive : ''}`}
-          onClick={openAuditLog}
+          onClick={() => openAuditLog()}
         >
           📜 Audit Log
         </button>
@@ -419,6 +425,16 @@ export default function TenantsPage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+            {!auditLoading && auditTotal > AUDIT_PAGE_SIZE && (
+              <div className={styles.auditPagination}>
+                <span className={styles.auditPagination__count}>{auditTotal} result{auditTotal !== 1 ? 's' : ''}</span>
+                <Pagination
+                  current={auditPage}
+                  total={Math.ceil(auditTotal / AUDIT_PAGE_SIZE)}
+                  onChange={(p) => openAuditLog(p)}
+                />
               </div>
             )}
           </>

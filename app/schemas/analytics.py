@@ -30,18 +30,6 @@ class ProjectAnalyticsRow(BaseModel):
     blueprints: int = 0
 
 
-class PromptPerformanceItem(BaseModel):
-    prompt: str
-    avg_rating: float
-    samples: int
-
-
-class QualityTrendsResponse(BaseModel):
-    """Raw rating values in chronological order — used for the area chart."""
-
-    ratings: list[int]
-
-
 class UsageByModelItem(BaseModel):
     model: str
     prompt_tokens: int = 0
@@ -153,15 +141,6 @@ class ReviewItemRead(BaseModel):
     score: Optional[int] = None
     approved: bool = False
     comments: str = ""
-    created_at: Optional[datetime] = None
-
-    model_config = {"from_attributes": True}
-
-
-class SystemLogRead(BaseModel):
-    event_type: str
-    actor: Optional[str] = None
-    details: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

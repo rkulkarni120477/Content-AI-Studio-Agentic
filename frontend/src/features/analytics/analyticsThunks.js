@@ -28,24 +28,6 @@ export const fetchProjectAnalyticsThunk = createAsyncThunk(
   },
 );
 
-export const fetchPromptPerfThunk = createAsyncThunk(
-  'analytics/fetchPromptPerf',
-  async (filters, { getState, rejectWithValue }) => {
-    try {
-      return await analyticsService.getPromptPerf(paramsFrom(filters, { getState }));
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchQualityTrendsThunk = createAsyncThunk(
-  'analytics/fetchQualityTrends',
-  async (filters, { getState, rejectWithValue }) => {
-    try {
-      return await analyticsService.getQualityTrends(paramsFrom(filters, { getState }));
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
 export const fetchGenerationHistoryThunk = createAsyncThunk(
   'analytics/fetchGenHistory',
   async (filters, { getState, rejectWithValue }) => {
@@ -114,21 +96,20 @@ export const fetchReviewsThunk = createAsyncThunk(
   },
 );
 
-export const fetchSystemLogsThunk = createAsyncThunk(
-  'analytics/fetchSystemLogs',
-  async ({ page = 1 } = {}, { rejectWithValue }) => {
-    try {
-      return await analyticsService.getSystemLogs({ page, page_size: 50 });
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
 export const fetchLlmCostThunk = createAsyncThunk(
   'analytics/fetchLlmCost',
   async (filters, { getState, rejectWithValue }) => {
     try {
       return await analyticsService.getLlmCost(paramsFrom(filters, { getState }));
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchGenerationTraceThunk = createAsyncThunk(
+  'analytics/fetchGenerationTrace',
+  async (generationId, { rejectWithValue }) => {
+    try { return await analyticsService.getGenerationTrace(generationId); }
+    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
@@ -218,5 +199,43 @@ export const clearDatabaseThunk = createAsyncThunk(
       toast.success(result?.message || 'Data cleared.');
       return tag;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchBudgetsThunk = createAsyncThunk(
+  'analytics/fetchBudgets',
+  async (params, { rejectWithValue }) => {
+    try { return await adminService.listBudgets(params); }
+    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const upsertBudgetThunk = createAsyncThunk(
+  'analytics/upsertBudget',
+  async (body, { rejectWithValue }) => {
+    try {
+      const result = await adminService.upsertBudget(body);
+      toast.success('Budget saved.');
+      return result;
+    } catch (e) {
+      const message = extractErrorMessage(e);
+      toast.error(message);
+      return rejectWithValue(message);
+    }
+  },
+);
+
+export const deleteBudgetThunk = createAsyncThunk(
+  'analytics/deleteBudget',
+  async (id, { rejectWithValue }) => {
+    try {
+      await adminService.deleteBudget(id);
+      toast.success('Budget removed.');
+      return id;
+    } catch (e) {
+      const message = extractErrorMessage(e);
+      toast.error(message);
+      return rejectWithValue(message);
+    }
   },
 );

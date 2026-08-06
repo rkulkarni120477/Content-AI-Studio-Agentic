@@ -19,6 +19,9 @@ export const PLATFORM = {
   TENANT_ROLES:   (id) => `/api/v1/platform/tenants/${id}/roles`,
   TENANT_ROLE:    (id, roleId) => `/api/v1/platform/tenants/${id}/roles/${roleId}`,
   PERMISSION_CATALOG: '/api/v1/platform/tenants/permission-catalog',
+  BUDGETS:        '/api/v1/platform/tenants/budgets',
+  BUDGET_UPSERT:  '/api/v1/platform/tenants/budgets/policy',
+  BUDGET_DELETE:  (id) => `/api/v1/platform/tenants/budgets/${id}`,
 };
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -193,6 +196,7 @@ export const GENERATE = {
   COURSE_COMPLETION: (courseId) => `/api/v1/generations/course/${courseId}/completion-status`,
   JOB_STATUS:       (jobId)    => `/api/v1/jobs/${jobId}`,
   JOB_CANCEL:       (jobId)    => `/api/v1/jobs/${jobId}`,
+  TRACE:            (id)       => `/api/v1/generations/${id}/trace`,
 };
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
@@ -263,12 +267,9 @@ export const ANALYTICS = {
   FEEDBACK:             '/api/v1/analytics/feedback',
   FEEDBACK_SUMMARY:     '/api/v1/analytics/feedback/summary',
   REVIEWS:              '/api/v1/analytics/reviews',
-  SYSTEM_LOGS:          '/api/v1/analytics/system-logs',
   AUDIT_TRAIL:          '/api/v1/analytics/audit-trail',
   AUDIT_TRAIL_FILTERS:  '/api/v1/analytics/audit-trail/filters',
   AUDIT_EXPORT:         '/api/v1/analytics/audit-trail/export',
-  PROMPT_PERF:          '/api/v1/analytics/prompt-performance',
-  QUALITY_TRENDS:       '/api/v1/analytics/quality-trends',
   GENERATION_HISTORY:   '/api/v1/analytics/generations',
   HISTORY_PROMPT_VERSIONS: '/api/v1/analytics/history/prompt-versions',
   HISTORY_DOC_UPLOADS:  '/api/v1/analytics/history/document-uploads',

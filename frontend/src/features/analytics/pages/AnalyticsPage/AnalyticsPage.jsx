@@ -5,23 +5,31 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchSummaryThunk, fetchAuditTrailThunk, fetchUsersThunk, createUserThunk,
   toggleUserActiveThunk, exportAuditThunk,
-  fetchProjectAnalyticsThunk, fetchPromptPerfThunk,
-  fetchQualityTrendsThunk, fetchGenerationHistoryThunk,
+  fetchProjectAnalyticsThunk,
+  fetchGenerationHistoryThunk,
   fetchHistoryExtrasThunk, fetchFeedbackSummaryThunk, fetchFeedbackThunk,
-  fetchReviewsThunk, fetchSystemLogsThunk, fetchLlmCostThunk,
+  fetchReviewsThunk, fetchLlmCostThunk,
   fetchPermissionsOverviewThunk, fetchClearPresetsThunk, clearDatabaseThunk,
   fetchAuditTrailFiltersThunk,
+  fetchBudgetsThunk, upsertBudgetThunk, deleteBudgetThunk,
+  fetchGenerationTraceThunk,
 } from '@features/analytics/analyticsThunks';
 import {
-  selectSummary, selectProjectRows, selectPromptPerf, selectQualityRatings,
+  selectSummary, selectProjectRows,
   selectGenHistory, selectPromptVersionHistory, selectDocUploadHistory,
   selectCddBpHistory, selectHistoryExtrasError, selectFeedbackSummary, selectFeedback, selectFeedbackScope,
-  selectReviews, selectSystemLogs, selectLlmCost, selectAuditTrail, selectUsers,
+  selectReviews, selectLlmCost, selectAuditTrail, selectUsers,
   selectAnalyticsFilters, selectAnalyticsLoading, selectPermissionsOverview,
   selectClearPresets, selectAuditTrailLoading, selectAuditTrailError,
-  selectAuditFilterOptions, selectAuditFilters,
-  setFilters, setFeedbackScope, setAuditFilters,
+  selectAuditFilterOptions, selectAuditFilters, selectBudgets, selectBudgetsError,
+  selectGenerationTrace, selectGenerationTraceLoading, selectGenerationTraceError,
+  setFilters, setFeedbackScope, setAuditFilters, clearGenerationTrace,
 } from '@features/analytics/analyticsSlice';
+import BudgetMeter from '@features/analytics/components/BudgetMeter/BudgetMeter';
+import TraceViewer from '@features/analytics/components/TraceViewer/TraceViewer';
+import { platformService } from '@features/platform/services/platformService';
+import { analyticsService } from '@features/analytics/services/analyticsService';
+import { dashboardService } from '@features/dashboard/services/dashboardService';
 import {
   selectSelectedProject, selectSelectedCourse,
 } from '@features/dashboard/dashboardSlice';
@@ -30,7 +38,7 @@ import { createUserSchema } from '@utils/validation';
 import { DATE_RANGE_LABELS, DATE_RANGE_PRESETS } from '@utils/constants';
 import { formatDate, formatDateTime, formatNumber, formatTimestamp } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
@@ -63,13 +71,11 @@ export default function AnalyticsPage() {
   const L = useLabels();
   const HISTORY_TABS = historyTabs(L);
   const COST_TABS = costTabs(L);
-  const { isAdmin, isReviewer, isAuthor, user, canManageUsers, canClearDb, hasPermission } = useAuth();
+  const { isAdmin, isReviewer, isAuthor, user, canManageUsers, canClearDb, hasPermission, isPlatformAdmin } = useAuth();
   const canViewAudit = isAdmin || isReviewer;
 
   const summary = useAppSelector(selectSummary);
   const projectRows = useAppSelector(selectProjectRows);
-  const promptPerf = useAppSelector(selectPromptPerf);
-  const qualityRatings = useAppSelector(selectQualityRatings);
   const genHistory = useAppSelector(selectGenHistory);
   const promptVersionHistory = useAppSelector(selectPromptVersionHistory);
   const docUploadHistory = useAppSelector(selectDocUploadHistory);
@@ -79,12 +85,16 @@ export default function AnalyticsPage() {
   const feedback = useAppSelector(selectFeedback);
   const feedbackScope = useAppSelector(selectFeedbackScope);
   const reviews = useAppSelector(selectReviews);
-  const systemLogs = useAppSelector(selectSystemLogs);
   const llmCost = useAppSelector(selectLlmCost);
   const auditTrail = useAppSelector(selectAuditTrail);
   const users = useAppSelector(selectUsers);
   const permissionsOverview = useAppSelector(selectPermissionsOverview);
   const clearPresets = useAppSelector(selectClearPresets);
+  const budgets = useAppSelector(selectBudgets);
+  const budgetsError = useAppSelector(selectBudgetsError);
+  const generationTrace = useAppSelector(selectGenerationTrace);
+  const generationTraceLoading = useAppSelector(selectGenerationTraceLoading);
+  const generationTraceError = useAppSelector(selectGenerationTraceError);
   const filters = useAppSelector(selectAnalyticsFilters);
   const isLoading = useAppSelector(selectAnalyticsLoading);
   const auditTrailLoading = useAppSelector(selectAuditTrailLoading);
@@ -101,26 +111,28 @@ export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [historyTab, setHistoryTab] = useState(0);
   const [costTab, setCostTab] = useState(0);
-  const [systemLogPage, setSystemLogPage] = useState(1);
   const [auditPage, setAuditPage] = useState(1);
   const [showUserModal, setShowUserModal] = useState(false);
   const [toggleUserSelect, setToggleUserSelect] = useState('');
   const [clearConfirmTag, setClearConfirmTag] = useState(null);
   const [showPermissions, setShowPermissions] = useState(false);
   const [permSubTab, setPermSubTab] = useState(0);
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [budgetForm, setBudgetForm] = useState(null);
+  const [budgetProjectOptions, setBudgetProjectOptions] = useState([]);
+  const [budgetCourseOptions, setBudgetCourseOptions] = useState([]);
+  const [budgetCoursesLoading, setBudgetCoursesLoading] = useState(false);
+  const [showTraceModal, setShowTraceModal] = useState(false);
 
   const userForm = useForm({ resolver: zodResolver(createUserSchema) });
 
   function loadDashboard() {
     dispatch(fetchSummaryThunk(filters));
-    dispatch(fetchPromptPerfThunk(filters));
-    dispatch(fetchQualityTrendsThunk(filters));
     dispatch(fetchGenerationHistoryThunk(filters));
     dispatch(fetchHistoryExtrasThunk());
     dispatch(fetchFeedbackSummaryThunk());
     dispatch(fetchFeedbackThunk({ scope: feedbackScope === 'all' ? null : feedbackScope }));
     dispatch(fetchReviewsThunk());
-    dispatch(fetchSystemLogsThunk({ page: systemLogPage }));
     dispatch(fetchPermissionsOverviewThunk());
     if (canClearDb) dispatch(fetchClearPresetsThunk());
     if (isAdmin) dispatch(fetchProjectAnalyticsThunk());
@@ -144,9 +156,59 @@ export default function AnalyticsPage() {
     setAuditPage(1);
   }
 
-  function handleSystemLogPage(page) {
-    setSystemLogPage(page);
-    dispatch(fetchSystemLogsThunk({ page }));
+  async function openBudgetModal(policy) {
+    setBudgetCourseOptions([]);
+    setBudgetForm(policy ? {
+      id: policy.id,
+      scope: policy.scope,
+      scope_id: policy.scope_id,
+      period: policy.period,
+      limit_usd: String(policy.limit_usd),
+      warn_threshold_pct: String(policy.warn_threshold_pct),
+      _courseProjectId: '',
+    } : {
+      scope: 'project', scope_id: '', period: 'monthly', limit_usd: '', warn_threshold_pct: '80', _courseProjectId: '',
+    });
+    setShowBudgetModal(true);
+
+    // Editing an existing title-scope policy — look up which project owns it
+    // so the cascading picker can preselect it (scope_id alone doesn't say).
+    if (policy?.scope === 'course') {
+      try {
+        const course = await dashboardService.getCourse(policy.scope_id);
+        setBudgetForm((f) => (f ? { ...f, _courseProjectId: String(course.project_id) } : f));
+      } catch { /* course lookup is a UX nicety only — the raw id is still saved either way */ }
+    }
+  }
+
+  async function handleSaveBudget() {
+    const result = await dispatch(upsertBudgetThunk({
+      scope: budgetForm.scope,
+      scope_id: budgetForm.scope_id.trim(),
+      period: budgetForm.period,
+      limit_usd: Number(budgetForm.limit_usd),
+      warn_threshold_pct: Number(budgetForm.warn_threshold_pct),
+    }));
+    if (!result.error) setShowBudgetModal(false);
+  }
+
+  function openTraceModal(generationId) {
+    setShowTraceModal(true);
+    dispatch(fetchGenerationTraceThunk(generationId));
+  }
+
+  function closeTraceModal() {
+    setShowTraceModal(false);
+    dispatch(clearGenerationTrace());
+  }
+
+  const BUDGET_SCOPE_LABELS = { project: 'tenant', course: 'title', user: 'user' };
+
+  function handleDeleteBudget(policy) {
+    const scopeLabel = BUDGET_SCOPE_LABELS[policy.scope] || policy.scope;
+    if (window.confirm(`Delete the budget policy for ${scopeLabel} ${policy.scope_id}?`)) {
+      dispatch(deleteBudgetThunk(policy.id));
+    }
   }
 
   async function handleClearPreset(tag) {
@@ -154,11 +216,7 @@ export default function AnalyticsPage() {
     if (!result.error) {
       setClearConfirmTag(null);
       if (activeTab === 'Dashboard') loadDashboard();
-      else if (activeTab === 'Audit Trail') {
-        loadAuditTrail(auditPage);
-      } else {
-        dispatch(fetchSystemLogsThunk({ page: systemLogPage }));
-      }
+      else if (activeTab === 'Audit Trail') loadAuditTrail(auditPage);
     }
   }
 
@@ -204,6 +262,36 @@ export default function AnalyticsPage() {
     }
   }, [dispatch, historyTab, promptVersionHistory.length, docUploadHistory.length, cddBpHistory.length]);
 
+  // A regular user only ever sees their OWN budget — project/title budgets
+  // are a platform-admin concern. A platform admin instead manages every
+  // policy platform-wide.
+  const hasBudgetContext = isPlatformAdmin || Boolean(user?.username);
+
+  useEffect(() => {
+    if (activeTab !== 'LLM Cost') return;
+    if (isPlatformAdmin) { dispatch(fetchBudgetsThunk()); return; }
+    if (user?.username) dispatch(fetchBudgetsThunk({ scope: 'user', scope_id: user.username }));
+  }, [dispatch, activeTab, isPlatformAdmin, user?.username]);
+
+  useEffect(() => {
+    if (activeTab !== 'LLM Cost' || !isPlatformAdmin || budgetProjectOptions.length > 0) return;
+    platformService.listTenants().then((tenants) => {
+      setBudgetProjectOptions((tenants || []).map((t) => ({
+        value: String(t.id),
+        label: t.slug ? `${t.name} (${t.slug})` : t.name,
+      })));
+    }).catch(() => {});
+  }, [activeTab, isPlatformAdmin, budgetProjectOptions.length]);
+
+  useEffect(() => {
+    const projectId = budgetForm?._courseProjectId;
+    if (budgetForm?.scope !== 'course' || !projectId) { setBudgetCourseOptions([]); return; }
+    setBudgetCoursesLoading(true);
+    analyticsService.getProjectCourses(projectId).then((courses) => {
+      setBudgetCourseOptions((courses || []).map((c) => ({ value: String(c.id), label: c.name })));
+    }).catch(() => setBudgetCourseOptions([])).finally(() => setBudgetCoursesLoading(false));
+  }, [budgetForm?.scope, budgetForm?._courseProjectId]);
+
   useEffect(() => {
     if (activeTab === 'LLM Cost') dispatch(fetchLlmCostThunk(filters));
     if (activeTab === 'Audit Trail' && canViewAudit) {
@@ -234,7 +322,6 @@ export default function AnalyticsPage() {
     }
   }
 
-  const qualityChartData = (qualityRatings || []).map((r, i) => ({ index: i + 1, rating: r }));
   const monthlyChart = (llmCost?.monthly || []).map((r) => ({
     month: r.Month || r.month,
     cost: r['Cost ($)'] ?? r.cost ?? 0,
@@ -374,42 +461,6 @@ export default function AnalyticsPage() {
               )}
 
               <section className={styles.card}>
-                <h3 className={styles.card__title}>🏆 Prompt Performance Leaderboard</h3>
-                <p className={styles.card__caption}>Average quality rating per prompt template, computed from reviewer feedback.</p>
-                {promptPerf.length > 0 ? (
-                  <Table
-                    columns={[
-                      { key: 'prompt', header: 'Prompt', sortable: true },
-                      { key: 'avg_rating', header: 'Avg Rating', align: 'right' },
-                      { key: 'samples', header: 'Samples', align: 'right' },
-                    ]}
-                    rows={promptPerf}
-                    rowKey="prompt"
-                    pagination
-                    pageSize={10}
-                  />
-                ) : (
-                  <p className={styles.emptyHint}>No rated content yet. Score blocks in the Editor tab to see performance data here.</p>
-                )}
-              </section>
-
-              <section className={styles.card}>
-                <h3 className={styles.card__title}>🎯 Instructional Quality Trends</h3>
-                {qualityChartData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={200}>
-                    <AreaChart data={qualityChartData}>
-                      <XAxis dataKey="index" tick={{ fontSize: 12 }} />
-                      <YAxis domain={[1, 5]} tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Area type="monotone" dataKey="rating" stroke="#4f46e5" fill="#eef2ff" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <p className={styles.emptyHint}>No rated blocks yet.</p>
-                )}
-              </section>
-
-              <section className={styles.card}>
                 <h3 className={styles.card__title}>📜 Interactive System History</h3>
                 <div className={styles.subTabs}>
                   {HISTORY_TABS.map((t, i) => (
@@ -434,6 +485,11 @@ export default function AnalyticsPage() {
                         { key: 'cdd_label', header: 'CDD' },
                         { key: 'blueprint_label', header: 'Blueprint' },
                         { key: 'created_at', header: 'Time', render: (v) => formatDate(v) },
+                        {
+                          key: 'actions', header: '', render: (_, row) => (
+                            <Button variant="ghost" size="sm" onClick={() => openTraceModal(row.id)}>View Trace</Button>
+                          ),
+                        },
                       ]}
                       rows={genHistory}
                       rowKey="id"
@@ -553,29 +609,6 @@ export default function AnalyticsPage() {
                 ) : (
                   <p className={styles.emptyHint}>No reviews submitted yet. Submit reviews in the Editor tab.</p>
                 )}
-              </section>
-
-              <section className={styles.card}>
-                <h3 className={styles.card__title}>🔍 System Event Log (Observability)</h3>
-                <p className={styles.card__caption}>Full trace of system events — generations, uploads, exports, reviews, prompt changes.</p>
-                <Table
-                  columns={[
-                    { key: 'event_type', header: 'Event' },
-                    { key: 'actor', header: 'Actor' },
-                    { key: 'details', header: 'Details' },
-                    { key: 'created_at', header: 'Time', render: (v) => formatDateTime(v) },
-                  ]}
-                  rows={(systemLogs?.items || []).map((r, i) => ({ ...r, id: r.id ?? `log-${i}` }))}
-                  rowKey="id"
-                  pagination
-                  pageSize={50}
-                  serverSide
-                  totalCount={systemLogs?.total ?? 0}
-                  currentPage={systemLogPage}
-                  onPageChange={handleSystemLogPage}
-                  emptyTitle="No system events yet"
-                  emptyMessage="Events will appear here as you use the platform."
-                />
               </section>
 
               {canClearDb && (
@@ -737,6 +770,35 @@ export default function AnalyticsPage() {
                   )}
                 </div>
 
+                {hasBudgetContext && (
+                  <section className={styles.card}>
+                    <div className={styles.card__header}>
+                      <h3 className={styles.card__title}>💳 Budget Policies</h3>
+                      {isPlatformAdmin && (
+                        <Button variant="primary" size="sm" onClick={() => openBudgetModal(null)}>+ Set Budget</Button>
+                      )}
+                    </div>
+                    {!isPlatformAdmin && (
+                      <p className={styles.card__caption}>Your own personal AI budget.</p>
+                    )}
+                    {budgetsError && <p className={styles.emptyHint} role="alert">{budgetsError}</p>}
+                    {budgets.length > 0 ? (
+                      budgets.map((b) => (
+                        <BudgetMeter
+                          key={b.id}
+                          policy={b}
+                          onEdit={isPlatformAdmin ? openBudgetModal : undefined}
+                          onDelete={isPlatformAdmin ? handleDeleteBudget : undefined}
+                        />
+                      ))
+                    ) : (
+                      <p className={styles.emptyHint}>
+                        {isPlatformAdmin ? 'No budget policies set yet.' : 'No budget has been set for your account yet.'}
+                      </p>
+                    )}
+                  </section>
+                )}
+
                 {(isAdmin || isReviewer) && (
                   <section className={styles.card}>
                     <div className={styles.subTabs}>
@@ -842,15 +904,6 @@ export default function AnalyticsPage() {
                 <p className={styles.emptyHint} role="alert">{auditTrailError}</p>
               )}
 
-              {(auditTrail?.total ?? 0) > 0 && (
-                <p className={styles.auditSummary}>
-                  {auditTrail.total} event(s) total · showing page results
-                  {auditTrail.pages > 0 && (
-                    <> · Page {auditPage} of {auditTrail.pages}</>
-                  )}
-                </p>
-              )}
-
               <Table
                 columns={AUDIT_COLUMNS}
                 rows={auditTrail?.items || []}
@@ -937,6 +990,118 @@ export default function AnalyticsPage() {
               {...userForm.register('role')}
             />
           </form>
+        </Modal>
+
+        {budgetForm && (
+          <Modal
+            open={showBudgetModal}
+            onClose={() => setShowBudgetModal(false)}
+            title={budgetForm.id ? 'Edit Budget Policy' : 'Set Budget Policy'}
+            size="sm"
+            footer={(
+              <>
+                <Button variant="ghost" onClick={() => setShowBudgetModal(false)}>Cancel</Button>
+                <Button variant="primary" onClick={handleSaveBudget}>Save</Button>
+              </>
+            )}
+          >
+            <form className={styles.form}>
+              <Select
+                label="Scope"
+                required
+                disabled={Boolean(budgetForm.id)}
+                options={[
+                  { value: 'project', label: 'Tenant' },
+                  { value: 'course', label: 'Title' },
+                  { value: 'user', label: 'User' },
+                ]}
+                value={budgetForm.scope}
+                onChange={(e) => setBudgetForm({ ...budgetForm, scope: e.target.value, scope_id: '', _courseProjectId: '' })}
+              />
+              {budgetForm.scope === 'project' && (
+                <Select
+                  label="Tenant"
+                  required
+                  disabled={Boolean(budgetForm.id)}
+                  placeholder="Select a tenant…"
+                  options={budgetProjectOptions}
+                  value={budgetForm.scope_id}
+                  onChange={(e) => setBudgetForm({ ...budgetForm, scope_id: e.target.value })}
+                />
+              )}
+              {budgetForm.scope === 'course' && (
+                <>
+                  <Select
+                    label="Tenant"
+                    required
+                    disabled={Boolean(budgetForm.id)}
+                    placeholder="Select a tenant…"
+                    options={budgetProjectOptions}
+                    value={budgetForm._courseProjectId}
+                    onChange={(e) => setBudgetForm({ ...budgetForm, _courseProjectId: e.target.value, scope_id: '' })}
+                  />
+                  <Select
+                    label="Title"
+                    required
+                    disabled={Boolean(budgetForm.id) || !budgetForm._courseProjectId}
+                    placeholder={budgetCoursesLoading ? 'Loading titles…' : 'Select a title…'}
+                    options={budgetCourseOptions}
+                    value={budgetForm.scope_id}
+                    onChange={(e) => setBudgetForm({ ...budgetForm, scope_id: e.target.value })}
+                  />
+                </>
+              )}
+              {budgetForm.scope === 'user' && (
+                <Input
+                  label="Username"
+                  required
+                  disabled={Boolean(budgetForm.id)}
+                  value={budgetForm.scope_id}
+                  onChange={(e) => setBudgetForm({ ...budgetForm, scope_id: e.target.value })}
+                />
+              )}
+              <Select
+                label="Period"
+                required
+                options={[
+                  { value: 'monthly', label: 'Monthly' },
+                  { value: 'rolling', label: 'Rolling' },
+                ]}
+                value={budgetForm.period}
+                onChange={(e) => setBudgetForm({ ...budgetForm, period: e.target.value })}
+              />
+              <Input
+                label="Limit (USD)"
+                type="number"
+                min="0.01"
+                step="0.01"
+                required
+                value={budgetForm.limit_usd}
+                onChange={(e) => setBudgetForm({ ...budgetForm, limit_usd: e.target.value })}
+              />
+              <Input
+                label="Warn threshold (%)"
+                type="number"
+                min="0"
+                max="100"
+                required
+                value={budgetForm.warn_threshold_pct}
+                onChange={(e) => setBudgetForm({ ...budgetForm, warn_threshold_pct: e.target.value })}
+              />
+            </form>
+          </Modal>
+        )}
+
+        <Modal
+          open={showTraceModal}
+          onClose={closeTraceModal}
+          title="Generation Trace"
+          size="lg"
+          footer={<Button variant="ghost" onClick={closeTraceModal}>Close</Button>}
+        >
+          {generationTraceLoading && <div className={styles.center}><Loader size="lg" /></div>}
+          {generationTraceError && <p className={styles.emptyHint} role="alert">{generationTraceError}</p>}
+          {generationTrace && <TraceViewer observations={generationTrace.observations} />}
         </Modal>
       </div>
     </PageContainer>

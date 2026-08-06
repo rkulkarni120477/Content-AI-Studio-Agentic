@@ -314,7 +314,7 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
         if member_clients and (not requested_norm or requested_norm in member_clients):
             client_id = requested_norm if requested_norm in member_clients else member_clients[0]
             member_role = next((mrole for cid, mrole in membership if cid == client_id), "")
-            dis_role = "client_admin" if (member_role == "admin" or role in {"admin", "reviewer"}) else "user"
+            dis_role = "client_admin" if (member_role == "admin" or role in {"admin", "reviewer", "author"}) else "user"
             return DISAccessContext(
                 tenant_id=client_id,
                 client_id=client_id,
@@ -323,7 +323,7 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
                 available_clients=[client_id],
             )
         client_id = profile_client or inferred_client or default_client
-        dis_role = "client_admin" if role in {"admin", "reviewer"} else "user"
+        dis_role = "client_admin" if role in {"admin", "reviewer", "author"} else "user"
 
     if available and client_id not in available:
         client_id = default_client

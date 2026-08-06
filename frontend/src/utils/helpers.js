@@ -221,10 +221,19 @@ function formatApiDetail(detail) {
   return String(detail);
 }
 
+const BUDGET_SCOPE_LABELS = { project: 'This project', course: 'This title', user: 'Your account' };
+
 export function extractErrorMessage(error) {
   if (typeof error === 'string') return error;
   // Custom AppError envelope: { error: { code, message, detail } } — see app/main.py.
   const appError = error?.response?.data?.error ?? error?.data?.error;
+  if (appError?.code === 'QUOTA_EXCEEDED') {
+    const d = appError.detail || {};
+    const who = BUDGET_SCOPE_LABELS[d.scope] || 'This scope';
+    return `${who} has used $${Number(d.current_spend ?? 0).toFixed(2)} of its `
+      + `$${Number(d.limit_usd ?? 0).toFixed(2)} AI budget for this period. `
+      + 'Contact your platform admin to raise the limit.';
+  }
   if (appError?.message) return appError.message;
 
   const detail = error?.response?.data?.detail
@@ -237,6 +246,31 @@ export function extractErrorMessage(error) {
     error?.message ||
     'An unexpected error occurred.'
   );
+}
+
+// ─── Post-call usage summary (cost/tokens/budget remaining) ───────────────────
+// Shape comes from app/schemas/budget.py's UsageSummary, attached to every
+// generate/regenerate response — see budget_service.build_usage_summary().
+// Only the caller's own user-scope budget is ever mentioned here — project
+// and title budgets are a platform-admin/tenant concern, not something to
+// surface in every individual generation's toast.
+function myBudget(summary) {
+  return (summary?.budgets || []).find((b) => b.scope === 'user') || null;
+}
+
+export function hasOverBudget(summary) {
+  const b = myBudget(summary);
+  return Boolean(b && b.remaining_usd <= 0);
+}
+
+export function formatUsageSummaryMessage(summary) {
+  if (!summary) return null;
+  const parts = [`Used $${(summary.cost_usd ?? 0).toFixed(4)} · ${(summary.total_tokens ?? 0).toLocaleString()} tokens`];
+  const b = myBudget(summary);
+  if (b) {
+    parts.push(b.remaining_usd <= 0 ? 'Your budget: over budget' : `Your budget: $${b.remaining_usd.toFixed(2)} left`);
+  }
+  return `${parts.join('. ')}.`;
 }
 
 // ─── Debounce ─────────────────────────────────────────────────────────────────

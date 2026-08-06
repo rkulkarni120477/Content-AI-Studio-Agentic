@@ -181,6 +181,20 @@
   }
 }
 
+.auditPagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: $space-3;
+  margin-top: $space-3;
+}
+
+.auditPagination__count {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+}
+
 .name {
   font-weight: $font-weight-semibold;
   color: $color-gray-900;

@@ -531,6 +531,7 @@ def regenerate_blueprint_item(
         patch_item_in_section,
         regen_single_item,
     )
+    from promptops_app.services.usage_service import UsageLogContext
 
     bp = _get_blueprint_or_404(db, blueprint_id)
 
@@ -547,6 +548,10 @@ def regenerate_blueprint_item(
     )
     instruction = f"{(request_body.feedback or '').strip()} {context}".strip()
 
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
+        entity_type="blueprint_item_regen", entity_id=str(blueprint_id),
+    )
     new_item_text = regen_single_item(
         section_title=request_body.section_key,
         section_content=original,
@@ -554,15 +559,19 @@ def regenerate_blueprint_item(
         item_text=items[item_index]["text"],
         custom_instruction=instruction,
         model_choice=request_body.model_choice,
+        usage_ctx=usage_ctx,
     )
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
     _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d",
               current_user.username, blueprint_id, request_body.section_key, item_index)
 
+    from promptops_app.services.budget_service import build_usage_summary
+
     return BlueprintRegenerateItemResponse(
         updated_content=updated_content,
         patched_item=new_item_text or "",
+        usage_summary=build_usage_summary(db, usage_ctx, "blueprint_item_regen", str(blueprint_id)),
     )
 
 
@@ -586,6 +595,7 @@ def regenerate_blueprint_section(
     """
     from promptops_app.parsers.blueprint_parser import get_blueprint_prompts
     from promptops_app.services.llm_service import generate_text as call_llm
+    from promptops_app.services.usage_service import UsageLogContext
 
     bp = _get_blueprint_or_404(db, blueprint_id)
     mode = "teacher" if request_body.teacher_mode else "student"
@@ -599,14 +609,23 @@ def regenerate_blueprint_section(
         cdd_summary=cdd_summary or "No CDD linked.",
         custom_instruction=request_body.feedback or "Improve this section.",
     )
-    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt)
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
+        entity_type="blueprint_section_regen", entity_id=str(blueprint_id),
+    )
+    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt, usage_ctx)
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
 
     _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s",
               current_user.username, blueprint_id, request_body.section_key, mode)
 
-    return BlueprintRegenerateSectionResponse(updated_content=new_content.strip())
+    from promptops_app.services.budget_service import build_usage_summary
+
+    return BlueprintRegenerateSectionResponse(
+        updated_content=new_content.strip(),
+        usage_summary=build_usage_summary(db, usage_ctx, "blueprint_section_regen", str(blueprint_id)),
+    )
 
 
 @router.post("/{blueprint_id}/pin", response_model=BlueprintPinResponse, summary="Pin blueprint to a course")

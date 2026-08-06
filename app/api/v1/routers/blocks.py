@@ -351,9 +351,15 @@ def regenerate_block(
         feedback_instruction=feedback or "Improve overall quality, clarity, and engagement.",
     )
 
+    generation = block.generation
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=getattr(generation, "project_id", None),
+        course_id=getattr(generation, "course_id", None),
+        entity_type="block", entity_id=str(block_id),
+    )
     llm_result = generate_with_metadata(
-        request_body.model_choice, system_prompt, user_prompt,
-        usage_ctx=UsageLogContext(user_name=current_user.username, entity_type="block"),
+        request_body.model_choice, system_prompt, user_prompt, usage_ctx=usage_ctx,
     )
 
     if llm_result.status == "error":
@@ -372,6 +378,8 @@ def regenerate_block(
     _log.info("block_regenerated  user=%s  block_id=%d  model=%s",
               current_user.username, block_id, llm_result.model)
 
+    from promptops_app.services.budget_service import build_usage_summary
+
     return BlockRegenerateResponse(
         block_id=block_id,
         content=clean_content,
@@ -381,6 +389,7 @@ def regenerate_block(
             if llm_result.prompt_tokens else None
         ),
         version_created=version_label,
+        usage_summary=build_usage_summary(db, usage_ctx, "block", str(block_id)),
     )
 
 
@@ -407,6 +416,7 @@ def regenerate_block_item(
         regen_single_item,
     )
     from promptops_app.repositories.block_repo import save_block_version
+    from promptops_app.services.usage_service import UsageLogContext
 
     block = _get_block_or_404(db, block_id)
 
@@ -417,6 +427,13 @@ def regenerate_block_item(
         raise NotFoundError(f"Item index {item_index} not found in block {block_id}.")
 
     target = items[item_index]
+    generation = block.generation
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=getattr(generation, "project_id", None),
+        course_id=getattr(generation, "course_id", None),
+        entity_type="block_item_regen", entity_id=str(block_id),
+    )
     new_item_text = regen_single_item(
         section_title=request_body.section_key or (block.block_label or "content"),
         section_content=original,
@@ -424,6 +441,7 @@ def regenerate_block_item(
         item_text=target["text"],
         custom_instruction=request_body.feedback or "",
         model_choice=request_body.model_choice,
+        usage_ctx=usage_ctx,
     )
     from promptops_app.services.content_sanitizer import sanitize_stored_content
     updated_content = sanitize_stored_content(patch_item_in_section(original, item_index, new_item_text))
@@ -443,10 +461,13 @@ def regenerate_block_item(
     _log.info("block_item_regenerated  user=%s  block_id=%d  item=%d",
               current_user.username, block_id, item_index)
 
+    from promptops_app.services.budget_service import build_usage_summary
+
     return BlockRegenerateItemResponse(
         block_id=block_id,
         updated_content=updated_content,
         patched_item=new_item_text or "",
+        usage_summary=build_usage_summary(db, usage_ctx, "block_item_regen", str(block_id)),
     )
 
 
@@ -504,7 +525,7 @@ def restore_block_version(
     from promptops_app.repositories.block_repo import restore_block_version as _restore
 
     block = _get_block_or_404(db, block_id)
-    ok, message = _restore(db, block, version_id, restored_by=current_user.username)
+    ok, message = _restore(db, block, version_id, created_by=current_user.username)
     if not ok:
         raise WorkflowError(message or "Could not restore version.")
 
@@ -819,12 +840,15 @@ def regenerate_block_canvas_html(
     _log.info("block_canvas_html_regenerated  user=%s  block_id=%d",
               current_user.username, block_id)
 
+    from promptops_app.services.budget_service import build_usage_summary
+
     return BlockCanvasHtmlResponse(
         block_id=block.id,
         block_label=block.block_label or f"Block {block.id}",
         has_html=True,
         content_html=block.content_html,
         content_html_at=block.content_html_at,
+        usage_summary=build_usage_summary(db, usage_ctx, "canvas_html", str(block.id)),
     )
 
 

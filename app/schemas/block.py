@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.budget import UsageSummary
+
 
 # ---------------------------------------------------------------------------
 # Block read/list
@@ -100,6 +102,7 @@ class BlockRegenerateResponse(BaseModel):
     model_used: str
     tokens_used: Optional[int] = None
     version_created: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class BlockRegenerateItemRequest(BaseModel):
@@ -115,6 +118,7 @@ class BlockRegenerateItemResponse(BaseModel):
     block_id: int
     updated_content: str
     patched_item: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +240,7 @@ class BlockCanvasHtmlResponse(BaseModel):
     has_html: bool
     content_html: Optional[str] = None
     content_html_at: Optional[datetime] = None
+    usage_summary: Optional[UsageSummary] = None
 
 
 # ---------------------------------------------------------------------------

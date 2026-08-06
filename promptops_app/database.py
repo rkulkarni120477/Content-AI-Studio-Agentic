@@ -883,7 +883,7 @@ class LLMUsageLog(Base):
     id              = Column(Integer,     primary_key=True)
     user_id         = Column(String(100), nullable=True,  index=True)   # username
     project_id      = Column(Integer,     nullable=True,  index=True)
-    course_id       = Column(Integer,     nullable=True)
+    course_id       = Column(Integer,     nullable=True,  index=True)  # P2: was missing an index despite project_id/user_id both having one
     entity_type     = Column(String(60),  nullable=True)   # generation | cdd | blueprint | evaluation | style
     entity_id       = Column(String(64),  nullable=True)
     prompt_template = Column(String(150), nullable=True)
@@ -896,7 +896,61 @@ class LLMUsageLog(Base):
     duration_ms     = Column(Integer,     nullable=True)
     status          = Column(String(30),  nullable=False)  # success|retry_success|fallback_success|error
     error_message   = Column(Text,        nullable=True)
+    langfuse_trace_id = Column(String(64), nullable=True, index=True)  # P1: looked up by the trace-detail endpoint
     created_at      = Column(DateTime,    default=datetime.utcnow, index=True)
+
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class BudgetPolicy(Base):
+    """An admin-configured spend limit for one project, course, or user (P2).
+
+    scope_id is a string for all three scope types on purpose: a project/course
+    id stored as text, or a username for scope="user" — LLMUsageLog.user_id is
+    itself a username string, not a numeric FK, so this mirrors that instead of
+    inventing a polymorphic int/string split. No DB-level FK to Project/Course/
+    User (LLMUsageLog already has none) — scope_id existence is validated at the
+    service layer, not enforced by the schema.
+    """
+    __tablename__ = "budget_policies"
+    __table_args__ = (
+        UniqueConstraint("scope", "scope_id", name="uq_budget_policy_scope"),
+    )
+
+    id                 = Column(Integer, primary_key=True)
+    scope              = Column(String(20), nullable=False)   # project | course | user
+    scope_id           = Column(String(100), nullable=False)
+    period             = Column(String(20), nullable=False, default="monthly")  # monthly | rolling
+    limit_usd          = Column(Float, nullable=False)
+    warn_threshold_pct = Column(Float, nullable=False, default=80.0)
+    # Which period_key (see budget_service.period_key()) last triggered a warn
+    # notification — prevents re-warning on every call once past threshold.
+    last_warned_period = Column(String(20), nullable=True)
+    created_at         = Column(DateTime, default=datetime.utcnow)
+    updated_at         = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class BudgetPeriodSpend(Base):
+    """Running spend total per (scope, scope_id, period) — P2.9's race-safe reserve.
+
+    This table, not a SUM() over LLMUsageLog, is what check_budget's
+    atomic UPDATE ... WHERE spent + :cost <= limit reserves against. Concurrent
+    calls for the same scope serialize through this single row's UPDATE instead
+    of racing on independent reads.
+    """
+    __tablename__ = "budget_period_spend"
+    __table_args__ = (
+        UniqueConstraint("scope", "scope_id", "period_key", name="uq_budget_period_spend"),
+    )
+
+    id         = Column(Integer, primary_key=True)
+    scope      = Column(String(20), nullable=False)
+    scope_id   = Column(String(100), nullable=False)
+    period_key = Column(String(20), nullable=False)  # e.g. "2026-08" (monthly) or a rolling-window key
+    spent_usd  = Column(Float, nullable=False, default=0.0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
 

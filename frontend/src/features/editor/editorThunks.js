@@ -1,6 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { editorService } from './services/editorService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { downloadBlob } from '@utils/helpers';
 import toast from 'react-hot-toast';
 
@@ -109,7 +109,9 @@ export const regenerateBlockThunk = createAsyncThunk(
         feedback_instruction: instruction,
         model_choice: modelChoice,
       });
-      toast.success('Block regenerated.');
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      const message = usageMsg ? `Block regenerated. ${usageMsg}` : 'Block regenerated.';
+      if (hasOverBudget(result.usage_summary)) toast.error(message); else toast.success(message);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -249,7 +251,9 @@ export const regenerateBlockItemThunk = createAsyncThunk(
         feedback: feedback || '',
         model_choice: modelChoice,
       });
-      toast.success('Item regenerated.');
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      const message = usageMsg ? `Item regenerated. ${usageMsg}` : 'Item regenerated.';
+      if (hasOverBudget(result.usage_summary)) toast.error(message); else toast.success(message);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));

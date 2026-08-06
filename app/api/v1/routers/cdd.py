@@ -851,8 +851,9 @@ def regenerate_cdd_item(
         patch_item_in_section,
         regen_single_item,
     )
+    from promptops_app.services.usage_service import UsageLogContext
 
-    _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id)
 
     original = request_body.section_content or ""
     item_index = request_body.item_index
@@ -861,6 +862,10 @@ def regenerate_cdd_item(
         raise NotFoundError("CDD item", item_index)
 
     target = items[item_index]
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=cdd.project_id, course_id=cdd.course_id,
+        entity_type="cdd_item_regen", entity_id=str(cdd_id),
+    )
     new_item_text = regen_single_item(
         section_title=request_body.section_key,
         section_content=original,
@@ -868,15 +873,19 @@ def regenerate_cdd_item(
         item_text=target["text"],
         custom_instruction=request_body.feedback or "",
         model_choice=request_body.model_choice,
+        usage_ctx=usage_ctx,
     )
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
     _log.info("cdd_item_regenerated  user=%s  cdd_id=%d  section=%s  item=%d",
               current_user.username, cdd_id, request_body.section_key, item_index)
 
+    from promptops_app.services.budget_service import build_usage_summary
+
     return CDDRegenerateItemResponse(
         updated_content=updated_content,
         patched_item=new_item_text or "",
+        usage_summary=build_usage_summary(db, usage_ctx, "cdd_item_regen", str(cdd_id)),
     )
 
 
@@ -906,6 +915,7 @@ def regenerate_cdd_section(
         CDD_SYSTEM_PROMPT,
     )
     from promptops_app.services.llm_service import generate_text as call_llm
+    from promptops_app.services.usage_service import UsageLogContext
 
     cdd = _get_cdd_or_404(db, cdd_id)
     course_title = getattr(cdd, "course_title", None) or request_body.section_key
@@ -915,14 +925,23 @@ def regenerate_cdd_section(
         course_title=course_title,
         custom_instruction=request_body.feedback or "Improve and expand this section.",
     )
-    new_content = call_llm(request_body.model_choice, CDD_SYSTEM_PROMPT, regen_prompt)
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=cdd.project_id, course_id=cdd.course_id,
+        entity_type="cdd_section_regen", entity_id=str(cdd_id),
+    )
+    new_content = call_llm(request_body.model_choice, CDD_SYSTEM_PROMPT, regen_prompt, usage_ctx)
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
 
     _log.info("cdd_section_regenerated  user=%s  cdd_id=%d  section=%s",
               current_user.username, cdd_id, request_body.section_key)
 
-    return CDDRegenerateSectionResponse(updated_content=new_content.strip())
+    from promptops_app.services.budget_service import build_usage_summary
+
+    return CDDRegenerateSectionResponse(
+        updated_content=new_content.strip(),
+        usage_summary=build_usage_summary(db, usage_ctx, "cdd_section_regen", str(cdd_id)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1033,6 +1052,25 @@ def export_cdd(
                 "cdd_exported_dlu_xlsx  user=%s  cdd_id=%d  sheets=%d",
                 current_user.username, cdd_id, len(sheets),
             )
+            # This DLU-worksheet branch builds its own file and returns early,
+            # bypassing export_service.export_content() (and its _log_export
+            # call) entirely — every other export path goes through that
+            # shared function, so without this, DLU xlsx exports were
+            # invisible to both the System Event Log and the Audit Trail.
+            from promptops_app.database import log_event
+            from promptops_app.services.audit_service import log_audit_event
+
+            log_event(
+                db, "export", current_user.username,
+                f"Exported XLSX [DLU worksheets] — cdd #{cdd_id} — {cdd.title}",
+            )
+            log_audit_event(
+                db, current_user.username, "export.course",
+                entity_type="cdd", entity_id=cdd_id,
+                project_id=cdd.project_id, course_id=cdd.course_id,
+                metadata={"format": "xlsx", "template": "dlu_worksheets", "sheets": len(sheets)},
+            )
+
             return Response(
                 content=buf.read(),
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

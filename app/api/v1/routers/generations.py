@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.dependencies import get_current_user, get_db, get_tenant_context, require_permission
 from app.core.http import content_disposition
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
@@ -380,6 +380,70 @@ def get_generation(
     blocks = generation_repository.list_blocks_for_generation(db, generation_id)
     result.blocks = [GenerationBlockSummary.model_validate(b) for b in blocks]
     return result
+
+
+@router.get(
+    "/{generation_id}/trace",
+    summary="Get this generation's full prompt/response trace from Langfuse",
+    description=(
+        "Proxies trace detail (prompt, response, model, token usage) from Langfuse "
+        "through CAS's own resource scoping — nobody needs a separate Langfuse login "
+        "or deep-link. Every tenant admin who can already see this generation can see "
+        "its trace. See P1 of claude_plan_platform_hardening."
+    ),
+)
+def get_generation_trace(
+    generation_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
+) -> dict:
+    """Look up the Langfuse trace_id for this generation's LLM call and fetch it.
+
+    Scoping is the whole security property here: get_scoped_or_404 is the exact
+    same tenant-filtered lookup every other scoped resource endpoint uses (see
+    feedback.py) — a generation belonging to another tenant 404s before this
+    function ever learns whether a trace exists for it. P1.5's isolation tests
+    prove this holds; do not change this lookup to anything that skips it.
+    """
+    from promptops_app.database import Generation, GenerationJob, LLMUsageLog
+    from app.core.tenant_context import get_scoped_or_404
+    from app.core.langfuse_client import get_trace_observations
+    from promptops_app.services.audit_service import log_audit_event
+
+    tenant_id, is_platform_admin = tenant
+    generation = get_scoped_or_404(db, Generation, generation_id, tenant_id, is_platform_admin)
+
+    # The LLM call that produced this generation was logged (P0) and traced (P1.2)
+    # under its GenerationJob's job_id, not the Generation row's own id — the
+    # Generation doesn't exist yet at the moment the call is logged. Join through
+    # GenerationJob.result_entity_id (set on job completion) to find it.
+    job = db.query(GenerationJob).filter(GenerationJob.result_entity_id == generation.id).first()
+    usage_row = None
+    if job is not None:
+        usage_row = (
+            db.query(LLMUsageLog)
+            .filter(LLMUsageLog.entity_type == "generation", LLMUsageLog.entity_id == job.id)
+            .order_by(LLMUsageLog.id.desc())
+            .first()
+        )
+
+    if usage_row is None or not usage_row.langfuse_trace_id:
+        raise NotFoundError("Trace for generation", generation_id)
+
+    observations = get_trace_observations(usage_row.langfuse_trace_id)
+
+    log_audit_event(
+        db, current_user.username, "generation.trace_viewed",
+        entity_type="generation", entity_id=str(generation_id),
+        project_id=generation.project_id, course_id=generation.course_id,
+    )
+
+    return {
+        "generation_id": generation_id,
+        "trace_id": usage_row.langfuse_trace_id,
+        "observations": observations,
+    }
 
 
 @router.get(

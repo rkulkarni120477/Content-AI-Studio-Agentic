@@ -53,6 +53,16 @@ def get_job_status(
     if not job:
         raise JobNotFoundError(job_id)
 
+    usage_summary = None
+    if job.status == "completed":
+        from promptops_app.services.budget_service import build_usage_summary
+        from promptops_app.services.usage_service import UsageLogContext
+
+        usage_ctx = UsageLogContext(
+            user_name=current_user.username, project_id=job.project_id, course_id=job.course_id,
+        )
+        usage_summary = build_usage_summary(db, usage_ctx, "generation", str(job.id))
+
     return JobStatusResponse(
         job_id=str(job.id),
         status=job.status,
@@ -62,6 +72,7 @@ def get_job_status(
         error_message=job.error_message,
         created_at=job.created_at.isoformat() if job.created_at else None,
         updated_at=job.updated_at.isoformat() if job.updated_at else None,
+        usage_summary=usage_summary,
     )
 
 

@@ -1,7 +1,7 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { cddService } from './services/cddService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
 import toast from 'react-hot-toast';
@@ -107,9 +107,15 @@ export const regenerateCddItemThunk = createAsyncThunk(
   'cdd/regenerateItem',
   async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      return await cddService.regenerateItem(cddId, {
+      const result = await cddService.regenerateItem(cddId, {
         sectionKey, sectionContent, itemIndex, feedback, modelChoice,
       });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
+        else toast.success(`Item regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -118,7 +124,13 @@ export const regenerateCddSectionThunk = createAsyncThunk(
   'cdd/regenerateSection',
   async ({ cddId, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      return await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
+      const result = await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
+        else toast.success(`Section regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

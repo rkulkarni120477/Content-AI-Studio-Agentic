@@ -1,0 +1,59 @@
+.meter {
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+  padding: $space-3 $space-4;
+  margin-bottom: $space-3;
+}
+
+.meter__header {
+  display: flex;
+  justify-content: space-between;
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+  margin-bottom: $space-2;
+}
+
+.meter__scope strong { color: $color-gray-900; }
+
+.meter__period { text-transform: capitalize; }
+
+.meter__track {
+  height: 8px;
+  border-radius: $radius-full;
+  background: $color-gray-100;
+  overflow: hidden;
+}
+
+.meter__fill {
+  height: 100%;
+  border-radius: $radius-full;
+  transition: width 0.2s ease;
+
+  &--ok      { background: $color-success; }
+  &--warn    { background: $color-warning; }
+  &--blocked { background: $color-danger; }
+}
+
+.meter__footer {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  margin-top: $space-2;
+  font-size: $font-size-sm;
+  color: $color-gray-600;
+}
+
+.meter__badge--warn    { color: $color-warning; font-weight: $font-weight-medium; }
+.meter__badge--blocked { color: $color-danger;  font-weight: $font-weight-medium; }
+
+.meter__actions {
+  margin-left: auto;
+  display: flex;
+  gap: $space-2;
+}
+
+.meter__tokens {
+  font-size: $font-size-xs;
+  color: $color-gray-500;
+  margin-top: $space-1;
+}

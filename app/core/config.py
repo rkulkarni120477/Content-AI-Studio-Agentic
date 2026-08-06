@@ -237,6 +237,14 @@ class AppSettings(BaseSettings):
     dis_default_client_id: str = Field(default="", alias="DIS_DEFAULT_CLIENT_ID")
     dis_available_clients: str = Field(default="aim,cengage", alias="DIS_AVAILABLE_CLIENTS")
     dis_super_admin_usernames: str = Field(default="", alias="DIS_SUPER_ADMIN_USERNAMES")
+
+    # ── Langfuse observability (P1 of claude_plan_platform_hardening) ────────
+    # Read directly by the langfuse SDK too (LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY
+    # env vars) — these fields exist so app/core/langfuse_client.py's server-side
+    # fetch (P1.4) doesn't need its own separate env-parsing.
+    langfuse_host: str = Field(default="http://localhost:3001", alias="LANGFUSE_HOST")
+    langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
     dis_super_admin_roles: str = Field(default="", alias="DIS_SUPER_ADMIN_ROLES")
     dis_user_client_map: str = Field(default="", alias="DIS_USER_CLIENT_MAP")
     dis_access_config_path: str = Field(default="", alias="DIS_ACCESS_CONFIG_PATH")

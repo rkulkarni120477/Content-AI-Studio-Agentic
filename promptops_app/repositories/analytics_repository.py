@@ -73,22 +73,6 @@ def list_cdd_blueprint_events(db, limit: int = 40, offset: int = 0):
     )
 
 
-# ── System Logs ───────────────────────────────────────────────────────────────
-
-def count_system_logs(db) -> int:
-    return db.query(SystemLog).count()
-
-
-def list_system_logs(db, limit: int = 50, offset: int = 0):
-    return (
-        db.query(SystemLog)
-        .order_by(SystemLog.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-
 # ── Actors / filters ──────────────────────────────────────────────────────────
 
 def list_distinct_actors(db) -> list:

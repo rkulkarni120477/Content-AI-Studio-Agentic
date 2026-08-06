@@ -181,10 +181,6 @@ class AppSettings(BaseSettings):
     )
 
     # ── Cost tracking ─────────────────────────────────────────────────────────
-    enable_cost_tracking: bool = Field(
-        default=True,
-        alias="PROMPTOPS_ENABLE_COST_TRACKING",
-    )
     model_pricing_override: Optional[str] = Field(
         default=None,
         alias="PROMPTOPS_MODEL_PRICING",
