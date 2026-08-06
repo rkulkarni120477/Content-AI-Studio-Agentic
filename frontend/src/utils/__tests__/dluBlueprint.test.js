@@ -27,6 +27,52 @@ const DLU = `**Day Number:** 1
 5. **Day Reflection**
    - Two prompts answered in 90 seconds.`;
 
+// Format B (bp 234): "### DLU Outline" + NON-numbered bold parts.
+const DLU_BOLD = `**Day Number:** 5
+**Day Type:** REVIEW DAY
+**Topic:** Drawing Interpretation Review
+
+---
+
+### DLU Outline
+
+**Today's Mission**
+Today's session focuses on interpreting aircraft drawings.
+
+**Learn It (Review Content)**
+- **Topic Label:** Drawing Interpretation Review
+
+**Quick Check**
+- 5 items.
+
+**Up Next in Class**
+- Bench work.
+
+**Day Reflection**
+- Two prompts.`;
+
+// Format C (bp 233): NO "### DLU Outline", bold-with-colon parts.
+const DLU_COLON = `**Day Number:** 3
+**Day Type:** Teaching Day
+**Topic:** Sectional Views
+
+---
+
+**Today's Mission:**
+Understanding aircraft drawings is crucial.
+
+**Learn It:**
+- **Topic Label:** Sectional views and detail drawings.
+
+**Quick Check:**
+- 6 items.
+
+**Up Next in Class:**
+- Hangar activity.
+
+**Day Reflection:**
+- Two prompts.`;
+
 // Standard module blueprint — ## sections, no DLU markers.
 const STD = `## Module Overview
 This module introduces the topic.
@@ -47,6 +93,35 @@ describe('dluBlueprint — detection', () => {
     const noHeader = "1. **Today's Mission**\n   - x\n2. **Day Reflection**\n   - y";
     expect(detectDluBlueprint(noHeader)).toBe(true);
   });
+  it('detects the non-numbered bold format (bp 234)', () => {
+    expect(detectDluBlueprint(DLU_BOLD)).toBe(true);
+  });
+  it('detects the bold-with-colon, no-heading format (bp 233)', () => {
+    expect(detectDluBlueprint(DLU_COLON)).toBe(true);
+  });
+});
+
+describe('dluBlueprint — the three real formats all yield the 5 parts', () => {
+  const expected = ["Today's Mission", 'Learn It', 'Quick Check', 'Up Next in Class', 'Day Reflection'];
+  for (const [name, fixture] of [['numbered', DLU], ['bold', DLU_BOLD], ['bold-colon', DLU_COLON]]) {
+    it(`${name}: parses Overview + 5 DLU parts and does not treat "Topic Label" as a part`, () => {
+      const secs = parseDluBlueprintSections(fixture);
+      expect(secs[0].title).toBe('Overview');
+      const partTitles = secs.slice(1).map((s) => s.title.replace(/\s*\(.*\)$/, ''));
+      expect(partTitles).toEqual(expected);
+      expect(secs.some((s) => /topic label/i.test(s.title))).toBe(false);
+    });
+    it(`${name}: round-trips a body-only regenerate keeping the header`, () => {
+      const secs = parseDluBlueprintSections(fixture);
+      const learn = secs.find((s) => /^learn it/i.test(s.title));
+      const rebuilt = replaceDluBlueprintSection(fixture, learn.title, 'FRESH BODY.');
+      const again = parseDluBlueprintSections(rebuilt);
+      expect(again.length).toBe(secs.length);
+      const l2 = again.find((s) => s.title === learn.title);
+      expect(l2.content).toContain('FRESH BODY.');
+      expect(l2.content.split('\n')[0]).toContain('Learn It');
+    });
+  }
 });
 
 describe('dluBlueprint — parse', () => {
