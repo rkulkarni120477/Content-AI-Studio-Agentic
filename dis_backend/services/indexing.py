@@ -191,42 +191,17 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
     if not cfg.enabled:
         return {"status": "skipped", "reason": "vector_store.enabled=false"}
     try:
-        from opensearchpy import OpenSearch, RequestsHttpConnection
-        from requests_aws4auth import AWS4Auth
-        import boto3
+        import importlib
+        for _dep in ("opensearchpy", "requests_aws4auth", "boto3"):
+            importlib.import_module(_dep)
     except Exception as exc:
         return {"status": "failed", "error": f"opensearch dependencies missing: {exc}"}
     try:
         if getattr(cfg, "provider", "opensearch") != "opensearch":
             return {"status": "skipped", "reason": f"Unsupported vector store provider: {cfg.provider}. Add adapter in services/adapters/vector_store.py"}
-        endpoint = cfg.endpoint.replace("https://", "").replace("http://", "").rstrip("/")
-        if cfg.auth_mode == "basic":
-            username = (cfg.username or "").strip()
-            password = (cfg.password or "").strip()
-            client = OpenSearch(
-                hosts=[{"host": endpoint, "port": 443}],
-                http_auth=(username, password),
-                use_ssl=True,
-                verify_certs=True,
-                connection_class=RequestsHttpConnection,
-                timeout=60,
-                max_retries=2,
-                retry_on_timeout=True,
-            )
-        else:
-            session = boto3.Session(region_name=cfg.region)
-            credentials = session.get_credentials()
-            auth = AWS4Auth(credentials.access_key, credentials.secret_key, cfg.region, "es", session_token=credentials.token)
-            client = OpenSearch(
-                hosts=[{"host": endpoint, "port": 443}],
-                http_auth=auth,
-                use_ssl=True,
-                verify_certs=True,
-                connection_class=RequestsHttpConnection,
-                timeout=60,
-                max_retries=2,
-                retry_on_timeout=True,
-            )
+        # Reuse the OpenSearch write client (P4.3/F7) instead of building a new
+        # one — and a fresh TLS handshake / AWS4Auth signing setup — per upsert.
+        client = _vector_store_write_client(cfg)
         ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
         units = state.get("embedding_ready_chunks") or state.get("content_units", []) or []
         count = 0
@@ -372,6 +347,11 @@ def ensure_index(client, index_name: str, dimension: int):
 # cached so rotating instance-role credentials never go stale (see below).
 _BEDROCK_CLIENTS: Dict[str, Any] = {}
 _OS_READ_CLIENTS: Dict[str, Any] = {}
+# Write-path OpenSearch clients (P4.3/F7). Kept in a separate cache from the read
+# path so ingestion is never coupled to read-path changes, but following the same
+# reuse rule: basic-auth clients are cached per endpoint; SigV4 clients are built
+# per call so rotating instance-role credentials never go stale.
+_OS_WRITE_CLIENTS: Dict[str, Any] = {}
 
 
 def _bedrock_runtime_client(region: str):
@@ -445,6 +425,40 @@ def _vector_store_read_client(cfg):
         hosts=[{"host": endpoint, "port": 443}],
         http_auth=auth, use_ssl=True, verify_certs=True,
         connection_class=RequestsHttpConnection, timeout=30, max_retries=2, retry_on_timeout=True,
+    )
+
+
+def _vector_store_write_client(cfg):
+    """Build (or reuse) an OpenSearch client for the ingestion WRITE path.
+
+    Same reuse rule as :func:`_vector_store_read_client` (basic-auth cached per
+    endpoint; SigV4 built per call so rotating instance-role credentials never go
+    stale), but kept in its own cache (``_OS_WRITE_CLIENTS``) with the write
+    path's longer 60s timeout, so ingestion is never coupled to read-path config.
+    """
+    from opensearchpy import OpenSearch, RequestsHttpConnection
+    endpoint = cfg.endpoint.replace("https://", "").replace("http://", "").rstrip("/")
+    if cfg.auth_mode == "basic":
+        cache_key = f"basic-write::{endpoint}"
+        client = _OS_WRITE_CLIENTS.get(cache_key)
+        if client is None:
+            client = OpenSearch(
+                hosts=[{"host": endpoint, "port": 443}],
+                http_auth=((cfg.username or "").strip(), (cfg.password or "").strip()),
+                use_ssl=True, verify_certs=True,
+                connection_class=RequestsHttpConnection, timeout=60, max_retries=2, retry_on_timeout=True,
+            )
+            _OS_WRITE_CLIENTS[cache_key] = client
+        return client
+    import boto3
+    from requests_aws4auth import AWS4Auth
+    session = boto3.Session(region_name=cfg.region)
+    credentials = session.get_credentials()
+    auth = AWS4Auth(credentials.access_key, credentials.secret_key, cfg.region, "es", session_token=credentials.token)
+    return OpenSearch(
+        hosts=[{"host": endpoint, "port": 443}],
+        http_auth=auth, use_ssl=True, verify_certs=True,
+        connection_class=RequestsHttpConnection, timeout=60, max_retries=2, retry_on_timeout=True,
     )
 
 

@@ -47,6 +47,7 @@ def get_job_status(
     Reads the GenerationJob row, which the Celery worker updates via
     job_status.set_running(), set_completed(), and set_failed().
     """
+    from promptops_app.jobs.job_status import JobStatus
     from promptops_app.repositories import job_repository
 
     job = job_repository.get_job(db, job_id)
@@ -61,15 +62,37 @@ def get_job_status(
         usage_ctx = UsageLogContext(
             user_name=current_user.username, project_id=job.project_id, course_id=job.course_id,
         )
-        usage_summary = build_usage_summary(db, usage_ctx, "generation", str(job.id))
+        # entity_id differs per job type: the full-generation job logs its LLM
+        # call under its own job id, but the regenerate-item job logs under the
+        # block it regenerated (result_entity_id) — matches how each job type
+        # constructs its own UsageLogContext at the actual LLM call site.
+        if job.job_type == "regenerate_item":
+            usage_summary = build_usage_summary(db, usage_ctx, "block_item_regen", str(job.result_entity_id))
+        else:
+            usage_summary = build_usage_summary(db, usage_ctx, "generation", str(job.id))
+
+    # Queue-depth visibility (P4.6/F19): for a still-queued job, tell the user how
+    # many jobs are ahead of it instead of showing a bare, position-less spinner.
+    # Folded into current_step too, so the existing progress UI shows it with no
+    # frontend change; also exposed as a structured field for richer UIs.
+    queue_position = None
+    current_step = job.current_step
+    if job.status == JobStatus.QUEUED:
+        queue_position = job_repository.count_active_jobs_ahead(db, job)
+        current_step = (
+            f"Queued — {queue_position} job(s) ahead"
+            if queue_position
+            else "Queued — starting shortly"
+        )
 
     return JobStatusResponse(
         job_id=str(job.id),
         status=job.status,
         progress=job.progress or 0,
-        current_step=job.current_step,
+        current_step=current_step,
         generation_id=job.result_entity_id,
         error_message=job.error_message,
+        queue_position=queue_position,
         created_at=job.created_at.isoformat() if job.created_at else None,
         updated_at=job.updated_at.isoformat() if job.updated_at else None,
         usage_summary=usage_summary,

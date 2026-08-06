@@ -2,6 +2,7 @@
 # Content AI Studio — Python dependencies
 # docker-compose logs -f api
 # docker-compose up -d --build      # backend
+# docker-compose build dis_backend
 # cd frontend && npm run dev        # UI
 # =============================================================================
 # Install all:  pip install -r requirements.txt

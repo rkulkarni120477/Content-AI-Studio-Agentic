@@ -1,5 +1,4 @@
 from __future__ import annotations
-import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -12,9 +11,6 @@ class JobStatus(str, Enum):
 
 class ContentClassification(str, Enum):
     PUBLIC = "public"; INTERNAL = "internal"; RESTRICTED = "restricted"; EXAM_SECRET = "exam_secret"
-
-class LicenseType(str, Enum):
-    OPEN = "open"; INTERNAL = "internal"; RESTRICTED = "restricted"
 
 
 class UploadResponse(BaseModel):
@@ -31,23 +27,6 @@ class JobStatusResponse(BaseModel):
     progress_pct: int = 0; current_step: Optional[str] = None
     error_message: Optional[str] = None; created_at: datetime; updated_at: datetime
     completed_at: Optional[datetime] = None; metadata: Dict[str, Any] = {}
-
-class RetrievalRequest(BaseModel):
-    tenant_id: str; client_id: str; query: str
-    top_k: int = Field(default=5, ge=1, le=50)
-    filters: Dict[str, Any] = {}
-    include_restricted: bool = False
-
-class RetrievalResult(BaseModel):
-    chunk_id: str; doc_id: str; text: str; score: float
-    metadata: Dict[str, Any] = {}; classification: str; source: Optional[str] = None
-
-class RetrievalResponse(BaseModel):
-    query: str; tenant_id: str; results: List[RetrievalResult]
-    total_results: int; truncated: bool = False
-    trace_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-
-    tokens_remaining: int; utilization_pct: float; blocked: bool
 
 class TenantSummary(BaseModel):
     tenant_id: str; display_name: str; namespace: str

@@ -6,6 +6,9 @@
 .env.*
 !.env.example
 
+# Local backup of stale tables/code before removal (contains prod data — never commit)
+stale_removal_backup/
+
 *.pem
 *.key
 
@@ -78,6 +81,7 @@ backups/
 # =============================================================================
 PROMPT_CONSOLIDATION_PLAN.md
 PROMPT_CONSOLIDATION_PLAN 1.md
+DIS_INTEGRATION_README.md
 project_execution.md
 MIGRATION_RUNBOOK.md
 CAS_PromptInject.md
@@ -85,6 +89,12 @@ CONTEXT_FLOW_AND_ARCHITECTURE.md
 Embd_based_retieval.md
 DIS_SOURCE_LIBRARY_LOGIC_FLOW.md
 OPENSEARCH_RETRIEVAL_PLAN.md
+PROMPTS_INVENTORY.md
+PRD-CAS-Reverse-Pipeline.md
+RUN_CAS_DIS_LOCAL.md
+reverse_cas.md
+Technical-Requirements-Reverse-Pipeline-v2.md
+
 logs/
 .graphify_python
 graphify-out/

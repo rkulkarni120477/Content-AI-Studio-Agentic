@@ -81,7 +81,7 @@ def launch_generation(
     Validates the prompt template, resolves the effective CDD/Blueprint,
     creates a GenerationJob row, and submits to the Celery worker.
     """
-    from promptops_app.jobs import generation_jobs, job_runner
+    from promptops_app.jobs import dispatch, generation_jobs
     from promptops_app.repositories import blueprint_repository, cdd_repository, job_repository
     from promptops_app.core.content_utils import get_module_completion_status, get_all_modules_completion
     from promptops_app.parsers.blueprint_parser import is_component_type_module_level, is_component_type_course_level
@@ -183,7 +183,7 @@ def launch_generation(
         course_id=request_body.course_id,
     )
 
-    job_runner.submit(generation_jobs.run_generation_job, job_id)
+    dispatch.submit(generation_jobs.run_generation_job, job_id)
 
     # Log-only, read-only lookups to report exactly where the CDD/blueprint/
     # style used for this generation came from. Does not affect req_params,

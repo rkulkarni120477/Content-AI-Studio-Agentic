@@ -135,6 +135,28 @@ _CDD_RETRIEVAL_INTENT = (
 )
 
 
+def _is_dlu_prompt(*texts: str) -> bool:
+    """True when the selected CDD prompt is a DLU (day/worksheet) Block Blueprint.
+
+    Detection is content-based and fail-safe toward "standard": a normal CDD
+    prompt contains none of these markers, so it never triggers the extra
+    course-generation retrieval pass below. Checked against the prompt's name,
+    system prompt, and user template (or the inline overrides).
+    """
+    blob = " ".join(t or "" for t in texts).upper()
+    # "WORKSHEET" is the DLU output contract's boundary marker (## WORKSHEET N:) and
+    # appears in every block-blueprint prompt's system text; the standard CDD prompt
+    # (Course -> Module -> Lesson) never uses it. "DLU" / "BLOCK BLUEPRINT" catch the
+    # short user templates / prompt names. NB: we deliberately do NOT match bare
+    # "BLUEPRINT" — the standard CDD prompt mentions it in passing.
+    return (
+        "DLU" in blob
+        or "BLOCK BLUEPRINT" in blob
+        or "WORKSHEET" in blob
+        or ("DAY-BY-DAY" in blob and "INSTRUCTIONAL" in blob)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helper — load CDD or raise 404
 # ---------------------------------------------------------------------------
@@ -284,13 +306,24 @@ def generate_cdd(
     # without it just a stray day. Read-only and best-effort; any lookup failure
     # leaves the base query unchanged so generation never breaks.
     prompt_query_text = request_body.user_prompt_override or ""
+    prompt_sys_text = request_body.system_prompt_override or ""
+    prompt_name = ""
     if not prompt_query_text and getattr(request_body, "prompt_id", None):
         try:
             from promptops_app.repositories.prompt_repository import get_active_version
+            from promptops_app.database import Prompt
             _pv = get_active_version(db, int(request_body.prompt_id))
-            prompt_query_text = (_pv.user_prompt_template or "") if _pv else ""
+            if _pv:
+                prompt_query_text = _pv.user_prompt_template or ""
+                prompt_sys_text = prompt_sys_text or (_pv.system_prompt or "")
+            _p = db.get(Prompt, int(request_body.prompt_id))
+            prompt_name = getattr(_p, "name", "") or ""
         except Exception:
-            prompt_query_text = ""
+            pass
+
+    # Is this a DLU (day/worksheet) Block Blueprint? Standard CDDs return False and
+    # keep the original single-pass retrieval unchanged.
+    is_dlu = _is_dlu_prompt(prompt_name, prompt_sys_text, prompt_query_text)
 
     dis_query = " ".join(str(x or "") for x in [
         request_body.course_title,
@@ -300,7 +333,10 @@ def generate_cdd(
         request_body.audience_category,
         request_body.extra_instructions,
         # The selected prompt's own wording (names the source docs it consumes).
-        prompt_query_text,
+        # Capped: a very long template blurs the query embedding and starves the
+        # tiny per-day calendar rows — 800 chars keeps the strong signal (course/
+        # source-kind vocabulary) without diluting day-level matches.
+        prompt_query_text[:800],
         # Name the planning-document kinds a CDD/blueprint is built from so
         # semantic search surfaces the syllabus + full calendar, not just a
         # title match. Applies to standard and DLU alike (see constant above).
@@ -336,6 +372,42 @@ def generate_cdd(
         "CDD CONTEXT",
         client_id=dis_client_id,
     )
+
+    # DLU Block Blueprints need far more than the calendar/syllabus that the `cdd`
+    # purpose returns — they draw on the per-day content, study questions, projects
+    # and quizzes that live under the `course-generation` purpose (the same source
+    # set lesson generation uses). Run a SECOND retrieval there with the same query
+    # and merge it in, so the model sees structure (cdd) + detail (course content).
+    #
+    # Gated to DLU prompts only: a standard CDD leaves is_dlu False and this block
+    # is skipped entirely, so its retrieval is byte-for-byte unchanged. Best-effort
+    # — _dis_context_block swallows any DIS error and returns "", so a failure here
+    # degrades to today's cdd-only behaviour rather than breaking generation.
+    if is_dlu:
+        gen_block, gen_units = _dis_context_block(
+            "course-generation",
+            {
+                "purpose": "course-generation",
+                "query": dis_query,
+                # include_restricted stays False: the rich student-facing content
+                # (per-day material, study questions, projects, quizzes) is returned
+                # without it, and requesting restricted content as a non-admin would
+                # 403 and drop this whole pass.
+                "filters": {"include_restricted": False},
+                "retrieval": {"top_k": 24, "token_budget": 24000},
+            },
+            current_user,
+            "COURSE CONTENT (per-day source material)",
+            client_id=dis_client_id,
+        )
+        if gen_block:
+            dis_context_block = f"{dis_context_block}{gen_block}"
+            dis_source_units = _merge_source_units(dis_source_units, gen_units)
+        _log.info(
+            "cdd_generate_dlu_course_gen_pass  user=%s  course=%d  merged=%s  added_units=%d",
+            current_user.username, request_body.course_id,
+            bool(gen_block), len(gen_units or []),
+        )
 
     # Documents the user explicitly picked in "Reference Documents" on the Create
     # New CDD form. Retrieved as an ADDITIONAL block pinned to those ids, on top

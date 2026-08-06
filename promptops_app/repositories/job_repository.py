@@ -56,6 +56,33 @@ def get_job(db, job_id: str):
     return db.query(GenerationJob).filter(GenerationJob.id == job_id).first()
 
 
+def count_active_jobs_ahead(db, job) -> int:
+    """Number of still-active jobs queued/running ahead of *job* (P4.6/F19).
+
+    Counts GenerationJob rows in ``queued`` or ``running`` state created before
+    *job* (FIFO by ``created_at``). A running job counts as "ahead" because it is
+    occupying a worker the queued job is waiting on. Backend-agnostic: both the
+    ThreadPoolExecutor and Celery paths write GenerationJob rows, so this gives a
+    real queue position for either. Approximate under exact ``created_at`` ties,
+    which is fine for a position indicator.
+    """
+    from sqlalchemy import func
+
+    created_at = job.created_at
+    if created_at is None:
+        return 0
+    count = (
+        db.query(func.count(GenerationJob.id))
+        .filter(
+            GenerationJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+            GenerationJob.id != job.id,
+            GenerationJob.created_at < created_at,
+        )
+        .scalar()
+    )
+    return int(count or 0)
+
+
 def list_jobs(
     db,
     *,

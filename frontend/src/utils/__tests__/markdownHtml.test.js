@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { mdToHtml, htmlToMd, sanitizeHtml } from '../markdownHtml';
+import { mdToHtml, htmlToMd, sanitizeHtml, normalizeMarkdownTables } from '../markdownHtml';
 
 /** Normalize whitespace so structural round-trip comparisons ignore cosmetic gaps. */
 const norm = (s) => s.replace(/\r\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
@@ -40,6 +40,42 @@ describe('mdToHtml', () => {
   it('returns empty string for empty/blank input', () => {
     expect(mdToHtml('')).toBe('');
     expect(mdToHtml('   \n  ')).toBe('');
+  });
+
+  it('renders a table whose delimiter row is one column short (LLM output)', () => {
+    // Real shape from the DLU Worksheet 4: 10-col header, 9-col delimiter.
+    const md = [
+      '| Day | Day Title | ACS Code(s) | Concept Type | Concept Scope | Content Summary | Formative Assessment | Projects/Activities | Source Completeness | Flags |',
+      '|---|---|---|---|---|---|---|---|---|',
+      '| 1 | Aircraft Drawings | AM.I.B.K1 | Knowledge | Intro | Overview | Quiz 1 | Project 2-1 | Complete | |',
+    ].join('\n');
+    const html = mdToHtml(md);
+    expect(html).toContain('<table>');
+    expect(html).toContain('<th>Day</th>');
+    expect(html).toContain('<td>Aircraft Drawings</td>');
+    expect(html).not.toContain('| Day |'); // no raw pipes left over
+  });
+});
+
+describe('normalizeMarkdownTables', () => {
+  it('pads a short delimiter row to the header column count', () => {
+    const md = [
+      '| A | B | C | D | E | F |',
+      '|---|---|---|---|---|',
+      '| 1 | 2 | 3 | 4 | 5 | 6 |',
+    ].join('\n');
+    const out = normalizeMarkdownTables(md).split('\n');
+    expect(out[1]).toBe('| --- | --- | --- | --- | --- | --- |');
+  });
+
+  it('leaves a well-formed table byte-for-byte unchanged', () => {
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |';
+    expect(normalizeMarkdownTables(md)).toBe(md);
+  });
+
+  it('does not touch non-table content that contains pipes', () => {
+    const md = 'Use a | b syntax in prose.\nAnother line.';
+    expect(normalizeMarkdownTables(md)).toBe(md);
   });
 });
 

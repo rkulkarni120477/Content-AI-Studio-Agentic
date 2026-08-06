@@ -80,6 +80,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _log.debug("Langfuse flush on shutdown skipped: %s", exc)
 
+    # Release reused DIS connection pools (P4.3/F7).
+    try:
+        from app.core.dis_client import dis_client
+        await dis_client.aclose()
+    except Exception:  # best-effort — never block shutdown on cleanup
+        _log.warning("dis_client.aclose failed during shutdown", exc_info=True)
+
     _log.info("shutdown  service=content-ai-api")
 
 
