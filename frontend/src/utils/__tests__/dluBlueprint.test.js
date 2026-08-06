@@ -1,0 +1,185 @@
+import { describe, expect, it } from 'vitest';
+import {
+  detectDluBlueprint,
+  parseDluBlueprintSections,
+  replaceDluBlueprintSection,
+} from '@utils/dluBlueprint';
+import { buildBlueprintUiSections } from '@utils/blueprintContent';
+
+// Real shape of a DLU day blueprint (from blueprint 236 / 232).
+const DLU = `**Day Number:** 1
+**Day Type:** Teaching Day
+**Topic:** Introduction to Aircraft Drawings
+**Codes Addressed:** AM.I.B.K1, AM.I.B.K2, AM.I.B.K4
+
+---
+
+### DLU Outline
+
+1. **Today's Mission**
+   - Understanding aircraft drawings is crucial for maintenance.
+2. **Learn It**
+   - Structured Canvas page drawn from the FAA manuals.
+3. **Quick Check**
+   - 5-8 formative items, multiple attempts.
+4. **Up Next in Class**
+   - Preview of the hands-on activity.
+5. **Day Reflection**
+   - Two prompts answered in 90 seconds.`;
+
+// Format B (bp 234): "### DLU Outline" + NON-numbered bold parts.
+const DLU_BOLD = `**Day Number:** 5
+**Day Type:** REVIEW DAY
+**Topic:** Drawing Interpretation Review
+
+---
+
+### DLU Outline
+
+**Today's Mission**
+Today's session focuses on interpreting aircraft drawings.
+
+**Learn It (Review Content)**
+- **Topic Label:** Drawing Interpretation Review
+
+**Quick Check**
+- 5 items.
+
+**Up Next in Class**
+- Bench work.
+
+**Day Reflection**
+- Two prompts.`;
+
+// Format C (bp 233): NO "### DLU Outline", bold-with-colon parts.
+const DLU_COLON = `**Day Number:** 3
+**Day Type:** Teaching Day
+**Topic:** Sectional Views
+
+---
+
+**Today's Mission:**
+Understanding aircraft drawings is crucial.
+
+**Learn It:**
+- **Topic Label:** Sectional views and detail drawings.
+
+**Quick Check:**
+- 6 items.
+
+**Up Next in Class:**
+- Hangar activity.
+
+**Day Reflection:**
+- Two prompts.`;
+
+// Standard module blueprint — ## sections, no DLU markers.
+const STD = `## Module Overview
+This module introduces the topic.
+
+## Lesson Structure (Topics)
+1. **Lesson 1: Intro**
+2. **Lesson 2: Build**`;
+
+describe('dluBlueprint — detection', () => {
+  it('detects a DLU day blueprint', () => {
+    expect(detectDluBlueprint(DLU)).toBe(true);
+  });
+  it('does not flag a standard module blueprint', () => {
+    expect(detectDluBlueprint(STD)).toBe(false);
+    expect(detectDluBlueprint('')).toBe(false);
+  });
+  it('detects even without the "### DLU Outline" marker (>=2 named parts)', () => {
+    const noHeader = "1. **Today's Mission**\n   - x\n2. **Day Reflection**\n   - y";
+    expect(detectDluBlueprint(noHeader)).toBe(true);
+  });
+  it('detects the non-numbered bold format (bp 234)', () => {
+    expect(detectDluBlueprint(DLU_BOLD)).toBe(true);
+  });
+  it('detects the bold-with-colon, no-heading format (bp 233)', () => {
+    expect(detectDluBlueprint(DLU_COLON)).toBe(true);
+  });
+});
+
+describe('dluBlueprint — the three real formats all yield the 5 parts', () => {
+  const expected = ["Today's Mission", 'Learn It', 'Quick Check', 'Up Next in Class', 'Day Reflection'];
+  for (const [name, fixture] of [['numbered', DLU], ['bold', DLU_BOLD], ['bold-colon', DLU_COLON]]) {
+    it(`${name}: parses Overview + 5 DLU parts and does not treat "Topic Label" as a part`, () => {
+      const secs = parseDluBlueprintSections(fixture);
+      expect(secs[0].title).toBe('Overview');
+      const partTitles = secs.slice(1).map((s) => s.title.replace(/\s*\(.*\)$/, ''));
+      expect(partTitles).toEqual(expected);
+      expect(secs.some((s) => /topic label/i.test(s.title))).toBe(false);
+    });
+    it(`${name}: round-trips a body-only regenerate keeping the header`, () => {
+      const secs = parseDluBlueprintSections(fixture);
+      const learn = secs.find((s) => /^learn it/i.test(s.title));
+      const rebuilt = replaceDluBlueprintSection(fixture, learn.title, 'FRESH BODY.');
+      const again = parseDluBlueprintSections(rebuilt);
+      expect(again.length).toBe(secs.length);
+      const l2 = again.find((s) => s.title === learn.title);
+      expect(l2.content).toContain('FRESH BODY.');
+      expect(l2.content.split('\n')[0]).toContain('Learn It');
+    });
+  }
+});
+
+describe('dluBlueprint — parse', () => {
+  it('splits into Overview + one section per numbered DLU part', () => {
+    const secs = parseDluBlueprintSections(DLU);
+    expect(secs[0].title).toBe('Overview');
+    expect(secs.map((s) => s.title)).toEqual([
+      'Overview', "Today's Mission", 'Learn It', 'Quick Check', 'Up Next in Class', 'Day Reflection',
+    ]);
+    // Overview keeps the header + DLU Outline line.
+    expect(secs[0].content).toContain('Day Number');
+    expect(secs[0].content).toContain('### DLU Outline');
+    // Each part keeps its own "N. **Title**" line verbatim.
+    expect(secs[1].content.startsWith("1. **Today's Mission**")).toBe(true);
+  });
+});
+
+describe('dluBlueprint — replace (splice-back)', () => {
+  it('replaces one part and preserves the others + numbering', () => {
+    const rebuilt = replaceDluBlueprintSection(DLU, 'Learn It', 'Regenerated Learn It body.');
+    const secs = parseDluBlueprintSections(rebuilt);
+    expect(secs.map((s) => s.title)).toEqual([
+      'Overview', "Today's Mission", 'Learn It', 'Quick Check', 'Up Next in Class', 'Day Reflection',
+    ]);
+    // The edited part got the new body, with its "2. **Learn It**" label re-prepended.
+    const learn = secs.find((s) => s.title === 'Learn It');
+    expect(learn.content).toContain('Regenerated Learn It body.');
+    expect(learn.content.startsWith('2. **Learn It**')).toBe(true);
+    // Neighbours untouched.
+    expect(secs.find((s) => s.title === "Today's Mission").content).toContain('crucial for maintenance');
+    expect(secs.find((s) => s.title === 'Quick Check').content).toContain('formative items');
+  });
+
+  it('keeps a manually-edited part that already carries its label', () => {
+    const edited = "3. **Quick Check**\n   - Edited items.";
+    const rebuilt = replaceDluBlueprintSection(DLU, 'Quick Check', edited);
+    const qc = parseDluBlueprintSections(rebuilt).find((s) => s.title === 'Quick Check');
+    expect((qc.content.match(/Quick Check/g) || []).length).toBe(1); // no doubled label
+    expect(qc.content).toContain('Edited items');
+  });
+
+  it('replaces the Overview block', () => {
+    const rebuilt = replaceDluBlueprintSection(DLU, 'Overview', '**Day Number:** 1\n\n### DLU Outline');
+    const secs = parseDluBlueprintSections(rebuilt);
+    expect(secs).toHaveLength(6);
+    expect(secs[0].title).toBe('Overview');
+  });
+});
+
+describe('buildBlueprintUiSections — DLU vs standard', () => {
+  it('returns DLU parts as sections for a DLU blueprint', () => {
+    const ui = buildBlueprintUiSections(DLU, null);
+    expect(ui.map((s) => s.title)).toContain("Today's Mission");
+    expect(ui.length).toBe(6);
+  });
+  it('still parses a standard blueprint via ## sections (unchanged)', () => {
+    const ui = buildBlueprintUiSections(STD, null);
+    expect(ui.map((s) => s.title)).toContain('Module Overview');
+    expect(ui.some((s) => s.title === "Today's Mission")).toBe(false);
+  });
+});

@@ -61,6 +61,8 @@
 .table td { border-top:1px solid #e2e8f0; padding:12px; vertical-align:top; }
 .badges { display:flex; gap:6px; flex-wrap:wrap; }
 .badge { display:inline-flex; align-items:center; border-radius:999px; padding:3px 8px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700; }
+.docTitleRow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.globalBadge { display:inline-flex; align-items:center; border-radius:999px; padding:2px 9px; background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
 .muted { color:#64748b; }
 .empty { padding:32px; text-align:center; color:#64748b; }
 .detail { margin-top:16px; border-top:1px solid #e2e8f0; padding-top:16px; }
