@@ -7,12 +7,16 @@ import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
   activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
+  generateCddBlockThunk,
 } from '@features/cdd/cddThunks';
 import { cddService } from '@features/cdd/services/cddService';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
-  selectCddLoading, selectCddGenerating, selectCddError,
+  selectCddLoading, selectCddGenerating, selectCddError, selectCddBlockJob,
+  resetBlockJob,
 } from '@features/cdd/cddSlice';
+import { useAuth } from '@hooks/useAuth';
+import BlockWidePanel from '@components/generation/BlockWidePanel/BlockWidePanel';
 import {
   selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
   selectModelChoice, selectExpertDomain, selectTargetAudience, selectAudienceCategory,
@@ -68,6 +72,11 @@ export default function CddPage() {
   const isLoading = useAppSelector(selectCddLoading);
   const isGenerating = useAppSelector(selectCddGenerating);
   const error = useAppSelector(selectCddError);
+  const blockJob = useAppSelector(selectCddBlockJob);
+  const { user } = useAuth();
+  // Block-wide (digest-pipeline) generation is opt-in per DIS client; the server
+  // reports the capability on /auth/me so we can hide the control otherwise.
+  const digestPipelineEnabled = Boolean(user?.digest_pipeline_enabled);
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
   const [refDocIds, setRefDocIds] = useState([]);
@@ -87,6 +96,9 @@ export default function CddPage() {
   const [viewVersion, setViewVersion] = useState(null);
   const [versionDetail, setVersionDetail] = useState(null);
   const [savingBlock, setSavingBlock] = useState(false);
+  // Block-wide (digest-pipeline) generation inputs.
+  const [blockLabel, setBlockLabel] = useState('');
+  const [qualityTier, setQualityTier] = useState('standard');
 
   const generateForm = useForm({
     resolver: zodResolver(createCddSchema),
@@ -118,6 +130,10 @@ export default function CddPage() {
 
   useEffect(() => {
     if (!courseId) return;
+    // Clear any block-job banner from a previously-viewed course so a stale
+    // completed/failed status can't leak into this course's view.
+    dispatch(resetBlockJob());
+    setBlockLabel('');
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
@@ -254,6 +270,24 @@ export default function CddPage() {
         : undefined,
     };
     await dispatch(generateCddThunk(payload));
+  }
+
+  async function onGenerateBlock() {
+    const data = generateForm.getValues();
+    const payload = {
+      block: blockLabel.trim(),
+      course_id: Number(courseId),
+      project_id: selProject?.id ?? projectId,
+      course_title: data.course_title,
+      document_title: data.document_title,
+      estimated_duration_hours: data.duration_hours || undefined,
+      quality_tier: qualityTier,
+      extra_instructions: extraInstructions,
+      model_choice: modelChoice,
+      target_audience: targetAudience,
+      expert_domain: expertDomain,
+    };
+    await dispatch(generateCddBlockThunk(payload));
   }
 
   async function onSetActive(cddId) {
@@ -787,6 +821,20 @@ export default function CddPage() {
                   ⬇️ Download Prompt
                 </Button>
               </div>
+
+              {digestPipelineEnabled && (
+                <BlockWidePanel
+                  label={L.cdd}
+                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
+                  block={blockLabel}
+                  onBlockChange={setBlockLabel}
+                  qualityTier={qualityTier}
+                  onQualityTierChange={setQualityTier}
+                  isGenerating={isGenerating}
+                  blockJob={blockJob}
+                  onGenerate={onGenerateBlock}
+                />
+              )}
             </div>
           </details>
         </div>

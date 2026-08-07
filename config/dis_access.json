@@ -7,7 +7,8 @@
   "client_admin_map": {
     "cengage_admin": "cengage",
     "aim_admin": "aim",
-    "shubham": "aim"
+    "shubham": "aim",
+    "platformadmin": "aim"
   },
   "user_client_map": {
     "cengage_user": "cengage",

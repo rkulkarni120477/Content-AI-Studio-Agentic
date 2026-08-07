@@ -3,6 +3,7 @@ import { blueprintService } from './services/blueprintService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { extractErrorMessage } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
+import { createBlockJobThunks } from '@features/shared/blockJob';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -54,6 +55,24 @@ export const generateBlueprintThunk = createAsyncThunk(
     }
   },
 );
+
+/**
+ * Block-wide (digest-pipeline) Block Blueprint generation — enqueue + poll via
+ * the shared factory (same robust polling lifecycle as CDD; see
+ * @features/shared/blockJob). Server persists AND pins on completion.
+ */
+export const { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk } =
+  createBlockJobThunks({
+    prefix: 'blueprint',
+    deliverable: 'blueprint',
+    enqueue: (payload) => blueprintService.generateBlueprintBlock(payload),
+    getJobStatus: (jobId) => blueprintService.getJobStatus(jobId),
+    completedMessage: 'Block Blueprint generated and set as active.',
+    failedMessage: 'Blueprint generation failed.',
+    onComplete: (dispatch, courseId) => {
+      if (courseId) dispatch(fetchBlueprintsThunk(courseId));
+    },
+  });
 
 export const setActiveBlueprintThunk = createAsyncThunk(
   'blueprint/setActive',

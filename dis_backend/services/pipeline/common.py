@@ -122,11 +122,22 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
         return '{"doc_type":"other","classification":"internal"}', 0, 0
 
 def safe_json(text: str) -> Dict[str, Any]:
+    clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
-        clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         return json.loads(clean)
     except Exception:
-        return {}
+        pass
+    # Models sometimes prepend conversational preamble before the JSON object
+    # (e.g. "Here is the JSON digest:\n\n{...}") even when told to return only
+    # JSON — the object itself is well-formed, just not at position 0. Extract
+    # the outermost {...} span and retry rather than discarding a good parse.
+    start, end = clean.find("{"), clean.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(clean[start:end + 1])
+        except Exception:
+            pass
+    return {}
 
 def keywords(text: str, limit: int = 20) -> List[str]:
     words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", text.lower())

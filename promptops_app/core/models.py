@@ -32,6 +32,10 @@ class ModelDef:
     provider:     Provider      # "openai" or "bedrock" — determines routing
     api_model_id: str           # Actual ID sent to the provider API
     is_default:   bool = False  # Pre-selected when no preference is saved
+    # Max output tokens to request for this model. Used by block-wide reduce so a
+    # larger-context model gets headroom instead of the flat 16384 cap that
+    # truncates long sectioned output (D6). Conservative defaults; tune in eval.
+    max_output_tokens: int = 16384
 
 
 # ── Catalog ────────────────────────────────────────────────────────────────
@@ -61,6 +65,7 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         tags=("structured",),
         provider="bedrock",
         api_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        max_output_tokens=32000,
     ),
     ModelDef(
         display_name="Claude Haiku 4.5 (Bedrock)",
@@ -71,6 +76,7 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         tags=("fast",),
         provider="bedrock",
         api_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        max_output_tokens=16384,
     ),
     ModelDef(
         display_name="Claude Opus 4.8 (Bedrock)",
@@ -82,6 +88,7 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         tags=("reasoning", "premium"),
         provider="bedrock",
         api_model_id="global.anthropic.claude-opus-4-8",
+        max_output_tokens=32000,
     ),
 )
 
@@ -131,3 +138,38 @@ def validate_model(display_name: str) -> ModelDef:
             f"Valid choices: {list(MODELS_BY_NAME)}"
         )
     return MODELS_BY_NAME[canonical]
+
+
+# ── Quality tiers for block-wide generation (D2) ────────────────────────────
+# A UI-selectable quality tier picks the REDUCE model for block-wide CDD /
+# Blueprint. The per-day MAP model is pinned separately (DIS side) so the digest
+# cache is shared across tiers — switching tier is one reduce call, not a full
+# rebuild. Standard is the default.
+
+@dataclass(frozen=True)
+class TierModels:
+    tier: str
+    reduce_model: str          # display_name resolvable via resolve_model()
+    max_output_tokens: int
+
+
+_TIER_REDUCE_MODEL: dict[str, str] = {
+    "draft":    "Claude Haiku 4.5 (Bedrock)",
+    "standard": "Claude Sonnet 4.5 (Bedrock)",
+    "premium":  "Claude Opus 4.8 (Bedrock)",
+}
+DEFAULT_TIER = "standard"
+
+
+def resolve_tier(tier: str | None) -> TierModels:
+    """Map a quality tier ('draft'|'standard'|'premium') to its REDUCE model.
+
+    Unknown/blank tiers fall back to the default tier rather than raising, so a
+    stale UI value can never break generation.
+    """
+    key = (tier or DEFAULT_TIER).strip().lower()
+    name = _TIER_REDUCE_MODEL.get(key)
+    if name is None:
+        key, name = DEFAULT_TIER, _TIER_REDUCE_MODEL[DEFAULT_TIER]
+    model = resolve_model(name)
+    return TierModels(tier=key, reduce_model=name, max_output_tokens=model.max_output_tokens)

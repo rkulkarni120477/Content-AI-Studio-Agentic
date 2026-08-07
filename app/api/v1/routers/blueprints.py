@@ -27,7 +27,7 @@ import json
 import logging
 import re
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -58,8 +58,12 @@ from app.schemas.blueprint import (
     BlueprintVersionRead,
 )
 from app.schemas.common import PaginatedResponse
+from app.schemas.block_wide import BlockWideGenerateRequest, BlockWideJobResponse
 from app.core.dis_client import dis_client
 from app.core.dis_access import resolve_course_dis_client
+from app.core.dis_day_context import resolve_day_context_block
+from app.core.config import settings
+from promptops_app.services.block_wide_service import run_block_wide_sync
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -162,13 +166,26 @@ def generate_blueprint(
     _log.info("blueprint_generate_start  user=%s  course=%d  module=%s",
               current_user.username, request_body.course_id, request_body.selected_module)
 
+    # ── Block-wide digest Blueprint (flag-gated) ───────────────────────────────
+    # Engages ONLY when a block is supplied AND the digest pipeline is enabled for
+    # the course's client (both checked inside run_block_wide_sync) → produces a
+    # day-by-day Block Blueprint from source digests (selected_module ignored). No
+    # caller sends `block` today, so the legacy module-blueprint path below is
+    # unchanged. Failure falls through to it.
+    _block_resp = run_block_wide_sync(db, "blueprint", request_body, current_user)
+    if _block_resp is not None:
+        return _block_resp
+
     # Resolve course (needed for cluster_id below) and CDD context.
     from promptops_app.repositories import course_repository
     course = course_repository.get_course_by_id(db, request_body.course_id)
     cdd_id = request_body.cdd_id or (course.active_cdd_id if course else None)
 
+    cdd_title = ""
     cdd_context = ""
     if cdd_id:
+        cdd_row = cdd_repository.get_cdd_by_id(db, cdd_id)
+        cdd_title = cdd_row.title if cdd_row else ""
         cdd_version = get_active_cdd_version(db, cdd_id)
         if cdd_version:
             cdd_context = extract_cdd_summary(cdd_version)
@@ -181,35 +198,59 @@ def generate_blueprint(
                     f"assessments defined for this module):**\n{module_section}"
                 )
 
-    dis_context_block, dis_source_units = _dis_context_block(
-        "blueprint",
-        {
-            "purpose": "blueprint",
-            "query": " ".join(str(x or "") for x in [
-                request_body.selected_module,
-                "",
-                request_body.extra_instructions,
-                cdd_context,
-                "teacher" if request_body.teacher_mode else "student",
-            ]),
-            "filters": {
-                "purpose": "blueprint",
-                "selected_module": request_body.selected_module,
-                # No hard document_types filter here. The DIS blueprint handler
-                # already narrows to calendar/syllabus (content_types), and the
-                # fixed names below did not match real stored doc types. Retrieval
-                # relies on purpose + semantic ranking; security allow-set applies.
-            },
-            "retrieval": {"top_k": 12, "token_budget": 12000},
-        },
-        current_user,
-        "BLUEPRINT CONTEXT",
-        # Scope retrieval to the COURSE's own Source Library (its project's
-        # client), independent of who runs the generation.
-        client_id=resolve_course_dis_client(
-            db, course_id=request_body.course_id, project_id=request_body.project_id,
-        ),
+    dis_client_id = resolve_course_dis_client(
+        db, course_id=request_body.course_id, project_id=request_body.project_id,
     )
+
+    # Day-scoped digest grounding (§7) — enriches a single Day selection with
+    # structured context (topic, ACS codes, source units) instead of only the
+    # generic whole-CDD summary above. Additive only: any miss (no day_number,
+    # pipeline disabled for this client, no parseable block label, DIS failure)
+    # leaves this a no-op and the legacy blob-query below still runs. Never
+    # engages the whole-block digest pipeline — see run_block_wide_sync's
+    # day_number guard.
+    day_context_block = resolve_day_context_block(
+        request_body.day_number, dis_client_id, current_user, "BLUEPRINT DAY CONTEXT",
+        course.name if course else None, cdd_title,
+    )
+
+    # Skip the legacy blob-query retrieval entirely when day-scoped grounding
+    # already succeeded — matches generations.py's `if not dis_context_block:`
+    # replacement semantics (§5.4 anti-pattern: don't stack a free-text blob
+    # query on top of a complete structured day bundle covering the same
+    # material). Flagged by adversarial review: this used to run BOTH
+    # unconditionally, paying for a real 12k-token retrieval call whose
+    # results mostly duplicated what the day bundle already provided.
+    if day_context_block:
+        dis_context_block, dis_source_units = "", []
+    else:
+        dis_context_block, dis_source_units = _dis_context_block(
+            "blueprint",
+            {
+                "purpose": "blueprint",
+                "query": " ".join(str(x or "") for x in [
+                    request_body.selected_module,
+                    "",
+                    request_body.extra_instructions,
+                    cdd_context,
+                    "teacher" if request_body.teacher_mode else "student",
+                ]),
+                "filters": {
+                    "purpose": "blueprint",
+                    "selected_module": request_body.selected_module,
+                    # No hard document_types filter here. The DIS blueprint handler
+                    # already narrows to calendar/syllabus (content_types), and the
+                    # fixed names below did not match real stored doc types. Retrieval
+                    # relies on purpose + semantic ranking; security allow-set applies.
+                },
+                "retrieval": {"top_k": 12, "token_budget": 12000},
+            },
+            current_user,
+            "BLUEPRINT CONTEXT",
+            # Scope retrieval to the COURSE's own Source Library (its project's
+            # client), independent of who runs the generation.
+            client_id=dis_client_id,
+        )
 
     # Build prompt.
     style_context = ""
@@ -219,6 +260,8 @@ def generate_blueprint(
             style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
 
     extra_block = request_body.extra_instructions or ""
+    if day_context_block:
+        extra_block = f"{extra_block}\n\n{day_context_block}".strip()
     if dis_context_block:
         extra_block = f"{extra_block}\n\n{dis_context_block}".strip()
     if style_context:
@@ -227,7 +270,16 @@ def generate_blueprint(
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
-        if dis_context_block:
+        # day_context_block and dis_context_block are mutually exclusive (the
+        # latter is only ever computed when the former came up empty, above) —
+        # fold in whichever one actually succeeded. Flagged by adversarial
+        # review: this only ever checked dis_context_block, so a day-scoped
+        # request using a prompt override silently lost its DIS grounding
+        # entirely once day-scoped grounding started replacing (rather than
+        # supplementing) the blob query.
+        if day_context_block:
+            user_prompt = f"{user_prompt}\n\n{day_context_block}"
+        elif dis_context_block:
             user_prompt = f"{user_prompt}\n\n{dis_context_block}"
         # Persist the override with the artifact (PL↔CAS sync review, plan
         # Phase 11) — inline-authored prompt text must stay recoverable.
@@ -327,11 +379,6 @@ def generate_blueprint(
     db.commit()
     db.refresh(new_bp)
 
-    cdd_title = ""
-    if cdd_id:
-        cdd_row = cdd_repository.get_cdd_by_id(db, cdd_id)
-        cdd_title = cdd_row.title if cdd_row else ""
-
     generation_params = {
         "cdd_id": cdd_id,
         "cdd_title": cdd_title,
@@ -420,6 +467,57 @@ def generate_blueprint(
             if llm_result.prompt_tokens else None
         ),
         auto_pinned=True,
+    )
+
+
+@router.post(
+    "/generate-block",
+    response_model=BlockWideJobResponse,
+    status_code=202,
+    summary="Generate a block-wide Block Blueprint via the digest pipeline (async)",
+    description=(
+        "Enqueues a background job that builds the block's day digests and reduces "
+        "them into a day-by-day Block Blueprint. Always async: poll "
+        "GET /api/v1/jobs/{job_id}; on completion the job's entity id is the new "
+        "blueprint id. Requires the digest pipeline enabled for the course's client."
+    ),
+    responses={
+        202: {"description": "Job queued."},
+        400: {"description": "Digest pipeline not enabled for this client."},
+        403: {"description": "Requires the blueprint.generate permission."},
+    },
+)
+def generate_blueprint_block(
+    request_body: BlockWideGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.generate")),
+) -> BlockWideJobResponse:
+    from promptops_app.repositories import job_repository
+    from promptops_app.jobs import job_runner, block_wide_jobs
+
+    dis_client_id = resolve_course_dis_client(
+        db, course_id=request_body.course_id, project_id=request_body.project_id,
+    )
+    if not settings.digest_pipeline_on_for(dis_client_id):
+        raise HTTPException(400, "Digest pipeline is not enabled for this course's client.")
+
+    params = request_body.model_dump()
+    params["deliverable"] = "blueprint"
+    params["user_name"] = current_user.username
+    # Persist role so the async worker keeps the caller's DIS privilege.
+    params["role"] = getattr(current_user, "role", "user")
+    params["dis_client_id"] = dis_client_id
+    job_id = job_repository.create_job(
+        db, user_name=current_user.username, request_params=params,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        job_type="blueprint_block",
+    )
+    job_runner.submit(block_wide_jobs.run_block_wide_job, job_id)
+    _log.info("blueprint_generate_block_queued  user=%s  course=%d  block=%s  job=%s",
+              current_user.username, request_body.course_id, request_body.block, job_id)
+    return BlockWideJobResponse(
+        job_id=job_id, status="queued", deliverable="blueprint",
+        block=request_body.block, poll_url=f"/api/v1/jobs/{job_id}",
     )
 
 
@@ -738,14 +836,16 @@ def get_blueprint_completion_status(
 @router.get("/{blueprint_id}/export", summary="Download blueprint as a file")
 def export_blueprint(
     blueprint_id: int,
-    format: str = Query(default="docx", description="docx | md"),
+    format: str = Query(default="docx", description="docx | md | xlsx"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
 ) -> Response:
     """Export the active blueprint version as a downloadable file."""
     from promptops_app.core.llm_client import safe_json_loads
     from promptops_app.parsers.blueprint_parser import _is_bp_section_hidden
-    from promptops_app.parsers.cdd_parser import _strip_ui_hidden_text, parse_sections_from_text
+    from promptops_app.parsers.cdd_parser import (
+        _strip_ui_hidden_text, is_dlu_cdd, parse_sections_from_text, split_cdd_worksheets,
+    )
     from promptops_app.repositories import blueprint_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
@@ -756,6 +856,41 @@ def export_blueprint(
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version)
     if not ver:
         raise NotFoundError(f"Blueprint version '{bp.active_version}'", blueprint_id)
+
+    # Block-wide Blueprint + XLSX → one sheet per worksheet (reuses cdd.py's
+    # DLU-CDD parser/exporter — worksheet detection is heading-shape-based, not
+    # CDD-specific). Gated on prompt_source == "digest_pipeline", NOT on content
+    # shape alone: this route is shared with the regular (non-block-wide) per-
+    # module Blueprint/"Outline" feature, which predates this pipeline and is
+    # out of scope for it. That feature's own AIM-specific prompt template
+    # ("Block Blueprint New") ALSO produces "## WORKSHEET N: X"-shaped output
+    # for unrelated reasons, so a shape-only check would silently reroute ITS
+    # xlsx export through this new path too — a real regression caught live,
+    # not theoretical. prompt_source is only ever "digest_pipeline" for
+    # content this pipeline generated, which itself is client-gated
+    # (DIGEST_PIPELINE_CLIENTS), so other tenants can never produce it.
+    gen_params = safe_json_loads(ver.generation_params) if ver.generation_params else {}
+    is_block_wide = isinstance(gen_params, dict) and gen_params.get("prompt_source") == "digest_pipeline"
+    if format == "xlsx" and is_block_wide and is_dlu_cdd(ver.full_content or ""):
+        from promptops_app.exporters.xlsx_exporter import build_xlsx_worksheets
+
+        sheets = []
+        for label, content in split_cdd_worksheets(ver.full_content or ""):
+            clean = _strip_ui_hidden_text(content)
+            if (clean or "").strip():
+                sheets.append((label, clean))
+        if sheets:
+            buf = build_xlsx_worksheets(bp.title, sheets)
+            fname = f"Blueprint_{bp.title.replace(' ', '_')}_{bp.active_version}.xlsx"
+            _log.info(
+                "blueprint_exported_dlu_xlsx  user=%s  blueprint_id=%d  sheets=%d",
+                current_user.username, blueprint_id, len(sheets),
+            )
+            return Response(
+                content=buf.read(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": content_disposition(fname)},
+            )
 
     # Build export blocks from the same UI-visible sections as the renderer —
     # filtered through _is_bp_section_hidden + _strip_ui_hidden_text so backend-only

@@ -77,6 +77,10 @@ class ModelConfig(BaseModel):
     structure_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
     quality_check: str = "anthropic.claude-3-sonnet-20240229-v1:0"
     vision: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    # Per-day digest extraction (MAP) for block-wide CDD/Blueprint. Pinned to a
+    # cheap model (Haiku) so the digest cache is shared across quality tiers (D2);
+    # only the REDUCE model varies by tier, on the app/promptops side.
+    digest_extraction: str = "anthropic.claude-3-haiku-20240307-v1:0"
 
 class PipelineConfig(BaseModel):
     # For local/dev, keep llm_provider=mock and USE_BEDROCK=false in .env.
@@ -90,6 +94,17 @@ class PipelineConfig(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 64
     vision_enabled: bool = True
+    # Digest MAP fan-out (plan D4/D7). When true, block digest builds run as a
+    # LangGraph Send fan-out (per-day checkpoint/resume, bounded concurrency)
+    # instead of the sequential loop; falls back to sequential if langgraph is
+    # absent. Off by default so the verified sequential path stays the default.
+    digest_fanout_enabled: bool = False
+    digest_fanout_max_concurrency: int = 5
+    # D7 checkpointer DSN for cross-process per-day resume. Blank ⇒ no checkpointer
+    # (in-process fan-out only). Production sets this AND installs
+    # langgraph-checkpoint-postgres; NEVER point it at the shared prod RDS from a
+    # dev container. A blank DSN keeps the seam inert and safe.
+    digest_fanout_checkpoint_dsn: str = ""
 
 class MetadataField(BaseModel):
     name: str
@@ -216,6 +231,10 @@ class StructureStoreConfig(BaseModel):
     url: str = ""
     schema_name: str = "dis"
     auto_create_schema: bool = True
+    # CurriculumProfile selector (plan §5.5 / D8). Picks how the block-wide digest
+    # pipeline enumerates coverage units + reads the declared coverage set for this
+    # tenant. Blank ⇒ fall back to the client id (AIM resolves to the AIM profile).
+    curriculum_profile: str = ""
 
 class VectorStoreConfig(BaseModel):
     # Tenant-specific vector store. Default provider is OpenSearch.

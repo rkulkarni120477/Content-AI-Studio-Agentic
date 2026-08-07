@@ -32,6 +32,10 @@ from promptops_app.core.config import settings as _cfg
 # Resolved once at import time from the central AppSettings.
 PROMPTOPS_API_TIMEOUT_SECONDS = _cfg.llm_timeout_seconds
 
+# Default output-token cap when a caller does not request model-aware headroom.
+# Preserves the historical flat value so every existing call is unchanged.
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
+
 _log = logging.getLogger(__name__)
 
 
@@ -91,7 +95,7 @@ def _get_openai_session() -> requests.Session:
     return _openai_session
 
 
-def call_openai(system_prompt: str, user_prompt: str) -> str:
+def call_openai(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> str:
     """Send a prompt to OpenAI and return the response text. No truncation applied."""
     if not settings.openai_api_key:
         return "ERROR: OpenAI API Key not configured."
@@ -107,7 +111,7 @@ def call_openai(system_prompt: str, user_prompt: str) -> str:
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": 16384,
+        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
     }
     _log.info("llm_call_started", extra={
         "event": "llm_call_started", "provider": "openai", "model": target_model,
@@ -140,12 +144,14 @@ def _call_openai_raw(
     system_prompt: str,
     user_prompt: str,
     model: Optional[str] = None,
+    max_tokens: Optional[int] = None,
 ) -> LLMResponse:
     """Call OpenAI and return LLMResponse. Raises LLM*Error on failure.
 
     Used by llm_service for the retry/fallback reliability layer.
     ``model`` should be the actual OpenAI API model ID (e.g. "gpt-4o"),
     resolved by the model catalog before this call is made.
+    ``max_tokens`` overrides the default output cap (block-wide reduce headroom).
     """
     if not settings.openai_api_key:
         raise LLMAuthError("OpenAI API key not configured.")
@@ -162,7 +168,7 @@ def _call_openai_raw(
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": 16384,
+        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
     }
     _log.info("llm_call_started", extra={
         "event": "llm_call_started", "provider": "openai", "model": target_model,
@@ -237,7 +243,42 @@ def _get_bedrock_client():
     return _bedrock_client
 
 
-def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] = None) -> str:
+def _bedrock_body(system_prompt: str, user_prompt: str, max_tokens: Optional[int],
+                  include_temperature: bool = True) -> str:
+    body: dict = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+    if include_temperature:
+        body["temperature"] = 0.3
+    return json.dumps(body)
+
+
+def _invoke_bedrock_with_retry(client, target_model_id: str, system_prompt: str,
+                               user_prompt: str, max_tokens: Optional[int]):
+    """Call Bedrock invoke_model, retrying once without `temperature` if the
+    model rejects it. Newer models (caught live: "global.anthropic.claude-opus-4-8")
+    have deprecated explicit temperature control and reject ANY value outright —
+    without this retry that sinks the whole call, which is worse than just
+    dropping a cosmetic sampling knob the model no longer accepts."""
+    try:
+        return client.invoke_model(
+            modelId=target_model_id,
+            body=_bedrock_body(system_prompt, user_prompt, max_tokens),
+        )
+    except Exception as exc:
+        if "temperature" not in str(exc).lower():
+            raise
+        return client.invoke_model(
+            modelId=target_model_id,
+            body=_bedrock_body(system_prompt, user_prompt, max_tokens, include_temperature=False),
+        )
+
+
+def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] = None,
+                 max_tokens: Optional[int] = None) -> str:
     """Send a prompt to AWS Bedrock and return the response text.
 
     ``model_id`` should be the actual Bedrock model ID (e.g.
@@ -252,14 +293,7 @@ def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] =
     start = time.monotonic()
     try:
         client = _get_bedrock_client()
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 16384,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}],
-            "temperature": 0.3,
-        })
-        response = client.invoke_model(modelId=target_model_id, body=body)
+        response = _invoke_bedrock_with_retry(client, target_model_id, system_prompt, user_prompt, max_tokens)
         response_body = json.loads(response.get("body").read())
         text = response_body.get("content", [{}])[0].get("text", "ERROR: Empty response from Bedrock")
         _log.info("llm_call_completed", extra={
@@ -279,12 +313,14 @@ def _call_bedrock_raw(
     system_prompt: str,
     user_prompt: str,
     model_id: Optional[str] = None,
+    max_tokens: Optional[int] = None,
 ) -> LLMResponse:
     """Call AWS Bedrock and return LLMResponse. Raises LLM*Error on failure.
 
     Used by llm_service for the retry/fallback reliability layer.
     ``model_id`` should be the actual Bedrock model ID resolved by the catalog;
     falls back to ``settings.bedrock_model_id`` when omitted.
+    ``max_tokens`` overrides the default output cap (block-wide reduce headroom).
     """
     target_model_id = model_id or settings.bedrock_model_id
     _log.info("llm_call_started", extra={
@@ -298,16 +334,8 @@ def _call_bedrock_raw(
         except Exception as exc:
             raise LLMProviderError(f"Bedrock client init failed: {exc}") from exc
 
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 16384,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}],
-            "temperature": 0.3,
-        })
-
         try:
-            response = client.invoke_model(modelId=target_model_id, body=body)
+            response = _invoke_bedrock_with_retry(client, target_model_id, system_prompt, user_prompt, max_tokens)
         except Exception as exc:
             err_lower = str(exc).lower()
             if any(k in err_lower for k in ("timeout", "timed out", "read timeout", "connect timeout")):

@@ -241,6 +241,14 @@ class AppSettings(BaseSettings):
     dis_user_client_map: str = Field(default="", alias="DIS_USER_CLIENT_MAP")
     dis_access_config_path: str = Field(default="", alias="DIS_ACCESS_CONFIG_PATH")
 
+    # ── Digest pipeline (block-wide CDD/Blueprint) ────────────────────────────
+    # Master switch for the enumerate→map→reduce→verify digest path. Default OFF:
+    # when false, CDD generation is byte-identical to today (legacy single call).
+    # The allowlist scopes the flag to specific clients so AIM can flip on first
+    # while every other tenant stays on the legacy path (multi-tenant safety).
+    digest_pipeline_enabled: bool = Field(default=False, alias="DIGEST_PIPELINE_ENABLED")
+    digest_pipeline_clients: str = Field(default="aim", alias="DIGEST_PIPELINE_CLIENTS")
+
     # ── Validators ────────────────────────────────────────────────────────────
 
     @field_validator("log_level", mode="before")
@@ -248,6 +256,17 @@ class AppSettings(BaseSettings):
     def _normalise_log_level(cls, value: object) -> object:
         """Normalise log level to uppercase so INFO and info both work."""
         return value.upper() if isinstance(value, str) else value
+
+    def digest_pipeline_on_for(self, client_id: str) -> bool:
+        """Whether the digest pipeline is active for *client_id*.
+
+        Master switch AND (empty allowlist ⇒ all clients, else membership). A
+        blank/unknown client is only enabled when the allowlist is empty.
+        """
+        if not self.digest_pipeline_enabled:
+            return False
+        allow = {c.strip().lower() for c in (self.digest_pipeline_clients or "").split(",") if c.strip()}
+        return not allow or (client_id or "").strip().lower() in allow
 
     # ── Safe plain-text accessors ─────────────────────────────────────────────
     # Use these when an external library needs the raw string.

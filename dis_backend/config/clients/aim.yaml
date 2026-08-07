@@ -55,6 +55,10 @@ pipeline:
     structure_extraction: anthropic.claude-3-sonnet-20240229-v1:0
     quality_check: anthropic.claude-3-sonnet-20240229-v1:0
     vision: anthropic.claude-3-sonnet-20240229-v1:0
+    # Per-day digest (MAP) for block-wide CDD/Blueprint. Design pins this to Haiku
+    # for a tier-shared cache (D2), but Haiku 3 is not invokable on this account
+    # (see note above), so AIM runs MAP on Sonnet 3 like the other text steps.
+    digest_extraction: anthropic.claude-3-sonnet-20240229-v1:0
   llm_temperature: 0.0
   chunking_strategy: semantic
   chunk_size: 512

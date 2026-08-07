@@ -94,7 +94,9 @@ PRD-CAS-Reverse-Pipeline.md
 RUN_CAS_DIS_LOCAL.md
 reverse_cas.md
 Technical-Requirements-Reverse-Pipeline-v2.md
-
+CDD_CONTEXT_REDESIGN_PLAN.md
+CDD_PHASE1_IMPLEMENTATION.md
+BLOCK2_BLUEPRINT_PROMPT_V4.md
 logs/
 .graphify_python
 graphify-out/

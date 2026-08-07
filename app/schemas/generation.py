@@ -46,6 +46,13 @@ class GenerationLaunchRequest(BaseModel):
     component_label: str = Field(..., description="Human-readable label shown in the dropdown.")
     component_type: str = Field(..., description="Component category: lesson | assessment")
 
+    # Day-scoped structural facets (plan §7). When both are set AND the digest
+    # pipeline is enabled for the course's client, retrieval switches from the
+    # free-text blob query to a structured block+day fetch (complete day units +
+    # digest + bounded kNN supplement). Absent → legacy retrieval, unchanged.
+    block: Optional[str] = Field(default=None, description="Curriculum block label, e.g. 'Block 2' (day-scoped retrieval).")
+    day: Optional[int] = Field(default=None, ge=1, description="Day number within the block (day-scoped retrieval).")
+
     # Prompt template (optional — prompt is auto-built from CDD/Blueprint context)
     prompt_name: Optional[str] = Field(default="", description="Prompt template name. Unused when CDD/Blueprint are present.")
     prompt_id: Optional[int] = Field(
