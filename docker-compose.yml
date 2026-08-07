@@ -34,6 +34,13 @@ services:
     volumes:
       - .:/app
 
+    # host.docker.internal resolves automatically on Docker Desktop (local dev)
+    # but not on plain Docker Engine on Linux (prod EC2) — needed for
+    # DIS_API_BASE_URL and LANGFUSE_HOST, both of which point at
+    # host.docker.internal to reach sibling compose projects on this same host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     depends_on:
       redis:
         condition: service_healthy
@@ -70,6 +77,9 @@ services:
 
     env_file:
       - .env
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     depends_on:
       redis:
