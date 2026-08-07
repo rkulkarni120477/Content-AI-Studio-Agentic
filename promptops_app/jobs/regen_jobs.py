@@ -124,7 +124,10 @@ def run_regenerate_item_job(job_id: str) -> None:
         _log.exception("Regenerate-item job %s failed: %s", job_id, exc)
         if job is not None:
             try:
-                set_failed(db, job, "Item regeneration failed. Please try again.")
+                # str(exc), not a generic message — matches generation_jobs.py.
+                # Without this, a BudgetExceededError's actual "$X of $Y used"
+                # message never reaches the user, just an unhelpful retry prompt.
+                set_failed(db, job, str(exc))
             except Exception:  # pragma: no cover - best-effort status write
                 pass
     finally:

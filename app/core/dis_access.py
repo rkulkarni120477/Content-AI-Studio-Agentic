@@ -314,7 +314,17 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
         if member_clients and (not requested_norm or requested_norm in member_clients):
             client_id = requested_norm if requested_norm in member_clients else member_clients[0]
             member_role = next((mrole for cid, mrole in membership if cid == client_id), "")
-            dis_role = "client_admin" if (member_role == "admin" or role in {"admin", "reviewer", "author"}) else "user"
+            if member_role == "admin" or role in {"admin", "reviewer"}:
+                dis_role = "client_admin"
+            elif role == "author":
+                # Narrow tier: upload/batch/folder-scan only — NOT a client_admin
+                # synonym. Must never satisfy require_role("client_admin"),
+                # including the restricted-content gate in DIS's
+                # retrieve_course_generation_context (answer keys/instructor-only
+                # material stay blocked for authors).
+                dis_role = "uploader"
+            else:
+                dis_role = "user"
             return DISAccessContext(
                 tenant_id=client_id,
                 client_id=client_id,
@@ -323,7 +333,12 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
                 available_clients=[client_id],
             )
         client_id = profile_client or inferred_client or default_client
-        dis_role = "client_admin" if role in {"admin", "reviewer", "author"} else "user"
+        if role in {"admin", "reviewer"}:
+            dis_role = "client_admin"
+        elif role == "author":
+            dis_role = "uploader"  # upload/batch/folder-scan only — see note above
+        else:
+            dis_role = "user"
 
     if available and client_id not in available:
         client_id = default_client

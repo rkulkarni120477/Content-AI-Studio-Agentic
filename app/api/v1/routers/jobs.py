@@ -55,12 +55,17 @@ def get_job_status(
         raise JobNotFoundError(job_id)
 
     usage_summary = None
-    if job.status == "completed":
+    # Scoped to the job's own creator, not whoever happens to be polling —
+    # get_job_status has no ownership check (pre-existing), so without this a
+    # shared/guessed job_id would leak a stranger's personal budget headroom
+    # under someone else's cost/token numbers. In the normal flow the poller
+    # already is the creator, so this changes nothing for legitimate use.
+    if job.status == "completed" and job.created_by == current_user.username:
         from promptops_app.services.budget_service import build_usage_summary
         from promptops_app.services.usage_service import UsageLogContext
 
         usage_ctx = UsageLogContext(
-            user_name=current_user.username, project_id=job.project_id, course_id=job.course_id,
+            user_name=job.created_by, project_id=job.project_id, course_id=job.course_id,
         )
         # entity_id differs per job type: the full-generation job logs its LLM
         # call under its own job id, but the regenerate-item job logs under the

@@ -591,3 +591,4 @@ def delete_role(
     role = tenant_service.get_custom_role_or_404(db, project_id, role_id)
     tenant_service.delete_custom_role(db, role)
     db.commit()
+    _log.info("tenant_role_deleted  project_id=%d  role_id=%d", project_id, role_id)
