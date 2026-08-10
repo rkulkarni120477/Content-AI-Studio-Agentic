@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { useParams } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
@@ -87,6 +87,10 @@ function formatFileSize(doc = {}) {
 export default function SourceLibraryPage() {
   const currentUser = useSelector(selectUser);
   const isAdmin = useSelector(selectIsAdmin);
+  // Set by the "Upload as Global" submit button (via onClick, which fires before
+  // the form's onSubmit) so handleUpload knows to tag the docs tenant-wide. A ref
+  // (not state) avoids a re-render race between the click and the submit.
+  const uploadAsGlobalRef = useRef(false);
   const { courseId } = useParams();
   const selectedProject = useSelector(selectSelectedProject);
   const selectedCourse = useSelector(selectSelectedCourse);
@@ -394,6 +398,10 @@ export default function SourceLibraryPage() {
 
   async function handleUpload(e) {
     e.preventDefault();
+    // Read + reset the global flag immediately so a later normal upload can't
+    // inherit it. Set by the "Upload as Global" button's onClick (fires first).
+    const uploadAsGlobal = uploadAsGlobalRef.current === true;
+    uploadAsGlobalRef.current = false;
     const formEl = e.currentTarget;
     const rawForm = new FormData(formEl);
     const selectedFiles = Array.from(formEl.elements.files?.files || []);
@@ -425,6 +433,7 @@ export default function SourceLibraryPage() {
       progress: 0,
       purpose: selectedPurpose,
       document_type: selectedDocumentType || 'auto-detect',
+      global: uploadAsGlobal,
       detail: 'Waiting to upload',
     }));
     setPersistedUploadQueue((current) => [...(current || []), ...queue]);
@@ -446,7 +455,13 @@ export default function SourceLibraryPage() {
         fd.set('source_root', relativePath.split('/')[0] || '');
       }
       if (scopedProjectId) fd.set('project_id', scopedProjectId);
-      if (scopedCourseId) fd.set('course_id', scopedCourseId);
+      // "Upload as Global": tag the doc with the tenant-wide sentinel course_id
+      // "-1". The DIS retrieval filter treats "-1" as visible in every course of
+      // this client/tenant. project_id is still sent (harmless — visibility keys
+      // off course_id only) so the correct tenant client still resolves. A normal
+      // upload keeps the currently selected course scope.
+      if (uploadAsGlobal) fd.set('course_id', '-1');
+      else if (scopedCourseId) fd.set('course_id', scopedCourseId);
       try {
         const result = await sourceLibraryApi.uploadDocument(fd, (pct) => {
           setUploadProgress(Math.round(((i + pct / 100) / entries.length) * 100));
@@ -596,15 +611,27 @@ export default function SourceLibraryPage() {
                 <input className={styles.input} name="document_type" placeholder="Optional, auto-detect if blank" />
               </div>
             </div>
-            <div style={{ marginTop: 12 }}>
-              <button className={styles.button} disabled={uploading}>{uploading ? `Uploading ${uploadProgress}%` : 'Upload and Ingest'}</button>
+            <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button type="submit" className={styles.button} disabled={uploading} onClick={() => { uploadAsGlobalRef.current = false; }}>{uploading ? `Uploading ${uploadProgress}%` : 'Upload and Ingest'}</button>
+              <button
+                type="submit"
+                className={styles.button}
+                disabled={uploading}
+                onClick={() => { uploadAsGlobalRef.current = true; }}
+                title="Upload these documents as tenant-wide global sources, visible in every course of this tenant."
+              >
+                Upload as Global
+              </button>
             </div>
             {uploadStatusItems.length > 0 && (
               <div className={styles.uploadQueue}>
                 {uploadStatusItems.map((item) => (
                   <div key={item.id} className={styles.uploadQueueItem}>
                     <div>
-                      <strong>{item.name}</strong>
+                      <div className={styles.docTitleRow}>
+                        <strong>{item.name}</strong>
+                        {item.global && <span className={styles.globalBadge} title="Uploading as tenant-wide global">Global</span>}
+                      </div>
                       <div className={styles.muted}>{Math.round((item.size || 0) / 1024 / 1024 * 10) / 10} MB · {item.detail || item.status}</div>
                     </div>
                     <span className={`${styles.statusPill} ${styles[`status_${item.status}`] || ''}`}>{item.status}</span>
@@ -649,7 +676,10 @@ export default function SourceLibraryPage() {
                   {uploadStatusItems.map((item) => (
                     <div key={item.id} className={styles.uploadQueueItem}>
                       <div>
-                        <strong>{item.name}</strong>
+                        <div className={styles.docTitleRow}>
+                          <strong>{item.name}</strong>
+                          {item.global && <span className={styles.globalBadge} title="Uploading as tenant-wide global">Global</span>}
+                        </div>
                         <div className={styles.muted}>{Math.round((item.size || 0) / 1024 / 1024 * 10) / 10} MB · {purposeLabels[item.purpose] || item.purpose || 'purpose'} · {item.document_type || 'auto-detect'} · {item.detail || item.status}</div>
                       </div>
                       <span className={`${styles.statusPill} ${styles[`status_${item.status}`] || ''}`}>{item.status}</span>
@@ -705,7 +735,13 @@ export default function SourceLibraryPage() {
                 <tbody>
                   {displayedDocuments.map((doc) => (
                     <tr key={doc.job_id || doc.document_id}>
-                      <td><strong>{doc.title || doc.source_file_name}</strong><div className={styles.muted}>{doc.source_file_name}</div></td>
+                      <td>
+                        <div className={styles.docTitleRow}>
+                          <strong>{doc.title || doc.source_file_name}</strong>
+                          {String(doc.course_id) === '-1' && <span className={styles.globalBadge} title="Visible in every course of this tenant">Global</span>}
+                        </div>
+                        <div className={styles.muted}>{doc.source_file_name}</div>
+                      </td>
                       <td>{doc.document_type || '—'}</td>
                       <td>{formatFileSize(doc)}</td>
                       <td>{doc.purpose || '—'}</td>

@@ -33,6 +33,7 @@ import {
   buildExtraInstructionsBlock,
 } from '@utils/blueprintModules';
 import { parseSectionsFromText } from '@utils/blueprintContent';
+import { detectDluBlueprint, replaceDluBlueprintSection } from '@utils/dluBlueprint';
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { commitVersionSchema } from '@utils/validation';
 import { GENERATION_MODES } from '@utils/constants';
@@ -371,6 +372,15 @@ export default function BlueprintPage() {
     const fullContent = versionDetail?.full_content
       || displayBp.active_content?.full_content
       || '';
+    // DLU (day-based) blueprints: splice the edited/regenerated part back into the
+    // numbered DLU structure instead of rebuilding as `## ` sections (which would
+    // flatten and renumber the day blueprint). Standard blueprints skip this.
+    if (detectDluBlueprint(fullContent)) {
+      return {
+        updatedSections: {},
+        newFull: replaceDluBlueprintSection(fullContent, sectionTitle, newContent),
+      };
+    }
     let sections = versionDetail?.sections;
     if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
       sections = parseSectionsFromText(fullContent);

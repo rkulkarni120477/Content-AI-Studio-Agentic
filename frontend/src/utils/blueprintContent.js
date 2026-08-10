@@ -1,6 +1,7 @@
 /**
  * Blueprint section parsing & UI filtering (Streamlit render_blueprint_content parity).
  */
+import { detectDluBlueprint, parseDluBlueprintSections } from './dluBlueprint';
 
 const BP_UI_HIDDEN_SECTION_KEYS = [
   'step 1 module identification',
@@ -94,6 +95,19 @@ export function normalizeBlueprintSectionTitle(title) {
  * @returns {{ title: string, content: string }[]}
  */
 export function buildBlueprintUiSections(fullContent, sectionsObj) {
+  // DLU (day-based) blueprints aren't organised as `## ` sections — they use a
+  // "### DLU Outline" + numbered-part shape. Parse that so the page shows the
+  // same per-section Save/Regenerate controls. Titles/content are kept verbatim
+  // (no normalize/strip) so the splice-back in BlueprintPage matches exactly.
+  // Standard blueprints have no DLU markers -> detectDluBlueprint false -> the
+  // existing `## ` logic below runs unchanged.
+  if (detectDluBlueprint(fullContent)) {
+    const dlu = parseDluBlueprintSections(fullContent)
+      .map((s) => ({ title: s.title, content: (s.content || '').trim() }))
+      .filter((s) => s.content);
+    if (dlu.length) return dlu;
+  }
+
   let raw = {};
   if (sectionsObj && typeof sectionsObj === 'object' && Object.keys(sectionsObj).length > 0) {
     raw = sectionsObj;
