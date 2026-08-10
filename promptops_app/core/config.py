@@ -19,11 +19,15 @@ at import time so the problem surfaces immediately rather than at runtime.
 
 from __future__ import annotations
 
+import functools
+import logging
 import os
 from typing import Optional
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_log = logging.getLogger(__name__)
 
 
 class AppSettings(BaseSettings):
@@ -140,6 +144,37 @@ class AppSettings(BaseSettings):
         ge=0,
     )
 
+    # ── Token-based truncation (P6.1, F11) ──────────────────────────────────────
+    # Truncation is token-based and ON by default. The flag is a master on/off:
+    #   enabled (default / true) → clip source & context to the token limits below
+    #                              (real token count via tiktoken).
+    #   false                    → NO truncation at all — full text reaches the LLM
+    #                              (accepts the cost / context-overflow tradeoff).
+    # Read at startup — recreate containers to pick up a change.
+    token_limit_enabled: bool = Field(
+        default=False,
+        alias="PROMPTOPS_TOKEN_LIMIT_ENABLED",
+    )
+    max_source_tokens: int = Field(
+        default=1500,            # per source document
+        alias="PROMPTOPS_MAX_SOURCE_TOKENS",
+        gt=0,
+    )
+    max_context_tokens: int = Field(
+        default=7500,            # combined supplementary context
+        alias="PROMPTOPS_MAX_CONTEXT_TOKENS",
+        gt=0,
+    )
+    token_encoding: str = Field(
+        default="cl100k_base",   # exact for OpenAI; close approx for Claude/Bedrock
+        alias="PROMPTOPS_TOKEN_ENCODING",
+    )
+    chars_per_token: float = Field(
+        default=4.0,             # only for the char fallback when tiktoken is absent
+        alias="PROMPTOPS_CHARS_PER_TOKEN",
+        gt=0,
+    )
+
     # ── Pagination ────────────────────────────────────────────────────────────
     editor_page_size: int     = Field(default=25,  alias="PROMPTOPS_EDITOR_PAGE_SIZE",     gt=0)
     workflow_page_size: int   = Field(default=100, alias="PROMPTOPS_WORKFLOW_PAGE_SIZE",   gt=0)
@@ -252,6 +287,9 @@ settings = AppSettings()
 MAX_SOURCE_CHARS   = settings.max_source_chars
 MAX_CONTEXT_CHARS  = settings.max_context_chars
 
+MAX_SOURCE_TOKENS  = settings.max_source_tokens
+MAX_CONTEXT_TOKENS = settings.max_context_tokens
+
 EDITOR_PAGE_SIZE     = settings.editor_page_size
 WORKFLOW_PAGE_SIZE   = settings.workflow_page_size
 ANALYTICS_PAGE_SIZE  = settings.analytics_page_size
@@ -272,6 +310,8 @@ LOG_FULL_PROMPTS = settings.enable_prompt_logging
 # PROMPTOPS_-prefixed aliases kept for any remaining legacy imports
 PROMPTOPS_MAX_SOURCE_CHARS       = MAX_SOURCE_CHARS
 PROMPTOPS_MAX_CONTEXT_CHARS      = MAX_CONTEXT_CHARS
+PROMPTOPS_MAX_SOURCE_TOKENS      = MAX_SOURCE_TOKENS
+PROMPTOPS_MAX_CONTEXT_TOKENS     = MAX_CONTEXT_TOKENS
 PROMPTOPS_EDITOR_PAGE_SIZE       = EDITOR_PAGE_SIZE
 PROMPTOPS_WORKFLOW_PAGE_SIZE     = WORKFLOW_PAGE_SIZE
 PROMPTOPS_ANALYTICS_PAGE_SIZE    = ANALYTICS_PAGE_SIZE
@@ -291,12 +331,34 @@ PROMPTOPS_LOG_FULL_PROMPTS       = LOG_FULL_PROMPTS
 # Text clipping utility — kept here so existing imports don't break
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=4)
+def _get_token_encoder(encoding_name: str):
+    """Return a cached tiktoken encoder, or None if tiktoken/the encoding is
+    unavailable (logged once — lru_cache also caches the None result). A None
+    return signals clip_tokens to use its character-based fallback."""
+    try:
+        import tiktoken
+        return tiktoken.get_encoding(encoding_name)
+    except Exception:
+        _log.warning(
+            "PROMPTOPS_TOKEN_LIMIT_ENABLED is on but tiktoken/encoding %r is "
+            "unavailable — falling back to character-based truncation.",
+            encoding_name,
+        )
+        return None
+
+
 def clip_text(
     text: str,
     limit: int,
     suffix: str = "\n...[truncated for faster generation]",
 ) -> str:
-    """Trim *text* to *limit* characters with a visible truncation marker."""
+    """Trim *text* to *limit* characters with a visible truncation marker.
+
+    Pure character-based truncation. ``limit <= 0`` means no cap. Kept as the
+    historical utility and as :func:`clip_tokens`' fallback when tiktoken is
+    unavailable.
+    """
     text = text or ""
     if limit <= 0 or len(text) <= limit:
         return text
@@ -304,6 +366,44 @@ def clip_text(
 
 
 _clip_text = clip_text  # private alias used throughout the codebase
+
+
+def clip_tokens(
+    text: str,
+    max_tokens: int,
+    suffix: str = "\n...[truncated for faster generation]",
+) -> str:
+    """Trim *text* to at most *max_tokens* real tokens (via tiktoken).
+
+    Behaviour is governed by ``PROMPTOPS_TOKEN_LIMIT_ENABLED``:
+
+    * **enabled (default)** — truncate to *max_tokens* tokens.
+    * **false** — no truncation at all; the full text is returned (the caller
+      accepts the cost / context-overflow tradeoff).
+
+    ``max_tokens <= 0`` means no cap. If tiktoken (or the configured encoding)
+    is unavailable, or token encoding/decoding raises, this degrades to
+    character-based truncation at ``max_tokens * chars_per_token`` characters —
+    so input stays bounded and a tokenizer problem can never break generation.
+    """
+    text = text or ""
+    if not settings.token_limit_enabled:
+        return text  # explicit opt-out → send the full, untrimmed text
+    if max_tokens <= 0:
+        return text  # no cap
+
+    enc = _get_token_encoder(settings.token_encoding)
+    if enc is None:
+        # tiktoken absent → keep input bounded via the char equivalent.
+        return clip_text(text, int(max_tokens * settings.chars_per_token), suffix)
+    try:
+        tokens = enc.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return enc.decode(tokens[:max_tokens]).rstrip() + suffix
+    except Exception:
+        _log.warning("Token truncation failed; using char fallback.", exc_info=True)
+        return clip_text(text, int(max_tokens * settings.chars_per_token), suffix)
 
 
 # ---------------------------------------------------------------------------

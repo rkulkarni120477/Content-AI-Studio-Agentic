@@ -33,6 +33,12 @@ celery_app.conf.update(
     task_acks_late=True,               # ack only after the task completes
     task_reject_on_worker_lost=True,   # re-queue if worker dies mid-task
     worker_prefetch_multiplier=1,      # one task at a time per worker slot
+    # Worker recycling (P6.3, F13) — reclaim any slowly-leaked memory by
+    # restarting a worker child after N tasks OR once it exceeds a memory
+    # ceiling, whichever comes first. Recycling happens between tasks, so it's
+    # transparent to job execution.
+    worker_max_tasks_per_child=100,        # recycle after 100 tasks
+    worker_max_memory_per_child=1_500_000, # ...or when RSS exceeds ~1.5 GB (value in KB)
     # Result expiry (keep results 24 h for polling)
     result_expires=86_400,
 )
