@@ -42,15 +42,26 @@ class BudgetExceededError(Exception):
     it to HTTP 402 (429 stays reserved for P5's separate rate limiting).
     """
 
-    def __init__(self, scope: str, scope_id: str, limit_usd: float, current_spend: float):
+    def __init__(self, scope: str, scope_id: str, limit_usd: float, current_spend: float, limit_type: str = "usd"):
         self.scope = scope
         self.scope_id = scope_id
+        # Named *_usd for backward compat (app/main.py's handler and existing
+        # tests read these attributes directly) — for a token-capped breach
+        # these hold token counts, not dollars; check limit_type to know which.
         self.limit_usd = limit_usd
         self.current_spend = current_spend
-        super().__init__(
-            f"{scope.capitalize()} budget exceeded: ${current_spend:.2f} of "
-            f"${limit_usd:.2f} used this period."
-        )
+        self.limit_type = limit_type
+        if limit_type == "tokens":
+            msg = (
+                f"{scope.capitalize()} token limit exceeded: {int(current_spend):,} of "
+                f"{int(limit_usd):,} tokens used this period."
+            )
+        else:
+            msg = (
+                f"{scope.capitalize()} budget exceeded: ${current_spend:.2f} of "
+                f"${limit_usd:.2f} used this period."
+            )
+        super().__init__(msg)
 
 # Matches the max_tokens already hardcoded in llm_client.py's request bodies —
 # the true worst case a single call can actually request from the provider.
@@ -65,6 +76,10 @@ _CHARS_PER_TOKEN_ESTIMATE = 4
 
 def _estimate_input_tokens(system_prompt: str, user_prompt: str) -> int:
     return (len(system_prompt or "") + len(user_prompt or "")) // _CHARS_PER_TOKEN_ESTIMATE
+
+
+def _worst_case_tokens(system_prompt: str, user_prompt: str) -> int:
+    return _estimate_input_tokens(system_prompt, user_prompt) + WORST_CASE_OUTPUT_TOKENS
 
 
 def period_key(period: str, now: Optional[datetime] = None) -> str:
@@ -114,11 +129,18 @@ def current_period_spend(db, scope: str, scope_id: str, period: str, now: Option
 
 @dataclass
 class BudgetReservation:
-    """What check_budget hands reconcile_budget after the call completes."""
+    """What check_budget hands reconcile_budget after the call completes.
+
+    Both cost and token worst-case estimates are always carried, regardless
+    of which one the scope's policy actually enforces — budget_period_spend
+    tracks both columns unconditionally (see reconcile_budget), so the
+    dashboard always has real numbers for either axis.
+    """
     scope: str
     scope_id: str
     period_key: str
     reserved_usd: float
+    reserved_tokens: int = 0
 
 
 def _get_policy(db, scope: str, scope_id: str):
@@ -128,7 +150,7 @@ def _get_policy(db, scope: str, scope_id: str):
     ).first()
 
 
-def _reserve(db, *, scope: str, scope_id: str, pkey: str, cost_usd: float, limit_usd: float) -> bool:
+def _reserve(db, *, scope: str, scope_id: str, pkey: str, cost_usd: float, tokens: int, policy) -> bool:
     """Atomic check-and-reserve. Returns True if reserved, False if it would breach the limit.
 
     Two statements, same transaction: seed the bucket at 0 if it doesn't exist
@@ -136,26 +158,37 @@ def _reserve(db, *, scope: str, scope_id: str, pkey: str, cost_usd: float, limit
     step, a fresh period's very first call would hit the INSERT branch of a
     single combined upsert unconditionally — no WHERE guard applies to a plain
     INSERT, so a first call whose own cost exceeds the limit would slip through.
+
+    Both spent_usd and spent_tokens are incremented unconditionally in the same
+    UPDATE — only the WHERE guard's column depends on the policy's limit_type,
+    since that's the only one actually enforced. guard_col is one of two fixed
+    internal strings, never user input, so the f-string is not an injection risk.
     """
     db.execute(
         text("""
-            INSERT INTO budget_period_spend (scope, scope_id, period_key, spent_usd, updated_at)
-            VALUES (:scope, :scope_id, :period_key, 0, :now)
+            INSERT INTO budget_period_spend (scope, scope_id, period_key, spent_usd, spent_tokens, updated_at)
+            VALUES (:scope, :scope_id, :period_key, 0, 0, :now)
             ON CONFLICT (scope, scope_id, period_key) DO NOTHING
         """),
         {"scope": scope, "scope_id": scope_id, "period_key": pkey, "now": datetime.now(timezone.utc)},
     )
+    if policy.limit_type == "tokens":
+        guard_col, limit_val = "spent_tokens", policy.limit_tokens
+    else:
+        guard_col, limit_val = "spent_usd", policy.limit_usd
     result = db.execute(
-        text("""
+        text(f"""
             UPDATE budget_period_spend
-            SET spent_usd = spent_usd + :cost, updated_at = :now
+            SET spent_usd = spent_usd + :cost, spent_tokens = spent_tokens + :tokens, updated_at = :now
             WHERE scope = :scope AND scope_id = :scope_id AND period_key = :period_key
-              AND spent_usd + :cost <= :limit_usd
-            RETURNING spent_usd
+              AND {guard_col} + :guard_amount <= :limit_val
+            RETURNING spent_usd, spent_tokens
         """),
         {
             "scope": scope, "scope_id": scope_id, "period_key": pkey,
-            "cost": cost_usd, "limit_usd": limit_usd, "now": datetime.now(timezone.utc),
+            "cost": cost_usd, "tokens": tokens,
+            "guard_amount": tokens if policy.limit_type == "tokens" else cost_usd,
+            "limit_val": limit_val, "now": datetime.now(timezone.utc),
         },
     )
     reserved = result.first() is not None
@@ -163,48 +196,52 @@ def _reserve(db, *, scope: str, scope_id: str, pkey: str, cost_usd: float, limit
     return reserved
 
 
-def _reserve_unconditional(db, *, scope: str, scope_id: str, pkey: str, cost_usd: float) -> float:
+def _reserve_unconditional(db, *, scope: str, scope_id: str, pkey: str, cost_usd: float, tokens: int) -> tuple[float, int]:
     """Always increments, never blocks — dry-run mode's accounting path.
 
     Dry-run means "don't block", not "don't track": the real call happens
     either way, so spend must be recorded for real even past a configured
     limit, or the running total silently under-counts once a limit is
-    nominally hit. Returns the new total so the caller can log/warn without
-    a second query.
+    nominally hit. Returns (new_spent_usd, new_spent_tokens) so the caller can
+    log/warn without a second query.
     """
     result = db.execute(
         text("""
-            INSERT INTO budget_period_spend (scope, scope_id, period_key, spent_usd, updated_at)
-            VALUES (:scope, :scope_id, :period_key, :cost, :now)
+            INSERT INTO budget_period_spend (scope, scope_id, period_key, spent_usd, spent_tokens, updated_at)
+            VALUES (:scope, :scope_id, :period_key, :cost, :tokens, :now)
             ON CONFLICT (scope, scope_id, period_key) DO UPDATE
-              SET spent_usd = budget_period_spend.spent_usd + :cost, updated_at = :now
-            RETURNING spent_usd
+              SET spent_usd = budget_period_spend.spent_usd + :cost,
+                  spent_tokens = budget_period_spend.spent_tokens + :tokens,
+                  updated_at = :now
+            RETURNING spent_usd, spent_tokens
         """),
-        {"scope": scope, "scope_id": scope_id, "period_key": pkey, "cost": cost_usd, "now": datetime.now(timezone.utc)},
+        {"scope": scope, "scope_id": scope_id, "period_key": pkey, "cost": cost_usd, "tokens": tokens, "now": datetime.now(timezone.utc)},
     )
     row = result.first()
     db.commit()
-    return float(row[0]) if row else cost_usd
+    return (float(row[0]), int(row[1])) if row else (cost_usd, tokens)
 
 
-def reconcile_budget(db, reservation: BudgetReservation, actual_cost_usd: float) -> None:
-    """Adjust a reservation down (or up) to the real cost. Call in a `finally` —
-    must run even when the LLM call fails, or a failed call permanently leaks
-    its worst-case reservation until the period rolls over.
+def reconcile_budget(db, reservation: BudgetReservation, actual_cost_usd: float, actual_tokens: int = 0) -> None:
+    """Adjust a reservation down (or up) to the real cost/tokens. Call in a
+    `finally` — must run even when the LLM call fails, or a failed call
+    permanently leaks its worst-case reservation until the period rolls over.
     """
     try:
-        delta = actual_cost_usd - reservation.reserved_usd
-        if delta == 0:
+        delta_cost = actual_cost_usd - reservation.reserved_usd
+        delta_tokens = actual_tokens - reservation.reserved_tokens
+        if delta_cost == 0 and delta_tokens == 0:
             return
         db.execute(
             text("""
                 UPDATE budget_period_spend
-                SET spent_usd = spent_usd + :delta, updated_at = :now
+                SET spent_usd = spent_usd + :delta_cost, spent_tokens = spent_tokens + :delta_tokens, updated_at = :now
                 WHERE scope = :scope AND scope_id = :scope_id AND period_key = :period_key
             """),
             {
                 "scope": reservation.scope, "scope_id": reservation.scope_id,
-                "period_key": reservation.period_key, "delta": delta,
+                "period_key": reservation.period_key,
+                "delta_cost": delta_cost, "delta_tokens": delta_tokens,
                 "now": datetime.now(timezone.utc),
             },
         )
@@ -246,9 +283,10 @@ class BudgetCheckResult:
     warnings: list       # list[dict] — levels that crossed warn_threshold_pct this call
 
 
-def _current_total(db, scope: str, scope_id: str, pkey: str) -> float:
+def _current_total(db, scope: str, scope_id: str, pkey: str, limit_type: str = "usd") -> float:
+    column = "spent_tokens" if limit_type == "tokens" else "spent_usd"
     row = db.execute(
-        text("SELECT spent_usd FROM budget_period_spend WHERE scope=:s AND scope_id=:i AND period_key=:p"),
+        text(f"SELECT {column} FROM budget_period_spend WHERE scope=:s AND scope_id=:i AND period_key=:p"),
         {"s": scope, "i": scope_id, "p": pkey},
     ).first()
     return float(row[0]) if row else 0.0
@@ -290,56 +328,62 @@ def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: 
             return BudgetCheckResult(reservations=[], warnings=[])
 
         worst_case_cost = estimate_cost(model, _estimate_input_tokens(system_prompt, user_prompt), WORST_CASE_OUTPUT_TOKENS)
+        worst_case_tokens = _worst_case_tokens(system_prompt, user_prompt)
         dry_run = enforcement_mode() != "enforce"
 
         reservations: list[BudgetReservation] = []
         warnings: list[dict] = []
-        breaches: list[tuple[str, str, float, float, float]] = []  # scope, scope_id, limit, spend, margin
+        breaches: list[tuple[str, str, float, float, float, str]] = []  # scope, scope_id, limit, spend, margin, limit_type
 
         for scope, scope_id in levels:
             policy = _get_policy(db, scope, scope_id)
             if policy is None:
                 continue  # no policy configured at this level — unrestricted
             pkey = period_key(policy.period)
+            limit_type = policy.limit_type or "usd"
+            limit_value = policy.limit_tokens if limit_type == "tokens" else policy.limit_usd
 
             if dry_run:
                 # Real call happens regardless — track real spend, never block.
-                new_total = _reserve_unconditional(db, scope=scope, scope_id=scope_id, pkey=pkey, cost_usd=worst_case_cost)
-                reservations.append(BudgetReservation(scope, scope_id, pkey, worst_case_cost))
-                if new_total > policy.limit_usd:
+                new_usd, new_tokens = _reserve_unconditional(
+                    db, scope=scope, scope_id=scope_id, pkey=pkey, cost_usd=worst_case_cost, tokens=worst_case_tokens,
+                )
+                new_total = new_tokens if limit_type == "tokens" else new_usd
+                reservations.append(BudgetReservation(scope, scope_id, pkey, worst_case_cost, worst_case_tokens))
+                if limit_value and new_total > limit_value:
                     _log.warning(
-                        "BUDGET_DRY_RUN would_block scope=%s scope_id=%s spend=%.4f limit=%.4f",
-                        scope, scope_id, new_total, policy.limit_usd,
+                        "BUDGET_DRY_RUN would_block scope=%s scope_id=%s limit_type=%s spend=%.4f limit=%.4f",
+                        scope, scope_id, limit_type, new_total, limit_value,
                     )
-                elif policy.limit_usd > 0 and (new_total / policy.limit_usd * 100) >= policy.warn_threshold_pct:
+                elif limit_value and (new_total / limit_value * 100) >= policy.warn_threshold_pct:
                     if policy.last_warned_period != pkey:
                         policy.last_warned_period = pkey
                         db.commit()
-                        warnings.append({"scope": scope, "scope_id": scope_id, "current_spend": new_total, "limit_usd": policy.limit_usd})
+                        warnings.append({"scope": scope, "scope_id": scope_id, "current_spend": new_total, "limit_usd": limit_value, "limit_type": limit_type})
                 continue
 
-            reserved = _reserve(db, scope=scope, scope_id=scope_id, pkey=pkey, cost_usd=worst_case_cost, limit_usd=policy.limit_usd)
+            reserved = _reserve(db, scope=scope, scope_id=scope_id, pkey=pkey, cost_usd=worst_case_cost, tokens=worst_case_tokens, policy=policy)
             if reserved:
-                reservations.append(BudgetReservation(scope, scope_id, pkey, worst_case_cost))
-                current_total = _current_total(db, scope, scope_id, pkey)
-                if policy.limit_usd > 0 and (current_total / policy.limit_usd * 100) >= policy.warn_threshold_pct:
+                reservations.append(BudgetReservation(scope, scope_id, pkey, worst_case_cost, worst_case_tokens))
+                current_total = _current_total(db, scope, scope_id, pkey, limit_type)
+                if limit_value and (current_total / limit_value * 100) >= policy.warn_threshold_pct:
                     if policy.last_warned_period != pkey:
                         policy.last_warned_period = pkey
                         db.commit()
-                        warnings.append({"scope": scope, "scope_id": scope_id, "current_spend": current_total, "limit_usd": policy.limit_usd})
+                        warnings.append({"scope": scope, "scope_id": scope_id, "current_spend": current_total, "limit_usd": limit_value, "limit_type": limit_type})
             else:
-                current_total = _current_total(db, scope, scope_id, pkey)
-                margin = policy.limit_usd - current_total
-                breaches.append((scope, scope_id, policy.limit_usd, current_total, margin))
+                current_total = _current_total(db, scope, scope_id, pkey, limit_type)
+                margin = (limit_value or 0) - current_total
+                breaches.append((scope, scope_id, limit_value or 0, current_total, margin, limit_type))
 
         if breaches:
             # The call as a whole is blocked — release any reservations already
             # made at OTHER levels this same attempt, since no real cost happens.
             for r in reservations:
-                reconcile_budget(db, r, actual_cost_usd=0.0)
+                reconcile_budget(db, r, actual_cost_usd=0.0, actual_tokens=0)
             breaches.sort(key=lambda b: b[4])  # smallest margin = most restrictive
-            scope, scope_id, limit_usd, current_spend, _ = breaches[0]
-            raise BudgetExceededError(scope, scope_id, limit_usd, current_spend)
+            scope, scope_id, limit_value, current_spend, _, limit_type = breaches[0]
+            raise BudgetExceededError(scope, scope_id, limit_value, current_spend, limit_type)
 
         return BudgetCheckResult(reservations=reservations, warnings=warnings)
 
@@ -362,7 +406,7 @@ def check_budget_autocommit(usage_ctx, *, system_prompt: str, user_prompt: str, 
         db.close()
 
 
-def reconcile_budget_autocommit(reservations: list, actual_cost_usd: float) -> None:
+def reconcile_budget_autocommit(reservations: list, actual_cost_usd: float, actual_tokens: int = 0) -> None:
     """reconcile_budget() for all of a call's reservations at once, own session."""
     if not reservations:
         return
@@ -370,7 +414,7 @@ def reconcile_budget_autocommit(reservations: list, actual_cost_usd: float) -> N
     db = SessionLocal()
     try:
         for reservation in reservations:
-            reconcile_budget(db, reservation, actual_cost_usd)
+            reconcile_budget(db, reservation, actual_cost_usd, actual_tokens)
     finally:
         db.close()
 
@@ -402,12 +446,16 @@ def build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Opti
         policy = _get_policy(db, scope, scope_id)
         if policy is None:
             continue
-        spent = current_period_spend(db, scope, scope_id, policy.period)
-        budgets.append({
-            "scope": scope, "scope_id": scope_id,
-            "limit_usd": policy.limit_usd, "spent_usd": round(spent, 4),
-            "remaining_usd": round(policy.limit_usd - spent, 4),
-        })
+        spent_usd, spent_tokens = current_period_usage(db, scope, scope_id, policy.period)
+        limit_type = policy.limit_type or "usd"
+        entry = {
+            "scope": scope, "scope_id": scope_id, "limit_type": limit_type,
+            "limit_usd": policy.limit_usd, "spent_usd": round(spent_usd, 4),
+            "remaining_usd": round(policy.limit_usd - spent_usd, 4) if policy.limit_usd is not None else None,
+            "limit_tokens": policy.limit_tokens, "spent_tokens": spent_tokens,
+            "remaining_tokens": (policy.limit_tokens - spent_tokens) if policy.limit_tokens is not None else None,
+        }
+        budgets.append(entry)
 
     return {
         "cost_usd": round(usage_row.estimated_cost or 0.0, 4),

@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { ANALYTICS, USERS, GENERATE, PROJECTS } from '@services/endpoints';
+import { ANALYTICS, GENERATE, PROJECTS } from '@services/endpoints';
 
 /** Normalize list endpoints — API returns a JSON array; guard wrapped shapes. */
 function asList(data) {
@@ -29,7 +29,4 @@ export const analyticsService = {
   getProjectCourses:    (projectId) =>
     api.get(PROJECTS.COURSES(projectId), { params: { page_size: 200 } }).then(asList),
   exportAudit:          (p)  => api.download(ANALYTICS.AUDIT_EXPORT, { params: p }),
-  listUsers:            ()   => api.get(USERS.LIST),
-  createUser:           (d)  => api.post(USERS.CREATE, d),
-  toggleUserActive:     (id, isActive) => api.put(USERS.TOGGLE_ACTIVE(id), { is_active: isActive }),
 };

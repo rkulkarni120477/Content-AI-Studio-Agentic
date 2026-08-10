@@ -1,14 +1,12 @@
 import { createSlice } from '@reduxjs/toolkit';
 import {
-  fetchSummaryThunk, fetchAuditTrailThunk,
-  fetchFeedbackThunk, fetchUsersThunk,
-  createUserThunk, toggleUserActiveThunk,
+  fetchSummaryThunk,
+  fetchFeedbackThunk,
   fetchProjectAnalyticsThunk,
   fetchGenerationHistoryThunk,
   fetchHistoryExtrasThunk, fetchFeedbackSummaryThunk,
   fetchReviewsThunk, fetchLlmCostThunk,
   fetchPermissionsOverviewThunk, fetchClearPresetsThunk,
-  fetchAuditTrailFiltersThunk,
   fetchBudgetsThunk, upsertBudgetThunk, deleteBudgetThunk,
   fetchGenerationTraceThunk,
 } from './analyticsThunks';
@@ -26,14 +24,6 @@ const initialState = {
   feedbackScope: 'learning',
   reviews:    { total: 0, approved: 0, avg_score: 0, items: [] },
   llmCost:    null,
-  auditTrail: { items: [], total: 0, page: 1, page_size: 25, pages: 0 },
-  auditTrailError: null,
-  auditTrailLoading: false,
-  auditFilterOptions: { actors: [], actions: [], entity_types: [], projects: [], page_sizes: [25, 50, 100] },
-  auditFilters: {
-    actor: '', action: '', entityType: '', projectId: '', dateFrom: '', dateTo: '', pageSize: 25,
-  },
-  users:      [],
   permissionsOverview: null,
   clearPresets: [],
   budgets: [],
@@ -47,7 +37,6 @@ const initialState = {
     pageSize:   50,
   },
   isLoading:  false,
-  isLoadingUsers: false,
   error:      null,
 };
 
@@ -59,7 +48,6 @@ const analyticsSlice = createSlice({
     setFilters(s, { payload }) { s.filters = { ...s.filters, ...payload }; },
     setFeedbackScope(s, { payload }) { s.feedbackScope = payload; },
     resetFilters(s) { s.filters = initialState.filters; },
-    setAuditFilters(s, { payload }) { s.auditFilters = { ...s.auditFilters, ...payload }; },
     clearGenerationTrace(s) { s.generationTrace = null; s.generationTraceError = null; },
   },
   extraReducers: (b) => {
@@ -86,31 +74,8 @@ const analyticsSlice = createSlice({
       .addCase(fetchReviewsThunk.fulfilled, (s, { payload }) => { s.reviews = payload || s.reviews; })
       .addCase(fetchLlmCostThunk.fulfilled, (s, { payload }) => { s.llmCost = payload; })
 
-      .addCase(fetchAuditTrailThunk.pending, (s) => { s.auditTrailLoading = true; s.auditTrailError = null; })
-      .addCase(fetchAuditTrailThunk.fulfilled, (s, { payload }) => {
-        s.auditTrailLoading = false;
-        s.auditTrail = payload ?? { items: [], total: 0 };
-      })
-      .addCase(fetchAuditTrailThunk.rejected, (s, { payload }) => {
-        s.auditTrailLoading = false;
-        s.auditTrailError = payload || 'Failed to load audit trail';
-      })
-
-      .addCase(fetchAuditTrailFiltersThunk.fulfilled, (s, { payload }) => {
-        s.auditFilterOptions = payload || s.auditFilterOptions;
-      })
-
-      .addCase(fetchUsersThunk.pending,   (s) => { s.isLoadingUsers = true; })
-      .addCase(fetchUsersThunk.fulfilled, (s, { payload }) => { s.isLoadingUsers = false; s.users = payload?.items || payload || []; })
-      .addCase(fetchUsersThunk.rejected,  (s) => { s.isLoadingUsers = false; })
-
       .addCase(fetchPermissionsOverviewThunk.fulfilled, (s, { payload }) => { s.permissionsOverview = payload; })
       .addCase(fetchClearPresetsThunk.fulfilled, (s, { payload }) => { s.clearPresets = payload || []; })
-
-      .addCase(createUserThunk.fulfilled, (s, { payload }) => { s.users.unshift(payload); })
-      .addCase(toggleUserActiveThunk.fulfilled, (s, { payload }) => {
-        s.users = s.users.map((u) => u.id === payload.id ? payload : u);
-      })
 
       .addCase(fetchBudgetsThunk.pending, (s) => { s.budgetsError = null; })
       .addCase(fetchBudgetsThunk.fulfilled, (s, { payload }) => { s.budgets = payload || []; })
@@ -136,7 +101,7 @@ const analyticsSlice = createSlice({
   },
 });
 
-export const { clearError, setFilters, setFeedbackScope, resetFilters, setAuditFilters, clearGenerationTrace } = analyticsSlice.actions;
+export const { clearError, setFilters, setFeedbackScope, resetFilters, clearGenerationTrace } = analyticsSlice.actions;
 export default analyticsSlice.reducer;
 
 export const selectSummary    = (s) => s.analytics.summary;
@@ -151,12 +116,6 @@ export const selectFeedback   = (s) => s.analytics.feedback;
 export const selectFeedbackScope = (s) => s.analytics.feedbackScope;
 export const selectReviews    = (s) => s.analytics.reviews;
 export const selectLlmCost    = (s) => s.analytics.llmCost;
-export const selectAuditTrail = (s) => s.analytics.auditTrail;
-export const selectAuditTrailLoading = (s) => s.analytics.auditTrailLoading;
-export const selectAuditTrailError = (s) => s.analytics.auditTrailError;
-export const selectAuditFilterOptions = (s) => s.analytics.auditFilterOptions;
-export const selectAuditFilters = (s) => s.analytics.auditFilters;
-export const selectUsers      = (s) => s.analytics.users;
 export const selectPermissionsOverview = (s) => s.analytics.permissionsOverview;
 export const selectClearPresets = (s) => s.analytics.clearPresets;
 export const selectBudgets = (s) => s.analytics.budgets;

@@ -187,6 +187,9 @@ class LlmCostDashboardResponse(BaseModel):
     by_project: list[dict] = Field(default_factory=list)
     by_course: list[dict] = Field(default_factory=list)
     by_user: list[dict] = Field(default_factory=list)
+    platform_user_usage: list[dict] = Field(default_factory=list)
+    platform_tenant_usage: list[dict] = Field(default_factory=list)
+    platform_course_usage: list[dict] = Field(default_factory=list)
 
 
 class GenerationHistoryRow(BaseModel):

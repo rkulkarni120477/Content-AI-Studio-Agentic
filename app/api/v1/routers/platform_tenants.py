@@ -233,7 +233,9 @@ def upsert_budget(
         db.add(policy)
 
     policy.period = body.period
+    policy.limit_type = body.limit_type
     policy.limit_usd = body.limit_usd
+    policy.limit_tokens = body.limit_tokens
     policy.warn_threshold_pct = body.warn_threshold_pct
     db.commit()
     db.refresh(policy)

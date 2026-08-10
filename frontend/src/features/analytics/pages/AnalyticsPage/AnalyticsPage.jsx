@@ -1,16 +1,12 @@
 import { useEffect, useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchSummaryThunk, fetchAuditTrailThunk, fetchUsersThunk, createUserThunk,
-  toggleUserActiveThunk, exportAuditThunk,
+  fetchSummaryThunk,
   fetchProjectAnalyticsThunk,
   fetchGenerationHistoryThunk,
   fetchHistoryExtrasThunk, fetchFeedbackSummaryThunk, fetchFeedbackThunk,
   fetchReviewsThunk, fetchLlmCostThunk,
   fetchPermissionsOverviewThunk, fetchClearPresetsThunk, clearDatabaseThunk,
-  fetchAuditTrailFiltersThunk,
   fetchBudgetsThunk, upsertBudgetThunk, deleteBudgetThunk,
   fetchGenerationTraceThunk,
 } from '@features/analytics/analyticsThunks';
@@ -18,12 +14,11 @@ import {
   selectSummary, selectProjectRows,
   selectGenHistory, selectPromptVersionHistory, selectDocUploadHistory,
   selectCddBpHistory, selectHistoryExtrasError, selectFeedbackSummary, selectFeedback, selectFeedbackScope,
-  selectReviews, selectLlmCost, selectAuditTrail, selectUsers,
+  selectReviews, selectLlmCost,
   selectAnalyticsFilters, selectAnalyticsLoading, selectPermissionsOverview,
-  selectClearPresets, selectAuditTrailLoading, selectAuditTrailError,
-  selectAuditFilterOptions, selectAuditFilters, selectBudgets, selectBudgetsError,
+  selectClearPresets, selectBudgets, selectBudgetsError,
   selectGenerationTrace, selectGenerationTraceLoading, selectGenerationTraceError,
-  setFilters, setFeedbackScope, setAuditFilters, clearGenerationTrace,
+  setFilters, setFeedbackScope, clearGenerationTrace,
 } from '@features/analytics/analyticsSlice';
 import BudgetMeter from '@features/analytics/components/BudgetMeter/BudgetMeter';
 import TraceViewer from '@features/analytics/components/TraceViewer/TraceViewer';
@@ -34,9 +29,8 @@ import {
   selectSelectedProject, selectSelectedCourse,
 } from '@features/dashboard/dashboardSlice';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
-import { createUserSchema } from '@utils/validation';
 import { DATE_RANGE_LABELS, DATE_RANGE_PRESETS } from '@utils/constants';
-import { formatDate, formatDateTime, formatNumber, formatTimestamp } from '@utils/helpers';
+import { formatDate, formatDateTime, formatNumber } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
@@ -49,9 +43,14 @@ import Loader from '@components/common/Loader/Loader';
 import { useLabels } from '@hooks/useLabels';
 import styles from './AnalyticsPage.module.scss';
 
-const MAIN_TABS = ['Dashboard', 'LLM Cost', 'Audit Trail', 'User Management'];
+const MAIN_TABS = ['Dashboard', 'LLM Cost'];
 const historyTabs = (L) => ['Generations', 'Registry Commits', 'Document Uploads', `${L.cdd} & ${L.blueprint} Log`];
 const costTabs = (L) => ['By Model', 'Monthly Trend', 'By Project', `By ${L.title}`, 'By User'];
+const platformBreakdownOptions = (L) => [
+  { value: 'user', label: 'User' },
+  { value: 'tenant', label: 'Tenant' },
+  { value: 'course', label: L.title },
+];
 const FEEDBACK_FILTERS = [
   { value: 'learning', label: 'Learning signals only' },
   { value: 'one_time', label: 'One-time only' },
@@ -71,8 +70,8 @@ export default function AnalyticsPage() {
   const L = useLabels();
   const HISTORY_TABS = historyTabs(L);
   const COST_TABS = costTabs(L);
-  const { isAdmin, isReviewer, isAuthor, user, canManageUsers, canClearDb, hasPermission, isPlatformAdmin } = useAuth();
-  const canViewAudit = isAdmin || isReviewer;
+  const PLATFORM_BREAKDOWN_OPTIONS = platformBreakdownOptions(L);
+  const { isAdmin, isReviewer, isAuthor, user, canClearDb, hasPermission, isPlatformAdmin } = useAuth();
 
   const summary = useAppSelector(selectSummary);
   const projectRows = useAppSelector(selectProjectRows);
@@ -86,8 +85,6 @@ export default function AnalyticsPage() {
   const feedbackScope = useAppSelector(selectFeedbackScope);
   const reviews = useAppSelector(selectReviews);
   const llmCost = useAppSelector(selectLlmCost);
-  const auditTrail = useAppSelector(selectAuditTrail);
-  const users = useAppSelector(selectUsers);
   const permissionsOverview = useAppSelector(selectPermissionsOverview);
   const clearPresets = useAppSelector(selectClearPresets);
   const budgets = useAppSelector(selectBudgets);
@@ -97,23 +94,12 @@ export default function AnalyticsPage() {
   const generationTraceError = useAppSelector(selectGenerationTraceError);
   const filters = useAppSelector(selectAnalyticsFilters);
   const isLoading = useAppSelector(selectAnalyticsLoading);
-  const auditTrailLoading = useAppSelector(selectAuditTrailLoading);
-  const auditTrailError = useAppSelector(selectAuditTrailError);
-  const auditFilterOptions = useAppSelector(selectAuditFilterOptions);
-  const auditFilters = useAppSelector(selectAuditFilters);
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
 
-  const visibleMainTabs = MAIN_TABS.filter((t) => {
-    if (isAuthor) return t === 'Dashboard' || t === 'LLM Cost';
-    return (t !== 'Audit Trail' || canViewAudit) && (t !== 'User Management' || canManageUsers);
-  });
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [historyTab, setHistoryTab] = useState(0);
   const [costTab, setCostTab] = useState(0);
-  const [auditPage, setAuditPage] = useState(1);
-  const [showUserModal, setShowUserModal] = useState(false);
-  const [toggleUserSelect, setToggleUserSelect] = useState('');
   const [clearConfirmTag, setClearConfirmTag] = useState(null);
   const [showPermissions, setShowPermissions] = useState(false);
   const [permSubTab, setPermSubTab] = useState(0);
@@ -123,8 +109,7 @@ export default function AnalyticsPage() {
   const [budgetCourseOptions, setBudgetCourseOptions] = useState([]);
   const [budgetCoursesLoading, setBudgetCoursesLoading] = useState(false);
   const [showTraceModal, setShowTraceModal] = useState(false);
-
-  const userForm = useForm({ resolver: zodResolver(createUserSchema) });
+  const [platformBreakdown, setPlatformBreakdown] = useState('user');
 
   function loadDashboard() {
     dispatch(fetchSummaryThunk(filters));
@@ -138,24 +123,6 @@ export default function AnalyticsPage() {
     if (isAdmin) dispatch(fetchProjectAnalyticsThunk());
   }
 
-  function loadAuditTrail(page = auditPage) {
-    dispatch(fetchAuditTrailThunk({
-      page,
-      pageSize: auditFilters.pageSize,
-      filters: auditFilters,
-    }));
-  }
-
-  function handleAuditPage(page) {
-    setAuditPage(page);
-    loadAuditTrail(page);
-  }
-
-  function updateAuditFilter(patch) {
-    dispatch(setAuditFilters(patch));
-    setAuditPage(1);
-  }
-
   async function openBudgetModal(policy) {
     setBudgetCourseOptions([]);
     setBudgetForm(policy ? {
@@ -163,11 +130,14 @@ export default function AnalyticsPage() {
       scope: policy.scope,
       scope_id: policy.scope_id,
       period: policy.period,
-      limit_usd: String(policy.limit_usd),
+      limit_type: policy.limit_type || 'usd',
+      limit_usd: policy.limit_usd != null ? String(policy.limit_usd) : '',
+      limit_tokens: policy.limit_tokens != null ? String(policy.limit_tokens) : '',
       warn_threshold_pct: String(policy.warn_threshold_pct),
       _courseProjectId: '',
     } : {
-      scope: 'project', scope_id: '', period: 'monthly', limit_usd: '', warn_threshold_pct: '80', _courseProjectId: '',
+      scope: 'project', scope_id: '', period: 'monthly',
+      limit_type: 'usd', limit_usd: '', limit_tokens: '', warn_threshold_pct: '80', _courseProjectId: '',
     });
     setShowBudgetModal(true);
 
@@ -186,7 +156,9 @@ export default function AnalyticsPage() {
       scope: budgetForm.scope,
       scope_id: budgetForm.scope_id.trim(),
       period: budgetForm.period,
-      limit_usd: Number(budgetForm.limit_usd),
+      limit_type: budgetForm.limit_type,
+      limit_usd: budgetForm.limit_type === 'usd' ? Number(budgetForm.limit_usd) : null,
+      limit_tokens: budgetForm.limit_type === 'tokens' ? Number(budgetForm.limit_tokens) : null,
       warn_threshold_pct: Number(budgetForm.warn_threshold_pct),
     }));
     if (!result.error) setShowBudgetModal(false);
@@ -216,33 +188,11 @@ export default function AnalyticsPage() {
     if (!result.error) {
       setClearConfirmTag(null);
       if (activeTab === 'Dashboard') loadDashboard();
-      else if (activeTab === 'Audit Trail') loadAuditTrail(auditPage);
     }
   }
 
-  const toggleUserOptions = (users || [])
-    .filter((u) => u.username !== user?.username)
-    .map((u) => ({
-      value: String(u.id),
-      label: `${u.username} (${u.role_display || u.role})`,
-    }));
-
-  const selectedToggleUser = (users || []).find((u) => String(u.id) === toggleUserSelect);
-  const toggleActionLabel = selectedToggleUser
-    ? (selectedToggleUser.is_active !== false ? '🚫 Deactivate' : '✅ Reactivate')
-    : null;
-
   const clearPresetItems = (clearPresets || []).filter((p) => p.tag !== 'everything');
   const clearEverythingPreset = (clearPresets || []).find((p) => p.tag === 'everything');
-
-  async function handleToggleAccess() {
-    if (!toggleUserSelect) return;
-    const result = await dispatch(toggleUserActiveThunk({
-      userId: Number(toggleUserSelect),
-      isActive: selectedToggleUser?.is_active === false,
-    }));
-    if (!result.error) dispatch(fetchUsersThunk());
-  }
 
   useEffect(() => {
     loadDashboard();
@@ -294,33 +244,7 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     if (activeTab === 'LLM Cost') dispatch(fetchLlmCostThunk(filters));
-    if (activeTab === 'Audit Trail' && canViewAudit) {
-      dispatch(fetchAuditTrailFiltersThunk());
-    }
-    if (activeTab === 'User Management' && canManageUsers) {
-      dispatch(fetchUsersThunk());
-    }
-  }, [dispatch, activeTab, filters, canViewAudit, isAdmin, canManageUsers]);
-
-  useEffect(() => {
-    if (activeTab !== 'Audit Trail' || !canViewAudit) return;
-    loadAuditTrail(auditPage);
-  }, [dispatch, auditFilters, auditPage, activeTab, canViewAudit]);
-
-  useEffect(() => {
-    if (toggleUserOptions.length > 0 && !toggleUserOptions.some((o) => o.value === toggleUserSelect)) {
-      setToggleUserSelect(toggleUserOptions[0].value);
-    }
-  }, [toggleUserOptions, toggleUserSelect]);
-
-  async function onCreateUser(data) {
-    const result = await dispatch(createUserThunk(data));
-    if (!result.error) {
-      setShowUserModal(false);
-      userForm.reset();
-      dispatch(fetchUsersThunk());
-    }
-  }
+  }, [dispatch, activeTab, filters]);
 
   const monthlyChart = (llmCost?.monthly || []).map((r) => ({
     month: r.Month || r.month,
@@ -331,44 +255,6 @@ export default function AnalyticsPage() {
     model: r.Model || r.model,
     cost: r['Cost ($)'] ?? r.cost ?? 0,
   }));
-
-  const AUDIT_COLUMNS = [
-    { key: 'created_at', header: 'When', render: (v) => formatTimestamp(v) },
-    { key: 'actor', header: 'User' },
-    { key: 'action', header: 'Action', render: (v, row) => `${row.icon || ''} ${v || ''}`.trim() },
-    { key: 'label', header: 'Label' },
-    { key: 'entity_type', header: 'Entity type', render: (v) => v || '—' },
-    { key: 'entity_id', header: 'Entity ID', render: (v) => v || '—' },
-    { key: 'project_id', header: 'Project', render: (v) => (v != null ? String(v) : '—') },
-    { key: 'ip_address', header: 'IP', render: (v) => v || '—' },
-  ];
-
-  const actorOptions = [
-    ...(isAdmin ? [{ value: '', label: 'All users' }] : []),
-    ...(auditFilterOptions.actors || []).map((a) => ({ value: a, label: a })),
-  ];
-  const actionOptions = [
-    { value: '', label: 'All actions' },
-    ...(auditFilterOptions.actions || []).map((a) => ({ value: a, label: a })),
-  ];
-  const entityOptions = [
-    { value: '', label: 'All entities' },
-    ...(auditFilterOptions.entity_types || []).map((e) => ({ value: e, label: e })),
-  ];
-  const projectOptions = [
-    { value: '', label: 'All projects' },
-    ...(auditFilterOptions.projects || []).map((p) => ({ value: String(p.id), label: p.name })),
-  ];
-  const pageSizeOptions = (auditFilterOptions.page_sizes || [25, 50, 100]).map((n) => ({
-    value: String(n), label: String(n),
-  }));
-
-  const USER_COLUMNS = [
-    { key: 'username', header: 'Username', sortable: true },
-    { key: 'role_display', header: 'Role', render: (_, row) => row.role_display || row.role },
-    { key: 'is_active', header: 'Status', render: (v) => (v !== false ? '✅ Active' : '🚫 Inactive') },
-    { key: 'created_at', header: 'Created', render: (v) => (v ? formatDate(v) : '—') },
-  ];
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Analytics' }]} noPadding>
@@ -392,7 +278,7 @@ export default function AnalyticsPage() {
         {isAdmin && <p className={styles.scopeCaption}>Admin view — cross-project metrics.</p>}
 
         <div className={styles.tabs} role="tablist">
-          {visibleMainTabs.map((tab) => (
+          {MAIN_TABS.map((tab) => (
             <button
               key={tab}
               type="button"
@@ -830,167 +716,43 @@ export default function AnalyticsPage() {
                   </section>
                 )}
                 {!isAdmin && !isReviewer && <p className={styles.emptyHint}>Contact your Admin or Lead for cost breakdowns.</p>}
+
+                {isPlatformAdmin && (() => {
+                  const PLATFORM_ROWS = {
+                    user: { rows: llmCost.platform_user_usage, rowKey: 'User' },
+                    tenant: { rows: llmCost.platform_tenant_usage, rowKey: 'Project' },
+                    course: { rows: llmCost.platform_course_usage, rowKey: 'Course' },
+                  };
+                  const { rows, rowKey } = PLATFORM_ROWS[platformBreakdown];
+                  return (
+                    <section className={styles.card}>
+                      <div className={styles.card__header}>
+                        <h3 className={styles.card__title}>🌐 Token Usage — Platform-Wide</h3>
+                        <Select
+                          label="Breakdown"
+                          options={PLATFORM_BREAKDOWN_OPTIONS}
+                          value={platformBreakdown}
+                          onChange={(e) => setPlatformBreakdown(e.target.value)}
+                          wrapperClassName={styles.dateRangeSelect}
+                        />
+                      </div>
+                      <p className={styles.card__caption}>Every tenant, every {rowKey.toLowerCase()} — not scoped to your own project.</p>
+                      {rows?.length > 0 ? (
+                        <Table
+                          columns={Object.keys(rows[0] || {}).map((k) => ({ key: k, header: k }))}
+                          rows={rows}
+                          rowKey={rowKey}
+                          pagination
+                          pageSize={10}
+                        />
+                      ) : <p className={styles.emptyHint}>No data yet.</p>}
+                    </section>
+                  );
+                })()}
               </>
             )}
           </>
         )}
-
-        {/* ── Audit Trail ── */}
-        {activeTab === 'Audit Trail' && canViewAudit && (
-          <>
-            <SectionBadge icon="🗒️" title="Audit Trail" subtitle="Structured log of every significant action — workflow transitions, approvals, exports, logins, role changes, and more." />
-            <section className={styles.card}>
-              <div className={styles.card__header}>
-                <h3 className={styles.card__title}>Audit events</h3>
-                {hasPermission('export.audit_log') && (
-                  <Button variant="ghost" size="sm" onClick={() => dispatch(exportAuditThunk({ filters: auditFilters }))}>
-                    ⬇️ Export to CSV
-                  </Button>
-                )}
-              </div>
-
-              <div className={styles.auditFilters}>
-                <Select
-                  label="User"
-                  options={actorOptions}
-                  value={auditFilters.actor}
-                  onChange={(e) => updateAuditFilter({ actor: e.target.value })}
-                  disabled={!isAdmin}
-                />
-                <Select
-                  label="Action"
-                  options={actionOptions}
-                  value={auditFilters.action}
-                  onChange={(e) => updateAuditFilter({ action: e.target.value })}
-                />
-                <Select
-                  label="Entity type"
-                  options={entityOptions}
-                  value={auditFilters.entityType}
-                  onChange={(e) => updateAuditFilter({ entityType: e.target.value })}
-                />
-                {isAdmin && (
-                  <Select
-                    label="Project"
-                    options={projectOptions}
-                    value={auditFilters.projectId}
-                    onChange={(e) => updateAuditFilter({ projectId: e.target.value })}
-                  />
-                )}
-                <Input
-                  label="Date from"
-                  type="date"
-                  value={auditFilters.dateFrom}
-                  onChange={(e) => updateAuditFilter({ dateFrom: e.target.value })}
-                />
-                <Input
-                  label="Date to"
-                  type="date"
-                  value={auditFilters.dateTo}
-                  onChange={(e) => updateAuditFilter({ dateTo: e.target.value })}
-                />
-                <Select
-                  label="Rows per page"
-                  options={pageSizeOptions}
-                  value={String(auditFilters.pageSize)}
-                  onChange={(e) => updateAuditFilter({ pageSize: Number(e.target.value) })}
-                />
-              </div>
-              {!isAdmin && (
-                <p className={styles.emptyHint}>Showing your events only.</p>
-              )}
-
-              {auditTrailError && (
-                <p className={styles.emptyHint} role="alert">{auditTrailError}</p>
-              )}
-
-              <Table
-                columns={AUDIT_COLUMNS}
-                rows={auditTrail?.items || []}
-                rowKey="id"
-                isLoading={auditTrailLoading}
-                pagination
-                pageSize={auditFilters.pageSize}
-                serverSide
-                totalCount={auditTrail?.total ?? 0}
-                currentPage={auditPage}
-                onPageChange={handleAuditPage}
-                emptyTitle="No audit events match your filters"
-                emptyMessage="Audit events appear here as users work in the platform."
-              />
-            </section>
-          </>
-        )}
-
-        {/* ── User Management (Streamlit admin sections) ── */}
-        {activeTab === 'User Management' && canManageUsers && (
-          <>
-            <section className={styles.card}>
-              <div className={styles.card__header}>
-                <h3 className={styles.card__title}>👥 User Management</h3>
-                <Button variant="primary" size="sm" onClick={() => setShowUserModal(true)}>+ New User</Button>
-              </div>
-              <p className={styles.card__caption}>
-                Admin-only view. Manage platform users, roles, and access control.
-              </p>
-              <Table columns={USER_COLUMNS} rows={users} rowKey="id" pagination pageSize={20} emptyTitle="No users" />
-            </section>
-
-            {users.length > 1 && toggleUserOptions.length > 0 && (
-              <section className={styles.card}>
-                <h4 className={styles.sectionHeading}>🔒 Toggle User Access</h4>
-                <div className={styles.toggleAccess}>
-                  <Select
-                    label="Select user to toggle"
-                    options={toggleUserOptions}
-                    value={toggleUserSelect}
-                    onChange={(e) => setToggleUserSelect(e.target.value)}
-                    wrapperClassName={styles.toggleSelect}
-                  />
-                  {toggleActionLabel && (
-                    <Button
-                      variant={selectedToggleUser?.is_active !== false ? 'danger-ghost' : 'primary'}
-                      size="sm"
-                      className={styles.toggleAccess__btn}
-                      onClick={handleToggleAccess}
-                    >
-                      {toggleActionLabel}
-                    </Button>
-                  )}
-                </div>
-              </section>
-            )}
-          </>
-        )}
-
-        <Modal
-          open={showUserModal}
-          onClose={() => setShowUserModal(false)}
-          title="Create New User"
-          size="sm"
-          footer={(
-            <>
-              <Button variant="ghost" onClick={() => setShowUserModal(false)}>Cancel</Button>
-              <Button variant="primary" onClick={userForm.handleSubmit(onCreateUser)}>Create</Button>
-            </>
-          )}
-        >
-          <form className={styles.form}>
-            <Input label="Username" required error={userForm.formState.errors.username?.message} {...userForm.register('username')} />
-            <Input label="Password" type="password" required error={userForm.formState.errors.password?.message} {...userForm.register('password')} />
-            <Select
-              label="Role"
-              required
-              options={[
-                { value: 'author', label: 'ID' },
-                { value: 'reviewer', label: 'Lead' },
-                { value: 'admin', label: 'Admin' },
-              ]}
-              error={userForm.formState.errors.role?.message}
-              {...userForm.register('role')}
-            />
-          </form>
-        </Modal>
 
         {budgetForm && (
           <Modal
@@ -1070,15 +832,38 @@ export default function AnalyticsPage() {
                 value={budgetForm.period}
                 onChange={(e) => setBudgetForm({ ...budgetForm, period: e.target.value })}
               />
-              <Input
-                label="Limit (USD)"
-                type="number"
-                min="0.01"
-                step="0.01"
+              <Select
+                label="Cap type"
                 required
-                value={budgetForm.limit_usd}
-                onChange={(e) => setBudgetForm({ ...budgetForm, limit_usd: e.target.value })}
+                disabled={Boolean(budgetForm.id)}
+                options={[
+                  { value: 'usd', label: 'USD budget' },
+                  { value: 'tokens', label: 'Token limit' },
+                ]}
+                value={budgetForm.limit_type}
+                onChange={(e) => setBudgetForm({ ...budgetForm, limit_type: e.target.value })}
               />
+              {budgetForm.limit_type === 'tokens' ? (
+                <Input
+                  label="Token limit"
+                  type="number"
+                  min="1"
+                  step="1"
+                  required
+                  value={budgetForm.limit_tokens}
+                  onChange={(e) => setBudgetForm({ ...budgetForm, limit_tokens: e.target.value })}
+                />
+              ) : (
+                <Input
+                  label="Limit (USD)"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  required
+                  value={budgetForm.limit_usd}
+                  onChange={(e) => setBudgetForm({ ...budgetForm, limit_usd: e.target.value })}
+                />
+              )}
               <Input
                 label="Warn threshold (%)"
                 type="number"

@@ -187,7 +187,37 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: $space-3;
-  margin-top: $space-3;
+  margin: $space-3 $space-4;
+}
+
+.card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $space-4 $space-4 0;
+}
+
+.card__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: $font-weight-semibold;
+}
+
+.auditFilters {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $space-4;
+  padding: $space-4;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.emptyHint {
+  font-size: $font-size-sm;
+  color: $color-gray-500;
+  margin: $space-3 0 0;
 }
 
 .auditPagination__count {

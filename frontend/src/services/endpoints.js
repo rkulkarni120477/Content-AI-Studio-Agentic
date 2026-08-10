@@ -83,8 +83,6 @@ export const IMPORTS = {
 export const USERS = {
   LIST:             '/api/v1/users',
   GET:              (id)      => `/api/v1/users/${id}`,
-  CREATE:           '/api/v1/users',
-  TOGGLE_ACTIVE:    (id)      => `/api/v1/users/${id}/toggle`,
   REVIEWERS:        '/api/v1/users/reviewers',
 };
 

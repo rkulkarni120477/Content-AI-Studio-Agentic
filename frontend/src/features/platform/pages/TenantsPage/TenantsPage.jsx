@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import { platformService } from '@features/platform/services/platformService';
 import { analyticsService } from '@features/analytics/services/analyticsService';
+import { buildAuditTrailParams } from '@features/analytics/utils/auditTrailParams';
 import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
-import { extractErrorMessage, formatTimestamp } from '@utils/helpers';
+import { downloadBlob, extractErrorMessage, formatTimestamp } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Modal from '@components/common/Modal/Modal';
@@ -62,7 +63,12 @@ export default function TenantsPage() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditPage, setAuditPage] = useState(1);
   const [auditTotal, setAuditTotal] = useState(0);
-  const AUDIT_PAGE_SIZE = 25;
+  const [auditPageSize, setAuditPageSize] = useState(25);
+  const [auditFilters, setAuditFilters] = useState({
+    actor: '', action: '', entityType: '', projectId: '', dateFrom: '', dateTo: '',
+  });
+  const [auditFilterOptions, setAuditFilterOptions] = useState(null);
+  const [auditExporting, setAuditExporting] = useState(false);
   const [expandedAuditId, setExpandedAuditId] = useState(null);
   const [viewContentEvent, setViewContentEvent] = useState(null);
   // Which tenant's labels are being edited; null shows the organization list.
@@ -127,11 +133,16 @@ export default function TenantsPage() {
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
-  async function openAuditLog(page = 1) {
+  function openAuditLog() {
     setView('audit');
+  }
+
+  async function loadAuditTrail(page = 1) {
     setAuditLoading(true);
     try {
-      const res = await analyticsService.getAuditTrail({ page, page_size: AUDIT_PAGE_SIZE });
+      const res = await analyticsService.getAuditTrail(
+        buildAuditTrailParams({ page, pageSize: auditPageSize, filters: auditFilters }),
+      );
       setAuditItems(res?.items || []);
       setAuditPage(page);
       setAuditTotal(res?.total ?? 0);
@@ -139,6 +150,38 @@ export default function TenantsPage() {
       toast.error(extractErrorMessage(e));
     } finally {
       setAuditLoading(false);
+    }
+  }
+
+  function updateAuditFilter(patch) {
+    setAuditFilters((f) => ({ ...f, ...patch }));
+    setAuditPage(1);
+  }
+
+  useEffect(() => {
+    if (view !== 'audit') return;
+    loadAuditTrail(auditPage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, auditFilters, auditPageSize, auditPage]);
+
+  useEffect(() => {
+    if (view !== 'audit' || auditFilterOptions) return;
+    analyticsService.getAuditTrailFilters().then(setAuditFilterOptions).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
+  async function handleExportAudit() {
+    setAuditExporting(true);
+    try {
+      const response = await analyticsService.exportAudit(
+        buildAuditTrailParams({ page: 1, pageSize: 5000, filters: auditFilters }),
+      );
+      downloadBlob(response.data, 'audit-trail.csv');
+      toast.success('Audit trail exported.');
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setAuditExporting(false);
     }
   }
 
@@ -370,12 +413,80 @@ export default function TenantsPage() {
               subtitle="Who did what, when — including exactly what went into each generation."
             />
 
-            {auditLoading ? (
-              <div className={styles.center}><Loader size="lg" /></div>
-            ) : auditItems.length === 0 ? (
-              <EmptyState icon="📜" title="No audit events yet" message="Audit events appear here as users work in the platform." />
-            ) : (
-              <div className={styles.card}>
+            <div className={styles.card}>
+              <div className={styles.card__header}>
+                <h3 className={styles.card__title}>Audit events</h3>
+                <Button variant="ghost" size="sm" loading={auditExporting} onClick={handleExportAudit}>
+                  ⬇️ Export to CSV
+                </Button>
+              </div>
+
+              <div className={styles.auditFilters}>
+                <Select
+                  label="User"
+                  options={[
+                    { value: '', label: 'All users' },
+                    ...(auditFilterOptions?.actors || []).map((a) => ({ value: a, label: a })),
+                  ]}
+                  value={auditFilters.actor}
+                  onChange={(e) => updateAuditFilter({ actor: e.target.value })}
+                />
+                <Select
+                  label="Action"
+                  options={[
+                    { value: '', label: 'All actions' },
+                    ...(auditFilterOptions?.actions || []).map((a) => ({ value: a, label: a })),
+                  ]}
+                  value={auditFilters.action}
+                  onChange={(e) => updateAuditFilter({ action: e.target.value })}
+                />
+                <Select
+                  label="Entity type"
+                  options={[
+                    { value: '', label: 'All entities' },
+                    ...(auditFilterOptions?.entity_types || []).map((e) => ({ value: e, label: e })),
+                  ]}
+                  value={auditFilters.entityType}
+                  onChange={(e) => updateAuditFilter({ entityType: e.target.value })}
+                />
+                <Select
+                  label="Project"
+                  options={[
+                    { value: '', label: 'All projects' },
+                    ...(auditFilterOptions?.projects || []).map((p) => ({ value: String(p.id), label: p.name })),
+                  ]}
+                  value={auditFilters.projectId}
+                  onChange={(e) => updateAuditFilter({ projectId: e.target.value })}
+                />
+                <Input
+                  label="Date from"
+                  type="date"
+                  value={auditFilters.dateFrom}
+                  onChange={(e) => updateAuditFilter({ dateFrom: e.target.value })}
+                />
+                <Input
+                  label="Date to"
+                  type="date"
+                  value={auditFilters.dateTo}
+                  onChange={(e) => updateAuditFilter({ dateTo: e.target.value })}
+                />
+                <Select
+                  label="Rows per page"
+                  options={[25, 50, 100].map((n) => ({ value: String(n), label: String(n) }))}
+                  value={String(auditPageSize)}
+                  onChange={(e) => { setAuditPageSize(Number(e.target.value)); setAuditPage(1); }}
+                />
+              </div>
+
+              {auditLoading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : auditItems.length === 0 ? (
+                <EmptyState
+                  icon="📜"
+                  title={Object.values(auditFilters).some(Boolean) ? 'No audit events match your filters' : 'No audit events yet'}
+                  message="Audit events appear here as users work in the platform."
+                />
+              ) : (
                 <table className={styles.table}>
                   <thead>
                     <tr>
@@ -425,18 +536,18 @@ export default function TenantsPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
-            )}
-            {!auditLoading && auditTotal > AUDIT_PAGE_SIZE && (
-              <div className={styles.auditPagination}>
-                <span className={styles.auditPagination__count}>{auditTotal} result{auditTotal !== 1 ? 's' : ''}</span>
-                <Pagination
-                  current={auditPage}
-                  total={Math.ceil(auditTotal / AUDIT_PAGE_SIZE)}
-                  onChange={(p) => openAuditLog(p)}
-                />
-              </div>
-            )}
+              )}
+              {!auditLoading && auditTotal > auditPageSize && (
+                <div className={styles.auditPagination}>
+                  <span className={styles.auditPagination__count}>{auditTotal} result{auditTotal !== 1 ? 's' : ''}</span>
+                  <Pagination
+                    current={auditPage}
+                    total={Math.ceil(auditTotal / auditPageSize)}
+                    onChange={(p) => setAuditPage(p)}
+                  />
+                </div>
+              )}
+            </div>
           </>
         )}
         </div>

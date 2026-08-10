@@ -600,6 +600,19 @@ def get_llm_cost_dashboard(
         db, project_id=scoped_project, date_from=parsed_from, date_to=parsed_to,
     ) if is_admin else []
 
+    # Platform-wide breakdowns (project_id=None, every tenant) — restricted to
+    # true platform admins, not merely tenant-role "admin", so one tenant's
+    # admin can't see another tenant's users'/courses' spend. cost_by_project
+    # is inherently unscoped already (it groups BY project); cost_by_course
+    # and cost_by_user just need project_id=None instead of scoped_project.
+    is_platform_admin_user = bool(getattr(current_user, "_is_platform_admin", False))
+    if is_platform_admin_user:
+        platform_user_usage = usage_repository.cost_by_user(db, project_id=None, date_from=parsed_from, date_to=parsed_to)
+        platform_tenant_usage = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to)
+        platform_course_usage = usage_repository.cost_by_course(db, project_id=None, date_from=parsed_from, date_to=parsed_to)
+    else:
+        platform_user_usage = platform_tenant_usage = platform_course_usage = []
+
     return LlmCostDashboardResponse(
         summary=LlmCostSummary(**kpi),
         by_model=by_model,
@@ -607,4 +620,7 @@ def get_llm_cost_dashboard(
         by_project=by_project,
         by_course=by_course,
         by_user=by_user,
+        platform_user_usage=platform_user_usage,
+        platform_tenant_usage=platform_tenant_usage,
+        platform_course_usage=platform_course_usage,
     )

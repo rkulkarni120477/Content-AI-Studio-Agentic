@@ -305,11 +305,12 @@ def _call_openai_raw(
             prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens,
             total_duration_s=duration_s, status="success",
         ), usage_ctx)
-        # P2.9: true up the worst-case reservation to the real cost now that
-        # actual token counts are known.
+        # P2.9: true up the worst-case reservation to the real cost/tokens now
+        # that actual counts are known.
         reconcile_budget_autocommit(
             check_result.reservations,
             estimate_cost(target_model, result.prompt_tokens or 0, result.completion_tokens or 0),
+            (result.prompt_tokens or 0) + (result.completion_tokens or 0),
         )
         return result
     except Exception as exc:
@@ -455,6 +456,7 @@ def _call_bedrock_raw(
         reconcile_budget_autocommit(
             check_result.reservations,
             estimate_cost(target_model_id, result.prompt_tokens or 0, result.completion_tokens or 0),
+            (result.prompt_tokens or 0) + (result.completion_tokens or 0),
         )
         return result
     except Exception as exc:

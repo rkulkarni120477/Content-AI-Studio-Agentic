@@ -52,7 +52,9 @@
   gap: $space-2;
 }
 
-.meter__tokens {
+.meter__details {
+  display: flex;
+  gap: $space-3;
   font-size: $font-size-xs;
   color: $color-gray-500;
   margin-top: $space-1;

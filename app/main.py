@@ -173,6 +173,7 @@ def create_application() -> FastAPI:
                     "detail": {
                         "scope": exc.scope,
                         "scope_id": exc.scope_id,
+                        "limit_type": exc.limit_type,
                         "limit_usd": round(exc.limit_usd, 2),
                         "current_spend": round(exc.current_spend, 2),
                     },

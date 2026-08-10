@@ -2,9 +2,7 @@ import { createAsyncThunk } from '@reduxjs/toolkit';
 import { analyticsService } from './services/analyticsService';
 import { adminService } from './services/adminService';
 import { buildAnalyticsParams } from './utils/analyticsParams';
-import { buildAuditTrailParams } from './utils/auditTrailParams';
 import { extractErrorMessage } from '@utils/helpers';
-import { downloadBlob } from '@utils/helpers';
 import toast from 'react-hot-toast';
 
 function paramsFrom(filters, { getState }) {
@@ -110,68 +108,6 @@ export const fetchGenerationTraceThunk = createAsyncThunk(
   async (generationId, { rejectWithValue }) => {
     try { return await analyticsService.getGenerationTrace(generationId); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchAuditTrailFiltersThunk = createAsyncThunk(
-  'analytics/fetchAuditFilters',
-  async (_, { rejectWithValue }) => {
-    try { return await analyticsService.getAuditTrailFilters(); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchAuditTrailThunk = createAsyncThunk(
-  'analytics/fetchAudit',
-  async ({ page = 1, pageSize = 25, filters = {} } = {}, { rejectWithValue }) => {
-    try {
-      return await analyticsService.getAuditTrail(
-        buildAuditTrailParams({ page, pageSize, filters }),
-      );
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const exportAuditThunk = createAsyncThunk(
-  'analytics/exportAudit',
-  async ({ filters = {} } = {}, { rejectWithValue }) => {
-    try {
-      const response = await analyticsService.exportAudit(
-        buildAuditTrailParams({ page: 1, pageSize: 5000, filters }),
-      );
-      downloadBlob(response.data, 'audit-trail.csv');
-      toast.success('Audit trail exported.');
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchUsersThunk = createAsyncThunk(
-  'analytics/fetchUsers',
-  async (_, { rejectWithValue }) => {
-    try { return await analyticsService.listUsers(); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const createUserThunk = createAsyncThunk(
-  'analytics/createUser',
-  async (data, { rejectWithValue }) => {
-    try {
-      const result = await analyticsService.createUser(data);
-      toast.success('User created.');
-      return result;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const toggleUserActiveThunk = createAsyncThunk(
-  'analytics/toggleUser',
-  async ({ userId, isActive }, { rejectWithValue }) => {
-    try {
-      const result = await analyticsService.toggleUserActive(userId, isActive);
-      toast.success('User status updated.');
-      return result;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 

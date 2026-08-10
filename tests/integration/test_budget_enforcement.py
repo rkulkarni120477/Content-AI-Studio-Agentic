@@ -9,6 +9,7 @@ triggers the cross-provider fallback (P2.3's retry-ladder note).
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,9 +59,10 @@ class TestRaceSafety:
             # rather than a hard test-thread crash.
             thread_db = _TestSessionLocal()
             try:
+                policy = SimpleNamespace(limit_type="usd", limit_usd=1.0, limit_tokens=None)
                 reserved = bs._reserve(
                     thread_db, scope="project", scope_id="race-test", pkey=bs.period_key("monthly"),
-                    cost_usd=per_call_cost, limit_usd=1.0,
+                    cost_usd=per_call_cost, tokens=0, policy=policy,
                 )
             except Exception:
                 reserved = False
@@ -154,7 +156,8 @@ class TestReconciliation:
         _policy(db, "project", "reconcile-test", limit_usd=1.0)
         pkey = bs.period_key("monthly")
         reservation = bs.BudgetReservation(scope="project", scope_id="reconcile-test", period_key=pkey, reserved_usd=0.25)
-        bs._reserve(db, scope="project", scope_id="reconcile-test", pkey=pkey, cost_usd=0.25, limit_usd=1.0)
+        policy = SimpleNamespace(limit_type="usd", limit_usd=1.0, limit_tokens=None)
+        bs._reserve(db, scope="project", scope_id="reconcile-test", pkey=pkey, cost_usd=0.25, tokens=0, policy=policy)
         assert bs._current_total(db, "project", "reconcile-test", pkey) == 0.25
 
         # Simulated failed call: reconcile down to 0 real cost.

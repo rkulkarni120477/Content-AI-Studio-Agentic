@@ -1,10 +1,10 @@
 """
-Users router — user management and RBAC administration.
+Users router — platform-wide user lookup and role administration.
 
-Streamlit equivalent: The user management section in ``pages/analytics.py``
-(Create User form, role editor, activate/deactivate toggle).
-
-All write operations are Admin only.
+``GET /users`` backs the project/title "Manage Users" picker (assigning
+existing accounts to a project or course) — account creation and
+activate/deactivate now live per-tenant under
+``/api/v1/platform/tenants/{id}/users`` (platform-admin only).
 The ``GET /users/reviewers`` endpoint is used by the Workflow page to
 populate the reviewer assignment dropdown.
 """
@@ -17,16 +17,13 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
-from app.core.exceptions import DuplicateResourceError, NotFoundError
+from app.core.exceptions import NotFoundError
 from app.core.permissions import role_label
-from app.core.security import hash_password
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.user import (
-    UserCreateRequest,
     UserListItem,
     UserRead,
     UserRoleUpdateRequest,
-    UserToggleRequest,
 )
 
 _log = logging.getLogger(__name__)
@@ -74,45 +71,6 @@ def list_users(
         items.append(item)
 
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
-
-
-@router.post(
-    "",
-    response_model=UserRead,
-    status_code=201,
-    summary="Create a new user",
-)
-def create_user(
-    request_body: UserCreateRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("users.create")),
-) -> UserRead:
-    """
-    Create a user account with a hashed password.
-
-    Replicates the "Create User" form in the Analytics admin tab.
-    Password is hashed with PBKDF2-HMAC-SHA256 to match the existing scheme.
-    """
-    from promptops_app.database import User
-    from promptops_app.repositories import user_repository
-
-    # Check for duplicate username.
-    if user_repository.get_user_by_username(db, request_body.username):
-        raise DuplicateResourceError("User", request_body.username)
-
-    user = User(
-        username=request_body.username,
-        password_hash=hash_password(request_body.password),
-        role=request_body.role,
-        is_active=True,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    _log.info("user_created  by=%s  new_user=%s  role=%s",
-              current_user.username, user.username, user.role)
-    return _to_user_read(user)
 
 
 @router.get(
@@ -184,31 +142,4 @@ def update_user_role(
 
     _log.info("user_role_changed  by=%s  user=%s  old=%s  new=%s",
               current_user.username, user.username, old_role, request_body.role)
-    return _to_user_read(user)
-
-
-@router.put(
-    "/{user_id}/toggle",
-    response_model=UserRead,
-    summary="Activate or deactivate a user account",
-)
-def toggle_user(
-    user_id: int,
-    request_body: UserToggleRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("users.toggle")),
-) -> UserRead:
-    """
-    Enable or disable a user account.
-
-    Replicates the active/inactive toggle in the Analytics admin tab.
-    Deactivated users cannot log in but their data is preserved.
-    """
-    user = _get_user_or_404(db, user_id)
-    user.is_active = request_body.is_active
-    db.commit()
-    db.refresh(user)
-
-    action = "activated" if request_body.is_active else "deactivated"
-    _log.info("user_%s  by=%s  user=%s", action, current_user.username, user.username)
     return _to_user_read(user)

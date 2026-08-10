@@ -309,7 +309,9 @@ export default function CoursePromptsPage() {
 
       {loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
       {!loading && visible.length === 0 && (
-        <p style={{ color: 'var(--muted)' }}>No titles found.</p>
+        <p style={{ color: 'var(--muted)' }}>
+          {selCluster ? 'No titles found for this category.' : 'No prompt titles found for this tenant.'}
+        </p>
       )}
 
       {visible.map((g) => {

@@ -915,7 +915,12 @@ class BudgetPolicy(Base):
     scope              = Column(String(20), nullable=False)   # project | course | user
     scope_id           = Column(String(100), nullable=False)
     period             = Column(String(20), nullable=False, default="monthly")  # monthly | rolling
-    limit_usd          = Column(Float, nullable=False)
+    # limit_type picks which of the two limit columns is active — exactly one
+    # is set, matching the admin UI's either/or "Cap type" choice. Both stay
+    # nullable so a token-capped row doesn't need a meaningless $ ceiling.
+    limit_type         = Column(String(10), nullable=False, default="usd")  # usd | tokens
+    limit_usd          = Column(Float, nullable=True)
+    limit_tokens       = Column(Integer, nullable=True)
     warn_threshold_pct = Column(Float, nullable=False, default=80.0)
     # Which period_key (see budget_service.period_key()) last triggered a warn
     # notification — prevents re-warning on every call once past threshold.
@@ -939,12 +944,17 @@ class BudgetPeriodSpend(Base):
         UniqueConstraint("scope", "scope_id", "period_key", name="uq_budget_period_spend"),
     )
 
-    id         = Column(Integer, primary_key=True)
-    scope      = Column(String(20), nullable=False)
-    scope_id   = Column(String(100), nullable=False)
-    period_key = Column(String(20), nullable=False)  # e.g. "2026-08" (monthly) or a rolling-window key
-    spent_usd  = Column(Float, nullable=False, default=0.0)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id           = Column(Integer, primary_key=True)
+    scope        = Column(String(20), nullable=False)
+    scope_id     = Column(String(100), nullable=False)
+    period_key   = Column(String(20), nullable=False)  # e.g. "2026-08" (monthly) or a rolling-window key
+    spent_usd    = Column(Float, nullable=False, default=0.0)
+    # Tracked unconditionally alongside spent_usd regardless of which limit
+    # type a scope's policy actually enforces — the dashboard/meter always
+    # wants both numbers, and a scope can flip cap type later without losing
+    # its running token count.
+    spent_tokens = Column(Integer, nullable=False, default=0)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -1568,6 +1578,11 @@ def _run_legacy_ddl():
         # feedback — module (blueprint) scope
         "ALTER TABLE feedback_documents ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
         "ALTER TABLE feedback_items ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
+        # budget_policies — token cap as an alternative to the USD cap
+        "ALTER TABLE budget_policies ADD COLUMN IF NOT EXISTS limit_type VARCHAR(10) DEFAULT 'usd' NOT NULL",
+        "ALTER TABLE budget_policies ALTER COLUMN limit_usd DROP NOT NULL",
+        "ALTER TABLE budget_policies ADD COLUMN IF NOT EXISTS limit_tokens INTEGER",
+        "ALTER TABLE budget_period_spend ADD COLUMN IF NOT EXISTS spent_tokens INTEGER DEFAULT 0 NOT NULL",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
