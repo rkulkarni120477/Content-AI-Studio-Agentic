@@ -27,6 +27,7 @@ import { canManagePipelinePrompts } from '../utils/permissions';
 import { clusterOptions } from '../utils/clusters';
 import { componentCategoryLabel } from '../utils/prompt';
 import { plPrompt } from '../paths';
+import { platformService } from '@features/platform/services/platformService';
 
 const SOURCE_BADGES = {
   course_lock: { className: 'badge-global', text: '🔒 Title lock' },
@@ -173,6 +174,7 @@ function SlotRow({ slot, group, canOpen, pool, busy, onLoadPool, onBind, onUnbin
 
 export default function CoursePromptsPage() {
   const { user } = useAuth();
+  const isPlatformAdmin = Boolean(user?.is_platform_admin);
   const { show } = useToast();
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -183,15 +185,32 @@ export default function CoursePromptsPage() {
   const poolRequests = useRef({}); // component -> true once requested
   const canOpen = canManagePipelinePrompts(user);
 
+  // Tenant filter — platform-admin only. Everyone else is already
+  // hard-scoped to their own tenant server-side (GET /prompts/by-course
+  // ignores project_id for non-admins), so this control would do nothing
+  // for them and stays hidden.
+  const [tenantOptions, setTenantOptions] = useState([]);
+  const [selTenant, setSelTenant] = useState('');
+
+  useEffect(() => {
+    if (!isPlatformAdmin) return;
+    platformService.listTenants()
+      .then((tenants) => setTenantOptions((tenants || []).map((t) => ({
+        value: String(t.id),
+        label: t.slug ? `${t.name} (${t.slug})` : t.name,
+      }))))
+      .catch(() => {});
+  }, [isPlatformAdmin]);
+
   const reload = useCallback(async () => {
-    const items = await fetchPromptsByCourse();
+    const items = await fetchPromptsByCourse(selTenant || undefined);
     setGroups(items);
-  }, []);
+  }, [selTenant]);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    fetchPromptsByCourse()
+    fetchPromptsByCourse(selTenant || undefined)
       .then((items) => {
         if (alive) setGroups(items);
       })
@@ -203,7 +222,7 @@ export default function CoursePromptsPage() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selTenant]);
 
   const loadPool = useCallback(async (component) => {
     if (poolRequests.current[component]) return;
@@ -294,6 +313,19 @@ export default function CoursePromptsPage() {
           its project, or globally — locks show a 🔒 badge, and the most specific one
           wins. Non-admins can only lock prompts whose active version is approved.
         </p>
+        {isPlatformAdmin && (
+          <div className="field field--compact">
+            <label htmlFor="course-tenant-filter">Tenant</label>
+            <CompactSelect
+              id="course-tenant-filter"
+              fitContent
+              aria-label="Filter by tenant"
+              value={selTenant}
+              onChange={(v) => { setSelTenant(v); setSelCluster(''); }}
+              options={[{ value: '', label: 'All tenants' }, ...tenantOptions]}
+            />
+          </div>
+        )}
         <div className="field field--compact">
           <label htmlFor="course-cluster-filter">Category</label>
           <CompactSelect
