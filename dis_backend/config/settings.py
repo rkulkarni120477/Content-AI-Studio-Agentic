@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import AliasChoices, BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -347,9 +347,25 @@ class GlobalSettings(BaseSettings):
     jwt_expiry_minutes: int = 480       # 8 hours
 
     # AWS (used when storage provider = s3 or for Bedrock)
-    aws_region: str = "us-east-1"
+    # Accepts AWS_REGION *or* AWS_DEFAULT_REGION. Previously this read only
+    # AWS_REGION, while the CAS side reads AWS_DEFAULT_REGION (promptops_app/core/
+    # config.py) — so a .env setting only AWS_DEFAULT_REGION=ap-south-1 left DIS
+    # silently on the us-east-1 default, where the Bedrock text models are not
+    # provisioned (`anthropic.claude-3-sonnet-20240229-v1:0` →
+    # ResourceNotFoundException). Both services must resolve the same region from one
+    # variable; AWS_REGION still wins when both are set, matching the AWS SDK's own
+    # precedence.
+    aws_region: str = Field(
+        default="us-east-1",
+        validation_alias=AliasChoices("AWS_REGION", "AWS_DEFAULT_REGION"),
+    )
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
+    # Required when the configured credentials are temporary STS credentials — the
+    # key/secret alone are rejected without it. There was no field for this at all,
+    # so a .env supplying AWS_SESSION_TOKEN was silently ignored and every signed
+    # request failed authentication.
+    aws_session_token: Optional[str] = None
     aws_endpoint_url: str = ""          # LocalStack override
 
     # Bedrock / Anthropic
