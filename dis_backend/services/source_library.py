@@ -289,6 +289,34 @@ def write_source_index(tenant_cfg: TenantConfig, client_id: str, index: Dict[str
     return ArtifactWriter(tenant_cfg).write_json(source_index_key(tenant_cfg, client_id), index)
 
 
+def update_source_record_status(
+    tenant_cfg: TenantConfig, client_id: str, job_id: str, status: str,
+    extra: Optional[Dict[str, Any]] = None, only_if_status: Optional[str] = None,
+) -> str:
+    """Reconcile one source-index record's status in place.
+
+    Used when the background pipeline stops (duplicate) or fails: the
+    ProcessedStorageAgent that would finalize the record is skipped, so a
+    deferred record would otherwise stay ``status="processing"`` forever. This
+    flips it to e.g. ``duplicate`` / ``failed`` (the first-pages preview text is
+    left untouched). No-op if the record isn't found. When ``only_if_status`` is
+    given, the update applies ONLY if the record currently has that status —
+    so already-finalized ("processed") records with real content are never
+    disturbed.
+    """
+    index = read_source_index(tenant_cfg, client_id)
+    for rec in index.get("sources", []):
+        if str(rec.get("job_id")) == str(job_id):
+            if only_if_status is not None and str(rec.get("status") or "").lower() != only_if_status.lower():
+                return ""
+            rec["status"] = status
+            rec["updated_at"] = datetime.utcnow().isoformat()
+            if extra:
+                rec.update({k: v for k, v in extra.items() if v})
+            return write_source_index(tenant_cfg, client_id, index)
+    return ""
+
+
 def upsert_source_record(tenant_cfg: TenantConfig, client_id: str, record: Dict[str, Any]) -> str:
     index = read_source_index(tenant_cfg, client_id)
     sources = [s for s in index.get("sources", []) if s.get("job_id") != record.get("job_id")]

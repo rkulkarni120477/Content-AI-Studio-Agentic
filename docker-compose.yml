@@ -108,7 +108,7 @@ services:
         condition: service_healthy
 
     # Hard memory ceiling (P6.3, F13) — secondary API.
-    mem_limit: 1g
+    mem_limit: 512m
 
     restart: unless-stopped
 
@@ -127,7 +127,7 @@ services:
       - "${DIS_PORT}:8000"
 
     # Hard memory ceiling (P6.3, F13) — parsing / indexing service.
-    mem_limit: 1g
+    mem_limit: 2g
 
     restart: unless-stopped
 

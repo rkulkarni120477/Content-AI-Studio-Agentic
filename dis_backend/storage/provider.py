@@ -14,6 +14,8 @@ Usage:
 
 from __future__ import annotations
 import abc
+import asyncio
+import io
 import logging
 import os
 from pathlib import Path
@@ -81,14 +83,36 @@ class S3Provider(StorageProvider):
 
     def __init__(self, cfg: StorageConfig, aws_access_key_id=None,
                  aws_secret_access_key=None, region="us-east-1"):
+        # boto3 is imported lazily here (not at module top) so Azure/GCP/Local
+        # tenants don't need boto3 installed.
         import boto3
+        from botocore.config import Config
+        from boto3.s3.transfer import TransferConfig
         kwargs = dict(region_name=cfg.s3.region or region)
         if cfg.s3.endpoint_url:
             kwargs["endpoint_url"] = cfg.s3.endpoint_url
         if aws_access_key_id:
             kwargs["aws_access_key_id"] = aws_access_key_id
             kwargs["aws_secret_access_key"] = aws_secret_access_key
+        # Generous socket timeouts + retries. Large source files (100+ MB) can
+        # take well over boto3's default 60s to transfer over a slow uplink,
+        # which previously surfaced as a false "Storage upload failed: Read
+        # timeout" even though S3 had actually received the whole object.
+        # "standard" retry mode (not the still-experimental "adaptive").
+        kwargs["config"] = Config(
+            connect_timeout=30,
+            read_timeout=120,
+            retries={"max_attempts": 5, "mode": "standard"},
+        )
         self._s3 = boto3.client("s3", **kwargs)
+        # Multipart config built once and reused per upload (split into ~16 MB
+        # parts, each retried independently, instead of one long PUT).
+        self._transfer_cfg = TransferConfig(
+            multipart_threshold=16 * 1024 * 1024,
+            multipart_chunksize=16 * 1024 * 1024,
+            max_concurrency=4,
+            use_threads=True,
+        )
         self._raw = cfg.raw_bucket
         self._proc = cfg.processed_bucket
         self._base_prefix = getattr(cfg, "base_prefix", "")
@@ -111,14 +135,23 @@ class S3Provider(StorageProvider):
             extra["ServerSideEncryption"] = "aws:kms"
             extra["SSEKMSKeyId"] = self._kms
         storage_key = self._key_for_storage(key)
-        self._s3.put_object(Bucket=bucket, Key=storage_key, Body=data, **extra)
+        # Multipart upload (self._transfer_cfg) for resilience on large files,
+        # run in a worker thread so the blocking transfer never stalls the loop.
+        await asyncio.to_thread(
+            self._s3.upload_fileobj, io.BytesIO(data), bucket, storage_key,
+            ExtraArgs=extra, Config=self._transfer_cfg,
+        )
         log.info("[S3] uploaded s3://%s/%s (%d bytes)", bucket, storage_key, len(data))
         return f"s3://{bucket}/{storage_key}"
 
     async def download(self, key: str) -> bytes:
+        # get_object + Body.read() are blocking; run off the event loop so a
+        # large download (e.g. _process re-fetching raw bytes) never stalls DIS.
         bucket = self._bucket_for(key)
-        resp = self._s3.get_object(Bucket=bucket, Key=self._key_for_storage(key))
-        return resp["Body"].read()
+        storage_key = self._key_for_storage(key)
+        def _get() -> bytes:
+            return self._s3.get_object(Bucket=bucket, Key=storage_key)["Body"].read()
+        return await asyncio.to_thread(_get)
 
     async def delete(self, key: str) -> None:
         bucket = self._bucket_for(key)
