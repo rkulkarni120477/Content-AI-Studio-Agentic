@@ -71,17 +71,29 @@ def test_fallback_leaves_max_tokens_untouched_when_already_within_ceiling():
     assert kwargs["max_tokens"] == 2000
 
 
-def test_every_bedrock_model_uses_an_inference_profile_id():
+# Bedrock model IDs confirmed invokable on this AWS account by direct InvokeModel
+# in BOTH deploy regions (us-east-1 and ap-south-1). A valid-looking
+# inference-profile prefix is NOT evidence of availability: this set is
+# deliberately narrow because `global.anthropic.claude-haiku-4-5-...` and
+# `global.anthropic.claude-opus-4-8` both carry a correct prefix and both return
+# AccessDeniedException — the account has no model access for them.
+#
+# To extend this set, actually invoke the ID in every deploy region first
+# (max_tokens=1 is enough), then add it. Do not add one on the strength of its
+# shape, or because Bedrock's ListFoundationModels includes the base model.
+VERIFIED_INVOKABLE_BEDROCK_IDS = frozenset({
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+})
+
+
+def test_bedrock_ids_are_inference_profiles_not_bare_on_demand_ids():
     """Caught live: Haiku 4.5 shipped with the bare on-demand ID
     `anthropic.claude-haiku-4-5-...`, which this AWS account cannot invoke —
     Bedrock rejects it with "Invocation of model ID ... with on-demand throughput
     isn't supported. Retry with the ID or ARN of an inference profile."
 
-    That silently broke two paths, both of which resolve to Haiku: the default
-    prompt-guidance distillation model, and quality_tier='draft' for block-wide
-    REDUCE. Every Bedrock entry must carry a cross-region inference-profile
-    prefix (verified live in ap-south-1: `global.` works; bare, `us.`, and
-    `apac.` all fail).
+    This is a NECESSARY-but-not-sufficient check; see the availability test below
+    for why the prefix alone proves nothing.
     """
     from promptops_app.core.models import MODEL_CATALOG
 
@@ -96,16 +108,56 @@ def test_every_bedrock_model_uses_an_inference_profile_id():
         )
 
 
-def test_every_quality_tier_resolves_to_an_invokable_model():
-    """A tier that resolves to a non-invokable model fails the whole block-wide
-    generation for that tier, not just one call."""
-    from promptops_app.core.models import resolve_tier, resolve_model
+def test_every_default_resolved_model_is_verified_invokable():
+    """The models reached WITHOUT an explicit user choice must be known-invokable.
 
-    for tier in ("draft", "standard", "premium"):
-        tm = resolve_tier(tier)
-        model = resolve_model(tm.reduce_model)
-        if model.provider == "bedrock":
-            assert model.api_model_id.split(".", 1)[0] in {"global", "us", "eu", "apac"}, (
-                f"tier {tier!r} -> {model.display_name} is not invokable "
-                f"({model.api_model_id})"
-            )
+    The earlier version of this guard only checked the ID's prefix, which let two
+    unusable models through: Haiku 4.5 (every quality tier's 'draft', and the
+    prompt-guidance distiller) and Opus 4.8 ('premium'), both AccessDenied on this
+    account in every region. Prefix syntax is not availability.
+
+    Scope is deliberately the DEFAULT paths only — a user explicitly selecting an
+    unavailable model from the catalog degrades to the OpenAI fallback, which is
+    acceptable and honestly reported. A default that cannot be invoked is not: it
+    fails every generation for that tier with nobody having chosen it.
+    """
+    from promptops_app.core.models import resolve_model, resolve_tier
+    from promptops_app.services.prompt_guidance import _FALLBACK_MODEL
+
+    targets = [(f"tier {t!r}", resolve_tier(t).reduce_model)
+               for t in ("draft", "standard", "premium")]
+    targets.append(("prompt_guidance._FALLBACK_MODEL", _FALLBACK_MODEL))
+
+    for label, display_name in targets:
+        model = resolve_model(display_name)
+        if model.provider != "bedrock":
+            continue
+        assert model.api_model_id in VERIFIED_INVOKABLE_BEDROCK_IDS, (
+            f"{label} -> {model.display_name} ({model.api_model_id}) is not in the "
+            f"verified-invokable set. Invoke it in every deploy region before "
+            f"making it a default."
+        )
+
+
+def test_dis_default_text_models_are_verified_invokable():
+    """DIS's ModelConfig defaults deserve the same guard, and more urgently: on
+    failure call_llm returns a VALID-JSON stub, so an unavailable model there
+    produces complete-looking output with every extracted field at its default
+    rather than an error. The Claude 3 defaults this replaced were end-of-life
+    (Sonnet 3, us-east-1) or provider-legacy and denied everywhere (Haiku 3).
+    """
+    import sys
+    from pathlib import Path
+    dis = str(Path(__file__).resolve().parents[2] / "dis_backend")
+    if dis not in sys.path:
+        sys.path.insert(0, dis)
+    from config.settings import ModelConfig
+
+    cfg = ModelConfig()
+    text_steps = ("classification", "metadata_extraction", "structure_extraction",
+                  "quality_check", "vision", "digest_extraction")
+    for step in text_steps:
+        assert getattr(cfg, step) in VERIFIED_INVOKABLE_BEDROCK_IDS, (
+            f"DIS default {step}={getattr(cfg, step)!r} is not verified invokable; "
+            f"call_llm would silently return its stub for every {step} call."
+        )

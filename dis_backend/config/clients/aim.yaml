@@ -47,18 +47,31 @@ processing:
 pipeline:
   models:
     embedding: amazon.titan-embed-text-v2:0
-    # Claude 3 Haiku (20240307) is now a Bedrock "legacy" model and is not
-    # invokable on this account; Claude 3 Sonnet (20240229) is. Use Sonnet for
-    # every text step so classification/quality-check don't silently fall back.
-    classification: anthropic.claude-3-sonnet-20240229-v1:0
-    metadata_extraction: anthropic.claude-3-sonnet-20240229-v1:0
-    structure_extraction: anthropic.claude-3-sonnet-20240229-v1:0
-    quality_check: anthropic.claude-3-sonnet-20240229-v1:0
-    vision: anthropic.claude-3-sonnet-20240229-v1:0
-    # Per-day digest (MAP) for block-wide CDD/Blueprint. Design pins this to Haiku
-    # for a tier-shared cache (D2), but Haiku 3 is not invokable on this account
-    # (see note above), so AIM runs MAP on Sonnet 3 like the other text steps.
-    digest_extraction: anthropic.claude-3-sonnet-20240229-v1:0
+    # Sonnet 4.5 via the `global.` inference profile is the ONLY Anthropic text
+    # model this account can invoke in BOTH deploy regions, so every text step
+    # uses it. Verified live by direct InvokeModel:
+    #
+    #   global.anthropic.claude-sonnet-4-5-20250929-v1:0  us-east-1 OK   ap-south-1 OK
+    #   anthropic.claude-3-sonnet-20240229-v1:0           us-east-1 EOL  ap-south-1 OK
+    #   anthropic.claude-3-haiku-20240307-v1:0            legacy, denied in both
+    #   *.anthropic.claude-haiku-4-5-20251001-v1:0        AccessDenied (no model access)
+    #
+    # The Claude 3 models here previously worked only because dev runs in
+    # ap-south-1: Sonnet 3 is end-of-life in us-east-1, and because call_llm
+    # returns a VALID-JSON stub on any exception, every text step would have
+    # failed silently there — producing complete-looking Blueprints with every
+    # digest field at its default. Do not point these at a model without
+    # invoking it in the target region first; a bare or wrong-prefix ID is
+    # indistinguishable from success in the output.
+    classification: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    metadata_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    structure_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    quality_check: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    vision: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    # Per-day digest (MAP) for block-wide CDD/Blueprint. The design pins this to
+    # Haiku for a tier-shared cache (D2); Haiku is unavailable on this account in
+    # either region, so MAP runs on Sonnet 4.5 like the other text steps.
+    digest_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
   llm_temperature: 0.0
   chunking_strategy: semantic
   chunk_size: 512

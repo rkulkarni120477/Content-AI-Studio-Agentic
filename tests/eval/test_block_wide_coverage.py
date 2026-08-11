@@ -120,7 +120,9 @@ def test_reduce_coverage_golden():
     assert rows[1]["narrative"] == "Cell for day 1"
     assert rows[4]["narrative"].startswith("REVIEW NEEDED")
     # Tier → model + token headroom; the per-day batch is 1 call + 1 patterns_notes call.
-    assert res.reduce_model == "Claude Opus 4.8 (Bedrock)"
+    # 'premium' resolves to Sonnet 4.5 (not Opus) while Opus has no model access on
+    # this account; the 32000 headroom is unchanged, since both carry that ceiling.
+    assert res.reduce_model == "Claude Sonnet 4.5 (Bedrock)"
     assert res.max_output_tokens == 32000
     assert res.llm_calls == 2
     # Multi-worksheet shape: 5 sections in a fixed order, even with no overview/
@@ -456,9 +458,14 @@ def test_reduce_threads_map_guidance_into_patterns_notes_too():
 
 
 def test_resolve_tier():
-    assert resolve_tier("draft").reduce_model == "Claude Haiku 4.5 (Bedrock)"
+    # All three tiers currently resolve to Sonnet 4.5 because it is the only
+    # Anthropic text model this AWS account can invoke — Haiku 4.5 and Opus 4.8
+    # return AccessDeniedException in every region (see core/models.py). Tier
+    # selection therefore does not differentiate model capability today; restore
+    # distinct models here once Bedrock model access is granted.
+    assert resolve_tier("draft").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
     assert resolve_tier("standard").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
-    assert resolve_tier("premium").reduce_model == "Claude Opus 4.8 (Bedrock)"
+    assert resolve_tier("premium").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
     # Blank/unknown falls back to the default tier, never raises.
     assert resolve_tier(None).tier == "standard"
     assert resolve_tier("bogus").tier == "standard"
@@ -686,7 +693,7 @@ def test_blueprint_digest_path_render(monkeypatch):
                                                             dis_client_id="aim")
     assert gen is not None
     assert gen["prompt_provenance"]["deliverable"] == "blueprint"
-    assert gen["model_used"] == "Claude Haiku 4.5 (Bedrock)"   # draft tier
+    assert gen["model_used"] == "Claude Sonnet 4.5 (Bedrock)"  # draft tier (see resolve_tier)
     assert "Block Blueprint" in gen["raw_output"] and "WORKSHEET 4: DAY-BY-DAY MAP" in gen["raw_output"]
     assert gen["coverage"]["orphan_acs"] == ["D"]
     # Multi-worksheet shape carries through the real generate_blueprint_via_digests

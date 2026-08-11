@@ -70,17 +70,30 @@ class ProcessingConfig(BaseModel):
     pptx_extract_images: bool = False
     max_extracted_chars: int = 250000
 
+# Defaults used whenever a client YAML omits a model key. These MUST name a model
+# that is invokable in every deploy region: call_llm returns a valid-JSON stub on
+# failure, so an unavailable default degrades silently into empty extractions
+# rather than an error. The Claude 3 defaults these replace were end-of-life in
+# us-east-1 (Sonnet 3) or provider-marked legacy and denied in every region
+# (Haiku 3) — verified live via InvokeModel. Sonnet 4.5 on the `global.` inference
+# profile is the only Anthropic text model invokable on this account in both
+# us-east-1 and ap-south-1.
+_TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+
 class ModelConfig(BaseModel):
     embedding: str = "amazon.titan-embed-text-v2:0"
-    classification: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    metadata_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    structure_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    quality_check: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    vision: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    # Per-day digest extraction (MAP) for block-wide CDD/Blueprint. Pinned to a
-    # cheap model (Haiku) so the digest cache is shared across quality tiers (D2);
-    # only the REDUCE model varies by tier, on the app/promptops side.
-    digest_extraction: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    classification: str = _TEXT_MODEL
+    metadata_extraction: str = _TEXT_MODEL
+    structure_extraction: str = _TEXT_MODEL
+    quality_check: str = _TEXT_MODEL
+    vision: str = _TEXT_MODEL
+    # Per-day digest extraction (MAP) for block-wide CDD/Blueprint. The design pins
+    # this to a cheap model (Haiku) so the digest cache is shared across quality
+    # tiers (D2) — only the REDUCE model varies by tier, on the app/promptops side.
+    # Haiku is not invokable on this account (no Bedrock model access in either
+    # region), so this falls back to the shared text model.
+    digest_extraction: str = _TEXT_MODEL
 
 class PipelineConfig(BaseModel):
     # For local/dev, keep llm_provider=mock and USE_BEDROCK=false in .env.
