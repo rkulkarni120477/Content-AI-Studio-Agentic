@@ -12,6 +12,9 @@ from pydantic import BaseModel, Field
 
 from api.middleware.auth import get_current_tenant
 from services.context_retrieval import ContextRetrievalService
+from services.digests.enumerate import enumerate_block
+from services.digests.build import build_digests, digest_status, context_bundle
+from services.digests.day_scoped import day_context, DEFAULT_SUPPLEMENT_K
 from services.source_library import delete_source_document
 from config.settings import get_tenant_config
 from storage.provider import get_storage_provider
@@ -272,6 +275,182 @@ async def retrieve_course_generation_context(request: Request, body: DynamicCont
     if filters.get("include_restricted") and role not in {"client_admin", "super_admin"}:
         raise HTTPException(403, "Only client_admin or super_admin can retrieve instructor-only/restricted context")
     return ContextRetrievalService(tenant, role=role).retrieve(client_id, data)
+
+class EnumerateRequest(BaseModel):
+    block: str = Field(..., description="Block label, e.g. 'Block 2'.")
+    client_id: str | None = Field(None, description="Super admin only. Inspect another client/workspace.")
+    include_units: bool = Field(False, description="Admin only. Include per-day unit descriptors (ids/types/attribution signal).")
+
+
+def _resolve_block_scope(request: Request, body_client_id: str | None):
+    """Resolve (tenant, client_id) for a block-wide request, honoring super-admin
+    cross-client inspection (mirrors /sources). Returns (tenant, client_id, role)."""
+    tenant = get_current_tenant(request)
+    role = getattr(request.state, "role", "user")
+    current_client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    if body_client_id and role != "super_admin" and body_client_id != current_client_id:
+        raise HTTPException(403, "Only super admin can pass client_id to inspect another client")
+    if body_client_id and role == "super_admin" and body_client_id != tenant.tenant_id:
+        try:
+            tenant = get_tenant_config(body_client_id)
+        except KeyError:
+            raise HTTPException(404, f"Client '{body_client_id}' not found")
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        client_id = tenant.effective_client_id("")
+    else:
+        client_id = tenant.effective_client_id(body_client_id or current_client_id)
+    return tenant, client_id, role
+
+
+@router.post("/enumerate")
+async def enumerate_block_context(request: Request, body: EnumerateRequest):
+    """Deterministic block inventory for block-wide CDD / Blueprint coverage.
+
+    Read-only. Enumerates the block's calendar days and content units, attributes
+    units whose ``day_number`` is NULL to a day (ENUMERATE owns attribution), and
+    returns the declared-ACS set with coverage flags (BLOCK_INCOMPLETE /
+    DUPLICATE_CALENDAR / THIN_DAY / UNATTRIBUTED). Returns metadata only — day
+    topics, ACS codes and counts — never source text.
+    """
+    tenant, client_id, role = _resolve_block_scope(request, body.client_id)
+    # Unit-level detail can surface instructor-only unit titles; gate it.
+    if body.include_units and role not in {"client_admin", "super_admin"}:
+        raise HTTPException(403, "Only client_admin or super_admin can include unit-level detail")
+    try:
+        result = enumerate_block(tenant, body.block, client_id=client_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    return result.to_summary(include_units=body.include_units)
+
+
+class DigestBuildRequest(BaseModel):
+    block: str = Field(..., description="Block label, e.g. 'Block 2'.")
+    client_id: str | None = Field(None, description="Super admin only. Build for another client/workspace.")
+    force: bool = Field(False, description="Rebuild every day's digest, ignoring the cache.")
+    use_graph: bool | None = Field(
+        None,
+        description="Override the fan-out strategy: true = LangGraph Send fan-out, "
+                    "false = sequential. None ⇒ tenant/global config default (D4).",
+    )
+    map_guidance: str = Field(
+        "", description="Optional judgment/emphasis guidance distilled from the course's "
+                        "selected CDD/Blueprint prompt (see the CAS-side prompt_guidance "
+                        "service) — appended to every day's MAP extraction call and folded "
+                        "into the cache key. Empty string reproduces today's behavior exactly.",
+    )
+
+
+@router.post("/digests/build")
+async def build_block_digests(request: Request, body: DigestBuildRequest):
+    """Build (or refresh) the per-day digest tier for a block (MAP + cache, D3).
+
+    Lazy + content-addressed: days whose source units are unchanged are served
+    from cache; only changed/missing/failed days re-run the extractor. This calls
+    the LLM and writes the (idempotent, content-addressed) digest store.
+    Authenticated-tenant access, mirroring /retrieve/cdd — the endpoint is reached
+    server-to-server via the CAS service token, and the caller (CAS
+    /cdd/generate-block, /blueprints/generate-block) is already permission-gated
+    (cdd.generate / blueprint.generate), so this is not an unauthenticated
+    spend/write surface. No restricted text is ever exposed; digests are
+    instructor-facing and answer keys are excluded. Can be long for a full block;
+    the app-side async job wraps end-to-end generation.
+
+    Strategy (D4): the block's MAP step runs either sequentially or as a LangGraph
+    ``Send`` fan-out (per-day checkpoint/resume + bounded concurrency). The default
+    comes from ``pipeline.digest_fanout_enabled``; ``use_graph`` overrides per call.
+    """
+    tenant, client_id, role = _resolve_block_scope(request, body.client_id)
+    pipe = tenant.pipeline
+    use_graph = pipe.digest_fanout_enabled if body.use_graph is None else body.use_graph
+    checkpointer = None
+    if use_graph:
+        from services.digests.graph import make_checkpointer
+        checkpointer = make_checkpointer(getattr(pipe, "digest_fanout_checkpoint_dsn", ""))
+    try:
+        return build_digests(
+            tenant, body.block, client_id=client_id, force=body.force,
+            use_graph=use_graph, checkpointer=checkpointer,
+            max_concurrency=getattr(pipe, "digest_fanout_max_concurrency", 5),
+            map_guidance=body.map_guidance,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/digests")
+async def get_block_digests(
+    request: Request,
+    block: str = Query(..., description="Block label, e.g. 'Block 2'."),
+    client_id: str = Query("", description="Super admin only. Inspect another client/workspace."),
+):
+    """Return the enumerate summary + persisted digest bodies for a block — the
+    bundle the app-side REDUCE consumes. Read-only (does not build); call
+    /digests/build first to ensure freshness. Authenticated-tenant access
+    (mirrors /retrieve/cdd; digests carry instructor-facing narrative only, no
+    answer keys)."""
+    tenant, resolved_client_id, role = _resolve_block_scope(request, client_id or None)
+    try:
+        return context_bundle(tenant, block, client_id=resolved_client_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/digests/status")
+async def block_digest_status(
+    request: Request,
+    block: str = Query(..., description="Block label, e.g. 'Block 2'."),
+    client_id: str = Query("", description="Super admin only. Inspect another client/workspace."),
+):
+    """Coverage + freshness of a block's digest store (fresh/stale/missing/failed
+    per day) without building. Authenticated-tenant operational view."""
+    tenant, resolved_client_id, role = _resolve_block_scope(request, client_id or None)
+    try:
+        return digest_status(tenant, block, client_id=resolved_client_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class DayContextRequest(BaseModel):
+    block: str = Field(..., description="Block label, e.g. 'Block 2'.")
+    day: int = Field(..., ge=1, description="Day number within the block's calendar.")
+    client_id: str | None = Field(None, description="Super admin only. Inspect another client/workspace.")
+    audience: str = Field("instructor", description="'instructor' (default) or 'student' — drives the §8.4 text gate.")
+    supplement_k: int = Field(DEFAULT_SUPPLEMENT_K, ge=0, le=20, description="Max related handbook pages to add beyond the day's own units (0 disables).")
+
+
+@router.post("/retrieve/day")
+async def retrieve_day_context(request: Request, body: DayContextRequest):
+    """Structured-first day-scoped context (plan §7) for DLU / Learn It / Today's
+    Mission generators.
+
+    Returns *every* unit placed on ``block+day`` (complete, reusing ENUMERATE's
+    attribution), the day's digest, and a bounded kNN supplement of related pages
+    beyond the day's own sources. Read-only. The §8.4 text gate applies — pass
+    ``audience='student'`` for student-facing deliverables to withhold
+    instructor-only text (metadata is always returned for coverage). Authenticated
+    tenant access, mirroring /retrieve/cdd; answer-key text is never returned.
+    """
+    tenant, client_id, role = _resolve_block_scope(request, body.client_id)
+    audience = body.audience if body.audience in {"instructor", "student"} else "instructor"
+    try:
+        return day_context(
+            tenant, body.block, body.day, client_id=client_id,
+            audience=audience, supplement_k=body.supplement_k,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
 
 @router.get("/sources/{job_id}/overview")
 async def source_overview(job_id: str, request: Request):

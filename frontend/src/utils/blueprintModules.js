@@ -139,11 +139,26 @@ export function parseDaySchedule(cddContent) {
   const days = [];
   const seen = new Set();
 
-  // Locate the day-schedule table header (must have a "Day Title" column).
+  // Locate the day-schedule table header. Recognised shapes: a "Day Title"
+  // column (older Instructional Sequence Map tables), or "Day" as the first
+  // column with "Topic" as the second (the block-wide digest pipeline's
+  // Day-by-Day Map — its header is exactly
+  // ["Day", "Topic", "Handbook Reference", ...], see _DAY_TABLE_HEADER in
+  // block_wide_service.py). Requiring "Topic" specifically, not just a bare
+  // "Day" first column, matters: a plain "Day" first-column match alone false-
+  // positives on an ordinary Module CDD's own "Suggested Pacing" table (e.g.
+  // "| Day | Activity | Duration |"), which would wrongly hide Module
+  // selection and show "Select Day" for a course that has no days at all.
   let headerIdx = -1;
   for (let i = 0; i < lines.length; i += 1) {
     const l = lines[i];
-    if (l.includes('|') && /day\s*title/i.test(l) && /\bday\b/i.test(l)) {
+    if (!l.includes('|')) continue;
+    if (/day\s*title/i.test(l) && /\bday\b/i.test(l)) {
+      headerIdx = i;
+      break;
+    }
+    const cells = splitTableRow(l);
+    if (cells.length > 1 && /^day$/i.test(cells[0]) && /^topic$/i.test(cells[1])) {
       headerIdx = i;
       break;
     }

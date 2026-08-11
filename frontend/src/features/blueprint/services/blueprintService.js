@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { BLUEPRINT } from '@services/endpoints';
+import { BLUEPRINT, GENERATE } from '@services/endpoints';
 
 export const blueprintService = {
   listBlueprints: async ({ courseId, projectId } = {}) => {
@@ -40,6 +40,7 @@ export const blueprintService = {
       project_id: data.project_id,
       cdd_id: data.cdd_id ?? null,
       selected_module: data.selected_module,
+      day_number: data.day_number ?? undefined,
       extra_instructions: data.extra_instructions || '',
       style_id: data.style_id ?? null,
       model_choice: data.model_choice || 'GPT-5.4',
@@ -54,6 +55,29 @@ export const blueprintService = {
     }
     return created;
   },
+
+  /**
+   * Enqueue a block-wide Block Blueprint build (digest pipeline, async). Returns
+   * a job handle {job_id, status, poll_url}; poll getJobStatus until terminal,
+   * then reload the blueprint by the job's result entity id.
+   */
+  generateBlueprintBlock: (data) => api.post(BLUEPRINT.GENERATE_BLOCK, {
+    deliverable: 'blueprint',
+    block: data.block,
+    course_id: data.course_id,
+    project_id: data.project_id,
+    course_title: data.course_title || '',
+    document_title: data.document_title || undefined,
+    quality_tier: data.quality_tier || undefined,
+    model_choice: data.model_choice || undefined,
+    extra_instructions: data.extra_instructions || '',
+    cdd_id: data.cdd_id ?? undefined,
+    target_audience: data.target_audience || '',
+    expert_domain: data.expert_domain || '',
+    estimated_duration_hours: data.estimated_duration_hours ?? undefined,
+  }),
+  /** Shared job-status endpoint — same one the generate/import flows poll. */
+  getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId)),
 
   getVersions: (id) => api.get(BLUEPRINT.VERSIONS(id)),
   getVersion: (id, v) => api.get(BLUEPRINT.GET_VERSION(id, v)),

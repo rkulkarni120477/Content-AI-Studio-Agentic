@@ -104,7 +104,8 @@ def _user_msg(error_type: str) -> str:
     return _USER_MESSAGES.get(error_type, _USER_MESSAGES["unknown"])
 
 
-def _invoke_primary(model_choice: str, system: str, user: str) -> LLMResponse:
+def _invoke_primary(model_choice: str, system: str, user: str,
+                    max_tokens: Optional[int] = None) -> LLMResponse:
     """Dispatch to the correct provider using the model catalog.
 
     Raises LLMProviderError for unknown model names so the retry pipeline
@@ -117,27 +118,48 @@ def _invoke_primary(model_choice: str, system: str, user: str) -> LLMResponse:
         raise LLMProviderError(str(exc)) from exc
 
     if m.provider == "bedrock":
-        return _call_bedrock_raw(system, user, model_id=m.api_model_id)
-    return _call_openai_raw(system, user, model=m.api_model_id)
+        return _call_bedrock_raw(system, user, model_id=m.api_model_id, max_tokens=max_tokens)
+    return _call_openai_raw(system, user, model=m.api_model_id, max_tokens=max_tokens)
 
 
-def _invoke_fallback(model_choice: str, system: str, user: str) -> LLMResponse:
-    """Fall back to the opposite provider using its first catalog entry."""
+def _invoke_fallback(model_choice: str, system: str, user: str,
+                     max_tokens: Optional[int] = None) -> LLMResponse:
+    """Fall back to the opposite provider using its first catalog entry.
+
+    ``max_tokens`` is capped to the FALLBACK model's own catalog ceiling, not
+    dropped or shrunk arbitrarily — it's sized for the PRIMARY model (e.g.
+    Opus 4.8's 32000) and a different fallback model's real provider limit can
+    be lower (gpt-4o's 16384). Forwarding the primary's value unchanged doesn't
+    get you a bigger response; the provider just rejects the request outright
+    with a 400 before generating anything (caught live: a Bedrock failure fell
+    back to OpenAI with max_tokens=32000, which OpenAI rejected, sinking the
+    whole call and losing the fallback entirely). Capping to the fallback's own
+    ceiling is what makes it possible to get its fullest real result at all."""
     from promptops_app.core.models import resolve_model, OPENAI_MODELS, BEDROCK_MODELS
+
+    def _capped(requested: Optional[int], fallback_model) -> Optional[int]:
+        if requested is None or fallback_model is None:
+            return requested
+        return min(requested, fallback_model.max_output_tokens)
+
     m = resolve_model(model_choice)   # safe — never raises
 
     if m.provider == "bedrock":
         # Primary was Bedrock → fall back to first OpenAI model in catalog
         if not settings.openai_api_key:
             raise LLMAuthError("Fallback OpenAI key not configured.")
-        fallback_id = OPENAI_MODELS[0].api_model_id if OPENAI_MODELS else settings.openai_model
-        return _call_openai_raw(system, user, model=fallback_id)
+        fallback = OPENAI_MODELS[0] if OPENAI_MODELS else None
+        fallback_id = fallback.api_model_id if fallback else settings.openai_model
+        return _call_openai_raw(system, user, model=fallback_id,
+                                max_tokens=_capped(max_tokens, fallback))
     else:
         # Primary was OpenAI → fall back to first Bedrock model in catalog
         if not (settings.aws_access_key and settings.aws_secret_key):
             raise LLMAuthError("Fallback Bedrock credentials not configured.")
-        fallback_id = BEDROCK_MODELS[0].api_model_id if BEDROCK_MODELS else settings.bedrock_model_id
-        return _call_bedrock_raw(system, user, model_id=fallback_id)
+        fallback = BEDROCK_MODELS[0] if BEDROCK_MODELS else None
+        fallback_id = fallback.api_model_id if fallback else settings.bedrock_model_id
+        return _call_bedrock_raw(system, user, model_id=fallback_id,
+                                 max_tokens=_capped(max_tokens, fallback))
 
 
 def _make_result(resp: LLMResponse, start: float, status: str) -> LLMResult:
@@ -169,6 +191,7 @@ def generate_with_metadata(
     system_prompt: str,
     user_prompt: str,
     usage_ctx: Optional["UsageLogContext"] = None,
+    max_tokens: Optional[int] = None,
 ) -> LLMResult:
     """Full reliability pipeline. Never raises — always returns an LLMResult.
 
@@ -176,6 +199,8 @@ def generate_with_metadata(
     describes the failure category for downstream logging or UI display.
 
     Pass usage_ctx to record token usage, cost, and latency in llm_usage_logs.
+    ``max_tokens`` overrides the output cap (e.g. block-wide reduce headroom);
+    None keeps the historical default so existing callers are unchanged.
     """
     start = time.monotonic()
     last_exc: Optional[Exception] = None
@@ -183,7 +208,7 @@ def generate_with_metadata(
 
     # ── Attempt 1: primary model ─────────────────────────────────────────────
     try:
-        resp = _invoke_primary(model_choice, system_prompt, user_prompt)
+        resp = _invoke_primary(model_choice, system_prompt, user_prompt, max_tokens=max_tokens)
         _log.debug("LLM success [model=%s duration=%.1fs]", resp.model, time.monotonic() - start)
         result = _make_result(resp, start, "success")
         if usage_ctx is not None:
@@ -201,7 +226,7 @@ def generate_with_metadata(
     if last_error_type == "timeout" and _cfg.llm_retry_count >= 1:
         _log.info("Retrying primary model after timeout [model=%s]", model_choice)
         try:
-            resp = _invoke_primary(model_choice, system_prompt, user_prompt)
+            resp = _invoke_primary(model_choice, system_prompt, user_prompt, max_tokens=max_tokens)
             _log.info(
                 "Primary succeeded on retry [model=%s duration=%.1fs]",
                 resp.model, time.monotonic() - start,
@@ -226,7 +251,7 @@ def generate_with_metadata(
             model_choice, fallback_label,
         )
         try:
-            resp = _invoke_fallback(model_choice, system_prompt, user_prompt)
+            resp = _invoke_fallback(model_choice, system_prompt, user_prompt, max_tokens=max_tokens)
             _log.info(
                 "Fallback succeeded [provider=%s duration=%.1fs]",
                 fallback_label, time.monotonic() - start,
