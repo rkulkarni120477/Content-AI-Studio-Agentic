@@ -25,6 +25,14 @@ log = logging.getLogger(__name__)
 _jobs: Dict[str, Dict[str, Any]] = {}   # production: move to RDS/DynamoDB
 _scans: Dict[str, Dict[str, Any]] = {}  # scan-level tracking for folder-scan
 
+# Uploads at/under this size get an inline text preview built during the request.
+# Larger files defer ALL text extraction to the background pipeline, so the web
+# request never spends minutes (or gigabytes of RAM) parsing a huge PDF on the
+# event loop — which previously froze DIS and failed the upload. Deferred files
+# still appear immediately in the Source Library, marked "processing".
+_IMMEDIATE_EXTRACT_MAX_MB = 25
+_IMMEDIATE_EXTRACT_MAX_BYTES = _IMMEDIATE_EXTRACT_MAX_MB * 1024 * 1024
+
 
 class FolderScanRequest(BaseModel):
     folder_path: str = Field(..., description="Server-side folder path. For local testing, this is a Windows path on the machine running FastAPI, for example C:\\...\\DIS\\data")
@@ -208,15 +216,33 @@ def _build_source_library_payload(
     *, tenant_cfg: TenantConfig, client_id: str, namespace: str, job_id: str, user_id: str,
     filename: str, content: bytes, content_type: str, raw_storage_url: str, s3_key: str,
     source_relative_path: str = "", source_root: str = "", metadata_hints: Optional[Dict[str, Any]] = None,
+    extract_text: bool = True,
 ) -> Dict[str, Any]:
+    """Build the immediate Source Library payload shown right after upload.
+
+    When ``extract_text`` is False (large files), inline text extraction is
+    skipped: the document is published as ``status="processing"`` with empty
+    preview text, and the background pipeline fills in the real content later.
+    This keeps the upload request fast and off the heavy parse path.
+
+    NOTE: this function is CPU/IO-bound (PDF parsing, sha256 over the whole
+    file). Callers on the async event loop MUST run it via ``asyncio.to_thread``
+    so it never blocks DIS from serving other requests.
+    """
     hints = metadata_hints or {}
     raw_purpose = (hints.get("purpose") or "general_reference").strip() or "general_reference"
     document_type = _guess_document_type(filename, hints.get("document_type") or "", raw_purpose)
     purpose = normalize_purpose(raw_purpose, document_type)
     visibility = normalize_visibility(hints.get("visibility") or "instructor")
-    extracted = _extract_text_for_source_library(filename, content)
-    if not extracted:
-        extracted = f"No readable text could be extracted from {filename}."
+    if extract_text:
+        extracted = _extract_text_for_source_library(filename, content)
+        if not extracted:
+            extracted = f"No readable text could be extracted from {filename}."
+        doc_status = "processed"
+    else:
+        # Deferred: heavy extraction happens in the background pipeline.
+        extracted = ""
+        doc_status = "processing"
     file_type = Path(filename or "").suffix.lower().lstrip(".") or (content_type or "application/octet-stream")
     sha = hashlib.sha256(content).hexdigest()
     now_iso = datetime.utcnow().isoformat()
@@ -230,7 +256,7 @@ def _build_source_library_payload(
         "purpose": purpose,
         "visibility": visibility,
         "access_level": visibility,
-        "status": "processed",
+        "status": doc_status,
         "file_sha256": sha,
         "content_hash": hashlib.sha256(extracted.encode("utf-8", errors="ignore")).hexdigest(),
         "course_name": hints.get("course_name") or "",
@@ -476,23 +502,40 @@ async def upload_file(
     # Product behavior: Source Library must show the file immediately after upload.
     # The deeper agent pipeline can still run in the background, but CAS list/view
     # should not wait for embeddings/RDS/OpenSearch or LLM extraction.
+    # Build + write the immediate payload OFF the event loop (asyncio.to_thread)
+    # so a large PDF can never block DIS during the request. Files larger than
+    # _IMMEDIATE_EXTRACT_MAX_BYTES skip inline text extraction entirely — they are
+    # published as "processing" and the background pipeline fills in their text.
+    do_immediate_extract = len(content) <= _IMMEDIATE_EXTRACT_MAX_BYTES
+    if not do_immediate_extract:
+        log.info(
+            "[%s] File is %.1f MB (> %d MB) — deferring text extraction to the background pipeline.",
+            job_id, len(content) / (1024 * 1024), _IMMEDIATE_EXTRACT_MAX_MB,
+        )
     try:
-        immediate_payload = _build_source_library_payload(
+        immediate_payload = await asyncio.to_thread(
+            _build_source_library_payload,
             tenant_cfg=tenant_cfg, client_id=actual_client_id, namespace=namespace,
             job_id=job_id, user_id=user_id, filename=file.filename or "unnamed",
             content=content, content_type=file.content_type or "application/octet-stream",
             raw_storage_url=storage_url, s3_key=s3_key, source_relative_path=safe_rel_path,
             source_root=source_root, metadata_hints=metadata_hints,
+            extract_text=do_immediate_extract,
         )
-        payload_url = _write_source_library_payload(
-            tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload
+        payload_url = await asyncio.to_thread(
+            _write_source_library_payload,
+            tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload,
         )
         _jobs[job_id]["payload_storage_url"] = payload_url
         _jobs[job_id].setdefault("artifact_urls", {})["studio_payload"] = payload_url
         _jobs[job_id]["metadata"] = {"doc_type": immediate_payload["metadata"].get("document_type"), "source_library_ready": True}
     except Exception as exc:
-        log.exception("[%s] Immediate Source Library payload failed: %s", job_id, exc)
-        raise HTTPException(500, f"Source Library payload creation failed: {exc}")
+        # Non-fatal: the raw file is already stored in S3 and the background
+        # pipeline will still extract + index it. A preview-build hiccup must not
+        # fail the whole upload (this previously surfaced as the misleading
+        # "DIS could not process this file" error).
+        log.exception("[%s] Immediate Source Library payload failed (upload continues): %s", job_id, exc)
+        _jobs[job_id]["metadata"] = {"source_library_ready": False, "immediate_payload_error": str(exc)}
 
     background_tasks.add_task(
         _process, job_id=job_id, tenant_cfg=tenant_cfg,

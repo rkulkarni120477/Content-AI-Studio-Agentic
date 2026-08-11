@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import toast from 'react-hot-toast';
 import { useSelector } from 'react-redux';
 import { useParams } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
@@ -69,6 +70,19 @@ function unique(values = []) {
   return Array.from(new Set((values || []).filter(Boolean))).sort();
 }
 
+// Normalize a project's client_name to the canonical DIS client id, matching the
+// backend's alias map (app/core/dis_access.py / source_library router). Keeps the
+// raw casing/spacing on projects (e.g. "AIM", "Cengage") in sync with the client
+// the backend actually resolves to ("aim", "cengage").
+const CLIENT_ID_ALIASES = {
+  cengage_learning: 'cengage', cengage: 'cengage', aim: 'aim',
+  academian: 'academian', demo: 'demo',
+};
+function normalizeClientId(value) {
+  const v = String(value || '').trim().toLowerCase().replace(/ /g, '_');
+  return CLIENT_ID_ALIASES[v] || v;
+}
+
 function errorMessage(err, fallback) {
   const msg = err?.response?.data?.detail || err?.message || fallback;
   return String(msg || fallback).replace(/^DIS error:\s*/i, '');
@@ -132,7 +146,14 @@ export default function SourceLibraryPage() {
   const L = useLabels();
   const purposeLabels = uiConfig?.purpose_labels || {};
   const effectiveAccess = access || uiConfig?.access || currentUser || {};
-  const selectedClientId = activeClientId || selectedProject?.client_name || effectiveAccess?.client_id || '';
+  // The client the Source Library shows must follow the tenant/project the user is
+  // in: aim project → aim, cengage project → cengage. The selected project's
+  // client_name is authoritative and takes priority over activeClientId (which is
+  // seeded from the scope-less boot()/profile() call and otherwise "sticks" on the
+  // environment's DIS default). Falls back to the backend-resolved client only when
+  // no project is selected (e.g. course-only or global views).
+  const tenantClientId = normalizeClientId(selectedProject?.client_name || '');
+  const selectedClientId = tenantClientId || activeClientId || effectiveAccess?.client_id || '';
   const docsCacheKey = useMemo(() => cacheKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId, allCourses: isAdmin && showAllCourses }), [scopedCourseId, scopedProjectId, selectedClientId, isAdmin, showAllCourses]);
   const uploadCacheKey = useMemo(() => uploadQueueKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId }), [scopedCourseId, scopedProjectId, selectedClientId]);
 
@@ -210,10 +231,7 @@ export default function SourceLibraryPage() {
 
   useEffect(() => {
     if (!uploadQueue.length || !documents.length) return;
-    const next = uploadQueue.filter((item) => {
-      if (String(item.status || '').toLowerCase() === 'failed') return true;
-      return !isDocumentProcessedForUpload(item, documents);
-    });
+    const next = uploadQueue.filter((item) => !isDocumentOnServer(item, documents));
     if (next.length !== uploadQueue.length) {
       writeUploadQueue(uploadCacheKey, next);
       setUploadQueue(next);
@@ -242,7 +260,7 @@ export default function SourceLibraryPage() {
   useEffect(() => {
     loadConfig(selectedClientId);
     loadDocuments(filters);
-  }, [scopedCourseId, scopedProjectId, showAllCourses]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scopedCourseId, scopedProjectId, tenantClientId, showAllCourses]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function updateFilter(key, value) {
     const next = { ...filters, [key]: value };
@@ -372,28 +390,25 @@ export default function SourceLibraryPage() {
       .replace(/\s+/g, ' ');
   }
 
-  function isDocumentProcessedForUpload(item, docs = documents) {
+  // True if the file already exists on the server at ANY status (processing,
+  // processed, …). Used to clear upload-queue rows: once the file is on the
+  // server the upload itself is done — even a row marked "failed" was a false
+  // failure (e.g. a slow large upload that timed out client-side but actually
+  // landed), so it should stop showing as failed.
+  function isDocumentOnServer(item, docs = documents) {
     const rawName = String(item?.name || '').trim().toLowerCase();
     const name = normalizeFileName(item?.name || '');
     if (!name && !rawName) return false;
     return (docs || []).some((doc) => {
       const docNameRaw = String(doc.source_file_name || doc.title || '').trim().toLowerCase();
-      const docTitleRaw = String(doc.title || '').trim().toLowerCase();
       const docName = normalizeFileName(doc.source_file_name || doc.title || '');
       const docTitle = normalizeFileName(doc.title || '');
-      const status = String(doc.status || 'processed').toLowerCase();
-      const statusOk = ['processed', 'completed', 'ready_for_studio_context_retrieval'].includes(status);
-      if (!statusOk) return false;
-      return docName === name || docTitle === name || docNameRaw === rawName || docTitleRaw === rawName || docName.includes(name) || name.includes(docName);
+      return docName === name || docTitle === name || docNameRaw === rawName || (docName && (docName.includes(name) || name.includes(docName)));
     });
   }
 
   function reconcileUploadQueue(nextDocs = documents) {
-    setPersistedUploadQueue((items) => (items || []).filter((item) => {
-      if (String(item.status || '').toLowerCase() === 'failed') return true;
-      if (isDocumentProcessedForUpload(item, nextDocs)) return false;
-      return true;
-    }));
+    setPersistedUploadQueue((items) => (items || []).filter((item) => !isDocumentOnServer(item, nextDocs)));
   }
 
   async function handleUpload(e) {
@@ -469,13 +484,16 @@ export default function SourceLibraryPage() {
         });
         if (result?.failed) {
           failed += 1;
+          toast.error(`${queue[i].name}: DIS could not process this file.`);
           setPersistedUploadQueue((q) => q.map((item) => (item.id === queue[i].id ? { ...item, status: 'failed', progress: 100, detail: 'DIS could not process this file. Check backend logs.' } : item)));
         } else {
+          toast.success(`${queue[i].name} uploaded — processing in the background.`);
           setPersistedUploadQueue((q) => q.filter((item) => item.id !== queue[i].id));
           await loadDocuments(filters);
         }
       } catch (err) {
         failed += 1;
+        toast.error(`${queue[i].name}: ${errorMessage(err, 'Upload failed.')}`);
         setPersistedUploadQueue((q) => q.map((item) => (item.id === queue[i].id ? { ...item, status: 'failed', progress: 100, detail: errorMessage(err, 'Upload failed.') } : item)));
       }
     }
@@ -525,7 +543,7 @@ export default function SourceLibraryPage() {
   const statusOptions = useMemo(() => unique([...(filterOptions.statuses || []), ...(documents || []).map((doc) => doc.status || 'processed'), ...(uploadQueue || []).map((item) => item.status)]), [filterOptions, documents, uploadQueue]);
   const uploadStatusItems = useMemo(() => {
     return (uploadQueue || []).filter((item) => {
-      if (isDocumentProcessedForUpload(item)) return false;
+      if (isDocumentOnServer(item)) return false;
       if (uploadStatusFilters.status && item.status !== uploadStatusFilters.status) return false;
       if (uploadStatusFilters.purpose && item.purpose !== uploadStatusFilters.purpose) return false;
       if (uploadStatusFilters.document_type && item.document_type !== uploadStatusFilters.document_type) return false;
@@ -682,7 +700,18 @@ export default function SourceLibraryPage() {
                         </div>
                         <div className={styles.muted}>{Math.round((item.size || 0) / 1024 / 1024 * 10) / 10} MB · {purposeLabels[item.purpose] || item.purpose || 'purpose'} · {item.document_type || 'auto-detect'} · {item.detail || item.status}</div>
                       </div>
-                      <span className={`${styles.statusPill} ${styles[`status_${item.status}`] || ''}`}>{item.status}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className={`${styles.statusPill} ${styles[`status_${item.status}`] || ''}`}>{item.status}</span>
+                        <button
+                          type="button"
+                          title="Dismiss"
+                          aria-label="Dismiss"
+                          onClick={() => setPersistedUploadQueue((q) => (q || []).filter((i) => i.id !== item.id))}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: '#888', padding: '0 4px' }}
+                        >
+                          ×
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

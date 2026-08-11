@@ -82,12 +82,22 @@ class S3Provider(StorageProvider):
     def __init__(self, cfg: StorageConfig, aws_access_key_id=None,
                  aws_secret_access_key=None, region="us-east-1"):
         import boto3
+        from botocore.config import Config
         kwargs = dict(region_name=cfg.s3.region or region)
         if cfg.s3.endpoint_url:
             kwargs["endpoint_url"] = cfg.s3.endpoint_url
         if aws_access_key_id:
             kwargs["aws_access_key_id"] = aws_access_key_id
             kwargs["aws_secret_access_key"] = aws_secret_access_key
+        # Generous socket timeouts + retries. Large source files (100+ MB) can
+        # take well over boto3's default 60s to transfer over a slow uplink,
+        # which previously surfaced as a false "Storage upload failed: Read
+        # timeout" even though S3 had actually received the whole object.
+        kwargs["config"] = Config(
+            connect_timeout=30,
+            read_timeout=120,
+            retries={"max_attempts": 5, "mode": "adaptive"},
+        )
         self._s3 = boto3.client("s3", **kwargs)
         self._raw = cfg.raw_bucket
         self._proc = cfg.processed_bucket
@@ -105,13 +115,29 @@ class S3Provider(StorageProvider):
         return _join_prefix(self._base_prefix, key)
 
     async def upload(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        import asyncio
+        import io as _io
+        from boto3.s3.transfer import TransferConfig
         bucket = self._bucket_for(key)
         extra = {"ContentType": content_type}
         if self._kms:
             extra["ServerSideEncryption"] = "aws:kms"
             extra["SSEKMSKeyId"] = self._kms
         storage_key = self._key_for_storage(key)
-        self._s3.put_object(Bucket=bucket, Key=storage_key, Body=data, **extra)
+        # Multipart upload for resilience on large files: boto3 splits the object
+        # into ~16 MB parts and uploads/retries each part independently, instead
+        # of one long PUT that can blow past the socket read timeout. Run it in a
+        # worker thread so the (blocking) transfer never stalls the event loop.
+        transfer_cfg = TransferConfig(
+            multipart_threshold=16 * 1024 * 1024,
+            multipart_chunksize=16 * 1024 * 1024,
+            max_concurrency=4,
+            use_threads=True,
+        )
+        await asyncio.to_thread(
+            self._s3.upload_fileobj, _io.BytesIO(data), bucket, storage_key,
+            ExtraArgs=extra, Config=transfer_cfg,
+        )
         log.info("[S3] uploaded s3://%s/%s (%d bytes)", bucket, storage_key, len(data))
         return f"s3://{bucket}/{storage_key}"
 

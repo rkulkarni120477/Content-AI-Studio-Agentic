@@ -61,6 +61,23 @@ def extract(filename: str, content: bytes, vision_fn=None, options: dict | None 
 # ── PDF ───────────────────────────────────────────────────────────────────────
 
 def extract_pdf(content: bytes, vision_fn=None, options: dict | None = None) -> ExtractionResult:
+    options = options or {}
+    max_chars = int(options.get("max_extracted_chars", 0) or 0)
+
+    # Large PDFs: go straight to PDFium and skip pdfplumber/pypdf. pdfplumber
+    # buffers and builds heavy per-page structures (easily several× the file
+    # size in RAM) — on a 100+ MB handbook that blows past the container memory
+    # limit (OOM/exit 137) before it can even fall through. PDFium is lazy and
+    # low-memory, and handles these large/linearized files that pdfminer/pypdf
+    # reject anyway. Tables are sacrificed for large reference docs (acceptable).
+    _LARGE_PDF_BYTES = 40 * 1024 * 1024
+    if len(content) > _LARGE_PDF_BYTES:
+        try:
+            return _extract_pdf_pdfium(content, max_chars)
+        except Exception as e:
+            log.error("[PDF] pdfium failed on large PDF (%s); falling back to pdfplumber/pypdf", e)
+
+    # 1) pdfplumber — richest output (text + tables) for well-formed PDFs.
     try:
         import pdfplumber
         all_text = []
@@ -73,22 +90,61 @@ def extract_pdf(content: bytes, vision_fn=None, options: dict | None = None) -> 
                 all_text.append(f"[Page {page_num}]\n{text}")
                 for tbl in page.extract_tables() or []:
                     tables.append(tbl)
-        return ExtractionResult(
-            text="\n\n".join(all_text),
-            page_count=page_count,
-            has_images=False,
-            tables=tables,
-        )
+        joined = "\n\n".join(all_text)
+        if joined.strip():
+            return ExtractionResult(text=joined, page_count=page_count, has_images=False, tables=tables)
+        log.warning("[PDF] pdfplumber returned no text; trying pypdf")
     except Exception as exc:
-        log.warning("[PDF] pdfplumber failed (%s), fallback to pypdf", exc)
-        try:
-            from pypdf import PdfReader
-            reader = PdfReader(io.BytesIO(content))
-            text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        log.warning("[PDF] pdfplumber failed (%s), trying pypdf", exc)
+
+    # 2) pypdf — lightweight fallback.
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(content))
+        text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        if text.strip():
             return ExtractionResult(text=text, page_count=len(reader.pages))
-        except Exception as e2:
-            log.error("[PDF] Both extractors failed: %s", e2)
-            return ExtractionResult(text="", page_count=0)
+        log.warning("[PDF] pypdf returned no text; trying pdfium")
+    except Exception as e2:
+        log.warning("[PDF] pypdf failed (%s), trying pdfium", e2)
+
+    # 3) PDFium (pypdfium2) — most tolerant of large/linearized PDFs that
+    #    pdfminer/pypdf reject with "negative seek value -1" / "Unexpected EOF".
+    #    Pure-pip, low memory (lazy per-page). Last resort so normal PDFs keep
+    #    pdfplumber's richer output (including tables).
+    try:
+        return _extract_pdf_pdfium(content, max_chars)
+    except Exception as e3:
+        log.error("[PDF] All extractors failed (pdfium: %s)", e3)
+        return ExtractionResult(text="", page_count=0)
+
+
+def _extract_pdf_pdfium(content: bytes, max_chars: int = 0) -> ExtractionResult:
+    """Extract text via PDFium. Iterates pages lazily and honors ``max_chars``
+    so a 1000+ page handbook stays bounded in time and memory."""
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(content)
+    try:
+        n = len(doc)
+        parts: List[str] = []
+        total = 0
+        for i in range(n):
+            page = doc[i]
+            textpage = page.get_textpage()
+            try:
+                txt = textpage.get_text_range() or ""
+            finally:
+                textpage.close()
+                page.close()
+            parts.append(f"[Page {i+1}]\n{txt}")
+            total += len(txt)
+            if max_chars and total >= max_chars:
+                log.info("[PDF] pdfium reached max_extracted_chars=%d at page %d/%d", max_chars, i + 1, n)
+                break
+        log.info("[PDF] pdfium extracted %d chars from %d/%d pages", total, min(i + 1, n) if n else 0, n)
+        return ExtractionResult(text="\n\n".join(parts), page_count=n, has_images=False)
+    finally:
+        doc.close()
 
 
 # ── DOCX ──────────────────────────────────────────────────────────────────────
