@@ -21,6 +21,7 @@ import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
 import Pagination from '@components/common/Pagination/Pagination';
 import TenantLabelsPanel from '@features/platform/components/TenantLabelsPanel/TenantLabelsPanel';
+import AnalyticsPage from '@features/analytics/pages/AnalyticsPage/AnalyticsPage';
 import { describeOverrides } from '@config/tenantLabels';
 import styles from './TenantsPage.module.scss';
 
@@ -50,7 +51,7 @@ const CONTENT_KEYS = ['system_prompt', 'user_prompt', 'output'];
 
 export default function TenantsPage() {
   const navigate = useNavigate();
-  const { logout, user, role } = useAuth();
+  const { logout, user, role, isPlatformAdmin } = useAuth();
 
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -58,7 +59,7 @@ export default function TenantsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  const [view, setView] = useState('tenants'); // 'tenants' | 'audit' | 'config'
+  const [view, setView] = useState('tenants'); // 'tenants' | 'audit' | 'config' | 'analytics'
   const [auditItems, setAuditItems] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditPage, setAuditPage] = useState(1);
@@ -190,6 +191,10 @@ export default function TenantsPage() {
     setConfigTenantId(null);
   }
 
+  function openAnalytics() {
+    setView('analytics');
+  }
+
   function toggleAuditDetail(id) {
     setExpandedAuditId((cur) => (cur === id ? null : id));
   }
@@ -233,6 +238,15 @@ export default function TenantsPage() {
         >
           ⚙️ Configuration
         </button>
+        {isPlatformAdmin && (
+          <button
+            type="button"
+            className={`${styles.navBtn} ${view === 'analytics' ? styles.navBtnActive : ''}`}
+            onClick={openAnalytics}
+          >
+            📊 Analytics
+          </button>
+        )}
         <div className={styles.sidebarSpacer} />
         <button type="button" className={styles.signOut} onClick={handleSignOut}>
           🚪 Sign Out
@@ -397,6 +411,8 @@ export default function TenantsPage() {
               )}
             </>
           )
+        ) : view === 'analytics' ? (
+          <AnalyticsPage embedded />
         ) : (
           <>
             <div className={styles.headerRow}>

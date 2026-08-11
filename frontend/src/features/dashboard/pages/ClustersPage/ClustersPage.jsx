@@ -18,7 +18,7 @@ import ClusterPromptManager from '@components/cluster/ClusterPromptManager/Clust
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import { useAuth } from '@hooks/useAuth';
-import { ROUTES } from '@utils/constants';
+import { ROUTES, projectHomeRoute } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import gridStyles from '@features/dashboard/styles/selectionGrid.module.scss';
 import pageStyles from './ClustersPage.module.scss';
@@ -27,7 +27,7 @@ export default function ClustersPage() {
   const { projectId } = useParams();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const { hasPermission, isAdmin } = useAuth();
+  const { hasPermission, isAdmin, isPlatformAdmin, projectId: authProjectId } = useAuth();
   const clusters = useAppSelector(selectClusters);
   const selProj = useAppSelector(selectSelectedProject);
   const isLoadingClusters = useAppSelector(selectIsLoadingClusters);
@@ -45,7 +45,7 @@ export default function ClustersPage() {
 
   useEffect(() => {
     if (!pid) {
-      navigate(ROUTES.DASHBOARD, { replace: true });
+      navigate(projectHomeRoute(isPlatformAdmin, authProjectId), { replace: true });
       return;
     }
     async function syncProject() {
@@ -54,11 +54,11 @@ export default function ClustersPage() {
         const p = await dashboardService.getProject(pid);
         dispatch(setSelectedProject(p));
       } catch {
-        navigate(ROUTES.DASHBOARD, { replace: true });
+        navigate(projectHomeRoute(isPlatformAdmin, authProjectId), { replace: true });
       }
     }
     syncProject();
-  }, [pid, selProj?.id, dispatch, navigate]);
+  }, [pid, selProj?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
   useEffect(() => {
     if (pid) dispatch(fetchClustersThunk(pid));
@@ -97,7 +97,7 @@ export default function ClustersPage() {
     }
   }
 
-  if (!selProj) return null;
+  if (!selProj) return <Loader size="xl" overlay />;
 
   return (
     <SelectionLayout
@@ -141,6 +141,7 @@ export default function ClustersPage() {
               key={cluster.id}
               title={`🗂️ ${cluster.name}`}
               description={cluster.description}
+              descriptionPlaceholder="No description provided."
               footerLine={`${cluster.course_count ?? 0} title${cluster.course_count !== 1 ? 's' : ''}`}
               onOpen={() => handleOpen(cluster)}
               onEdit={() => setEditModal({ type: 'cluster', item: cluster })}
