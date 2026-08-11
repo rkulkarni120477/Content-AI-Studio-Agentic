@@ -13,6 +13,14 @@ from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
+# Above this size a PDF skips pdfplumber/pypdf and goes straight to PDFium.
+# This is the EXTRACTION-cost threshold (pdfplumber's per-page structures blow
+# up memory on big files) and is intentionally distinct from ingestion's
+# _IMMEDIATE_EXTRACT_MAX_BYTES (25 MB), which is the UPLOAD-latency threshold
+# for deferring extraction to the background. Different decisions → different
+# numbers; 40 MB is where pdfplumber's RAM use starts risking the container cap.
+_LARGE_PDF_BYTES = 40 * 1024 * 1024
+
 
 @dataclass
 class ExtractionResult:
@@ -64,13 +72,10 @@ def extract_pdf(content: bytes, vision_fn=None, options: dict | None = None) -> 
     options = options or {}
     max_chars = int(options.get("max_extracted_chars", 0) or 0)
 
-    # Large PDFs: go straight to PDFium and skip pdfplumber/pypdf. pdfplumber
-    # buffers and builds heavy per-page structures (easily several× the file
-    # size in RAM) — on a 100+ MB handbook that blows past the container memory
-    # limit (OOM/exit 137) before it can even fall through. PDFium is lazy and
-    # low-memory, and handles these large/linearized files that pdfminer/pypdf
-    # reject anyway. Tables are sacrificed for large reference docs (acceptable).
-    _LARGE_PDF_BYTES = 40 * 1024 * 1024
+    # Large PDFs: go straight to PDFium and skip pdfplumber/pypdf (memory hogs
+    # that OOM on 100+ MB handbooks). PDFium is lazy/low-memory and handles the
+    # large/linearized files pdfminer/pypdf reject. Tables are sacrificed for
+    # large reference docs (acceptable). Threshold: module-level _LARGE_PDF_BYTES.
     if len(content) > _LARGE_PDF_BYTES:
         try:
             return _extract_pdf_pdfium(content, max_chars)
@@ -128,6 +133,7 @@ def _extract_pdf_pdfium(content: bytes, max_chars: int = 0) -> ExtractionResult:
         n = len(doc)
         parts: List[str] = []
         total = 0
+        pages_read = n  # stays n if we read the whole doc; set to i+1 on early stop
         for i in range(n):
             page = doc[i]
             textpage = page.get_textpage()
@@ -139,10 +145,13 @@ def _extract_pdf_pdfium(content: bytes, max_chars: int = 0) -> ExtractionResult:
             parts.append(f"[Page {i+1}]\n{txt}")
             total += len(txt)
             if max_chars and total >= max_chars:
-                log.info("[PDF] pdfium reached max_extracted_chars=%d at page %d/%d", max_chars, i + 1, n)
+                pages_read = i + 1
+                log.info("[PDF] pdfium reached max_extracted_chars=%d at page %d/%d", max_chars, pages_read, n)
                 break
-        log.info("[PDF] pdfium extracted %d chars from %d/%d pages", total, min(i + 1, n) if n else 0, n)
-        return ExtractionResult(text="\n\n".join(parts), page_count=n, has_images=False)
+        # Report pages ACTUALLY read, so page_count agrees with the (possibly
+        # truncated) text rather than claiming the full document's page count.
+        log.info("[PDF] pdfium extracted %d chars from %d/%d pages", total, pages_read, n)
+        return ExtractionResult(text="\n\n".join(parts), page_count=pages_read, has_images=False)
     finally:
         doc.close()
 

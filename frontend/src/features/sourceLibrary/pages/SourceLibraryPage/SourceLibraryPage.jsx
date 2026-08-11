@@ -70,17 +70,18 @@ function unique(values = []) {
   return Array.from(new Set((values || []).filter(Boolean))).sort();
 }
 
-// Normalize a project's client_name to the canonical DIS client id, matching the
-// backend's alias map (app/core/dis_access.py / source_library router). Keeps the
-// raw casing/spacing on projects (e.g. "AIM", "Cengage") in sync with the client
-// the backend actually resolves to ("aim", "cengage").
-const CLIENT_ID_ALIASES = {
+// Normalize a project's client_name to the canonical DIS client id. The backend
+// is the single source of truth and serves its map as uiConfig.client_aliases
+// (app/core/dis_access.py). This local map is only a pre-load FALLBACK so the
+// value stays correct before ui-config arrives; pass the served map to prefer it.
+const CLIENT_ID_ALIASES_FALLBACK = {
   cengage_learning: 'cengage', cengage: 'cengage', aim: 'aim',
   academian: 'academian', demo: 'demo',
 };
-function normalizeClientId(value) {
+function normalizeClientId(value, aliases) {
   const v = String(value || '').trim().toLowerCase().replace(/ /g, '_');
-  return CLIENT_ID_ALIASES[v] || v;
+  const map = aliases || CLIENT_ID_ALIASES_FALLBACK;
+  return map[v] || v;
 }
 
 function errorMessage(err, fallback) {
@@ -152,7 +153,7 @@ export default function SourceLibraryPage() {
   // seeded from the scope-less boot()/profile() call and otherwise "sticks" on the
   // environment's DIS default). Falls back to the backend-resolved client only when
   // no project is selected (e.g. course-only or global views).
-  const tenantClientId = normalizeClientId(selectedProject?.client_name || '');
+  const tenantClientId = normalizeClientId(selectedProject?.client_name || '', uiConfig?.client_aliases);
   const selectedClientId = tenantClientId || activeClientId || effectiveAccess?.client_id || '';
   const docsCacheKey = useMemo(() => cacheKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId, allCourses: isAdmin && showAllCourses }), [scopedCourseId, scopedProjectId, selectedClientId, isAdmin, showAllCourses]);
   const uploadCacheKey = useMemo(() => uploadQueueKey({ courseId: scopedCourseId, projectId: scopedProjectId, clientId: selectedClientId }), [scopedCourseId, scopedProjectId, selectedClientId]);
@@ -399,11 +400,15 @@ export default function SourceLibraryPage() {
     const rawName = String(item?.name || '').trim().toLowerCase();
     const name = normalizeFileName(item?.name || '');
     if (!name && !rawName) return false;
+    // Exact match only. Substring/`includes` matching wrongly cleared rows when
+    // one filename contained another (e.g. guide.pdf vs instructor_guide.pdf),
+    // and `includes('')` matched the first doc when a name normalized to empty.
+    // The non-empty guards keep an empty name/rawName from matching anything.
     return (docs || []).some((doc) => {
       const docNameRaw = String(doc.source_file_name || doc.title || '').trim().toLowerCase();
       const docName = normalizeFileName(doc.source_file_name || doc.title || '');
       const docTitle = normalizeFileName(doc.title || '');
-      return docName === name || docTitle === name || docNameRaw === rawName || (docName && (docName.includes(name) || name.includes(docName)));
+      return (name && (docName === name || docTitle === name)) || (rawName && docNameRaw === rawName);
     });
   }
 
@@ -706,8 +711,8 @@ export default function SourceLibraryPage() {
                           type="button"
                           title="Dismiss"
                           aria-label="Dismiss"
+                          className={styles.dismissBtn}
                           onClick={() => setPersistedUploadQueue((q) => (q || []).filter((i) => i.id !== item.id))}
-                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: '#888', padding: '0 4px' }}
                         >
                           ×
                         </button>
