@@ -1,5 +1,8 @@
 import { WORKFLOW_STATES, ROLES, DATE_RANGE_PRESETS } from './constants';
 
+// Application display timezone — backend stores naive UTC; render in IST.
+export const APP_TIMEZONE = 'Asia/Kolkata';
+
 // ─── Formatting ───────────────────────────────────────────────────────────────
 // The backend stores/serializes timestamps as naive UTC (no Z / offset suffix —
 // SQLAlchemy `datetime.utcnow()` columns). `new Date("...")` on a string with no
@@ -16,7 +19,11 @@ function parseServerDate(dateStr) {
 export function formatDate(dateStr, opts = {}) {
   if (!dateStr) return '—';
   return new Intl.DateTimeFormat('en-IN', {
-    year: 'numeric', month: 'short', day: 'numeric', ...opts,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: APP_TIMEZONE,
+    ...opts,
   }).format(parseServerDate(dateStr));
 }
 
@@ -24,14 +31,23 @@ export function formatDateTime(dateStr) {
   return formatDate(dateStr, { hour: '2-digit', minute: '2-digit' });
 }
 
-/** Streamlit audit trail: YYYY-MM-DD HH:MM:SS */
+/** Streamlit audit trail: YYYY-MM-DD HH:MM:SS (IST) */
 export function formatTimestamp(dateStr) {
   if (!dateStr) return '—';
   const d = parseServerDate(dateStr);
   if (Number.isNaN(d.getTime())) return '—';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
-    + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: APP_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type) => parts.find((p) => p.type === type)?.value ?? '00';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
 }
 
 export function formatRelative(dateStr) {

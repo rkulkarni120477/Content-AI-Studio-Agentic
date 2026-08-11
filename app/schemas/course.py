@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class CourseCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=300, examples=["Module 1 — Fundamentals"])
     cluster_id: Optional[int] = Field(default=None, description="Optional cluster grouping.")
+    description: Optional[str] = Field(default=None, max_length=2000)
 
 
 class CourseUpdateRequest(BaseModel):
@@ -30,6 +31,7 @@ class CourseUserListItem(BaseModel):
 class CourseRead(BaseModel):
     id: int
     name: str
+    description: Optional[str] = None
     project_id: Optional[int] = None
     cluster_id: Optional[int] = None
     active_cdd_id: Optional[int] = Field(

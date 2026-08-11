@@ -9,7 +9,7 @@ const ROLE_COLORS = {
   [ROLES.AUTHOR]:   '#4338ca',
 };
 
-export default function Header({ title, breadcrumbs, actions }) {
+export default function Header({ title, breadcrumbs, actions, hideUser = false }) {
   const { user, role } = useAuth();
   const roleLabel = ROLE_LABELS[role] ?? role ?? '';
   const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
@@ -37,7 +37,7 @@ export default function Header({ title, breadcrumbs, actions }) {
 
       <div className={styles.header__right}>
         {actions}
-        {user && (
+        {!hideUser && user && (
           <HeaderUser username={user.username} roleLabel={roleLabel} roleColor={roleColor} />
         )}
         {/* Plain username label replaced by the HeaderUser chip above — kept for easy restore.

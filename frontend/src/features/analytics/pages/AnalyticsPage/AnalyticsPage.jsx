@@ -65,7 +65,7 @@ function stars(score) {
   return '⭐'.repeat(Math.min(5, Math.max(0, score)));
 }
 
-export default function AnalyticsPage() {
+export default function AnalyticsPage({ embedded = false }) {
   const dispatch = useAppDispatch();
   const L = useLabels();
   const HISTORY_TABS = historyTabs(L);
@@ -118,9 +118,11 @@ export default function AnalyticsPage() {
     dispatch(fetchFeedbackSummaryThunk());
     dispatch(fetchFeedbackThunk({ scope: feedbackScope === 'all' ? null : feedbackScope }));
     dispatch(fetchReviewsThunk());
-    dispatch(fetchPermissionsOverviewThunk());
-    if (canClearDb) dispatch(fetchClearPresetsThunk());
-    if (isAdmin) dispatch(fetchProjectAnalyticsThunk());
+    if (isPlatformAdmin) {
+      dispatch(fetchPermissionsOverviewThunk());
+      if (canClearDb) dispatch(fetchClearPresetsThunk());
+      dispatch(fetchProjectAnalyticsThunk());
+    }
   }
 
   async function openBudgetModal(policy) {
@@ -196,7 +198,7 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     loadDashboard();
-  }, [dispatch, filters.dateRange, isAdmin]);
+  }, [dispatch, filters.dateRange, isPlatformAdmin, canClearDb]);
 
   useEffect(() => {
     dispatch(fetchFeedbackThunk({ scope: feedbackScope === 'all' ? null : feedbackScope }));
@@ -257,7 +259,7 @@ export default function AnalyticsPage() {
   }));
 
   return (
-    <PageContainer title="" breadcrumbs={[{ label: 'Analytics' }]} noPadding>
+    <PageContainer title="" breadcrumbs={[{ label: 'Analytics' }]} noPadding hideHeaderUser={embedded}>
       <div className={styles.pageWrap}>
         <SectionBadge
           icon="📊"
@@ -327,7 +329,7 @@ export default function AnalyticsPage() {
                 ))}
               </div>
 
-              {isAdmin && projectRows.length > 0 && (
+              {isPlatformAdmin && projectRows.length > 0 && (
                 <section className={styles.card}>
                   <h3 className={styles.card__title}>📁 Project-Level Comparison</h3>
                   <Table
@@ -497,7 +499,7 @@ export default function AnalyticsPage() {
                 )}
               </section>
 
-              {canClearDb && (
+              {isPlatformAdmin && canClearDb && (
                 <>
                   <section className={styles.card}>
                     <h3 className={styles.card__title}>🗑️ Clear Database</h3>
@@ -561,6 +563,7 @@ export default function AnalyticsPage() {
                 </>
               )}
 
+              {isPlatformAdmin && (
               <section className={styles.card}>
                 <button
                   type="button"
@@ -627,6 +630,7 @@ export default function AnalyticsPage() {
                   </>
                 )}
               </section>
+              )}
             </>
           )
         )}

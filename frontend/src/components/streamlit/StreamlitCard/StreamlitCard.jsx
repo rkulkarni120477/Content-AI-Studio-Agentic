@@ -1,4 +1,5 @@
 import Button from '@components/common/Button/Button';
+import { cn } from '@utils/helpers';
 import styles from './StreamlitCard.module.scss';
 
 export default function StreamlitCard({
@@ -6,6 +7,7 @@ export default function StreamlitCard({
   badge,
   clientLine,
   description,
+  descriptionPlaceholder,
   footerLine,
   onOpen,
   openLabel = 'Open →',
@@ -18,7 +20,11 @@ export default function StreamlitCard({
   canDelete = false,
   canManageUsers = false,
 }) {
-  const desc = description?.length > 90 ? `${description.slice(0, 90)}…` : description;
+  const trimmed = description?.trim();
+  const desc = trimmed
+    ? (trimmed.length > 120 ? `${trimmed.slice(0, 120)}…` : trimmed)
+    : (descriptionPlaceholder || null);
+  const descIsPlaceholder = !trimmed && Boolean(descriptionPlaceholder);
 
   return (
     <article className={styles.card}>
@@ -28,7 +34,11 @@ export default function StreamlitCard({
           {badge && <span className={styles.card__badge}>{badge}</span>}
         </h3>
         {clientLine && <p className={styles.card__client}>Client: {clientLine}</p>}
-        {desc && <p className={styles.card__desc}>{desc}</p>}
+        {desc && (
+          <p className={cn(styles.card__desc, descIsPlaceholder && styles.card__descPlaceholder)}>
+            {desc}
+          </p>
+        )}
         {footerLine && <p className={styles.card__meta}>{footerLine}</p>}
       </div>
 
