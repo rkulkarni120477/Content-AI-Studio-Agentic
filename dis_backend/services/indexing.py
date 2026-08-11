@@ -186,6 +186,48 @@ def generate_embeddings(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict
         return {"status": "failed", "error": str(exc)}
 
 
+def _build_bulk_actions(
+    index_name: str, state: Dict[str, Any], units: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Build one OpenSearch bulk action per content unit.
+
+    Extracted so the (pure) document-mapping is unit-testable without a live
+    OpenSearch. Each action uses the default ``index`` op — create-or-replace by
+    ``_id`` — identical semantics to the previous per-unit ``client.index()``
+    call; only the transport (one batched request vs. N) changes.
+    """
+    actions: List[Dict[str, Any]] = []
+    for unit in units:
+        meta = unit.get("metadata", {}) or {}
+        doc = {
+            "content_unit_id": unit.get("content_unit_id"),
+            "job_id": state.get("job_id"),
+            "tenant_id": state.get("tenant_id"),
+            "client_id": state.get("client_id"),
+            "source_file_name": state.get("filename"),
+            "source_file_type": state.get("file_type"),
+            "document_type": state.get("doc_type"),
+            "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
+            "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
+            "day_number": meta.get("day_number"),
+            "unit_type": unit.get("unit_type"),
+            "unit_number": unit.get("unit_number"),
+            "title": unit.get("title"),
+            "text": unit.get("text"),
+            "visual_summary": unit.get("visual_summary"),
+            "keywords": unit.get("keywords", []),
+            "topics": unit.get("topics", []),
+            "metadata": meta,
+            "embedding": unit.get("embedding", []),
+        }
+        actions.append({
+            "_index": index_name,
+            "_id": unit.get("content_unit_id"),
+            "_source": doc,
+        })
+    return actions
+
+
 def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[str, Any]:
     cfg = tenant_cfg.vector_store
     if not cfg.enabled:
@@ -204,33 +246,20 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
         client = _vector_store_write_client(cfg)
         ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
         units = state.get("embedding_ready_chunks") or state.get("content_units", []) or []
-        count = 0
-        for unit in units:
-            meta = unit.get("metadata", {}) or {}
-            doc = {
-                "content_unit_id": unit.get("content_unit_id"),
-                "job_id": state.get("job_id"),
-                "tenant_id": state.get("tenant_id"),
-                "client_id": state.get("client_id"),
-                "source_file_name": state.get("filename"),
-                "source_file_type": state.get("file_type"),
-                "document_type": state.get("doc_type"),
-                "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
-                "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
-                "day_number": meta.get("day_number"),
-                "unit_type": unit.get("unit_type"),
-                "unit_number": unit.get("unit_number"),
-                "title": unit.get("title"),
-                "text": unit.get("text"),
-                "visual_summary": unit.get("visual_summary"),
-                "keywords": unit.get("keywords", []),
-                "topics": unit.get("topics", []),
-                "metadata": meta,
-                "embedding": unit.get("embedding", []),
-            }
-            client.index(index=cfg.index_name, id=unit.get("content_unit_id"), body=doc, refresh=False)
-            count += 1
-        return {"status": "completed", "provider": "opensearch", "auth_mode": cfg.auth_mode, "index_name": cfg.index_name, "documents_indexed": count}
+
+        # Issue a single batched request (helpers.bulk) instead of one
+        # client.index() call per content unit (P6.2/F12). Default op_type
+        # "index" preserves the previous create-or-replace-by-id semantics, and
+        # refresh=False is passed through unchanged. helpers.bulk raises on any
+        # item error (raise_on_error default True), so a failure still surfaces
+        # as status="failed" via the outer except — same contract as before.
+        actions = _build_bulk_actions(cfg.index_name, state, units)
+        if actions:
+            from opensearchpy import helpers
+            indexed, _errors = helpers.bulk(client, actions, refresh=False)
+        else:
+            indexed = 0
+        return {"status": "completed", "provider": "opensearch", "auth_mode": cfg.auth_mode, "index_name": cfg.index_name, "documents_indexed": indexed}
     except Exception as exc:
         log.exception("OpenSearch upsert failed")
         return {"status": "failed", "error": str(exc)}

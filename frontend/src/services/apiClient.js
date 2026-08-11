@@ -73,8 +73,14 @@ export const api = {
   delete: (url, config)         => apiClient.delete(url, config).then((r) => r.data),
 
   // For file uploads / form-data
+  // Large files (e.g. 100+ MB PDFs) can take far longer than the default 2-minute
+  // timeout to transfer. A timed-out request aborts with no response, which the
+  // interceptor surfaces as the misleading "Network error. Check your connection."
+  // Disable the timeout here so upload duration is bounded by the transfer itself,
+  // not the default API timeout. Progress is still reported via onUploadProgress.
   upload: (url, formData, onProgress) =>
     apiClient.post(url, formData, {
+      timeout: 0,
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e) => {
         if (onProgress && e.total) {
