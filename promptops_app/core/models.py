@@ -75,7 +75,15 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         ),
         tags=("fast",),
         provider="bedrock",
-        api_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        # `global.` inference-profile prefix, matching the Sonnet/Opus entries above.
+        # The bare on-demand ID (`anthropic.claude-haiku-4-5-...`) is NOT invokable on
+        # this account — Bedrock rejects it with "Invocation of model ID ... with
+        # on-demand throughput isn't supported. Retry with the ID or ARN of an
+        # inference profile." Verified live in ap-south-1: `global.` succeeds while the
+        # bare, `us.`, and `apac.` forms all fail. This was silently breaking two
+        # paths — prompt_guidance's default distillation model and quality_tier
+        # 'draft' — both of which resolve to Haiku.
+        api_model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
         max_output_tokens=16384,
     ),
     ModelDef(

@@ -44,10 +44,16 @@ def test_day_table_from_rows_produces_one_line_per_day_even_with_embedded_newlin
     lines = _day_table_from_rows(rows)
     day_rows = [l for l in lines if l.startswith("| 1 ") or l.startswith("| 2 ") or l.startswith("| 3 ")]
     assert len(day_rows) == 3  # one physical line per day — none swallowed a newline
+    # Derived from the header rather than hardcoded: N columns -> N+1 pipes. The
+    # previous literal (28, for 27 columns) had to be edited by hand every time a
+    # column was added to match the AIM reference, which turns an intentional schema
+    # change into a spurious test failure. What this test actually guards is that a
+    # row stays ONE line with the SAME cell count as the header.
+    from promptops_app.services.block_wide_service import _DAY_TABLE_HEADER
+    expected_pipes = len(_DAY_TABLE_HEADER) + 1
     for line in day_rows:
         assert "\n" not in line
-        # 27 columns declared in the header -> 28 pipe chars per well-formed row.
-        assert line.count("|") == 28
+        assert line.count("|") == expected_pipes
 
 
 ENUMERATE_SUMMARY = {

@@ -184,6 +184,31 @@ _REGISTRY: dict[str, dict] = {
         "required_vars": ["lesson_samples"],
         "optional_vars": ["course_name", "extra_instructions"],
     },
+    # ── Block-wide digest pipeline REDUCE prompts ───────────────────────────────
+    # Editable instructional layer for block-wide CDD/Blueprint generation. These
+    # carry a machine contract as well as prose: the reply's JSON keys are read by
+    # name in BlockWideGenerator, so an edit that drops one would yield an empty
+    # deliverable with no error. promptops_app/services/reduce_prompts.py validates
+    # the contract on every resolution and falls back to the built-in prompt for
+    # any layer that fails — see NARRATIVE_CONTRACT / PATTERNS_CONTRACT there.
+    "cdd_reduce": {
+        "version":      "v2",
+        "description":  "Block-wide CDD REDUCE — per-day narrative + cross-day cells.",
+        "required_vars": ["block_facts", "block_context", "day_records"],
+        "optional_vars": ["guidance_block"],
+    },
+    "blueprint_reduce_worksheet": {
+        "version":      "v2",
+        "description":  "Block-wide Block Blueprint REDUCE — per-day worksheet cells.",
+        "required_vars": ["block_facts", "block_context", "day_records"],
+        "optional_vars": ["guidance_block"],
+    },
+    "patterns_notes_reduce": {
+        "version":      "v1",
+        "description":  "Block-wide Patterns & Design Notes — content arc + production readiness.",
+        "required_vars": ["facts"],
+        "optional_vars": ["guidance_block"],
+    },
 }
 
 

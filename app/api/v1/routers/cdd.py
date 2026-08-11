@@ -652,6 +652,27 @@ def generate_cdd_block(
         project_id=request_body.project_id, course_id=request_body.course_id,
         job_type="cdd_block",
     )
+    # Written BEFORE submit so the request event can never be timestamped after
+    # the outcome event a fast-failing job would write.
+    # Audited at ENQUEUE, not only on completion: this path is always async, so a job
+    # that fails would otherwise leave no audit trace that an expensive,
+    # user-attributed generation was ever requested (the legacy path is synchronous,
+    # where cdd.created covers both). Paired with cdd.block_failed in the worker.
+    from promptops_app.services.audit_service import log_audit_event
+    log_audit_event(
+        db, current_user.username, "cdd.block_requested",
+        entity_type="cdd", entity_id=None,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        metadata={
+            "job_id": job_id, "block": request_body.block,
+            "quality_tier": request_body.quality_tier or "standard",
+            "model_choice": request_body.model_choice,
+            "dis_client_id": dis_client_id,
+            "prompt_id": request_body.prompt_id,
+            "course_title": request_body.course_title,
+            "extra_instructions": request_body.extra_instructions,
+        },
+    )
     job_runner.submit(block_wide_jobs.run_block_wide_job, job_id)
     _log.info("cdd_generate_block_queued  user=%s  course=%d  block=%s  job=%s",
               current_user.username, request_body.course_id, request_body.block, job_id)

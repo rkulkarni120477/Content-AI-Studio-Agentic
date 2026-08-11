@@ -69,3 +69,43 @@ def test_fallback_leaves_max_tokens_untouched_when_already_within_ceiling():
 
     _, kwargs = mock_call.call_args
     assert kwargs["max_tokens"] == 2000
+
+
+def test_every_bedrock_model_uses_an_inference_profile_id():
+    """Caught live: Haiku 4.5 shipped with the bare on-demand ID
+    `anthropic.claude-haiku-4-5-...`, which this AWS account cannot invoke —
+    Bedrock rejects it with "Invocation of model ID ... with on-demand throughput
+    isn't supported. Retry with the ID or ARN of an inference profile."
+
+    That silently broke two paths, both of which resolve to Haiku: the default
+    prompt-guidance distillation model, and quality_tier='draft' for block-wide
+    REDUCE. Every Bedrock entry must carry a cross-region inference-profile
+    prefix (verified live in ap-south-1: `global.` works; bare, `us.`, and
+    `apac.` all fail).
+    """
+    from promptops_app.core.models import MODEL_CATALOG
+
+    bedrock = [m for m in MODEL_CATALOG if m.provider == "bedrock"]
+    assert bedrock, "no Bedrock models in the catalog — did the catalog move?"
+    for m in bedrock:
+        prefix = m.api_model_id.split(".", 1)[0]
+        assert prefix in {"global", "us", "eu", "apac"}, (
+            f"{m.display_name} uses the bare on-demand id {m.api_model_id!r}; "
+            f"Bedrock requires an inference-profile prefix (e.g. "
+            f"global.{m.api_model_id})"
+        )
+
+
+def test_every_quality_tier_resolves_to_an_invokable_model():
+    """A tier that resolves to a non-invokable model fails the whole block-wide
+    generation for that tier, not just one call."""
+    from promptops_app.core.models import resolve_tier, resolve_model
+
+    for tier in ("draft", "standard", "premium"):
+        tm = resolve_tier(tier)
+        model = resolve_model(tm.reduce_model)
+        if model.provider == "bedrock":
+            assert model.api_model_id.split(".", 1)[0] in {"global", "us", "eu", "apac"}, (
+                f"tier {tier!r} -> {model.display_name} is not invokable "
+                f"({model.api_model_id})"
+            )

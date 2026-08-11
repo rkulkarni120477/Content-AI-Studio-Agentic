@@ -218,13 +218,21 @@ def _cell(text: str, default: str = "—") -> str:
     return clean or default
 
 
+# Column order mirrors the AIM reference workbook's "4_Day-by-Day Map" sheet, so the
+# generated Blueprint drops into the same review workflow. Deviations, all deliberate:
+#   * "Notes" is ours (the REDUCE narrative cell) and has no reference counterpart, so
+#     it sits last rather than displacing a reference column.
+#   * "AIM SME Comments" is blank by design — a reviewer-fill column, populated on
+#     0/20 days in the reference. Emitted so the column exists to be filled.
 _DAY_TABLE_HEADER = [
     "Day", "Topic", "Handbook Reference", "Handbook Edition", "ACS", "Concept Type",
-    "Concept Type Explanation", "Learn-While-Doing", "How It Is Applied", "Hangar Activity",
-    "Projects Today", "Assessment Today", "Source Files", "Learning Objective", "Misconceptions",
-    "Interactive Candidate", "Interactive Type", "Interactive Content", "Interactive Scope",
-    "Interactive Rationale", "Storyline Source Asset Status", "Job Aid Candidate", "Job Aid Type",
-    "Job Aid Description", "Job Aid Source Reference", "Academian Questions", "Notes",
+    "Concept Type Explanation", "Concept Scope", "Learn-While-Doing", "How It Is Applied",
+    "Hangar Activity", "Projects Today", "Assessment Today", "Targets for Quick Check",
+    "Summative Exam Item Cluster", "Source Files", "Learning Objective", "Misconceptions",
+    "Interactive Candidate", "Interactive Type", "Interactive Content",
+    "Storyline Source Asset Status", "Interactive Scope", "Interactive Rationale",
+    "Job Aid Candidate", "Job Aid Type", "Job Aid Description", "Job Aid Source Reference",
+    "Academian Questions", "AIM SME Comments", "Notes",
 ]
 
 
@@ -273,13 +281,27 @@ def _day_table_from_rows(rows: list[dict]) -> list[str]:
         questions = _cell(r.get("academian_questions") or "", default="")
         concept_type = _cell(r.get("concept_type") or "", default="Unknown")
         concept_type_explanation = _cell(r.get("concept_type_explanation") or "", default="")
+        # Per-day LLM field (schema v7) — the specific sub-topics/tools covered.
+        concept_scope = _cell(r.get("concept_scope") or "", default="REVIEW NEEDED — no source available")
+        # Both derived deterministically in verify()/_quick_check_targets from the
+        # day's own ACS codes joined against the block's ACS registry. Never
+        # invented: where the underlying analytics are absent they say so (the AIM
+        # reference builds these from an AKTR miss-rate table that is not ingested
+        # anywhere in this system — see worksheets.py's module docstring).
+        quick_check = _cell(r.get("quick_check_targets") or "", default="NO AKTR DATA")
+        exam_cluster = _cell(r.get("summative_exam_cluster") or "", default="")
         cells = [
             str(r.get("day_number")), topic, handbook, handbook_edition, acs, concept_type,
-            concept_type_explanation, learn_while_doing, how_it_is_applied, hangar_activity,
-            projects, assessment, files, objective, misconceptions,
-            interactive_yn, interactive_type, interactive_content, interactive_scope,
-            interactive_rationale, storyline_asset_status, job_aid_yn, job_aid_type,
-            job_aid_desc, job_aid_source_ref, questions, note,
+            concept_type_explanation, concept_scope, learn_while_doing, how_it_is_applied,
+            hangar_activity, projects, assessment, quick_check, exam_cluster,
+            files, objective, misconceptions,
+            interactive_yn, interactive_type, interactive_content,
+            storyline_asset_status, interactive_scope, interactive_rationale,
+            job_aid_yn, job_aid_type, job_aid_desc, job_aid_source_ref, questions,
+            # AIM SME Comments — reviewer-fill, intentionally blank (0/20 populated
+            # in the reference). Emitted so the column exists in the workbook.
+            "",
+            note,
         ]
         out.append("| " + " | ".join(cells) + " |")
     return out
@@ -307,14 +329,21 @@ def render_blueprint_markdown(block: Optional[str], result) -> str:
 # Reduce (shared build → bundle → reduce)
 # --------------------------------------------------------------------------- #
 def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
-                      current_user, dis_client_id: str, map_guidance: str = ""):
+                      current_user, dis_client_id: str, map_guidance: str = "",
+                      *, db=None, request_body=None):
     """Returns (ReduceResult, build_report) or (None, None) on any failure.
 
     ``map_guidance`` (optional) is judgment/emphasis guidance distilled from
     the course's selected CDD/Blueprint prompt (see
     promptops_app.services.prompt_guidance.resolve_prompt_guidance) — forwarded
     to both the MAP build (DIS side) and the REDUCE narrative fill below. ""
-    (the default) reproduces this function's exact pre-existing behavior."""
+    (the default) reproduces this function's exact pre-existing behavior.
+
+    ``db`` + ``request_body`` are threaded purely so the REDUCE prompts resolve
+    through their DB tier with this request's scope (prompt_id → course → cluster →
+    project). Without them ``load_template`` cannot consult the DB at all, so an
+    admin's edit in the Prompts UI would never reach generation. Both optional:
+    omitted ⇒ file/built-in tiers, exactly as before."""
     try:
         report = dis_client.build_digests_sync(block, current_user=current_user, client_id=dis_client_id,
                                                 map_guidance=map_guidance)
@@ -331,7 +360,22 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
         return None, None
     try:
         from promptops_app.services.block_wide_generator import BlockWideGenerator
-        result = BlockWideGenerator().reduce(
+        course = None
+        if db is not None and getattr(request_body, "course_id", None):
+            try:
+                from promptops_app.repositories.course_repository import get_course_by_id
+                course = get_course_by_id(db, request_body.course_id)
+            except Exception:
+                course = None   # scope narrows to project/global; never fatal
+        generator = BlockWideGenerator(
+            db=db,
+            project_id=getattr(request_body, "project_id", None) or (course.project_id if course else None),
+            cluster_id=course.cluster_id if course else None,
+            course_id=getattr(request_body, "course_id", None),
+            prompt_id=getattr(request_body, "prompt_id", None),
+            user_name=getattr(current_user, "username", "") or "",
+        )
+        result = generator.reduce(
             enumerate_summary, digests, deliverable=deliverable, tier=quality_tier,
             block_overview=bundle.get("block_overview"),
             source_file_inventory=bundle.get("source_file_inventory"),
@@ -345,13 +389,74 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     return result, report
 
 
+def _audit_provenance(prompt_provenance: Optional[Dict[str, Any]],
+                      coverage: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extra audit-metadata keys for a digest-pipeline generation ({} for legacy).
+
+    Why this exists: the audit row's ``system_prompt``/``user_prompt`` fields hold the
+    VERBATIM prompts on the legacy path, but the digest path has no single pair to
+    record — REDUCE is N batched calls plus a separate per-day MAP stage on the DIS
+    side, so those fields carry a descriptive label instead. Without this helper the
+    same audit field would silently mean "the actual prompt" for one path and "a
+    label" for the other, and a digest-generated deliverable could not be
+    reconstructed from its audit row at all.
+
+    What makes it reconstructible: the REDUCE template's name+version+tier (DB prompt
+    versions are append-only and immutable, so name+version pins exact text — a
+    ``file``-sourced layer is only as stable as the deployed file), the full distilled
+    ``map_guidance`` text that actually reached MAP and REDUCE, the per-day build
+    counts, and the coverage report. All of it also lands in the version row's
+    ``generation_params``; duplicating it here means an auditor reading ``audit_logs``
+    alone does not have to join another table to see what drove the generation.
+    """
+    if not prompt_provenance:
+        return {}
+    out: Dict[str, Any] = {
+        "generation_path": prompt_provenance.get("prompt_source") or "digest_pipeline",
+        "quality_tier": prompt_provenance.get("quality_tier"),
+        "reduce_model": prompt_provenance.get("reduce_model"),
+        "reduce_prompts": prompt_provenance.get("reduce_prompts") or {},
+        "digest_build": prompt_provenance.get("digest_build") or {},
+        # Recorded in full, not as a boolean: this is the admin's own DB-maintained
+        # prompt distilled down, and it is the ONLY channel by which that prompt
+        # influences MAP/REDUCE — a reviewer asking "why did it say that?" needs the
+        # actual text, not a flag saying some text existed.
+        "map_guidance_applied": bool(prompt_provenance.get("map_guidance_applied")),
+        "map_guidance": prompt_provenance.get("map_guidance") or "",
+    }
+    if coverage:
+        # The honest source-accounting for this path. `dis_source_units_count` is 0
+        # here because the digest pipeline never populates that list — it reads
+        # sources per-day on the DIS side — so on its own it reads as "no sources
+        # used", which is the opposite of true.
+        out["coverage"] = coverage
+        out["source_accounting"] = {
+            "enumerated_days": coverage.get("enumerated_days"),
+            "days_in_output": coverage.get("days_in_output"),
+            "failed_days": coverage.get("failed_days") or [],
+            "thin_days": coverage.get("thin_days") or [],
+            "declared_acs_count": len(coverage.get("declared_acs") or []),
+            "covered_acs_count": len(coverage.get("covered_acs") or []),
+            "orphan_acs_count": len(coverage.get("orphan_acs") or []),
+            "complete": coverage.get("complete"),
+        }
+    return out
+
+
 def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dict[str, Any]:
     return {
         "prompt_source": "digest_pipeline",
         "deliverable": deliverable,
         "reduce_model": result.reduce_model,
         "quality_tier": result.tier,
-        "digest_build": {k: report.get(k) for k in ("built", "cached", "failed", "map_calls")}
+        # Includes the MAP token counts: they are the ONLY record of what the per-day
+        # extraction cost. MAP runs on the DIS side through its own boto3 client, so it
+        # never reaches llm_usage_logs — the DIS build report is the single place those
+        # numbers exist, and dropping them here discarded the majority of the request's
+        # token spend (Block 2: ~168k in / ~9k out across 20 calls).
+        "digest_build": {k: report.get(k) for k in
+                         ("built", "cached", "failed", "map_calls",
+                          "map_tokens_in", "map_tokens_out")}
         if isinstance(report, dict) else {},
         # Traceability (PL↔CAS sync review discipline): whether/what prompt-
         # derived guidance actually reached MAP/REDUCE for this generation, so
@@ -360,6 +465,11 @@ def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dic
         # step itself is a fidelity risk that must stay inspectable).
         "map_guidance_applied": bool((map_guidance or "").strip()),
         "map_guidance": map_guidance or "",
+        # Which REDUCE template/version actually drove this run, and whether each
+        # layer came from the DB (admin edit), the shipped file, or the built-in
+        # fallback — so a reviewer can distinguish "the admin's prompt produced
+        # this" from "their edit was rejected and the built-in ran".
+        "reduce_prompts": getattr(result, "prompt_provenance", {}) or {},
     }
 
 
@@ -371,7 +481,8 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
     persist_cdd_and_respond, or None to fall back to legacy."""
     result, report = _build_and_reduce("cdd", request_body.block,
                                        getattr(request_body, "quality_tier", None),
-                                       current_user, dis_client_id, map_guidance)
+                                       current_user, dis_client_id, map_guidance,
+                                       db=db, request_body=request_body)
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_cdd_flat, parse_sections_from_text
@@ -385,8 +496,18 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
         "sections": sections,
         "dis_source_units": [],
         "prompt_provenance": _provenance("cdd", result, report, map_guidance),
-        "system_prompt": f"[digest-pipeline reduce · model={result.reduce_model}]",
-        "user_prompt": f"[block-wide digest reduce · block={request_body.block} · tier={result.tier}]",
+        # NOT a verbatim prompt — REDUCE is N batched calls plus a separate
+        # per-day MAP stage, so there is no single pair to record. Says so
+        # explicitly and points at the keys that ARE reconstructible, rather
+        # than looking like a truncated prompt (see _audit_provenance).
+        "system_prompt": (
+            f"[digest-pipeline reduce · model={result.reduce_model} · "
+            f"tier={result.tier} · not a verbatim prompt: see reduce_prompts (template name/version/source) and map_guidance]"
+        ),
+        "user_prompt": (
+            f"[block-wide digest reduce · block={request_body.block} · "
+            f"reduce_calls={result.llm_calls} · not a verbatim prompt: the per-day MAP prompts live on the DIS side and vary per batch]"
+        ),
         "model_used": result.reduce_model,
         "tokens_used": None,
         "coverage": result.coverage,
@@ -481,6 +602,7 @@ def persist_cdd_and_respond(db, request_body, current_user, *, raw_output, secti
             "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
             "input_mode": "full", "system_prompt": system_prompt,
             "user_prompt": user_prompt, "output": raw_output,
+            **_audit_provenance(prompt_provenance, coverage),
         },
     )
 
@@ -503,7 +625,8 @@ def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id
     persist_blueprint_and_respond, or None to fall back to legacy."""
     result, report = _build_and_reduce("blueprint", request_body.block,
                                         getattr(request_body, "quality_tier", None),
-                                        current_user, dis_client_id, map_guidance)
+                                        current_user, dis_client_id, map_guidance,
+                                        db=db, request_body=request_body)
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_sections_from_text
@@ -514,8 +637,18 @@ def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id
         "sections": sections,
         "dis_source_units": [],
         "prompt_provenance": _provenance("blueprint", result, report, map_guidance),
-        "system_prompt": f"[digest-pipeline reduce · model={result.reduce_model}]",
-        "user_prompt": f"[block-wide blueprint reduce · block={request_body.block} · tier={result.tier}]",
+        # NOT a verbatim prompt — REDUCE is N batched calls plus a separate
+        # per-day MAP stage, so there is no single pair to record. Says so
+        # explicitly and points at the keys that ARE reconstructible, rather
+        # than looking like a truncated prompt (see _audit_provenance).
+        "system_prompt": (
+            f"[digest-pipeline reduce · model={result.reduce_model} · "
+            f"tier={result.tier} · not a verbatim prompt: see reduce_prompts (template name/version/source) and map_guidance]"
+        ),
+        "user_prompt": (
+            f"[block-wide blueprint reduce · block={request_body.block} · "
+            f"reduce_calls={result.llm_calls} · not a verbatim prompt: the per-day MAP prompts live on the DIS side and vary per batch]"
+        ),
         "model_used": result.reduce_model,
         "tokens_used": None,
         "coverage": result.coverage,
@@ -609,6 +742,7 @@ def persist_blueprint_and_respond(db, request_body, current_user, *, raw_output,
             "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
             "input_mode": "full", "system_prompt": system_prompt,
             "user_prompt": user_prompt, "output": raw_output,
+            **_audit_provenance(prompt_provenance, coverage),
         },
     )
 

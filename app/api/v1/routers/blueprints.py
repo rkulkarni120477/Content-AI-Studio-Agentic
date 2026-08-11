@@ -512,6 +512,24 @@ def generate_blueprint_block(
         project_id=request_body.project_id, course_id=request_body.course_id,
         job_type="blueprint_block",
     )
+    # Written before submit (see cdd.generate_cdd_block for why).
+    # See cdd.generate_cdd_block: audited at enqueue because this path is async, so a
+    # failed job would otherwise leave no audit trace of the request at all.
+    from promptops_app.services.audit_service import log_audit_event
+    log_audit_event(
+        db, current_user.username, "blueprint.block_requested",
+        entity_type="blueprint", entity_id=None,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        metadata={
+            "job_id": job_id, "block": request_body.block,
+            "quality_tier": request_body.quality_tier or "standard",
+            "model_choice": request_body.model_choice,
+            "dis_client_id": dis_client_id,
+            "prompt_id": request_body.prompt_id,
+            "cdd_id": request_body.cdd_id,
+            "extra_instructions": request_body.extra_instructions,
+        },
+    )
     job_runner.submit(block_wide_jobs.run_block_wide_job, job_id)
     _log.info("blueprint_generate_block_queued  user=%s  course=%d  block=%s  job=%s",
               current_user.username, request_body.course_id, request_body.block, job_id)

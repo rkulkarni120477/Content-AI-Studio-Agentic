@@ -249,6 +249,30 @@ class AppSettings(BaseSettings):
     digest_pipeline_enabled: bool = Field(default=False, alias="DIGEST_PIPELINE_ENABLED")
     digest_pipeline_clients: str = Field(default="aim", alias="DIGEST_PIPELINE_CLIENTS")
 
+    # ── Prompt guidance (DB-maintained prompt → MAP/REDUCE guidance) ──────────
+    # How much of the course's selected CDD/Blueprint prompt reaches the single
+    # distillation call, and how much guidance it may emit. These were previously
+    # hardcoded at 6000/2500/12 — far too small for a real block prompt (AIM's
+    # Block 2 CDD template is ~15.7k chars), which silently dropped ~60% of the
+    # admin's own instructions before the distiller ever saw them. A prompt longer
+    # than the input cap is now WINDOWED (up to `..._max_windows` chunks, each
+    # distilled and merged) rather than truncated, so raising these trades cost for
+    # fidelity instead of correctness.
+    prompt_guidance_max_prompt_chars: int = Field(
+        default=48000, alias="PROMPT_GUIDANCE_MAX_PROMPT_CHARS", gt=0)
+    prompt_guidance_max_chars: int = Field(
+        default=8000, alias="PROMPT_GUIDANCE_MAX_CHARS", gt=0)
+    prompt_guidance_max_items: int = Field(
+        default=24, alias="PROMPT_GUIDANCE_MAX_ITEMS", gt=0)
+    prompt_guidance_max_windows: int = Field(
+        default=4, alias="PROMPT_GUIDANCE_MAX_WINDOWS", gt=0)
+    # In-process memo of distillations, keyed by a content hash of the prompt text.
+    # A block-wide generation is one distillation call per request; the prompt
+    # changes rarely, so this removes a redundant LLM call (and its latency) from
+    # every repeat generation. Content-keyed ⇒ an edited prompt misses naturally.
+    prompt_guidance_cache_size: int = Field(
+        default=64, alias="PROMPT_GUIDANCE_CACHE_SIZE", ge=0)
+
     # ── Validators ────────────────────────────────────────────────────────────
 
     @field_validator("log_level", mode="before")

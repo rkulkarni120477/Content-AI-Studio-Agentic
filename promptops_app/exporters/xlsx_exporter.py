@@ -94,6 +94,12 @@ def build_xlsx(topic: str, blocks: list[tuple[str, str]], template: str = "defau
 
 _ILLEGAL_SHEET_CHARS = _re.compile(r"[\\/?*\[\]:]")
 _TABLE_SEP_CELL = _re.compile(r"^:?-{2,}:?$")
+# "- **Label:** value" — the key-value bullet shape emitted by
+# block_wide_service._fields_section for the Block Overview and Patterns &
+# Design Notes worksheets. Captured so it can be split into label/value cells
+# rather than written as raw markdown into a single cell. The value is optional
+# (a field with no data renders as "- **Label:** ").
+_KV_BULLET = _re.compile(r"^[-*]\s+\*\*(.+?):\*\*\s*(.*)$")
 
 
 def _safe_sheet_name(base: str, used: set) -> str:
@@ -168,13 +174,35 @@ def _render_section_sheet(ws, topic: str, section_name: str, content: str) -> No
             i += 1
             continue
 
+        # ── "- **Label:** value" bullet → two real cells ────────────────────
+        # The key-value worksheets (Block Overview, Patterns & Design Notes) are
+        # emitted as markdown bullets by block_wide_service._fields_section. Written
+        # verbatim they land as one string in column A ("- **Block:** Block 2"),
+        # which is unusable as a spreadsheet and does not match the AIM reference —
+        # whose Block Overview is a plain two-column label/value grid. Split them so
+        # the label is a bold column-A cell and the value is column B, matching the
+        # reference layout and making the fields readable/filterable.
+        kv = _KV_BULLET.match(stripped)
+        if kv:
+            label = ws.cell(row=row, column=1, value=kv.group(1).strip())
+            label.font = _HEADER_FONT
+            label.alignment = _WRAP_TOP
+            value = ws.cell(row=row, column=2, value=kv.group(2).strip())
+            value.alignment = _WRAP_TOP
+            max_cols = max(max_cols, 2)
+            row += 1
+            i += 1
+            continue
+
         heading = _re.match(r"^(#{1,6})\s+(.*)$", stripped)
         cell = ws.cell(row=row, column=1)
         if heading:
             cell.value = heading.group(2).strip()
             cell.font = Font(bold=True, size=13 if len(heading.group(1)) <= 2 else 11)
         else:
-            cell.value = stripped
+            # Plain bullet with no bold label — strip the markdown marker so the
+            # cell reads as content, not as raw markdown.
+            cell.value = _re.sub(r"^[-*]\s+", "", stripped)
         cell.alignment = _WRAP_TOP
         row += 1
         i += 1

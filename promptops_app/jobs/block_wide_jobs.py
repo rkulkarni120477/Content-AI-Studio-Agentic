@@ -60,6 +60,42 @@ def _reconstruct_user(params: dict) -> types.SimpleNamespace:
     return types.SimpleNamespace(username=name, id=name, email=name, role=params.get("role", "user"))
 
 
+def _audit_failure(db, deliverable: str, req, user, job_id: str, reason: str,
+                   *, map_guidance_applied: bool | None = None) -> None:
+    """Record a ``*.block_failed`` audit event.
+
+    Closes the async gap: the request is audited at enqueue and success is audited by
+    the persist tail, so without this a failed run would show a request with no
+    recorded outcome. Mirrors ``log_audit_event``'s own contract — audit logging must
+    never be the reason a worker crashes — so every failure here is swallowed after
+    logging, and the caller is already inside an error path.
+    """
+    from promptops_app.services.audit_service import log_audit_event
+
+    action = "blueprint.block_failed" if deliverable == "blueprint" else "cdd.block_failed"
+    entity = "blueprint" if deliverable == "blueprint" else "cdd"
+    metadata = {
+        "job_id": job_id,
+        "block": getattr(req, "block", None),
+        "quality_tier": getattr(req, "quality_tier", None) or "standard",
+        "model_choice": getattr(req, "model_choice", ""),
+        "prompt_id": getattr(req, "prompt_id", None),
+        "reason": reason,
+    }
+    if map_guidance_applied is not None:
+        metadata["map_guidance_applied"] = map_guidance_applied
+    try:
+        log_audit_event(
+            db, getattr(user, "username", "") or "cas-user", action,
+            entity_type=entity, entity_id=None,
+            project_id=getattr(req, "project_id", None),
+            course_id=getattr(req, "course_id", None),
+            metadata=metadata,
+        )
+    except Exception:
+        _log.exception("Block-wide job %s: audit failure event not written", job_id)
+
+
 def run_block_wide_job(job_id: str) -> None:
     """Generate a block-wide CDD or Block Blueprint via the digest pipeline.
 
@@ -99,6 +135,9 @@ def run_block_wide_job(job_id: str) -> None:
 
         if gen is None:
             set_failed(db, job, "Digest pipeline unavailable (no enumerated days or DIS error).")
+            _audit_failure(db, deliverable, req, user, job_id,
+                           "Digest pipeline unavailable (no enumerated days or DIS error).",
+                           map_guidance_applied=bool((map_guidance or "").strip()))
             _log.warning("Block-wide job %s: digest pipeline returned no result", job_id)
             return
 
@@ -133,5 +172,16 @@ def run_block_wide_job(job_id: str) -> None:
                 set_failed(db, job, "Block-wide generation failed. Please try again.")
             except Exception:
                 _log.exception("Block-wide job %s: could not mark failed", job_id)
+            # Audit the failure too. `job` is set, but `deliverable`/`req`/`user` may
+            # not be if the exception fired before they were parsed — re-derive them
+            # from the job row defensively so an early crash is still audited rather
+            # than silently leaving only a request event with no outcome.
+            try:
+                params = json.loads(job.request_json or "{}")
+                _audit_failure(db, params.get("deliverable", "cdd"),
+                               _reconstruct_request(params), _reconstruct_user(params),
+                               job_id, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                _log.exception("Block-wide job %s: could not audit failure", job_id)
     finally:
         db.close()

@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import textwrap
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -69,6 +68,75 @@ _DEFAULT_SYSTEM = {
 }
 
 _TEMPLATE_NAME = {"cdd": "cdd_reduce", "blueprint": "blueprint_reduce_worksheet"}
+_PATTERNS_TEMPLATE_NAME = "patterns_notes_reduce"
+
+# ── Built-in USER prompts (last-resort fallback tier) ────────────────────────
+# These are the same {{placeholder}} templates shipped in prompts/templates/, kept
+# in code as the tier that cannot fail: a deleted/malformed/contract-violating
+# template file or DB row degrades to these rather than to a broken generation.
+# Both the resolved and the fallback path render through the SAME code below, so
+# there is exactly one prompt-assembly path to reason about.
+#
+# Keep the JSON key names here in sync with reduce_prompts.NARRATIVE_CONTRACT /
+# PATTERNS_CONTRACT and with the parsers in _fill_narratives/_patterns_notes.
+_DEFAULT_NARRATIVE_USER = (
+    'Return ONLY a JSON object mapping each day_number (as a string) to an object '
+    '{"narrative": str, "how_it_is_applied": str, "learn_while_doing_reason": str, '
+    '"hangar_activity_note": str, "objective_block_framing": str, '
+    '"cross_day_misconception_note": str}. narrative is a 1-2 sentence summary of '
+    'the day. how_it_is_applied is one sentence on how THIS day\'s content connects '
+    'to work on OTHER days (e.g. a specific project/activity on a later day that '
+    'exercises it) — use BLOCK_CONTEXT below to find that connection; if none is '
+    'evident, say "Not directly exercised elsewhere in this block." rather than '
+    'inventing one.\n\n'
+    'learn_while_doing_reason justifies the day\'s ALREADY-DECIDED learn_while_doing '
+    'value (true = a project opens this same day; false = none does) — do not '
+    'contradict it. If false, name the nearest day (from BLOCK_CONTEXT) whose '
+    'project first exercises this day\'s topic, e.g. "no project opens this day '
+    '(Project 2-1 opens Day 2)"; if true, name the project, e.g. "opens Project 2-1 '
+    'the same day this content is introduced." One short clause, no leading Yes/No '
+    '(that prefix is added separately).\n\n'
+    'hangar_activity_note: if hangar_activity_today is non-empty, one or two '
+    'sentences on what that activity likely covers and how it connects to this '
+    'day\'s acs_codes/topic — grounded only in the activity\'s own title and this '
+    'day\'s known facts, never inventing procedural detail you cannot see. If '
+    'hangar_activity_today is empty, use "N/A — no hangar activity listed for this '
+    'day."\n\n'
+    'objective_block_framing: an OPTIONAL clause to APPEND to this day\'s own '
+    'derived_objective (never replace it) that adds real block-level stakes from '
+    'BLOCK_FACTS below — e.g. for a summative-assessment day, something like "to a '
+    '70% or higher standard, per the block\'s grading policy." Leave "" for an '
+    'ordinary instructional day where no block-level framing genuinely adds value — '
+    'do not force one.\n\n'
+    'cross_day_misconception_note: an OPTIONAL single sentence to APPEND as one more '
+    'entry in this day\'s own misconceptions list (never replace or reword the '
+    'existing entries) — only when BLOCK_CONTEXT shows a genuine, specific '
+    'connection to a concept first introduced on an earlier day being '
+    'revisited/tested today, e.g. "Connects to the <concept> introduced on Day <N>, '
+    'reinforced here." — naming the actual concept and day from BLOCK_CONTEXT, never a '
+    'worked example carried over from another block. Leave "" when no such connection '
+    'is evident, or when '
+    'this day\'s own misconceptions list is empty (e.g. an assessment/review day '
+    'with nothing to document) — do not invent a connection to pad an empty list.\n\n'
+    'BLOCK_FACTS (block-level, for framing only — never contradict):\n'
+    '{{block_facts}}\n\n'
+    'BLOCK_CONTEXT (all days, for cross-referencing only):\n'
+    '{{block_context}}{{guidance_block}}\n\n'
+    'DAYS TO FILL IN:\n{{day_records}}'
+)
+
+_DEFAULT_PATTERNS_SYSTEM = (
+    "You write faithful, fact-grounded prose. Never invent or contradict a given fact."
+)
+
+_DEFAULT_PATTERNS_USER = (
+    'You are writing the "Content Arc Summary" and "Production Readiness" fields of '
+    'a Block Blueprint\'s Patterns & Design Notes worksheet, from VERIFIED '
+    'structural facts only — do not add any fact not given below, and do not '
+    'contradict any of them. Respond with ONLY this JSON object, no preamble:\n\n'
+    '{"content_arc_summary": str, "production_readiness": str}\n\n'
+    'FACTS:\n{{facts}}\n{{guidance_block}}'
+)
 
 
 @dataclass
@@ -100,6 +168,11 @@ class ReduceResult:
     sections: List[Dict[str, Any]]
     coverage: Dict[str, Any]
     llm_calls: int = 0
+    #: Which template/version/tier supplied each REDUCE prompt for this run
+    #: (see reduce_prompts.ReducePrompt.to_provenance). Persisted with the
+    #: artifact so a reviewer can tell an admin-edited prompt from the built-in
+    #: rather than inferring it.
+    prompt_provenance: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -133,10 +206,43 @@ def _safe_json(text: str) -> Any:
 
 
 class BlockWideGenerator:
-    def __init__(self, llm: Optional[LlmFn] = None, batch_size: int = DEFAULT_BATCH_SIZE):
+    """Block-wide REDUCE.
+
+    ``db`` + the scope ids are what make the REDUCE prompts genuinely editable at
+    runtime: ``prompt_loader.load_template`` only consults its DB tier when a
+    session is supplied, so without them an admin's edit in the Prompts UI could
+    never reach this call (it silently resolved from the file tier at best). Pass
+    them and resolution follows the normal scope precedence — prompt_id → course →
+    cluster → project → global → file → built-in.
+
+    All of them are optional so existing callers and tests keep working unchanged;
+    omitting ``db`` simply drops back to the file/built-in tiers.
+    """
+
+    def __init__(self, llm: Optional[LlmFn] = None, batch_size: int = DEFAULT_BATCH_SIZE,
+                 *, db: Any = None, project_id: Any = None, cluster_id: Any = None,
+                 course_id: Any = None, prompt_id: Any = None, user_name: str = ""):
         self._llm = llm
         self.batch_size = max(1, batch_size)
         self._max_tokens: Optional[int] = None   # set per reduce() from the tier
+        self._db = db
+        self._scope = {
+            "project_id": project_id,
+            "cluster_id": cluster_id,
+            "course_id": course_id,
+            "prompt_id": prompt_id,
+        }
+        self._user_name = user_name
+        self._block_label = ""   # set per reduce() from the enumerate summary
+        #: Per-call cost/traceability context for llm_usage_logs, set per reduce()
+        #: once the deliverable and tier are known. Every OTHER LLM surface in this
+        #: app (feedback, workflow, canvas, regen) passes one; the block-wide reduce
+        #: was the only one that did not, so its calls — the most expensive per
+        #: request in the product — produced no token, cost, or latency rows at all.
+        self._usage_ctx: Any = None
+        #: Provenance for the prompts actually used, surfaced on ReduceResult so a
+        #: reviewer can see which template/version/tier produced a deliverable.
+        self.prompt_provenance: Dict[str, Any] = {}
 
     # -- LLM seam -------------------------------------------------------------
     def _call(self, model_choice: str, system: str, user: str) -> str:
@@ -146,7 +252,8 @@ class BlockWideGenerator:
         # Pass the tier's output-token headroom so long sectioned reduces don't
         # truncate at the historical flat cap (D6).
         from promptops_app.services.llm_service import generate_with_metadata
-        result = generate_with_metadata(model_choice, system, user, max_tokens=self._max_tokens)
+        result = generate_with_metadata(model_choice, system, user, max_tokens=self._max_tokens,
+                                        usage_ctx=self._usage_ctx)
         # generate_with_metadata never raises — on total failure (after retry +
         # fallback) it returns status="error" with a human error string as .text.
         # If we didn't check, that string would become "narrative" (or fail JSON
@@ -157,18 +264,46 @@ class BlockWideGenerator:
             raise RuntimeError(getattr(result, "text", None) or "LLM reduce call failed")
         return getattr(result, "text", "") or ""
 
-    def _system(self, deliverable: str) -> str:
-        # Prefer the editable template (AIM domain/style layer, §5.3); fall back to
-        # the built-in so generation never breaks on a missing/DB-less template.
+    def _build_usage_ctx(self, deliverable: str, prompt) -> Any:
+        """Cost/traceability context for every REDUCE call of this generation.
+
+        ``entity_id`` is deliberately the block label, not a deliverable row id: the
+        row does not exist yet when these calls run (it is created by
+        persist_*_and_respond afterwards), and the block is what a cost review of a
+        block-wide generation actually groups by. Returns None on any failure —
+        usage logging must never be able to break a generation.
+        """
         try:
-            from promptops_app.prompts.prompt_loader import load_template
-            tpl = load_template(_TEMPLATE_NAME.get(deliverable, "cdd_reduce"))
-            system = getattr(tpl, "system_template", None)
-            if system and str(system).strip():
-                return str(system)
-        except Exception as exc:
-            log.debug("reduce template load failed (%s); using built-in system", exc)
-        return _DEFAULT_SYSTEM.get(deliverable, _DEFAULT_SYSTEM["cdd"])
+            from promptops_app.services.usage_service import UsageLogContext
+            return UsageLogContext(
+                user_name=self._user_name or "",
+                project_id=self._scope.get("project_id"),
+                course_id=self._scope.get("course_id"),
+                entity_type=deliverable,
+                entity_id=str(self._block_label or ""),
+                prompt_template=prompt.template_name or "",
+                prompt_version=str(prompt.template_version or ""),
+            )
+        except Exception as exc:   # noqa: BLE001 — accounting, never load-bearing
+            log.debug("block-wide usage context unavailable: %s", exc)
+            return None
+
+    def _resolve_prompt(self, name: str, builtin_system: str, builtin_user: str, contract):
+        """Resolve one REDUCE prompt through DB → file → built-in, contract-checked.
+
+        Threading ``self._db`` and the scope ids here is what reaches the DB tier;
+        ``reduce_prompts.resolve_reduce_prompt`` validates that an admin's edit
+        still asks for every JSON key the parser reads, and degrades per-layer to
+        the built-in when it doesn't (loudly, never silently)."""
+        from promptops_app.services.reduce_prompts import resolve_reduce_prompt
+        return resolve_reduce_prompt(
+            name,
+            builtin_system=builtin_system,
+            builtin_user=builtin_user,
+            contract=contract,
+            db=self._db,
+            **self._scope,
+        )
 
     # -- public API -----------------------------------------------------------
     def reduce(self, enumerate_summary: Dict[str, Any], digests: List[Dict[str, Any]],
@@ -186,12 +321,23 @@ class BlockWideGenerator:
         tm = resolve_tier(tier)
         by_day = {d.get("day_number"): d for d in digests}
         days = enumerate_summary.get("days", [])
+        self._block_label = enumerate_summary.get("block") or ""
 
         rows = [self._skeleton_row(day, by_day.get(day.get("day_number"))) for day in days]
+        # Per-day × block-registry join; must run before the day table is rendered.
+        self._apply_assessment_columns(rows, acs_registry)
 
         self._max_tokens = tm.max_output_tokens
-        system = self._system(deliverable)
-        llm_calls = self._fill_narratives(rows, deliverable, system, tm.reduce_model,
+        from promptops_app.services.reduce_prompts import NARRATIVE_CONTRACT
+        narrative_prompt = self._resolve_prompt(
+            _TEMPLATE_NAME.get(deliverable, "cdd_reduce"),
+            _DEFAULT_SYSTEM.get(deliverable, _DEFAULT_SYSTEM["cdd"]),
+            _DEFAULT_NARRATIVE_USER,
+            NARRATIVE_CONTRACT,
+        )
+        self.prompt_provenance = {"narrative": narrative_prompt.to_provenance()}
+        self._usage_ctx = self._build_usage_ctx(deliverable, narrative_prompt)
+        llm_calls = self._fill_narratives(rows, deliverable, narrative_prompt, tm.reduce_model,
                                           block_overview, map_guidance)
 
         coverage = self.verify(rows, enumerate_summary, deliverable, tm.tier)
@@ -217,6 +363,7 @@ class BlockWideGenerator:
             deliverable=deliverable, tier=tm.tier, reduce_model=tm.reduce_model,
             max_output_tokens=tm.max_output_tokens, sections=sections,
             coverage=coverage.to_dict(), llm_calls=llm_calls + notes_calls,
+            prompt_provenance=dict(self.prompt_provenance),
         )
 
     def _patterns_notes(self, rows: List[Dict[str, Any]], coverage: "CoverageReport",
@@ -275,20 +422,19 @@ class BlockWideGenerator:
             "orphan_acs": coverage.orphan_acs,
             **code_fields,
         }
-        prompt = textwrap.dedent(f"""\
-            You are writing the "Content Arc Summary" and "Production Readiness"
-            fields of a Block Blueprint's Patterns & Design Notes worksheet, from
-            VERIFIED structural facts only — do not add any fact not given below,
-            and do not contradict any of them. Respond with ONLY this JSON object,
-            no preamble:
-
-            {{"content_arc_summary": str, "production_readiness": str}}
-
-            FACTS:
-            {json.dumps(facts, indent=2)}
-            """)
-        prompt += _guidance_block(map_guidance)
-        text = self._call(model_choice, "You write faithful, fact-grounded prose. Never invent or contradict a given fact.", prompt)
+        from promptops_app.services.reduce_prompts import PATTERNS_CONTRACT, render_user_prompt
+        resolved = self._resolve_prompt(
+            _PATTERNS_TEMPLATE_NAME, _DEFAULT_PATTERNS_SYSTEM,
+            _DEFAULT_PATTERNS_USER, PATTERNS_CONTRACT,
+        )
+        self.prompt_provenance["patterns_notes"] = resolved.to_provenance()
+        prompt = render_user_prompt(
+            resolved,
+            {"facts": json.dumps(facts, indent=2), "guidance_block": _guidance_block(map_guidance)},
+            PATTERNS_CONTRACT,
+            _DEFAULT_PATTERNS_USER,
+        )
+        text = self._call(model_choice, resolved.system, prompt)
         data = _safe_json(text) or {}
         fields = {
             "content_arc_summary": data.get("content_arc_summary", "") or "NOT AVAILABLE",
@@ -312,6 +458,64 @@ class BlockWideGenerator:
                 questions.append("This day has no substantive source content — is that expected (e.g. a review/consolidation day), or is source material missing?")
         return " ".join(questions)
 
+    @staticmethod
+    def _apply_assessment_columns(rows: List[Dict[str, Any]],
+                                  acs_registry: Optional[List[Dict[str, Any]]]) -> None:
+        """Fill each row's ``quick_check_targets`` and ``summative_exam_cluster``.
+
+        Both are a per-day × block-registry join, so neither can come from a single
+        day's digest — hence a separate pass here, in code, after the rows exist.
+
+        **Deliberately not LLM-generated.** The AIM reference builds "Targets for
+        Quick Check" from an AKTR miss-rate table with real figures ("79.6%, rank
+        #1"), and that table is not ingested anywhere in this system (see
+        dis_backend/services/digests/worksheets.py's module docstring). Asking a model
+        for it would manufacture percentages, so this states the day's codes and the
+        registry's own priority, and says NO AKTR DATA where the analytics are absent
+        — the same honesty rule the rest of the pipeline follows.
+
+        "Summative Exam Item Cluster" is likewise an estimate in the reference ("Items
+        ~6-10 (estimated)"); without an ingested exam blueprint there is no item count
+        to distribute, so it reports the gap rather than inventing ranges.
+        """
+        by_code: Dict[str, Dict[str, Any]] = {}
+        for entry in acs_registry or []:
+            code = str(entry.get("acs_code") or "").strip()
+            if code:
+                by_code[code] = entry
+
+        for r in rows:
+            codes = [c for c in (r.get("acs_codes") or []) if c]
+            if not codes:
+                r["quick_check_targets"] = "No ACS codes mapped to this day."
+                r["summative_exam_cluster"] = "REVIEW NEEDED — no ACS codes mapped to this day."
+                continue
+
+            high_miss, priorities = [], []
+            for code in codes:
+                entry = by_code.get(code) or {}
+                miss = str(entry.get("high_miss") or "").strip()
+                if miss and miss.upper() not in {"NO", "N/A", "NONE", "NO AKTR DATA"}:
+                    high_miss.append(f"{code} ({miss})")
+                priority = str(entry.get("priority") or "").strip()
+                if priority:
+                    priorities.append(f"{code}: {priority}")
+
+            parts = []
+            if high_miss:
+                parts.append("HIGH-MISS: " + "; ".join(high_miss))
+            if priorities:
+                parts.append("; ".join(priorities))
+            else:
+                # Registry itself had nothing for these codes — say so rather than
+                # implying the codes were assessed and found low-priority.
+                parts.append(f"NO AKTR DATA for {', '.join(codes)} — priority defaults apply.")
+            r["quick_check_targets"] = " · ".join(parts)
+            r["summative_exam_cluster"] = (
+                "REVIEW NEEDED — no summative exam blueprint in source; "
+                "item cluster cannot be estimated."
+            )
+
     def _skeleton_row(self, day: Dict[str, Any], digest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         dn = day.get("day_number")
         digest = digest or {}
@@ -330,6 +534,12 @@ class BlockWideGenerator:
             "acs_codes": acs,
             "concept_type": digest.get("concept_type", "Unknown"),
             "concept_type_explanation": digest.get("concept_type_explanation", ""),
+            "concept_scope": digest.get("concept_scope", ""),
+            # Filled by _apply_assessment_columns() once the block-level ACS
+            # registry is available (they are a per-day × block-registry join, so
+            # they cannot be derived from one day's digest alone).
+            "quick_check_targets": "",
+            "summative_exam_cluster": "",
             "source_availability": digest.get("source_availability", {}),
             "review_flags": list(digest.get("review_flags", []) or []),
             "digest_status": digest.get("digest_status", "missing"),
@@ -363,7 +573,7 @@ class BlockWideGenerator:
         }
 
     def _fill_narratives(self, rows: List[Dict[str, Any]], deliverable: str,
-                         system: str, model_choice: str,
+                         prompt: Any, model_choice: str,
                          block_overview: Optional[Dict[str, Any]] = None,
                          map_guidance: str = "") -> int:
         """Batch rows and ask the LLM for a narrative + how-it's-applied cell per
@@ -400,6 +610,19 @@ class BlockWideGenerator:
         value; it can never replace, reword, or drop what the per-day digest
         already produced. block_facts (from block_overview, when available)
         gives it real block-level grounding instead of inventing one."""
+        # ``prompt`` is normally a resolved ReducePrompt. A bare string is accepted
+        # as "this system prompt + the built-in USER contract", which is what a
+        # caller that only has a system prompt (and every pre-templating test)
+        # supplies — normalising here keeps one prompt-assembly path below instead
+        # of branching on the argument type at each use.
+        if isinstance(prompt, str):
+            from promptops_app.services.reduce_prompts import ReducePrompt
+            prompt = ReducePrompt(
+                system=prompt, user_template=_DEFAULT_NARRATIVE_USER,
+                template_name=_TEMPLATE_NAME.get(deliverable, "cdd_reduce"),
+                template_version="builtin",
+            )
+
         calls = 0
         block_context = [{"day_number": r["day_number"], "topic": r["topic"],
                           "projects_today": r["projects_today"]} for r in rows]
@@ -423,52 +646,19 @@ class BlockWideGenerator:
                 "learn_while_doing": r["learn_while_doing"],
                 "hangar_activity_today": r["hangar_activity_today"],
             } for r in batch]
-            user = (
-                "Return ONLY a JSON object mapping each day_number (as a string) to an "
-                'object {"narrative": str, "how_it_is_applied": str, '
-                '"learn_while_doing_reason": str, "hangar_activity_note": str, '
-                '"objective_block_framing": str, "cross_day_misconception_note": str}. '
-                "narrative is a 1-2 sentence summary of the day. how_it_is_applied is "
-                "one sentence on how THIS day's content connects to work on OTHER days "
-                "(e.g. a specific project/activity on a later day that exercises it) — "
-                "use BLOCK_CONTEXT below to find that connection; if none is evident, "
-                'say "Not directly exercised elsewhere in this block." rather than '
-                "inventing one.\n\n"
-                "learn_while_doing_reason justifies the day's ALREADY-DECIDED "
-                "learn_while_doing value (true = a project opens this same day; false "
-                "= none does) — do not contradict it. If false, name the nearest day "
-                "(from BLOCK_CONTEXT) whose project first exercises this day's topic, "
-                'e.g. "no project opens this day (Project 2-1 opens Day 2)"; if true, '
-                'name the project, e.g. "opens Project 2-1 the same day this content '
-                'is introduced." One short clause, no leading Yes/No (that prefix is '
-                "added separately).\n\n"
-                "hangar_activity_note: if hangar_activity_today is non-empty, one or "
-                "two sentences on what that activity likely covers and how it connects "
-                "to this day's acs_codes/topic — grounded only in the activity's own "
-                "title and this day's known facts, never inventing procedural detail "
-                'you cannot see. If hangar_activity_today is empty, use "N/A — no '
-                'hangar activity listed for this day."\n\n'
-                "objective_block_framing: an OPTIONAL clause to APPEND to this day's "
-                "own derived_objective (never replace it) that adds real block-level "
-                "stakes from BLOCK_FACTS below — e.g. for a summative-assessment day, "
-                'something like "to a 70% or higher standard, per the block\'s grading '
-                'policy." Leave "" for an ordinary instructional day where no '
-                "block-level framing genuinely adds value — do not force one.\n\n"
-                "cross_day_misconception_note: an OPTIONAL single sentence to APPEND "
-                "as one more entry in this day's own misconceptions list (never replace "
-                "or reword the existing entries) — only when BLOCK_CONTEXT shows a "
-                "genuine, specific connection to a concept first introduced on an "
-                'earlier day being revisited/tested today, e.g. "Connects to Day 1\'s '
-                'drawing revision-control concept, reinforced here." Leave "" when no '
-                "such connection is evident, or when this day's own misconceptions list "
-                "is empty (e.g. an assessment/review day with nothing to document) — "
-                "do not invent a connection to pad an empty list.\n\n"
-                f"BLOCK_FACTS (block-level, for framing only — never contradict):\n{json.dumps(block_facts, indent=2)}\n\n"
-                f"BLOCK_CONTEXT (all days, for cross-referencing only):\n{json.dumps(block_context, indent=2)}"
-                + _guidance_block(map_guidance) +
-                "\n\nDAYS TO FILL IN:\n" + json.dumps(payload, indent=2)
+            from promptops_app.services.reduce_prompts import NARRATIVE_CONTRACT, render_user_prompt
+            user = render_user_prompt(
+                prompt,
+                {
+                    "block_facts": json.dumps(block_facts, indent=2),
+                    "block_context": json.dumps(block_context, indent=2),
+                    "guidance_block": _guidance_block(map_guidance),
+                    "day_records": json.dumps(payload, indent=2),
+                },
+                NARRATIVE_CONTRACT,
+                _DEFAULT_NARRATIVE_USER,
             )
-            text = self._call(model_choice, system, user)
+            text = self._call(model_choice, prompt.system, user)
             calls += 1
             parsed = _safe_json(text)
             mapping = parsed if isinstance(parsed, dict) else {}

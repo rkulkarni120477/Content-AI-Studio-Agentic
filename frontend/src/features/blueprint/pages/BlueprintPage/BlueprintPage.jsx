@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -54,6 +54,7 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { inferBlockLabel } from '@utils/blockLabel';
 import { useLabels } from '@hooks/useLabels';
 import styles from './BlueprintPage.module.scss';
 
@@ -88,6 +89,13 @@ export default function BlueprintPage() {
   // Block-wide (digest-pipeline) generation inputs.
   const [blockLabel, setBlockLabel] = useState('');
   const [qualityTier, setQualityTier] = useState('standard');
+  // See CddPage: once the user edits Block, stop auto-prefilling it — otherwise
+  // clearing the field would read as "needs a prefill" and refill as they delete.
+  const blockLabelTouched = useRef(false);
+  const onBlockLabelChange = useCallback((value) => {
+    blockLabelTouched.current = true;
+    setBlockLabel(value);
+  }, []);
   const [moduleSelKey, setModuleSelKey] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
@@ -154,10 +162,32 @@ export default function BlueprintPage() {
     // Clear any stale block-job banner from a previously-viewed course.
     dispatch(resetBlockJob());
     setBlockLabel('');
+    blockLabelTouched.current = false;
     dispatch(fetchBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
+
+  // Prefill Block from the text that names it, most specific source first: the
+  // selected prompt (written for a given block), then the linked CDD, then the
+  // course. Editable — the user sees and can correct what gets sent, because the
+  // label is an exact retrieval key server-side.
+  const inferredBlockLabel = useMemo(
+    () => inferBlockLabel(
+      promptConfig.systemPrompt,
+      promptConfig.userPromptTemplate,
+      linkedCdd?.title,
+      selCourse?.title,
+      selCourse?.name,
+    ),
+    [promptConfig.systemPrompt, promptConfig.userPromptTemplate,
+     linkedCdd?.title, selCourse?.title, selCourse?.name],
+  );
+
+  useEffect(() => {
+    if (!inferredBlockLabel || blockLabelTouched.current) return;
+    setBlockLabel((current) => (current ? current : inferredBlockLabel));
+  }, [inferredBlockLabel]);
 
   useEffect(() => {
     if (activeCdd?.id && linkedCddId === null) {
@@ -359,6 +389,10 @@ export default function BlueprintPage() {
       cdd_id: linkedCddId || undefined,
       extra_instructions: extraInstructions,
       model_choice: modelChoice,
+      // See the matching comment in CddPage.onGenerateBlock: without this the server
+      // cannot reach its DB prompt tier and distills guidance from the generic
+      // shipped template instead of the one selected in the dropdown.
+      prompt_id: promptConfig.selectedPromptId || undefined,
     };
     await dispatch(generateBlueprintBlockThunk(payload));
   }
@@ -994,7 +1028,7 @@ export default function BlueprintPage() {
                   label={L.blueprint}
                   hint={`Generate a whole-block ${L.blueprint} — a day-by-day plan built from every source in the block via enumerate → digest → reduce, with coverage checks. Runs in the background and is pinned as active when it finishes.`}
                   block={blockLabel}
-                  onBlockChange={setBlockLabel}
+                  onBlockChange={onBlockLabelChange}
                   qualityTier={qualityTier}
                   onQualityTierChange={setQualityTier}
                   isGenerating={isGenerating}
