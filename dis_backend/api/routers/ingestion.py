@@ -25,6 +25,35 @@ log = logging.getLogger(__name__)
 _jobs: Dict[str, Dict[str, Any]] = {}   # production: move to RDS/DynamoDB
 _scans: Dict[str, Dict[str, Any]] = {}  # scan-level tracking for folder-scan
 
+# Uploads at/under this size get an inline text preview built during the request.
+# Larger files defer ALL text extraction to the background pipeline, so the web
+# request never spends minutes (or gigabytes of RAM) parsing a huge PDF on the
+# event loop — which previously froze DIS and failed the upload. Deferred files
+# still appear immediately in the Source Library, marked "processing".
+_IMMEDIATE_EXTRACT_MAX_MB = 25
+_IMMEDIATE_EXTRACT_MAX_BYTES = _IMMEDIATE_EXTRACT_MAX_MB * 1024 * 1024
+
+# For deferred (large) files we still grab a cheap first-pages text preview so a
+# Source Library record is NEVER empty — even if the background pipeline is
+# delayed, stopped by dedup, or fails. PDFium stops early at this char budget,
+# so the preview stays fast and low-memory (a few pages, not the whole file).
+_DEFERRED_PREVIEW_MAX_CHARS = 8000
+
+# Per-client locks serialize writes to the per-client source index
+# (source_list.json), which is a non-atomic read-modify-write. Now that the
+# immediate write runs via asyncio.to_thread, two concurrent same-client uploads
+# on the event loop could otherwise interleave and drop a record. Holding the
+# lock across the (awaited) to_thread write serializes request-side writers.
+_source_index_locks: Dict[str, "asyncio.Lock"] = {}
+
+
+def _source_index_lock(client_id: str) -> "asyncio.Lock":
+    lock = _source_index_locks.get(client_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _source_index_locks[client_id] = lock
+    return lock
+
 
 class FolderScanRequest(BaseModel):
     folder_path: str = Field(..., description="Server-side folder path. For local testing, this is a Windows path on the machine running FastAPI, for example C:\\...\\DIS\\data")
@@ -162,6 +191,26 @@ def _extract_text_for_source_library(filename: str, content: bytes) -> str:
         return _clean_reading_text(content[:200000].decode("utf-8", errors="ignore"))
 
 
+def _preview_text_for_source_library(filename: str, content: bytes, max_chars: int = _DEFERRED_PREVIEW_MAX_CHARS) -> str:
+    """Cheap first-pages preview for the deferred (large-file) path.
+
+    Uses PDFium (tolerant of the large/linearized PDFs pypdf rejects) and stops
+    at *max_chars*, so it reads only the first few pages — fast and low-memory.
+    Best-effort: returns "" on any failure or unsupported type, so the record
+    simply falls back to empty (never worse than before). The full text is
+    filled in later by the background pipeline.
+    """
+    suffix = Path(filename or "").suffix.lower().lstrip(".")
+    try:
+        if suffix == "pdf":
+            from services.pipeline.extractors import _extract_pdf_pdfium
+            result = _extract_pdf_pdfium(content, max_chars)
+            return _clean_reading_text(result.text or "")
+    except Exception as exc:
+        log.warning("Deferred preview extraction failed for %s: %s", filename, exc)
+    return ""
+
+
 def _guess_document_type(filename: str, supplied: str = "", purpose: str = "") -> str:
     supplied = (supplied or "").strip()
     if supplied:
@@ -208,15 +257,35 @@ def _build_source_library_payload(
     *, tenant_cfg: TenantConfig, client_id: str, namespace: str, job_id: str, user_id: str,
     filename: str, content: bytes, content_type: str, raw_storage_url: str, s3_key: str,
     source_relative_path: str = "", source_root: str = "", metadata_hints: Optional[Dict[str, Any]] = None,
+    extract_text: bool = True,
 ) -> Dict[str, Any]:
+    """Build the immediate Source Library payload shown right after upload.
+
+    When ``extract_text`` is False (large files), inline text extraction is
+    skipped: the document is published as ``status="processing"`` with empty
+    preview text, and the background pipeline fills in the real content later.
+    This keeps the upload request fast and off the heavy parse path.
+
+    NOTE: this function is CPU/IO-bound (PDF parsing, sha256 over the whole
+    file). Callers on the async event loop MUST run it via ``asyncio.to_thread``
+    so it never blocks DIS from serving other requests.
+    """
     hints = metadata_hints or {}
     raw_purpose = (hints.get("purpose") or "general_reference").strip() or "general_reference"
     document_type = _guess_document_type(filename, hints.get("document_type") or "", raw_purpose)
     purpose = normalize_purpose(raw_purpose, document_type)
     visibility = normalize_visibility(hints.get("visibility") or "instructor")
-    extracted = _extract_text_for_source_library(filename, content)
-    if not extracted:
-        extracted = f"No readable text could be extracted from {filename}."
+    if extract_text:
+        extracted = _extract_text_for_source_library(filename, content)
+        if not extracted:
+            extracted = f"No readable text could be extracted from {filename}."
+        doc_status = "processed"
+    else:
+        # Deferred: the background pipeline does the full extraction, but grab a
+        # cheap first-pages preview now so the record is never empty even if that
+        # pipeline is delayed, stopped by dedup, or fails.
+        extracted = _preview_text_for_source_library(filename, content)
+        doc_status = "processing"
     file_type = Path(filename or "").suffix.lower().lstrip(".") or (content_type or "application/octet-stream")
     sha = hashlib.sha256(content).hexdigest()
     now_iso = datetime.utcnow().isoformat()
@@ -230,7 +299,7 @@ def _build_source_library_payload(
         "purpose": purpose,
         "visibility": visibility,
         "access_level": visibility,
-        "status": "processed",
+        "status": doc_status,
         "file_sha256": sha,
         "content_hash": hashlib.sha256(extracted.encode("utf-8", errors="ignore")).hexdigest(),
         "course_name": hints.get("course_name") or "",
@@ -297,6 +366,66 @@ def _write_source_library_payload(
     if client_id:
         write_source_content_and_index(tenant_cfg, client_id, payload, payload_key=key)
     return payload_url
+
+
+async def _publish_immediate_payload(
+    *, tenant_cfg: TenantConfig, client_id: str, namespace: str, job_id: str, user_id: str,
+    filename: str, content: bytes, content_type: str, raw_storage_url: str, s3_key: str,
+    source_relative_path: str = "", source_root: str = "", metadata_hints: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Build + write the immediate Source Library payload OFF the event loop.
+
+    Shared by all three upload paths (single ``upload_file``, ``upload_batch``,
+    and the folder-scan ``_create_job_record_and_upload``) so they can't drift.
+
+    * Runs the CPU/IO-bound build+write via ``asyncio.to_thread`` — never blocks
+      the event loop, even for a 100+ MB PDF.
+    * Files larger than ``_IMMEDIATE_EXTRACT_MAX_BYTES`` skip inline text
+      extraction: they publish as ``status="processing"`` and the background
+      pipeline fills in the text later.
+    * **Never raises.** The raw file is already stored in S3 and the pipeline
+      will still extract + index it, so a preview-build hiccup must not fail the
+      upload (that previously surfaced as a misleading "DIS could not process
+      this file" 500). Returns ``True`` on success, ``False`` if the preview
+      could not be written.
+
+    Updates ``_jobs[job_id]`` (payload_storage_url / artifact_urls / metadata).
+    """
+    do_immediate_extract = len(content) <= _IMMEDIATE_EXTRACT_MAX_BYTES
+    if not do_immediate_extract:
+        log.info(
+            "[%s] File is %.1f MB (> %d MB) — deferring text extraction to the background pipeline.",
+            job_id, len(content) / (1024 * 1024), _IMMEDIATE_EXTRACT_MAX_MB,
+        )
+    try:
+        immediate_payload = await asyncio.to_thread(
+            _build_source_library_payload,
+            tenant_cfg=tenant_cfg, client_id=client_id, namespace=namespace,
+            job_id=job_id, user_id=user_id, filename=filename or "unnamed",
+            content=content, content_type=content_type or "application/octet-stream",
+            raw_storage_url=raw_storage_url, s3_key=s3_key,
+            source_relative_path=source_relative_path, source_root=source_root,
+            metadata_hints=metadata_hints or {}, extract_text=do_immediate_extract,
+        )
+        # Serialize the index read-modify-write per client (the build above is
+        # left OUTSIDE the lock so heavy extraction never blocks other uploads).
+        async with _source_index_lock(client_id):
+            payload_url = await asyncio.to_thread(
+                _write_source_library_payload,
+                tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload,
+            )
+        job = _jobs.get(job_id)
+        if job is not None:
+            job["payload_storage_url"] = payload_url
+            job.setdefault("artifact_urls", {})["studio_payload"] = payload_url
+            job["metadata"] = {"doc_type": immediate_payload["metadata"].get("document_type"), "source_library_ready": True}
+        return True
+    except Exception as exc:
+        log.exception("[%s] Immediate Source Library payload failed (upload continues): %s", job_id, exc)
+        job = _jobs.get(job_id)
+        if job is not None:
+            job["metadata"] = {"source_library_ready": False, "immediate_payload_error": str(exc)}
+        return False
 
 
 def _resolve_tenant_and_client_for_ingestion(request: Request, current_tenant_cfg: TenantConfig, supplied_client_id: str = "") -> tuple[TenantConfig, str]:
@@ -476,23 +605,15 @@ async def upload_file(
     # Product behavior: Source Library must show the file immediately after upload.
     # The deeper agent pipeline can still run in the background, but CAS list/view
     # should not wait for embeddings/RDS/OpenSearch or LLM extraction.
-    try:
-        immediate_payload = _build_source_library_payload(
-            tenant_cfg=tenant_cfg, client_id=actual_client_id, namespace=namespace,
-            job_id=job_id, user_id=user_id, filename=file.filename or "unnamed",
-            content=content, content_type=file.content_type or "application/octet-stream",
-            raw_storage_url=storage_url, s3_key=s3_key, source_relative_path=safe_rel_path,
-            source_root=source_root, metadata_hints=metadata_hints,
-        )
-        payload_url = _write_source_library_payload(
-            tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload
-        )
-        _jobs[job_id]["payload_storage_url"] = payload_url
-        _jobs[job_id].setdefault("artifact_urls", {})["studio_payload"] = payload_url
-        _jobs[job_id]["metadata"] = {"doc_type": immediate_payload["metadata"].get("document_type"), "source_library_ready": True}
-    except Exception as exc:
-        log.exception("[%s] Immediate Source Library payload failed: %s", job_id, exc)
-        raise HTTPException(500, f"Source Library payload creation failed: {exc}")
+    # Publish the immediate Source Library preview (off the event loop, size-gated,
+    # non-fatal) via the shared helper used by all upload paths.
+    await _publish_immediate_payload(
+        tenant_cfg=tenant_cfg, client_id=actual_client_id, namespace=namespace,
+        job_id=job_id, user_id=user_id, filename=file.filename or "unnamed",
+        content=content, content_type=file.content_type or "application/octet-stream",
+        raw_storage_url=storage_url, s3_key=s3_key, source_relative_path=safe_rel_path,
+        source_root=source_root, metadata_hints=metadata_hints,
+    )
 
     background_tasks.add_task(
         _process, job_id=job_id, tenant_cfg=tenant_cfg,
@@ -549,23 +670,16 @@ async def batch_upload(
                 "validation_report_url": "",
             }
             # Make batch-uploaded files visible in Source Library immediately.
-            try:
-                immediate_payload = _build_source_library_payload(
-                    tenant_cfg=tenant_cfg, client_id=actual_client_id, namespace=namespace,
-                    job_id=job_id, user_id=getattr(request.state, "user_id", "batch"),
-                    filename=f.filename or "unnamed", content=content,
-                    content_type=f.content_type or "application/octet-stream", raw_storage_url=storage_url,
-                    s3_key=s3_key, metadata_hints=metadata_hints,
-                )
-                payload_url = _write_source_library_payload(
-                    tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload
-                )
-                _jobs[job_id]["payload_storage_url"] = payload_url
-                _jobs[job_id].setdefault("artifact_urls", {})["studio_payload"] = payload_url
-            except Exception as exc:
-                log.exception("[%s] Immediate Source Library payload failed for batch upload: %s", job_id, exc)
-                results.append({"filename": f.filename, "status": "rejected", "errors": [str(exc)]})
-                continue
+            # Non-fatal + off the event loop + size-gated via the shared helper:
+            # the raw file is already stored and the pipeline will still process
+            # it, so a preview hiccup must not reject the upload.
+            await _publish_immediate_payload(
+                tenant_cfg=tenant_cfg, client_id=actual_client_id, namespace=namespace,
+                job_id=job_id, user_id=getattr(request.state, "user_id", "batch"),
+                filename=f.filename or "unnamed", content=content,
+                content_type=f.content_type or "application/octet-stream",
+                raw_storage_url=storage_url, s3_key=s3_key, metadata_hints=metadata_hints,
+            )
             background_tasks.add_task(
                 _process, job_id=job_id, tenant_cfg=tenant_cfg, client_id=actual_client_id,
                 user_id=getattr(request.state, "user_id", "batch"), namespace=namespace,
@@ -840,23 +954,17 @@ async def _create_job_record_and_upload(
         "artifact_urls": {}, "payload_storage_url": "", "studio_job_id": "",
         "validation_report_url": "",
     }
-    try:
-        immediate_payload = _build_source_library_payload(
-            tenant_cfg=tenant_cfg, client_id=client_id, namespace=namespace,
-            job_id=job_id, user_id=user_id, filename=filename or "unnamed",
-            content=content, content_type=content_type or "application/octet-stream",
-            raw_storage_url=storage_url, s3_key=s3_key, source_relative_path=safe_rel_path,
-            source_root=source_root, metadata_hints=metadata_hints or {},
-        )
-        payload_url = _write_source_library_payload(
-            tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload
-        )
-        _jobs[job_id]["payload_storage_url"] = payload_url
-        _jobs[job_id].setdefault("artifact_urls", {})["studio_payload"] = payload_url
-        _jobs[job_id]["metadata"] = {"doc_type": immediate_payload["metadata"].get("document_type"), "source_library_ready": True}
-    except Exception as exc:
-        log.exception("[%s] Immediate Source Library payload failed: %s", job_id, exc)
-        raise HTTPException(500, f"Source Library payload creation failed: {exc}")
+    # Non-fatal + off the event loop + size-gated via the shared helper. Folder
+    # scans process many (often large) files in parallel, so this MUST NOT block
+    # the loop or fail the whole job over a preview hiccup — the raw file is
+    # stored and the pipeline will still process it.
+    await _publish_immediate_payload(
+        tenant_cfg=tenant_cfg, client_id=client_id, namespace=namespace,
+        job_id=job_id, user_id=user_id, filename=filename or "unnamed",
+        content=content, content_type=content_type or "application/octet-stream",
+        raw_storage_url=storage_url, s3_key=s3_key, source_relative_path=safe_rel_path,
+        source_root=source_root, metadata_hints=metadata_hints or {},
+    )
     return job_id
 
 
@@ -993,6 +1101,32 @@ async def get_index_status(job_id: str, request: Request, _=Depends(require_role
     }
 
 
+async def _reconcile_source_record(tenant_cfg, client_id, job_id, final_status, result=None):
+    """Fix a deferred record's status when the pipeline does NOT finalize it.
+
+    On a duplicate re-upload the DeduplicationAgent sets ``stop_pipeline``, and
+    on any pipeline failure the run aborts — either way the ProcessedStorageAgent
+    that would flip the record from ``processing`` to ``processed`` (with full
+    text) is skipped. Without this, the immediate record stays ``processing``
+    with only its first-pages preview forever. We flip it to ``duplicate`` /
+    ``failed`` (only if still ``processing``, so finalized records are untouched)
+    so the UI/View reflect reality. Best-effort; never raises into the caller.
+    """
+    try:
+        from services.source_library import update_source_record_status
+        result = result or {}
+        if final_status == JobStatus.DUPLICATE:
+            status, extra = "duplicate", {"duplicate_of_job_id": result.get("duplicate_of_job_id", "")}
+        else:
+            status, extra = "failed", {"error_message": result.get("fatal_error", "") or "processing failed"}
+        async with _source_index_lock(client_id):
+            await asyncio.to_thread(
+                update_source_record_status, tenant_cfg, client_id, job_id, status, extra, "processing",
+            )
+    except Exception:
+        log.warning("[%s] Could not reconcile source-index record to %s", job_id, final_status, exc_info=True)
+
+
 async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, s3_key, content, raw_storage_url="", source_relative_path="", source_root="", metadata_hints=None):
     _jobs[job_id]["status"] = JobStatus.PROCESSING
     _jobs[job_id]["updated_at"] = datetime.utcnow()
@@ -1013,6 +1147,11 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
             final_status = JobStatus.DUPLICATE
         else:
             final_status = JobStatus.FAILED if fatal_error else JobStatus.COMPLETED
+        # If the pipeline stopped (duplicate) or failed, the finalize step that
+        # would refresh the Source Library record was skipped — reconcile its
+        # status so a deferred record doesn't sit at "processing" forever.
+        if final_status in (JobStatus.DUPLICATE, JobStatus.FAILED):
+            await _reconcile_source_record(tenant_cfg, client_id, job_id, final_status, result)
         _jobs[job_id].update({
             "status": final_status, "progress_pct": 100,
             "completed_at": datetime.utcnow(),
@@ -1048,3 +1187,6 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
         _jobs[job_id]["status"] = JobStatus.FAILED
         _jobs[job_id]["error_message"] = str(exc)
         _jobs[job_id]["updated_at"] = datetime.utcnow()
+        # Reconcile the persisted record too, so a deferred upload doesn't stay
+        # "processing" forever after a pipeline crash (extraction/OOM/etc.).
+        await _reconcile_source_record(tenant_cfg, client_id, job_id, JobStatus.FAILED, {"fatal_error": str(exc)})

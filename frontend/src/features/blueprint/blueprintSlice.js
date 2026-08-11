@@ -1,8 +1,9 @@
 import { createSlice } from '@reduxjs/toolkit';
+import { attachBlockJobReducers } from '@features/shared/blockJob';
 import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, fetchBlueprintComponentsThunk,
-  activateBlueprintVersionThunk,
+  activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk,
 } from './blueprintThunks';
 
 const initialState = {
@@ -14,6 +15,8 @@ const initialState = {
   isLoading:      false,
   isGenerating:   false,
   error:          null,
+  // Block-wide async job tracking (digest pipeline).
+  blockJob:       null,  // { jobId, status, progress, currentStep }
 };
 
 const blueprintSlice = createSlice({
@@ -23,6 +26,7 @@ const blueprintSlice = createSlice({
     clearError(s)                     { s.error = null; },
     setGenerationMode(s, { payload }) { s.generationMode = payload; },
     setActiveBlueprintLocal(s, { payload }) { s.activeBlueprint = payload; },
+    resetBlockJob(s) { s.blockJob = null; },
   },
   extraReducers: (b) => {
     b
@@ -60,10 +64,13 @@ const blueprintSlice = createSlice({
       .addCase(fetchBlueprintComponentsThunk.fulfilled, (s, { payload }) => {
         s.components = Array.isArray(payload) ? payload : (payload?.components || []);
       });
+
+    // Shared block-wide async-job cases (pending/fulfilled/rejected + poll).
+    attachBlockJobReducers(b, { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk });
   },
 });
 
-export const { clearError, setGenerationMode, setActiveBlueprintLocal } = blueprintSlice.actions;
+export const { clearError, setGenerationMode, setActiveBlueprintLocal, resetBlockJob } = blueprintSlice.actions;
 export default blueprintSlice.reducer;
 
 export const selectBlueprints          = (s) => s.blueprint.blueprints;
@@ -74,3 +81,4 @@ export const selectBlueprintGenerationMode = (s) => s.blueprint.generationMode;
 export const selectBlueprintLoading    = (s) => s.blueprint.isLoading;
 export const selectBlueprintGenerating = (s) => s.blueprint.isGenerating;
 export const selectBlueprintError      = (s) => s.blueprint.error;
+export const selectBlueprintBlockJob   = (s) => s.blueprint.blockJob;

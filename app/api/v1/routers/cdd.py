@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -65,9 +65,11 @@ from app.schemas.cdd import (
     CDDVersionRead,
 )
 from app.schemas.common import PaginatedResponse
+from app.schemas.block_wide import BlockWideGenerateRequest, BlockWideJobResponse
 from app.api.v1.cdd_response import build_cdd_read
 from app.core.dis_client import dis_client
 from app.core.dis_access import resolve_course_dis_client
+from app.core.config import settings
 
 _log = logging.getLogger(__name__)
 
@@ -155,6 +157,20 @@ def _is_dlu_prompt(*texts: str) -> bool:
         or "WORKSHEET" in blob
         or ("DAY-BY-DAY" in blob and "INSTRUCTIONAL" in blob)
     )
+
+
+# ---------------------------------------------------------------------------
+# Block-wide digest pipeline (flag-gated) — enumerate → map → reduce → verify
+# ---------------------------------------------------------------------------
+# The pipeline + persistence live in promptops_app.services.block_wide_service so
+# the async worker (jobs/block_wide_jobs.py) can share them without a router↔jobs
+# import cycle. These aliases keep the local names used by generate_cdd() and the
+# coverage eval; persist_cdd_and_respond is also the legacy path's shared tail.
+from promptops_app.services.block_wide_service import (  # noqa: E402
+    generate_cdd_via_digests as _generate_cdd_via_digests,
+    persist_cdd_and_respond as _persist_and_respond,
+    run_block_wide_sync,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +313,16 @@ def generate_cdd(
         current_user.username, request_body.course_id,
         request_body.course_title, request_body.model_choice,
     )
+
+    # ── Block-wide digest pipeline (flag-gated) ────────────────────────────────
+    # Engages ONLY when a block is supplied AND the digest pipeline is enabled for
+    # the course's client (both checked inside run_block_wide_sync). No caller
+    # sends `block` today, so this is a no-op and the legacy single-call path below
+    # runs byte-for-byte unchanged. A DIS or reduce failure returns None and falls
+    # through to that same legacy path.
+    _block_resp = run_block_wide_sync(db, "cdd", request_body, current_user)
+    if _block_resp is not None:
+        return _block_resp
 
     # Fold the selected (or inline-overridden) prompt's own USER template into the
     # retrieval query. That template names the exact source documents the CDD is
@@ -559,118 +585,100 @@ def generate_cdd(
         if not key.startswith("_") and value.strip():
             sections[key] = value
 
-    # ── Step 4: Persist the CDD and initial version ────────────────────────────
-    document_title = request_body.document_title or f"{request_body.course_title} — CDD"
-
-    new_cdd = CourseDesignDocument(
-        title=document_title,
-        course_title=request_body.course_title,
-        description="",
-        active_version="v1",
-        workflow_state="draft",
-        created_by=current_user.username,
-        project_id=request_body.project_id,
-        course_id=request_body.course_id,
-    )
-    db.add(new_cdd)
-    db.commit()
-    db.refresh(new_cdd)
-
-    generation_params = {
-        "course_title":             request_body.course_title,
-        "target_audience":          request_body.target_audience,
-        "expert_domain":            request_body.expert_domain,
-        "estimated_duration_hours": request_body.estimated_duration_hours,
-        "extra_instructions":       request_body.extra_instructions,
-        "dis_source_units":         dis_source_units,
-        # Prompt provenance: which registry template (name+version) produced
-        # this version, or the full override text when the user edited the
-        # prompt inline — the artifact is reproducible either way.
-        **prompt_provenance,
-    }
-
-    version_record = CDDVersion(
-        cdd_id=new_cdd.id,
-        version="v1",
-        full_content=raw_output,
-        sections=json.dumps(sections),
-        generation_params=json.dumps(generation_params),
-        change_reason="Initial AI generation",
-        is_active=True,
-        created_by=current_user.username,
-    )
-    db.add(version_record)
-    db.commit()
-
-    # Copy generated CDD body to DIS/S3. CAS DB keeps workflow pointers and versions;
-    # DIS is the generated-document store for retrieval and cross-workflow reuse.
-    try:
-        dis_client.generated_upsert_sync({
-            "generated_doc_id": f"cdd_{new_cdd.id}",
-            "generated_type": "cdd",
-            "title": document_title,
-            "content": raw_output,
-            "summary": raw_output[:500],
-            "active": True,
-            "metadata": {
-                "course_title": request_body.course_title,
-                "target_audience": request_body.target_audience,
-                "expert_domain": request_body.expert_domain,
-                "course_id": request_body.course_id,
-                "project_id": request_body.project_id,
-            },
-            "source_documents_used": dis_source_units,
-            "cas_ref": {"entity": "cdd", "id": new_cdd.id},
-            "created_by": current_user.username,
-        }, current_user=current_user)
-    except Exception as exc:
-        _log.warning("dis_generated_cdd_upsert_failed cdd_id=%s error=%s", new_cdd.id, exc)
-
-    # ── Step 5: Auto-pin the new CDD to the course ────────────────────────────
-    set_active_cdd(db, request_body.course_id, new_cdd.id)
-
-    # ── Audit log ─────────────────────────────────────────────────────────────
-    log_audit_event(
-        db,
-        current_user.username,
-        "cdd.created",
-        entity_type="cdd",
-        entity_id=new_cdd.id,
-        project_id=request_body.project_id,
-        course_id=request_body.course_id,
-        metadata={
-            "title": document_title, "sections": len(sections),
-            "model_choice": request_body.model_choice,
-            "course_title": request_body.course_title,
-            "target_audience": request_body.target_audience,
-            "expert_domain": request_body.expert_domain,
-            "extra_instructions": request_body.extra_instructions,
-            "dis_source_units_count": len(dis_source_units) if dis_source_units else 0,
-            "input_mode": "full",
-            "system_prompt": system_prompt,
-            "user_prompt": user_prompt,
-            "output": raw_output,
-        },
-    )
-
-    _log.info(
-        "cdd_generate_complete  user=%s  cdd_id=%d  sections=%d  model=%s",
-        current_user.username, new_cdd.id, len(sections), llm_result.model,
-    )
-
-    return CDDGenerateResponse(
-        cdd_id=new_cdd.id,
-        title=document_title,
-        version="v1",
-        sections_count=len(sections),
-        full_content=raw_output,
+    # ── Step 4/5: Persist, mirror to DIS, auto-pin, audit, respond ─────────────
+    # Shared tail with the digest pipeline. Legacy path passes coverage=None.
+    return _persist_and_respond(
+        db, request_body, current_user,
+        raw_output=raw_output,
         sections=sections,
-        model_used=llm_result.model or request_body.model_choice,
+        dis_source_units=dis_source_units,
+        prompt_provenance=prompt_provenance,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_used=(llm_result.model or request_body.model_choice),
         tokens_used=(
             (llm_result.prompt_tokens or 0) + (llm_result.completion_tokens or 0)
             if llm_result.prompt_tokens else None
         ),
-        auto_pinned=True,
+        coverage=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generate a block-wide CDD asynchronously (digest pipeline)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/generate-block",
+    response_model=BlockWideJobResponse,
+    status_code=202,
+    summary="Generate a block-wide CDD via the digest pipeline (async)",
+    description=(
+        "Enqueues a background job that builds the block's day digests and reduces "
+        "them into a full-coverage CDD. Block-wide generation is long, so this is "
+        "always async: poll GET /api/v1/jobs/{job_id}; on completion the job's "
+        "entity id is the new CDD id. Requires the digest pipeline to be enabled "
+        "for the course's client."
+    ),
+    responses={
+        202: {"description": "Job queued."},
+        400: {"description": "Digest pipeline not enabled for this client."},
+        403: {"description": "Requires the cdd.generate permission."},
+    },
+)
+def generate_cdd_block(
+    request_body: BlockWideGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.generate")),
+) -> BlockWideJobResponse:
+    from promptops_app.repositories import job_repository
+    from promptops_app.jobs import job_runner, block_wide_jobs
+
+    dis_client_id = resolve_course_dis_client(
+        db, course_id=request_body.course_id, project_id=request_body.project_id,
+    )
+    if not settings.digest_pipeline_on_for(dis_client_id):
+        raise HTTPException(400, "Digest pipeline is not enabled for this course's client.")
+
+    params = request_body.model_dump()
+    params["deliverable"] = "cdd"
+    params["user_name"] = current_user.username
+    # Persist the role so the async worker reconstructs the caller's DIS
+    # privilege (e.g. super_admin) instead of silently downgrading to 'user'.
+    params["role"] = getattr(current_user, "role", "user")
+    params["dis_client_id"] = dis_client_id
+    job_id = job_repository.create_job(
+        db, user_name=current_user.username, request_params=params,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        job_type="cdd_block",
+    )
+    # Written BEFORE submit so the request event can never be timestamped after
+    # the outcome event a fast-failing job would write.
+    # Audited at ENQUEUE, not only on completion: this path is always async, so a job
+    # that fails would otherwise leave no audit trace that an expensive,
+    # user-attributed generation was ever requested (the legacy path is synchronous,
+    # where cdd.created covers both). Paired with cdd.block_failed in the worker.
+    from promptops_app.services.audit_service import log_audit_event
+    log_audit_event(
+        db, current_user.username, "cdd.block_requested",
+        entity_type="cdd", entity_id=None,
+        project_id=request_body.project_id, course_id=request_body.course_id,
+        metadata={
+            "job_id": job_id, "block": request_body.block,
+            "quality_tier": request_body.quality_tier or "standard",
+            "model_choice": request_body.model_choice,
+            "dis_client_id": dis_client_id,
+            "prompt_id": request_body.prompt_id,
+            "course_title": request_body.course_title,
+            "extra_instructions": request_body.extra_instructions,
+        },
+    )
+    job_runner.submit(block_wide_jobs.run_block_wide_job, job_id)
+    _log.info("cdd_generate_block_queued  user=%s  course=%d  block=%s  job=%s",
+              current_user.username, request_body.course_id, request_body.block, job_id)
+    return BlockWideJobResponse(
+        job_id=job_id, status="queued", deliverable="cdd",
+        block=request_body.block, poll_url=f"/api/v1/jobs/{job_id}",
     )
 
 

@@ -182,6 +182,13 @@ def _normalize_client_name(value: Any) -> str:
     return _CLIENT_NAME_ALIASES.get(v, v)
 
 
+# Public aliases — the single source of truth for client-name normalization,
+# reused by the Source Library router (and published to the frontend via
+# ui-config) so the alias map is defined in exactly one place.
+CLIENT_NAME_ALIASES = _CLIENT_NAME_ALIASES
+normalize_client_name = _normalize_client_name
+
+
 def resolve_course_dis_client(db: Any, *, course_id: Any = None, project_id: Any = None) -> str:
     """Return the normalized DIS client_id for a course/project.
 

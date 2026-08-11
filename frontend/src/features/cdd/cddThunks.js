@@ -4,6 +4,7 @@ import { dashboardService } from '@features/dashboard/services/dashboardService'
 import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
+import { createBlockJobThunks } from '@features/shared/blockJob';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -59,6 +60,27 @@ export const generateCddThunk = createAsyncThunk(
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
+
+/**
+ * Block-wide (digest-pipeline) CDD generation — long-running, so it enqueues a
+ * job and polls. The server persists AND pins the CDD on completion, so the
+ * poller only refreshes the list. All polling-lifecycle robustness (terminal/
+ * cancelled handling, transient-error tolerance, missing-job_id guard) lives in
+ * the shared factory so CDD and Blueprint can't drift apart.
+ */
+export const { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk } =
+  createBlockJobThunks({
+    prefix: 'cdd',
+    deliverable: 'cdd',
+    enqueue: (payload) => cddService.generateCddBlock(payload),
+    getJobStatus: (jobId) => cddService.getJobStatus(jobId),
+    completedMessage: 'CDD generated and set as active.',
+    failedMessage: 'CDD generation failed.',
+    onComplete: (dispatch, courseId) => {
+      queueDeferredToast('CDD created and pinned as active.');
+      if (courseId) dispatch(fetchCddsThunk(courseId));
+    },
+  });
 
 export const setActiveCddThunk = createAsyncThunk(
   'cdd/setActive',

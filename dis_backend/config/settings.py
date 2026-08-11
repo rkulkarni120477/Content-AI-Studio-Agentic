@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import AliasChoices, BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -70,13 +70,30 @@ class ProcessingConfig(BaseModel):
     pptx_extract_images: bool = False
     max_extracted_chars: int = 250000
 
+# Defaults used whenever a client YAML omits a model key. These MUST name a model
+# that is invokable in every deploy region: call_llm returns a valid-JSON stub on
+# failure, so an unavailable default degrades silently into empty extractions
+# rather than an error. The Claude 3 defaults these replace were end-of-life in
+# us-east-1 (Sonnet 3) or provider-marked legacy and denied in every region
+# (Haiku 3) — verified live via InvokeModel. Sonnet 4.5 on the `global.` inference
+# profile is the only Anthropic text model invokable on this account in both
+# us-east-1 and ap-south-1.
+_TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+
 class ModelConfig(BaseModel):
     embedding: str = "amazon.titan-embed-text-v2:0"
-    classification: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    metadata_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    structure_extraction: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    quality_check: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    vision: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    classification: str = _TEXT_MODEL
+    metadata_extraction: str = _TEXT_MODEL
+    structure_extraction: str = _TEXT_MODEL
+    quality_check: str = _TEXT_MODEL
+    vision: str = _TEXT_MODEL
+    # Per-day digest extraction (MAP) for block-wide CDD/Blueprint. The design pins
+    # this to a cheap model (Haiku) so the digest cache is shared across quality
+    # tiers (D2) — only the REDUCE model varies by tier, on the app/promptops side.
+    # Haiku is not invokable on this account (no Bedrock model access in either
+    # region), so this falls back to the shared text model.
+    digest_extraction: str = _TEXT_MODEL
 
 class PipelineConfig(BaseModel):
     # For local/dev, keep llm_provider=mock and USE_BEDROCK=false in .env.
@@ -90,6 +107,17 @@ class PipelineConfig(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 64
     vision_enabled: bool = True
+    # Digest MAP fan-out (plan D4/D7). When true, block digest builds run as a
+    # LangGraph Send fan-out (per-day checkpoint/resume, bounded concurrency)
+    # instead of the sequential loop; falls back to sequential if langgraph is
+    # absent. Off by default so the verified sequential path stays the default.
+    digest_fanout_enabled: bool = False
+    digest_fanout_max_concurrency: int = 5
+    # D7 checkpointer DSN for cross-process per-day resume. Blank ⇒ no checkpointer
+    # (in-process fan-out only). Production sets this AND installs
+    # langgraph-checkpoint-postgres; NEVER point it at the shared prod RDS from a
+    # dev container. A blank DSN keeps the seam inert and safe.
+    digest_fanout_checkpoint_dsn: str = ""
 
 class MetadataField(BaseModel):
     name: str
@@ -216,6 +244,10 @@ class StructureStoreConfig(BaseModel):
     url: str = ""
     schema_name: str = "dis"
     auto_create_schema: bool = True
+    # CurriculumProfile selector (plan §5.5 / D8). Picks how the block-wide digest
+    # pipeline enumerates coverage units + reads the declared coverage set for this
+    # tenant. Blank ⇒ fall back to the client id (AIM resolves to the AIM profile).
+    curriculum_profile: str = ""
 
 class VectorStoreConfig(BaseModel):
     # Tenant-specific vector store. Default provider is OpenSearch.
@@ -328,9 +360,25 @@ class GlobalSettings(BaseSettings):
     jwt_expiry_minutes: int = 480       # 8 hours
 
     # AWS (used when storage provider = s3 or for Bedrock)
-    aws_region: str = "us-east-1"
+    # Accepts AWS_REGION *or* AWS_DEFAULT_REGION. Previously this read only
+    # AWS_REGION, while the CAS side reads AWS_DEFAULT_REGION (promptops_app/core/
+    # config.py) — so a .env setting only AWS_DEFAULT_REGION=ap-south-1 left DIS
+    # silently on the us-east-1 default, where the Bedrock text models are not
+    # provisioned (`anthropic.claude-3-sonnet-20240229-v1:0` →
+    # ResourceNotFoundException). Both services must resolve the same region from one
+    # variable; AWS_REGION still wins when both are set, matching the AWS SDK's own
+    # precedence.
+    aws_region: str = Field(
+        default="us-east-1",
+        validation_alias=AliasChoices("AWS_REGION", "AWS_DEFAULT_REGION"),
+    )
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
+    # Required when the configured credentials are temporary STS credentials — the
+    # key/secret alone are rejected without it. There was no field for this at all,
+    # so a .env supplying AWS_SESSION_TOKEN was silently ignored and every signed
+    # request failed authentication.
+    aws_session_token: Optional[str] = None
     aws_endpoint_url: str = ""          # LocalStack override
 
     # Bedrock / Anthropic

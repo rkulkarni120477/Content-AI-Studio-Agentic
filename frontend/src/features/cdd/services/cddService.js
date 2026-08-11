@@ -1,5 +1,27 @@
 import { api } from '@services/apiClient';
-import { CDD, COURSES } from '@services/endpoints';
+import { CDD, COURSES, GENERATE } from '@services/endpoints';
+
+/**
+ * Payload for block-wide (digest-pipeline) async generation. Deliberately
+ * narrower than the sync path — the digest pipeline builds its own context from
+ * DIS enumerate/digests, so reference-doc/style/prompt-override fields don't apply.
+ */
+function mapBlockPayload(data) {
+  return {
+    deliverable: 'cdd',
+    block: data.block,
+    course_id: data.course_id,
+    project_id: data.project_id,
+    course_title: data.course_title || '',
+    document_title: data.document_title || undefined,
+    quality_tier: data.quality_tier || undefined,
+    model_choice: data.model_choice || undefined,
+    extra_instructions: data.extra_instructions || '',
+    target_audience: data.target_audience || '',
+    expert_domain: data.expert_domain || '',
+    estimated_duration_hours: data.estimated_duration_hours ?? undefined,
+  };
+}
 
 function mapGeneratePayload(data) {
   return {
@@ -49,6 +71,14 @@ export const cddService = {
     }
     return created;
   },
+  /**
+   * Enqueue a block-wide CDD build (long-running → async). Returns a job handle
+   * {job_id, status, poll_url}; poll getJobStatus until terminal, then reload
+   * the CDD by the job's result entity id.
+   */
+  generateCddBlock: (data) => api.post(CDD.GENERATE_BLOCK, mapBlockPayload(data)),
+  /** Shared job-status endpoint — same one the generate/import flows poll. */
+  getJobStatus:  (jobId)          => api.get(GENERATE.JOB_STATUS(jobId)),
   getVersions:   (id)             => api.get(CDD.VERSIONS(id)),
   getVersion:    (id, v)          => api.get(CDD.GET_VERSION(id, v)),
   activateVersion: (id, version)  => api.post(CDD.ACTIVATE_VERSION(id, version)),

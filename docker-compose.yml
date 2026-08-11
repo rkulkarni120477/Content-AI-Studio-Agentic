@@ -45,6 +45,10 @@ services:
       redis:
         condition: service_healthy
 
+    # Hard memory ceiling (P6.3, F13) — caps a runaway container; normal usage
+    # stays far below. Sized for the ~7.6 GB Docker budget on this host.
+    mem_limit: 1.5g
+
     restart: unless-stopped
 
 
@@ -60,7 +64,10 @@ services:
  
     volumes:
       - ${REDIS_VOLUME}:/data
- 
+
+    # Hard memory ceiling (P6.3, F13) — broker + result backend stay small.
+    mem_limit: 512m
+
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -85,6 +92,11 @@ services:
       redis:
         condition: service_healthy
 
+    # Hard memory ceiling (P6.3, F13) — the heavy service (parse + LLM +
+    # embedding). With --concurrency=2 it holds up to 2 tasks at once (~1 GB
+    # headroom each). Pairs with worker_max_*_per_child recycling in celery_app.py.
+    mem_limit: 2g
+
     restart: unless-stopped
 
 
@@ -105,6 +117,9 @@ services:
       redis:
         condition: service_healthy
 
+    # Hard memory ceiling (P6.3, F13) — secondary API.
+    mem_limit: 512m
+
     restart: unless-stopped
 
   dis_backend:
@@ -120,6 +135,9 @@ services:
 
     ports:
       - "${DIS_PORT}:8000"
+
+    # Hard memory ceiling (P6.3, F13) — parsing / indexing service.
+    mem_limit: 2g
 
     restart: unless-stopped
 

@@ -15,9 +15,9 @@ import re
 from typing import Optional
 
 from promptops_app.core.config import (
-    PROMPTOPS_MAX_CONTEXT_CHARS,
-    PROMPTOPS_MAX_SOURCE_CHARS,
-    _clip_text,
+    PROMPTOPS_MAX_CONTEXT_TOKENS,
+    PROMPTOPS_MAX_SOURCE_TOKENS,
+    clip_tokens,
 )
 
 
@@ -40,16 +40,23 @@ def fill_template(template: str, payload: dict) -> str:
 # Context building for generation prompts
 # ---------------------------------------------------------------------------
 
-def make_source_context(filename: str, content: str, max_chars: int = None) -> str:
-    """Wrap a source document in a clearly delimited block for prompt injection."""
-    max_chars = max_chars or PROMPTOPS_MAX_SOURCE_CHARS
-    safe_content = _clip_text(content or "", max_chars)
+def make_source_context(filename: str, content: str, max_tokens: int = None) -> str:
+    """Wrap a source document in a clearly delimited block for prompt injection.
+
+    Trimmed to a token budget (``PROMPTOPS_MAX_SOURCE_TOKENS``) unless
+    truncation is disabled via ``PROMPTOPS_TOKEN_LIMIT_ENABLED=false`` — see
+    :func:`promptops_app.core.config.clip_tokens`.
+    """
+    max_tokens = max_tokens or PROMPTOPS_MAX_SOURCE_TOKENS
+    safe_content = clip_tokens(content or "", max_tokens)
     return f"\n\n[START SOURCE: {filename}]\n{safe_content}\n[END SOURCE: {filename}]"
 
 
 def trim_generation_context(context: str) -> str:
-    """Apply a global character cap to the combined supplementary context string."""
-    return _clip_text(context or "", PROMPTOPS_MAX_CONTEXT_CHARS)
+    """Apply a global token cap to the combined supplementary context string
+    (``PROMPTOPS_MAX_CONTEXT_TOKENS``); disabled by
+    ``PROMPTOPS_TOKEN_LIMIT_ENABLED=false``."""
+    return clip_tokens(context or "", PROMPTOPS_MAX_CONTEXT_TOKENS)
 
 
 def find_labeled_snippet(sections: dict, keys: list, full_text: str = "", max_chars: int = 0) -> str:

@@ -27,8 +27,10 @@ from app.core.dependencies import get_current_user, get_db, get_tenant_context, 
 from app.core.http import content_disposition
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
+from app.core.config import settings
 from app.core.dis_client import dis_client
 from app.core.dis_access import resolve_course_dis_client
+from app.core.dis_day_context import _dis_day_context_block, _render_day_context
 from app.schemas.generation import (
     CompletionStatusResponse,
     GenerationLaunchRequest,
@@ -114,39 +116,53 @@ def launch_generation(
                     "Not all modules are complete. Complete all modules before generating course-level content."
                 )
 
-    dis_context_block, dis_source_units = _dis_context_block(
-        "course-generation",
-        {
-            "purpose": "course_generation",
-            "query": " ".join(str(x or "") for x in [
-                request_body.component_label,
-                request_body.component_value,
-                request_body.component_type,
-                request_body.target_audience,
-                request_body.expert_domain,
-                request_body.audience_category,
-                request_body.extra_instructions,
-            ]),
-            "filters": {
-                "purpose": "course_generation",
-                "component_label": request_body.component_label,
-                "component_type": request_body.component_type,
-                # No hard document_types filter: those fixed names did not match
-                # real stored doc types (AIM: lesson_pdf/quiz/project; Cengage: pdf),
-                # which silently returned zero results. Retrieval now relies on
-                # purpose + semantic ranking; the security allow-set still applies.
-            },
-            "retrieval": {"top_k": 16, "token_budget": 16000},
-        },
-        current_user,
-        "COURSE GENERATION CONTEXT",
-        # Scope retrieval to the COURSE's own Source Library (its project's
-        # client), so it reads the right client's documents regardless of who
-        # runs the generation. Empty -> falls back to per-user default.
-        client_id=resolve_course_dis_client(
-            db, course_id=request_body.course_id, project_id=request_body.project_id,
-        ),
+    # Scope retrieval to the COURSE's own Source Library (its project's client),
+    # so it reads the right client's documents regardless of who runs the
+    # generation. Empty -> falls back to per-user default.
+    gen_client_id = resolve_course_dis_client(
+        db, course_id=request_body.course_id, project_id=request_body.project_id,
     )
+
+    dis_context_block, dis_source_units = "", []
+    # §7 structured-first: when the request pins a block+day and the digest
+    # pipeline is on for this client, ground on the complete day bundle (units +
+    # digest + bounded kNN) instead of the free-text blob query (§5.4 anti-pattern).
+    # Any DIS failure returns ('', []) and we fall through to the legacy path.
+    if request_body.block and request_body.day and settings.digest_pipeline_on_for(gen_client_id):
+        dis_context_block, dis_source_units = _dis_day_context_block(
+            request_body.block, request_body.day, current_user,
+            "COURSE GENERATION CONTEXT", client_id=gen_client_id,
+        )
+
+    if not dis_context_block:
+        dis_context_block, dis_source_units = _dis_context_block(
+            "course-generation",
+            {
+                "purpose": "course_generation",
+                "query": " ".join(str(x or "") for x in [
+                    request_body.component_label,
+                    request_body.component_value,
+                    request_body.component_type,
+                    request_body.target_audience,
+                    request_body.expert_domain,
+                    request_body.audience_category,
+                    request_body.extra_instructions,
+                ]),
+                "filters": {
+                    "purpose": "course_generation",
+                    "component_label": request_body.component_label,
+                    "component_type": request_body.component_type,
+                    # No hard document_types filter: those fixed names did not match
+                    # real stored doc types (AIM: lesson_pdf/quiz/project; Cengage: pdf),
+                    # which silently returned zero results. Retrieval now relies on
+                    # purpose + semantic ranking; the security allow-set still applies.
+                },
+                "retrieval": {"top_k": 16, "token_budget": 16000},
+            },
+            current_user,
+            "COURSE GENERATION CONTEXT",
+            client_id=gen_client_id,
+        )
 
     # Build the request params dict (matches the structure used by generation_jobs.py).
     req_params = {

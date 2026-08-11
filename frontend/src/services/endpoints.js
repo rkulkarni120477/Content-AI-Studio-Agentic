@@ -155,6 +155,9 @@ export const CDD = {
   LIST_ALL:         '/api/v1/cdd',
   GET:              (id)       => `/api/v1/cdd/${id}`,
   GENERATE:         '/api/v1/cdd/generate',
+  // Block-wide (digest-pipeline) async generation → returns a job handle to poll
+  // via GENERATE.JOB_STATUS. Flag-gated server-side (AIM only, off by default).
+  GENERATE_BLOCK:   '/api/v1/cdd/generate-block',
   VERSIONS:         (id)       => `/api/v1/cdd/${id}/versions`,
   GET_VERSION:      (id, v)    => `/api/v1/cdd/${id}/versions/${v}`,
   ACTIVATE_VERSION: (id, v)    => `/api/v1/cdd/${id}/versions/${v}/activate`,
@@ -171,6 +174,8 @@ export const BLUEPRINT = {
   LIST:             '/api/v1/blueprints',
   GET:              (id)       => `/api/v1/blueprints/${id}`,
   GENERATE:         '/api/v1/blueprints/generate',
+  // Block-wide (digest-pipeline) async generation — see CDD.GENERATE_BLOCK.
+  GENERATE_BLOCK:   '/api/v1/blueprints/generate-block',
   VERSIONS:         (id)       => `/api/v1/blueprints/${id}/versions`,
   GET_VERSION:      (id, v)    => `/api/v1/blueprints/${id}/versions/${v}`,
   ACTIVATE_VERSION: (id, v)    => `/api/v1/blueprints/${id}/versions/${v}/activate`,

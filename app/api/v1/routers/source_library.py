@@ -14,9 +14,11 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.dis_access import (
+    CLIENT_NAME_ALIASES,
     build_dis_profile,
     get_dis_access_for_user,
     load_dis_access_config,
+    normalize_client_name,
     save_dis_access_config,
 )
 from app.core.dis_client import dis_client
@@ -25,9 +27,9 @@ router = APIRouter()
 
 
 def _normalize_client_id(value: str | None) -> str:
-    v = str(value or "").strip().lower().replace(" ", "_")
-    aliases = {"cengage_learning": "cengage", "cengage": "cengage", "aim": "aim", "academian": "academian", "demo": "demo"}
-    return aliases.get(v, v)
+    # Delegates to the single source of truth in app.core.dis_access (was a
+    # duplicated alias map here — kept identical, so behavior is unchanged).
+    return normalize_client_name(value)
 
 
 def _client_from_scope(db: Session, *, project_id: int | None = None, course_id: int | None = None) -> str:
@@ -128,7 +130,12 @@ async def get_source_ui_config(
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
-    return await dis_client.ui_config(current_user=current_user, client_id=resolved_client)
+    cfg = await dis_client.ui_config(current_user=current_user, client_id=resolved_client)
+    # Publish the canonical client-alias map so the frontend uses it instead of
+    # keeping its own copy (kills the drift risk). Additive + defensive.
+    if isinstance(cfg, dict):
+        cfg.setdefault("client_aliases", dict(CLIENT_NAME_ALIASES))
+    return cfg
 
 
 @router.get("/documents")

@@ -90,6 +90,21 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
             kwargs = {"region_name": settings.aws_region}
             if settings.aws_endpoint_url:
                 kwargs["endpoint_url"] = settings.aws_endpoint_url
+            # Pass the configured credentials explicitly, exactly as the S3 client in
+            # services/artifacts.py already does. Without this boto3 falls back to
+            # ambient credentials (env / instance role), which are absent in this
+            # deployment — every call then raised NoCredentialsError and returned the
+            # doc_type stub below. Because that stub is VALID JSON, safe_json parsed
+            # it happily and every digest field silently fell to its default
+            # (concept_type="Unknown", derived_objective="", misconceptions=[]),
+            # producing a complete-looking Blueprint with no extracted content.
+            if settings.aws_access_key_id:
+                kwargs["aws_access_key_id"] = settings.aws_access_key_id
+                kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+                # Only meaningful for temporary STS credentials; omitted for
+                # long-lived IAM keys, which must not carry a token.
+                if getattr(settings, "aws_session_token", None):
+                    kwargs["aws_session_token"] = settings.aws_session_token
             client = boto3.client("bedrock-runtime", **kwargs)
             body = _json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
@@ -122,11 +137,22 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
         return '{"doc_type":"other","classification":"internal"}', 0, 0
 
 def safe_json(text: str) -> Dict[str, Any]:
+    clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
-        clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         return json.loads(clean)
     except Exception:
-        return {}
+        pass
+    # Models sometimes prepend conversational preamble before the JSON object
+    # (e.g. "Here is the JSON digest:\n\n{...}") even when told to return only
+    # JSON — the object itself is well-formed, just not at position 0. Extract
+    # the outermost {...} span and retry rather than discarding a good parse.
+    start, end = clean.find("{"), clean.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(clean[start:end + 1])
+        except Exception:
+            pass
+    return {}
 
 def keywords(text: str, limit: int = 20) -> List[str]:
     words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", text.lower())

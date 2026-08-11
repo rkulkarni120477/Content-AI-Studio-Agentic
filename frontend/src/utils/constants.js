@@ -78,11 +78,21 @@ export const ENTITY_TYPES = {
 
 // ─── Job Statuses ────────────────────────────────────────────────────────────
 export const JOB_STATUSES = {
-  PENDING:   'pending',
+  PENDING:   'pending',    // legacy alias; the backend emits 'queued'
+  QUEUED:    'queued',
   RUNNING:   'running',
   COMPLETED: 'completed',
   FAILED:    'failed',
+  CANCELLED: 'cancelled',
 };
+
+// A job is still in flight for any status that isn't terminal. Deriving "active"
+// as "not terminal" (rather than enumerating active states) means a new/edge
+// status like 'cancelled' is handled correctly instead of wedging a poll loop.
+export const TERMINAL_JOB_STATUSES = [
+  JOB_STATUSES.COMPLETED, JOB_STATUSES.FAILED, JOB_STATUSES.CANCELLED,
+];
+export const isTerminalJobStatus = (s) => TERMINAL_JOB_STATUSES.includes(s);
 
 // ─── Plagiarism Statuses ─────────────────────────────────────────────────────
 export const PLAGIARISM_STATUSES = {

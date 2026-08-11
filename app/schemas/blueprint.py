@@ -68,6 +68,35 @@ class BlueprintGenerateRequest(BaseModel):
     system_prompt_override: Optional[str] = None
     user_prompt_override: Optional[str] = None
 
+    # ── Digest pipeline (block-wide Blueprint) ────────────────────────────────
+    block: Optional[str] = Field(
+        default=None,
+        description=(
+            "Block label (e.g. 'Block 2') for the block-wide digest Blueprint. "
+            "When set and the digest pipeline is enabled for the course's client, a "
+            "day-by-day Block Blueprint is produced from source digests (selected_module "
+            "is ignored). When omitted the legacy module-blueprint path runs unchanged."
+        ),
+        examples=["Block 2"],
+    )
+    quality_tier: Optional[str] = Field(
+        default=None,
+        description="Quality tier for the block-wide REDUCE model: 'draft' | 'standard' | 'premium'.",
+        examples=["standard", "premium"],
+    )
+    day_number: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Day number within the block, when selected_module refers to a Day (not a "
+            "Module). Enriches this single-item generation's grounding with the digest "
+            "pipeline's day-scoped context (topic, ACS codes, source units). Does not "
+            "change the output shape and does not engage the whole-block digest "
+            "pipeline — that path is driven by 'block' alone and ignores this field."
+        ),
+        examples=[3],
+    )
+
 
 class BlueprintVersionCreateRequest(BaseModel):
     """Commit manually edited blueprint content as a new version."""

@@ -186,6 +186,48 @@ def generate_embeddings(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict
         return {"status": "failed", "error": str(exc)}
 
 
+def _build_bulk_actions(
+    index_name: str, state: Dict[str, Any], units: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Build one OpenSearch bulk action per content unit.
+
+    Extracted so the (pure) document-mapping is unit-testable without a live
+    OpenSearch. Each action uses the default ``index`` op — create-or-replace by
+    ``_id`` — identical semantics to the previous per-unit ``client.index()``
+    call; only the transport (one batched request vs. N) changes.
+    """
+    actions: List[Dict[str, Any]] = []
+    for unit in units:
+        meta = unit.get("metadata", {}) or {}
+        doc = {
+            "content_unit_id": unit.get("content_unit_id"),
+            "job_id": state.get("job_id"),
+            "tenant_id": state.get("tenant_id"),
+            "client_id": state.get("client_id"),
+            "source_file_name": state.get("filename"),
+            "source_file_type": state.get("file_type"),
+            "document_type": state.get("doc_type"),
+            "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
+            "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
+            "day_number": meta.get("day_number"),
+            "unit_type": unit.get("unit_type"),
+            "unit_number": unit.get("unit_number"),
+            "title": unit.get("title"),
+            "text": unit.get("text"),
+            "visual_summary": unit.get("visual_summary"),
+            "keywords": unit.get("keywords", []),
+            "topics": unit.get("topics", []),
+            "metadata": meta,
+            "embedding": unit.get("embedding", []),
+        }
+        actions.append({
+            "_index": index_name,
+            "_id": unit.get("content_unit_id"),
+            "_source": doc,
+        })
+    return actions
+
+
 def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[str, Any]:
     cfg = tenant_cfg.vector_store
     if not cfg.enabled:
@@ -204,33 +246,20 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
         client = _vector_store_write_client(cfg)
         ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
         units = state.get("embedding_ready_chunks") or state.get("content_units", []) or []
-        count = 0
-        for unit in units:
-            meta = unit.get("metadata", {}) or {}
-            doc = {
-                "content_unit_id": unit.get("content_unit_id"),
-                "job_id": state.get("job_id"),
-                "tenant_id": state.get("tenant_id"),
-                "client_id": state.get("client_id"),
-                "source_file_name": state.get("filename"),
-                "source_file_type": state.get("file_type"),
-                "document_type": state.get("doc_type"),
-                "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
-                "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
-                "day_number": meta.get("day_number"),
-                "unit_type": unit.get("unit_type"),
-                "unit_number": unit.get("unit_number"),
-                "title": unit.get("title"),
-                "text": unit.get("text"),
-                "visual_summary": unit.get("visual_summary"),
-                "keywords": unit.get("keywords", []),
-                "topics": unit.get("topics", []),
-                "metadata": meta,
-                "embedding": unit.get("embedding", []),
-            }
-            client.index(index=cfg.index_name, id=unit.get("content_unit_id"), body=doc, refresh=False)
-            count += 1
-        return {"status": "completed", "provider": "opensearch", "auth_mode": cfg.auth_mode, "index_name": cfg.index_name, "documents_indexed": count}
+
+        # Issue a single batched request (helpers.bulk) instead of one
+        # client.index() call per content unit (P6.2/F12). Default op_type
+        # "index" preserves the previous create-or-replace-by-id semantics, and
+        # refresh=False is passed through unchanged. helpers.bulk raises on any
+        # item error (raise_on_error default True), so a failure still surfaces
+        # as status="failed" via the outer except — same contract as before.
+        actions = _build_bulk_actions(cfg.index_name, state, units)
+        if actions:
+            from opensearchpy import helpers
+            indexed, _errors = helpers.bulk(client, actions, refresh=False)
+        else:
+            indexed = 0
+        return {"status": "completed", "provider": "opensearch", "auth_mode": cfg.auth_mode, "index_name": cfg.index_name, "documents_indexed": indexed}
     except Exception as exc:
         log.exception("OpenSearch upsert failed")
         return {"status": "failed", "error": str(exc)}
@@ -326,7 +355,15 @@ def ensure_index(client, index_name: str, dimension: int):
             },
         },
     }
-    client.indices.create(index=index_name, body=body)
+    try:
+        client.indices.create(index=index_name, body=body)
+    except Exception as exc:  # noqa: BLE001
+        # Concurrent fan-out writers can race exists()→create(); the loser gets a
+        # resource_already_exists_exception. That's success, not failure — swallow
+        # it so a cold-block parallel build doesn't spuriously mark days failed.
+        if "resource_already_exists" in str(exc).lower():
+            return
+        raise
 
 
 # =============================================================================
@@ -526,3 +563,115 @@ def vector_search(tenant_cfg: TenantConfig, client_id: str, query_text: str, que
         src["_score"] = h.get("_score", 0.0)
         out.append(src)
     return out
+
+
+# =============================================================================
+# Day-digest store (block-wide CDD / Blueprint, design decision D1).
+#
+# Digests are persisted as ordinary documents in the SAME OpenSearch index with
+# `unit_type="day_digest"` — no new index, no RDS migration. They are fetched by
+# an exact bool/filter (NOT kNN): a completeness task wants every day of a block,
+# not the top-k most similar. The full digest JSON rides under `metadata.*`.
+#
+# These reuse `_vector_store_read_client` (a fully-capable client; the "read"
+# naming only means its SigV4 credentials are not cached). Digest volume is tiny
+# (~20 docs/block), so a dedicated write client is not warranted.
+# =============================================================================
+
+DIGEST_UNIT_TYPE = "day_digest"
+
+
+def _digest_projection_text(digest: Dict[str, Any]) -> str:
+    """Compact human/BM25-readable projection stored in the `text` field."""
+    parts = [
+        f"Day {digest.get('day_number')}: {digest.get('topic') or ''}",
+        digest.get("derived_objective") or "",
+        "ACS: " + ", ".join(digest.get("acs_codes") or []),
+    ]
+    return "\n".join(p for p in parts if p).strip()
+
+
+def upsert_digest(tenant_cfg: TenantConfig, digest: Dict[str, Any]) -> Dict[str, Any]:
+    """Index (idempotently) one per-day digest. Doc id = digest_id, so a rebuild
+    of the same day overwrites in place."""
+    from datetime import datetime, timezone
+
+    cfg = tenant_cfg.vector_store
+    if not cfg.enabled:
+        return {"status": "skipped", "reason": "vector_store.enabled=false"}
+    if getattr(cfg, "provider", "opensearch") != "opensearch":
+        return {"status": "skipped", "reason": f"Unsupported vector store provider: {cfg.provider}"}
+    digest_id = digest.get("digest_id")
+    if not digest_id:
+        return {"status": "failed", "error": "digest missing digest_id"}
+    try:
+        client = _vector_store_read_client(cfg)
+        ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
+        doc = {
+            "content_unit_id": digest_id,
+            "client_id": digest.get("client_id"),
+            "block": digest.get("block"),
+            "day_number": digest.get("day_number"),
+            "unit_type": DIGEST_UNIT_TYPE,
+            "title": f"Day {digest.get('day_number')} digest",
+            "text": _digest_projection_text(digest),
+            "metadata": digest,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        client.index(index=cfg.index_name, id=digest_id, body=doc, refresh=False)
+        return {"status": "completed", "index_name": cfg.index_name, "digest_id": digest_id}
+    except Exception as exc:
+        log.exception("Digest upsert failed for %s", digest_id)
+        return {"status": "failed", "error": str(exc)}
+
+
+def fetch_digests(tenant_cfg: TenantConfig, block: str, client_id: str) -> List[Dict[str, Any]]:
+    """Return all persisted day-digest JSON blobs for a block (exact filter, not
+    kNN). Empty list if the store/index is absent. Read-only; raises on query
+    error so the caller can decide to rebuild."""
+    cfg = tenant_cfg.vector_store
+    if not cfg.enabled:
+        return []
+    client = _vector_store_read_client(cfg)
+    if not client.indices.exists(index=cfg.index_name):
+        return []
+    body = {
+        "size": 500,
+        "_source": {"excludes": ["embedding"]},
+        "query": {"bool": {"filter": [
+            {"term": {"client_id": client_id}},
+            {"term": {"block": block}},
+            {"term": {"unit_type": DIGEST_UNIT_TYPE}},
+        ]}},
+    }
+    resp = client.search(index=cfg.index_name, body=body)
+    out: List[Dict[str, Any]] = []
+    for h in resp.get("hits", {}).get("hits", []):
+        meta = (h.get("_source", {}) or {}).get("metadata")
+        if isinstance(meta, dict):
+            out.append(meta)
+    return out
+
+
+def delete_digests(tenant_cfg: TenantConfig, block: str, client_id: str) -> Dict[str, Any]:
+    """Delete every day-digest for a block (force-rebuild support)."""
+    cfg = tenant_cfg.vector_store
+    if not cfg.enabled:
+        return {"status": "skipped", "reason": "vector_store.enabled=false"}
+    try:
+        client = _vector_store_read_client(cfg)
+        if not client.indices.exists(index=cfg.index_name):
+            return {"status": "skipped", "reason": "index does not exist"}
+        resp = client.delete_by_query(
+            index=cfg.index_name,
+            body={"query": {"bool": {"filter": [
+                {"term": {"client_id": client_id}},
+                {"term": {"block": block}},
+                {"term": {"unit_type": DIGEST_UNIT_TYPE}},
+            ]}}},
+            refresh=True,
+        )
+        return {"status": "completed", "deleted": resp.get("deleted", 0)}
+    except Exception as exc:
+        log.exception("Digest delete failed for block=%s", block)
+        return {"status": "failed", "error": str(exc)}

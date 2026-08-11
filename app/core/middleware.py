@@ -36,6 +36,11 @@ _log = logging.getLogger(__name__)
 _LOGGABLE_CONTENT_TYPES = ("application/json", "text/")
 _REDACT_KEYS = {"password", "admin_password", "new_password", "password_hash",
                  "azure_client_secret", "token", "access_token"}
+# Upper bound on how many request/response body bytes we ever buffer for
+# logging. File uploads (multipart/form-data, application/octet-stream, …) are
+# skipped entirely by the content-type guard below, so their bodies are never
+# read into memory here — they stream straight to the route handler.
+_MAX_LOGGED_BODY_BYTES = 64 * 1024  # 64 KB
 
 
 def _redact(body_bytes: bytes):
@@ -107,10 +112,29 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         start_time = time.perf_counter()
 
-        # Reading body() caches it on the request, so downstream handlers can
-        # still read it normally — this does not consume the stream for them.
-        req_body = await request.body()
-        req_body_val = _redact(req_body) if req_body else ""
+        # Only buffer the request body for content types we can safely log
+        # (JSON / text). For file uploads (multipart/form-data,
+        # application/octet-stream, …) we must NOT call request.body(): a large
+        # PDF would be read fully into memory and UTF-8-decoded for the log,
+        # which stalls/kills the upload before the route runs. Skipping the read
+        # lets the body stream straight to the UploadFile handler untouched.
+        #
+        # Reading body() for the loggable types caches it on the request, so
+        # those handlers can still read it normally — this does not consume the
+        # stream for them.
+        content_type = request.headers.get("content-type", "")
+        if any(content_type.startswith(ct) for ct in _LOGGABLE_CONTENT_TYPES):
+            req_body = await request.body()
+            if len(req_body) > _MAX_LOGGED_BODY_BYTES:
+                req_body_val = f"<{len(req_body)} bytes, not logged>"
+            else:
+                req_body_val = _redact(req_body) if req_body else ""
+        else:
+            req_body_val = (
+                f"<{content_type or 'unknown'} body, not logged>"
+                if request.method not in ("GET", "HEAD", "DELETE", "OPTIONS")
+                else ""
+            )
 
         _log.info(
             "request_started",
@@ -147,7 +171,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         content_type = response.headers.get("content-type", "")
         if any(content_type.startswith(ct) for ct in _LOGGABLE_CONTENT_TYPES):
             resp_bytes = b"".join([chunk async for chunk in response.body_iterator])
-            resp_body_val = _redact(resp_bytes) if resp_bytes else ""
+            # The full body is always re-sent to the client below; only the
+            # value we log is capped, to avoid multi-MB log lines.
+            if len(resp_bytes) > _MAX_LOGGED_BODY_BYTES:
+                resp_body_val = f"<{len(resp_bytes)} bytes, not logged>"
+            else:
+                resp_body_val = _redact(resp_bytes) if resp_bytes else ""
             response = Response(
                 content=resp_bytes,
                 status_code=response.status_code,

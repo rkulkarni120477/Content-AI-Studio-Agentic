@@ -305,6 +305,7 @@ def get_me(
     from app.core.dis_access import build_dis_profile
 
     role = getattr(current_user, "_role", None) or current_user.role
+    dis_profile = build_dis_profile(current_user)
     return UserProfileResponse(
         id=current_user.id,
         username=current_user.username,
@@ -314,5 +315,6 @@ def get_me(
         permissions=effective_permissions(current_user),
         project_id=getattr(current_user, "_project_id", None),
         is_platform_admin=getattr(current_user, "_is_platform_admin", False),
-        **build_dis_profile(current_user),
+        digest_pipeline_enabled=settings.digest_pipeline_on_for(dis_profile.get("client_id")),
+        **dis_profile,
     )

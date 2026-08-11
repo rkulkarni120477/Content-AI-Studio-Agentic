@@ -109,6 +109,8 @@
 .uploadQueue { margin-top:14px; display:grid; gap:8px; }
 .uploadQueueItem { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; border:1px solid #e2e8f0; border-radius:12px; padding:10px 12px; background:#f8fafc; }
 .statusPill { display:inline-flex; align-items:center; border-radius:999px; padding:4px 9px; font-size:12px; font-weight:800; background:#e2e8f0; color:#334155; text-transform:capitalize; }
+.dismissBtn { border:0; background:transparent; cursor:pointer; font-size:18px; line-height:1; color:#94a3b8; padding:0 4px; border-radius:6px; }
+.dismissBtn:hover { color:#334155; background:#f1f5f9; }
 .status_pending { background:#f1f5f9; color:#475569; }
 .status_uploading { background:#eff6ff; color:#1d4ed8; }
 .status_processed { background:#ecfdf5; color:#047857; }

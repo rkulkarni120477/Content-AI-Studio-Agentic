@@ -25,6 +25,18 @@ async def lifespan(app: FastAPI):
     log.info("Loaded %d client(s)", len(registry.all_tenants()))
     for t in registry.all_tenants():
         log.info("  client=%s namespace=%s storage=%s", t.tenant_id, t.namespace, t.storage.provider)
+        # D4 follow-up: fail loudly at startup if a tenant enables the digest MAP
+        # fan-out but langgraph is missing, so the sequential fallback can't
+        # silently mask a broken install (plan §5.1 / D4).
+        if getattr(t.pipeline, "digest_fanout_enabled", False):
+            from services.digests.graph import langgraph_available
+            if not langgraph_available():
+                log.warning(
+                    "client=%s has pipeline.digest_fanout_enabled=true but langgraph "
+                    "is not importable — digest builds will fall back to the sequential "
+                    "loop. Install langgraph (pinned in requirements.txt) or disable the flag.",
+                    t.tenant_id,
+                )
     yield
     log.info("=== DIS shutting down ===")
 

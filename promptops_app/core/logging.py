@@ -187,12 +187,24 @@ def configure_logging(level: Optional[str] = None) -> None:
     # Also write everything to a rotating file so logs survive past the
     # console scrollback and can be grepped/tailed directly (repo root is
     # bind-mounted into the container, so this shows up on the host too).
-    Path("logs").mkdir(exist_ok=True)
-    file_handler = logging.handlers.RotatingFileHandler(
-        "logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8",
-    )
-    file_handler.setFormatter(_JsonFormatter())
-    root.addHandler(file_handler)
+    #
+    # Best-effort: the path is CWD-relative and the directory is a bind mount, so
+    # whether it is writable depends on who last created the file and which uid the
+    # process runs as. Because configure_logging() is called at import time from
+    # app.main, an unwritable logs/app.log used to raise PermissionError and take
+    # down the ENTIRE application (and every test collection) — losing stdout logs
+    # too, over a convenience sink. Degrade to the stdout handler instead and say so.
+    try:
+        Path("logs").mkdir(exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            "logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8",
+        )
+    except OSError as exc:
+        root.warning("File logging disabled (%s: %s) — logging to stdout only",
+                     type(exc).__name__, exc)
+    else:
+        file_handler.setFormatter(_JsonFormatter())
+        root.addHandler(file_handler)
 
     # Quiet chatty third-party libraries that flood logs at DEBUG/INFO
     for noisy in (

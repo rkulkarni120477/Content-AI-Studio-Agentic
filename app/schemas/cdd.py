@@ -145,6 +145,25 @@ class CDDGenerateRequest(BaseModel):
         ),
     )
 
+    # ── Digest pipeline (block-wide CDD) ──────────────────────────────────────
+    block: Optional[str] = Field(
+        default=None,
+        description=(
+            "Block label (e.g. 'Block 2') for the block-wide digest pipeline. "
+            "Only used when the digest pipeline is enabled for the course's client; "
+            "when omitted the legacy single-call CDD path runs unchanged."
+        ),
+        examples=["Block 2"],
+    )
+    quality_tier: Optional[str] = Field(
+        default=None,
+        description=(
+            "Quality tier for the block-wide REDUCE model: 'draft' | 'standard' | "
+            "'premium'. Defaults to 'standard'. Ignored by the legacy path."
+        ),
+        examples=["standard", "premium"],
+    )
+
 
 # ---------------------------------------------------------------------------
 # CDD Version — POST /api/v1/cdd/{cdd_id}/versions
