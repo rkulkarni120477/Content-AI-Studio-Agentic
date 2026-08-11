@@ -203,15 +203,66 @@ def test_build_digest_new_llm_fields_default_sanely_when_omitted(stub_llm):
     assert digest["job_aid_source_reference"] == "N/A"
 
 
+def _rendered_map_prompt(guidance: str = "", sources: str = "(no units)") -> str:
+    """The MAP prompt as actually assembled and sent.
+
+    The rubric used to live in an f-string inside ``_llm_extract``, so these
+    regression tests read it with ``inspect.getsource``. It now resolves from
+    ``templates/digest_map.md`` (with the JSON contract injected as ``{{schema}}``),
+    so rendering the real thing is both the only way to see it AND a stronger
+    assertion than source-matching ever was: it exercises template resolution, the
+    contract check, and substitution, catching a template that fails to load or a
+    placeholder that never gets filled — none of which source-matching could see.
+    """
+    template, _hash = mapper.map_prompt()
+    return mapper.prompt_template_render(template, {
+        "schema": mapper.MAP_SCHEMA,
+        "guidance_block": mapper._guidance_block(guidance) or "\n",
+        "day_number": 3, "topic": "Topic", "lesson_title": "Lesson",
+        "sources": sources,
+    })
+
+
+def test_map_prompt_resolves_from_template_not_builtin_fallback():
+    """The shipped template must actually load and satisfy the reply contract.
+
+    Guards the silent-degradation path: if templates/digest_map.md were deleted,
+    malformed, or edited to drop the {{schema}} placeholder, resolution falls back
+    to the compact built-in and digest quality quietly drops. That fallback is
+    deliberate for robustness, but it must never be what a normal deploy uses.
+    """
+    template, content_hash = mapper.map_prompt()
+    assert template is not mapper._BUILTIN_MAP_PROMPT, (
+        "digest_map.md failed to resolve — check it exists and keeps {{schema}}"
+    )
+    assert "{{schema}}" in template
+    prompt = _rendered_map_prompt()
+    assert all(key in prompt for key in mapper.MAP_REPLY_KEYS)
+    # No placeholder may survive rendering — an unfilled one would reach the model.
+    assert "{{" not in prompt
+    # The version marker carries the template hash, so an edit invalidates digests.
+    assert mapper.current_prompt_version() == f"{mapper.PROMPT_VERSION_BASE}+{content_hash}"
+
+
+def test_map_prompt_template_edit_changes_cache_key():
+    """A template edit must invalidate the digests it would change.
+
+    The rubric is now editable at runtime, so its content is part of what produced
+    a digest. If the cache key ignored it, an admin's edit would appear to do
+    nothing until every day happened to change for some other reason.
+    """
+    units = [{"content_hash": "h1"}]
+    before = mapper.cache_key(1, units, "m")
+    edited = mapper.cache_key(1, units, "m", prompt_version="map-v6+deadbeefcafe")
+    assert before != edited
+
+
 def test_concept_type_prompt_gives_a_discriminating_rubric():
     """Regression: a real Block 2 run returned "Procedural" for all 20 days
     (including a Test day) because the prompt just listed 4 bare words with no
     criteria — the model wasn't discriminating, it was defaulting. The prompt
     must give each type a concrete one-line criterion."""
-    # _llm_extract builds the prompt inline (no separate template function) —
-    # inspect the source text itself for the rubric rather than executing a call.
-    import inspect
-    source = inspect.getsource(mapper._llm_extract)
+    source = _rendered_map_prompt()
     assert "Conceptual:" in source and "Procedural:" in source and "Metacognitive:" in source
     assert "Mixed" in source  # combined-type guidance for genuinely blended days
 
@@ -223,8 +274,7 @@ def test_concept_type_prompt_distinguishes_being_taught_from_doing():
     "Conceptual" for both — the rubric didn't distinguish being TAUGHT ABOUT a
     procedure/tool from the learner actually DOING it. The prompt must say so
     explicitly, not just list the four original bare labels."""
-    import inspect
-    source = inspect.getsource(mapper._llm_extract).lower()
+    source = _rendered_map_prompt().lower()
     assert "how a tool/technique/process is used" in source
     assert "hands-on task" in source
 
@@ -235,8 +285,7 @@ def test_concept_type_prompt_adds_summative_assessment_distinct_from_metacogniti
     review/reflection days with no graded test) — the prompt previously offered
     no such value, so the model's only fallback was Metacognitive for every kind
     of test/review day."""
-    import inspect
-    source = inspect.getsource(mapper._llm_extract)
+    source = _rendered_map_prompt()
     assert "Summative Assessment:" in source
 
 
@@ -245,8 +294,7 @@ def test_misconceptions_prompt_requires_empty_array_not_placeholder_string():
     a placeholder INSIDE the array — which renders as a literal, wrong-looking
     list item downstream instead of the clean "NONE DOCUMENTED" default an
     empty array produces."""
-    import inspect
-    source = inspect.getsource(mapper._llm_extract)
+    source = _rendered_map_prompt()
     assert '"no"' in source and "placeholder" in source
 
 
@@ -730,3 +778,275 @@ def test_build_digest_never_truncates_long_prose_fields(stub_llm, monkeypatch):
                                  client_id="aim", block="Block 2")
     assert digest["derived_objective"] == long_text
     assert len(digest["derived_objective"]) > 500
+
+
+# --------------------------------------------------------------------------- #
+# Attribution precision — regressions from the Block 2 cdd-146 incident, where
+# S3 pulled 22 pages of an unrelated 90-page ACS standards PDF onto Day 1
+# (~90k chars of turbine/fire-detection/lavatory text on an Aircraft Drawings
+# day), overflowed the extractor's context window, and left every LLM-derived
+# cell of the shipped Blueprint blank.
+# --------------------------------------------------------------------------- #
+def _wide_days(n=20):
+    """A block whose calendar rows repeat the same boilerplate on every day —
+    the real shape of AIM calendar hint text."""
+    boiler = "ACS codes FAA 8083 30B pgs reading reference topics covered aircraft"
+    return [{"day_number": i, "topic": f"{boiler} widget{i} gadget{i}",
+             "lesson_title": f"Lesson {i}", "source_text": "",
+             "assignments_json": "", "assessments_json": ""} for i in range(1, n + 1)]
+
+
+def test_ubiquitous_hint_terms_are_dropped_but_distinctive_ones_survive():
+    dterms = attribution.day_terms_by_day(_wide_days(), drop_ubiquitous=False)
+    common = attribution.ubiquitous_terms(dterms)
+    # Repeated on every calendar row -> zero discriminative power.
+    for t in ("acs", "faa", "8083", "reference", "aircraft", "topics"):
+        assert t in common, t
+    # Unique to one day -> must survive, or S3 loses all signal.
+    assert "widget7" not in common and "gadget7" not in common
+    filtered = attribution.day_terms_by_day(_wide_days())
+    assert filtered[7] == {"widget7", "gadget7", "lesson"} - common
+
+
+def test_ubiquity_filter_is_inert_on_a_tiny_block():
+    """A 2-day block must not have its hint terms stripped — with so few days,
+    'shared by most days' carries no information."""
+    days = _days()[:2]
+    assert attribution.ubiquitous_terms(attribution.day_terms_by_day(days, drop_ubiquitous=False)) == set()
+
+
+def test_s3_refuses_a_tie_instead_of_silently_picking_the_lowest_day():
+    """The original bug: `ov > best` over dict-insertion order meant a tie
+    resolved to whichever day came first, making Day 1 a sink for every
+    unresolvable unit. Half the wrongly-attributed units had margin == 0."""
+    days = [
+        {"day_number": 1, "topic": "alpha bravo charlie delta", "lesson_title": "",
+         "source_text": "", "assignments_json": "", "assessments_json": ""},
+        {"day_number": 2, "topic": "alpha bravo charlie echo", "lesson_title": "",
+         "source_text": "", "assignments_json": "", "assessments_json": ""},
+    ]
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "page", "title": "alpha bravo charlie",
+            "text_content": "alpha bravo charlie", "metadata_json": {}}
+    placed, signal, conf = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [] and conf == 0.0
+    assert "S3-weak" in signal and "/3)" in signal   # best 3 == runner-up 3
+
+
+def test_s3_rejects_a_long_unit_that_overlaps_only_on_boilerplate():
+    """A big document trivially clears an absolute overlap floor by volume. After
+    ubiquity filtering its 'evidence' is empty, so it must stay unresolved."""
+    days = _wide_days()
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "page", "title": "Aviation Mechanic Certification Standards",
+            "text_content": ("ACS codes FAA 8083 30B reference reading aircraft topics "
+                             "covered inspect maintenance system " * 40),
+            "metadata_json": {}}
+    placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [], f"boilerplate-only overlap was attributed: {signal}"
+
+
+def test_s3_still_recovers_a_genuinely_day_specific_unit():
+    """Precision must not cost the real recoveries S3 exists for — the AIM study
+    questions / hangar activities that carry no day token."""
+    days = _wide_days()
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "study_question", "title": "widget7 gadget7 study questions",
+            "text_content": "widget7 gadget7 lesson practice", "metadata_json": {}}
+    placed, signal, conf = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [7] and signal.startswith("S3") and conf > 0
+
+
+@pytest.mark.parametrize("md", [
+    {"doc_type": "ebook_reference"},
+    {"document_type": "ebook_reference"},
+    {"content_type": "syllabus"},
+    {"tags": ["tenant:aim", "type:ebook_reference", "visibility:student"]},
+    {"tags": ["content_type:course_calendar"]},
+])
+def test_block_wide_reference_pages_are_never_term_attributed(md):
+    """One page of a 90-page standards PDF has no day. Sharing trade vocabulary
+    with a day's topic is not evidence of belonging to it."""
+    days = _wide_days()
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "page", "title": "widget7 gadget7",
+            "text_content": "widget7 gadget7 lesson", "metadata_json": md}
+    placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [] and signal == "unresolved:block-wide-reference"
+
+
+def test_block_wide_reference_still_honours_an_explicit_day_token():
+    """Only the statistical signal is withheld. An explicit 'Day 3' or project
+    cross-reference in such a document IS real evidence and must still land."""
+    days = _days()
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "page", "title": "Handbook excerpt", "text_content": "",
+            "metadata_json": {"doc_type": "ebook_reference", "source_file_name": "B2D3.pdf"}}
+    placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [3] and signal.startswith("S2")
+
+    unit2 = {"unit_type": "page", "title": "Project 2-1 reference pages",
+             "text_content": "", "metadata_json": {"doc_type": "ebook_reference"}}
+    placed2, signal2, _ = attribution.attribute(unit2, days, proj_ref, quiz_ref, dterms)
+    assert placed2 == [1] and signal2.startswith("S1")
+
+
+def test_worksheets_shares_the_one_block_wide_reference_definition():
+    """The two modules must never disagree about what a block-wide reference is."""
+    from services.digests import worksheets
+    assert set(worksheets._BLOCK_WIDE_REFERENCE_TYPES) == \
+        set(attribution.BLOCK_WIDE_REFERENCE_DOC_TYPES)
+
+
+# --------------------------------------------------------------------------- #
+# MAP input budget — a day is unbounded upstream; exceeding the extractor's
+# context window is a HARD Bedrock error that fails the whole day.
+# --------------------------------------------------------------------------- #
+def _unit(sig, chars, uid):
+    return {"content_unit_id": uid, "unit_type": "page", "title": uid,
+            "text_content": "x" * chars, "attribution_signal": sig,
+            "metadata_json": {}}
+
+
+def test_source_body_passes_everything_through_when_within_budget():
+    units = [_unit("raw:day_number", 100, "a"), _unit("S3:overlap(9/2)", 100, "b")]
+    body, dropped = mapper._source_body(units)
+    assert dropped == {}
+    assert "a" in body and "b" in body
+
+
+def test_source_body_caps_total_and_drops_lowest_confidence_first():
+    # Each unit contributes MAP_MAX_UNIT_CHARS; three of them cannot fit a budget
+    # of two, and the S3 unit is the least certainly this day's material.
+    n = mapper.MAP_MAX_UNIT_CHARS
+    units = [_unit("S3:overlap(3/1)", n, "weak"),
+             _unit("raw:day_number", n, "strong1"),
+             _unit("S1:project 2-1", n, "mid")]
+    monkey_budget = 2 * (n + len("[page] strong1\n")) + 4
+    orig = mapper.MAP_MAX_SOURCE_CHARS
+    try:
+        mapper.MAP_MAX_SOURCE_CHARS = monkey_budget
+        body, dropped = mapper._source_body(units)
+    finally:
+        mapper.MAP_MAX_SOURCE_CHARS = orig
+    assert dropped["units"] == 1 and dropped["chars"] > 0
+    assert "strong1" in body and "mid" in body
+    assert "weak" not in body
+    # Surviving units keep source order, not confidence order.
+    assert body.index("strong1") < body.index("mid")
+
+
+def test_source_body_keeps_at_least_one_unit_even_if_it_alone_exceeds_budget():
+    """A day whose single unit is larger than the whole budget must still send
+    something (per-unit truncation applies) rather than an empty SOURCES block."""
+    orig = mapper.MAP_MAX_SOURCE_CHARS
+    try:
+        mapper.MAP_MAX_SOURCE_CHARS = 10
+        body, dropped = mapper._source_body([_unit("raw:day_number", 5000, "solo")])
+    finally:
+        mapper.MAP_MAX_SOURCE_CHARS = orig
+    assert "solo" in body and dropped == {}
+
+
+def test_oversized_day_is_flagged_for_review_not_silently_truncated(stub_llm):
+    orig = mapper.MAP_MAX_SOURCE_CHARS
+    try:
+        mapper.MAP_MAX_SOURCE_CHARS = 200
+        digest = mapper.build_digest(
+            {"day_number": 1, "topic": "Intro", "lesson_title": "L1"},
+            [_unit("raw:day_number", 150, "a"), _unit("S3:overlap(3/1)", 150, "b")],
+            _tenant(), model="stub-model", client_id="aim", block="Block 2")
+    finally:
+        mapper.MAP_MAX_SOURCE_CHARS = orig
+    assert digest["digest_status"] == "ok"
+    assert any(f.startswith("SOURCES_TRUNCATED") for f in digest["review_flags"]), \
+        digest["review_flags"]
+
+
+# --------------------------------------------------------------------------- #
+# Poisoned-digest self-healing. digest_status=="ok" is only as trustworthy as the
+# code that wrote it; digests stored before MAP failures were surfaced are "ok"
+# with every extracted field at its default.
+# --------------------------------------------------------------------------- #
+def test_has_extraction_rejects_the_poisoned_shape_and_accepts_sparse_real_days():
+    poisoned = {"concept_type": "Unknown", "derived_objective": "",
+                "misconceptions": [], "interactive_candidate": False}
+    assert not mapper.has_extraction(poisoned)
+    assert not mapper.has_extraction({})
+    # A real but sparse day: no interactive, no misconceptions, still extracted.
+    assert mapper.has_extraction({"concept_type": "Summative Assessment",
+                                  "derived_objective": ""})
+    assert mapper.has_extraction({"concept_type": "Unknown",
+                                  "derived_objective": "Identify line types."})
+
+
+def test_cache_reuses_a_real_digest_but_rebuilds_a_poisoned_one():
+    day = {"day_number": 1, "topic": "Intro", "lesson_title": "L1"}
+    units = [{"content_unit_id": "s1", "unit_type": "slide", "title": "s",
+              "text_content": "body", "content_hash": "a", "metadata_json": {}}]
+    ck = mapper.cache_key(1, units, "stub-model", day_meta=mapper.day_signature(day))
+    real = {"cache_key": ck, "digest_status": "ok", "concept_type": "Conceptual",
+            "derived_objective": "Explain drawings."}
+    assert build.day_is_cached(day, units, "stub-model", {1: real}, force=False)
+
+    poisoned = {"cache_key": ck, "digest_status": "ok", "concept_type": "Unknown",
+                "derived_objective": ""}
+    assert not build.day_is_cached(day, units, "stub-model", {1: poisoned}, force=False)
+
+
+def test_stored_prompt_version_is_the_effective_one_not_the_bare_base(stub_llm):
+    """Provenance: a v6-era digest and one from a since-edited template both
+    claiming 'map-v6' is what made the stale-digest incident hard to diagnose."""
+    digest = mapper.build_digest({"day_number": 1, "topic": "Intro", "lesson_title": "L1"},
+                                 [], _tenant(), model="stub-model",
+                                 client_id="aim", block="Block 2")
+    assert digest["prompt_version"] == mapper.current_prompt_version()
+    assert digest["prompt_version"].startswith(mapper.PROMPT_VERSION_BASE + "+")
+
+
+def test_final_exam_resolves_to_the_calendar_exam_day_not_by_overlap():
+    """A final exam covers every day's vocabulary, so term overlap scatters it
+    across the block. On real Block 2 the calendar schedules it on day 20 while
+    S3 had placed its questions on days 8 and 10."""
+    days = _wide_days()
+    days[-1]["assessments_json"] = json.dumps(["Block 2: Final Exam"])
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    assert attribution.final_exam_day(days) == 20
+
+    # Deliberately loaded with day-7 vocabulary AND a project token, both of which
+    # would otherwise win: the exam's own text cites items from across the block.
+    unit = {"unit_type": "quiz_question", "title": "Block 2 Final Exam",
+            "text_content": "widget7 gadget7 Project 2-1 review of all topics",
+            "metadata_json": {"content_type": "final_exam",
+                              "tags": ["type:final_exam"]}}
+    placed, signal, conf = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [20] and signal == "S1:final-exam" and conf == 1.0
+
+
+def test_final_exam_is_unresolved_when_no_calendar_day_claims_it():
+    """Better surfaced as unattributed than scattered onto a plausible-looking day."""
+    days = _wide_days()
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "quiz_question", "title": "Final Exam",
+            "text_content": "widget7 gadget7", "metadata_json": {"doc_type": "final_exam"}}
+    placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [] and signal == "unresolved:final-exam-day-unknown"
+
+
+def test_numbered_per_day_quiz_is_not_treated_as_the_final_exam():
+    """'Quiz 1' must still resolve via its own calendar cross-reference."""
+    days = _days()
+    days[0]["assessments_json"] = json.dumps(["Block 2: Final Exam"])
+    proj_ref, quiz_ref = attribution.build_calendar_refs(days)
+    dterms = attribution.day_terms_by_day(days)
+    unit = {"unit_type": "quiz_question", "title": "Quiz 1 question 3",
+            "text_content": "", "metadata_json": {"content_type": "quiz"}}
+    placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
+    assert placed == [2] and signal.startswith("S1:quiz")

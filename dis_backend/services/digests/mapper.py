@@ -20,24 +20,119 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import textwrap
 from typing import Any, Dict, List, Optional
 
 from services.digests import attribution
+from services.digests.prompt_template import render as prompt_template_render
 
 log = logging.getLogger(__name__)
 
-DIGEST_SCHEMA_VERSION = "v6"  # bumped: added concept_type_explanation, interactive_scope,
-# job_aid_source_reference (LLM fields) and storyline_source_asset_status (mechanical, from
-# unit types) to close the AIM-reference Day-by-Day Map column gap. Same cache-invalidation
-# requirement as every prior bump here: this is a structural change to what a digest CONTAINS,
-# and cache_key doesn't know that on its own.
-PROMPT_VERSION = "map-v5"  # bumped: _llm_extract now accepts an optional map_guidance block
-# (see resolve_prompt_guidance in promptops_app/services/prompt_guidance.py) — judgment/
-# emphasis instructions distilled from the course's selected CDD/Blueprint prompt, appended
-# AFTER the fixed schema/rubric below. cache_key now folds map_guidance's own text into the
-# hash (see cache_key), so this bump is a belt-and-suspenders marker, not the only thing
-# invalidating old cache entries.
+DIGEST_SCHEMA_VERSION = "v7"
+# Every bump here is a structural change to what a digest CONTAINS, which cache_key
+# cannot infer on its own — so the version must move for existing digests to rebuild.
+#   v7: added concept_scope — the AIM reference's Worksheet 4 "Concept Scope" column:
+#       the specific sub-topics/tools/materials covered that day, grounded in that
+#       day's own sources rather than a restatement of the Day Title.
+#   v6: added concept_type_explanation, interactive_scope, job_aid_source_reference
+#       (LLM fields) and storyline_source_asset_status (mechanical, from unit types)
+#       to close the AIM-reference Day-by-Day Map column gap.
+PROMPT_VERSION_BASE = "map-v6"  # bumped: the extraction rubric + concept_type taxonomy moved
+# out of this module's f-string literal into the editable templates/digest_map.md (the JSON
+# schema below stays code-owned and is injected as {{schema}}). The effective prompt version
+# is BASE + the template's content hash — see current_prompt_version() — so editing the
+# template invalidates exactly the digests it changes, with no manual bump needed.
+
+#: The reply contract. Code-owned and injected into the template as ``{{schema}}`` so an
+#: admin can rewrite the entire rubric without being able to drop a key the parser reads.
+#: Keep in sync with the ``fields`` dict at the end of ``_llm_extract``.
+MAP_SCHEMA = (
+    '{"derived_objective": str, "misconceptions": [str],\n'
+    '"salient_excerpts": [str], "concept_type": str, "concept_type_explanation": str,\n'
+    '"concept_scope": str,\n'
+    '"interactive_candidate": bool, "interactive_type": str,\n'
+    '"interactive_content": str, "interactive_rationale": str, "interactive_scope": str,\n'
+    '"job_aid_candidate": bool, "job_aid_type": str, "job_aid_description": str,\n'
+    '"job_aid_source_reference": str}'
+)
+
+#: Every key ``_llm_extract`` reads out of the reply. A template that fails to mention one
+#: is rejected in favour of the built-in (see prompt_template.resolve).
+MAP_REPLY_KEYS = (
+    "derived_objective", "misconceptions", "salient_excerpts", "concept_type",
+    "concept_type_explanation", "concept_scope", "interactive_candidate", "interactive_type",
+    "interactive_content", "interactive_rationale", "interactive_scope",
+    "job_aid_candidate", "job_aid_type", "job_aid_description", "job_aid_source_reference",
+)
+
+MAP_TEMPLATE_NAME = "digest_map"
+
+
+class MapExtractionError(RuntimeError):
+    """The MAP reply did not contain the digest fields.
+
+    Raised rather than defaulting, so ``build_digest``'s per-day isolation marks the
+    day ``digest_status="failed"`` and it surfaces as "REVIEW NEEDED" plus a
+    ``coverage.failed_days`` entry. A silently-defaulted day is indistinguishable
+    downstream from a genuinely extracted one, which is how an entire block once
+    rendered with every LLM field at its default while reporting success.
+    """
+
+#: Last-resort fallback if ``templates/digest_map.md`` is missing, empty, unreadable, or
+#: fails the reply-key contract check. Deliberately a COMPACT prompt rather than a
+#: duplicate of the shipped template: two copies of a 60-line rubric would drift, and
+#: the shipped file is the source of truth. This keeps the reply contract and the core
+#: "never invent" discipline intact, so a bad deploy degrades digest QUALITY (a terser
+#: rubric, no concept_type taxonomy) rather than CORRECTNESS — and says so in the log.
+#: Its own hash feeds the cache key too, so fallback-built digests never masquerade as
+#: template-built ones.
+_BUILTIN_MAP_PROMPT = (
+    "You are extracting a compact JSON digest of ONE course day for a Block Blueprint /\n"
+    "Course Design Document. Extract ONLY the fields in the schema below. Do not invent a\n"
+    "source type, citation, or fact that is absent from the SOURCES. Be concise.\n\n"
+    "List fields (misconceptions, salient_excerpts) must be genuine JSON arrays — use []\n"
+    "when the day has nothing to document. NEVER put a placeholder string like \"no\",\n"
+    "\"N/A\", or \"none\" inside an array as if it were a real item.\n\n"
+    "Use the \"no\"/false/\"N/A\" values where a field genuinely doesn't apply. The\n"
+    "*_type/*_content/*_description fields are \"\" when their *_candidate is false.\n\n"
+    "concept_type is a short label for the day's dominant mode of learning (e.g.\n"
+    "Conceptual, Procedural, Skill, Factual, Metacognitive, Summative Assessment), and\n"
+    "concept_type_explanation grounds that choice in what the SOURCES actually contain.\n\n"
+    "Respond with ONLY the JSON object below — no preamble, no markdown fence.\n\n"
+    "{{schema}}\n"
+    "{{guidance_block}}"
+    "DAY {{day_number}}: {{topic}}\n"
+    "LESSON: {{lesson_title}}\n"
+    "SOURCES:\n"
+    "{{sources}}\n"
+)
+
+
+def map_prompt() -> tuple[str, str]:
+    """Return ``(template_text, content_hash)`` for the MAP prompt."""
+    from services.digests import prompt_template
+    return prompt_template.resolve(MAP_TEMPLATE_NAME, _BUILTIN_MAP_PROMPT, MAP_REPLY_KEYS,
+                                   schema=MAP_SCHEMA)
+
+
+def current_prompt_version() -> str:
+    """Effective MAP prompt version: base marker + the template's content hash.
+
+    Resolved at CALL time, not import time, so an edit to the template is picked up
+    by a running process (the loader is mtime-aware) and immediately invalidates the
+    digests that edit would change. Import-time resolution would let a long-lived
+    worker keep serving cached digests under a stale version after an edit — the same
+    stale-process failure mode that has bitten this pipeline before.
+    """
+    try:
+        return f"{PROMPT_VERSION_BASE}+{map_prompt()[1]}"
+    except Exception as exc:   # never let versioning break a build
+        log.warning("map prompt version resolution failed (%s) — using base marker", exc)
+        return PROMPT_VERSION_BASE
+
+
+#: Backwards-compatible module attribute. Prefer ``current_prompt_version()``: this is a
+#: snapshot taken at import and does not reflect a later template edit.
+PROMPT_VERSION = PROMPT_VERSION_BASE
 MAP_MAX_TOKENS = 4096  # raised from 900 (itself raised from 600) — 900 was still an artificial
 # ceiling below this model's real limit. aim.yaml's digest_extraction model is Bedrock Claude 3
 # Sonnet, whose actual max output is 4096 — matching that gives every field (derived_objective,
@@ -96,9 +191,28 @@ def day_signature(day: Dict[str, Any]) -> str:
     return f"{day.get('topic') or ''}|{day.get('lesson_title') or ''}"
 
 
+def has_extraction(digest: Dict[str, Any]) -> bool:
+    """Whether a digest actually carries LLM-extracted content.
+
+    A digest can be structurally complete and marked ``ok`` while every extracted
+    field sits at its default — the signature of a MAP call that returned an
+    unrelated shape back when that only logged a warning. Used by the cache check
+    so such a digest is rebuilt rather than trusted, and safe to apply to any
+    stored digest regardless of which code version wrote it.
+
+    ``concept_type`` and ``derived_objective`` are the two fields every real day
+    yields (unlike the optional interactive/job-aid ones, legitimately empty on many
+    days), so requiring EITHER to be non-default avoids flagging a genuinely sparse
+    day as poisoned.
+    """
+    ct = str(digest.get("concept_type") or "").strip()
+    obj = str(digest.get("derived_objective") or "").strip()
+    return bool((ct and ct.lower() != "unknown") or obj)
+
+
 def cache_key(day_number: int, units: List[Dict[str, Any]], model: str,
               schema_version: str = DIGEST_SCHEMA_VERSION,
-              prompt_version: str = PROMPT_VERSION,
+              prompt_version: str = "",
               day_meta: str = "", map_guidance: str = "") -> str:
     """Content-addressed digest key (§4.4).
 
@@ -110,7 +224,13 @@ def cache_key(day_number: int, units: List[Dict[str, Any]], model: str,
     editing the underlying course prompt correctly busts every previously
     cached digest that guidance would have applied to, with no separate
     invalidation bookkeeping needed.
+
+    ``prompt_version`` defaults to ``current_prompt_version()`` — resolved on each
+    call rather than bound at import, so it carries the MAP template's live content
+    hash and an edit to that template invalidates the digests it affects. Callers
+    may still pass an explicit value (tests do) to pin the key.
     """
+    prompt_version = prompt_version or current_prompt_version()
     unit_hashes = ",".join(sorted((u.get("content_hash") or _est_hash(u)) for u in units))
     raw = (f"{schema_version}|{model}|{prompt_version}|day{day_number}|{day_meta}"
            f"|mg:{map_guidance}|{unit_hashes}")
@@ -141,10 +261,60 @@ def _guidance_block(map_guidance: str) -> str:
     )
 
 
+#: Hard ceiling on the assembled SOURCES text for one day's MAP prompt. A day is not
+#: bounded by anything upstream — attribution can legitimately place 130+ units on a
+#: single day — and exceeding the extractor's context window is a HARD Bedrock error
+#: ("Input is too long for requested model") that fails the whole day. Observed live
+#: on Block 2 Day 1 before attribution was tightened. Chosen so that even worst-case
+#: dense text (ACS code lists tokenize at roughly one token per character, far worse
+#: than the usual ~4 chars/token) stays inside a 200k-token window.
+MAP_MAX_SOURCE_CHARS = 120_000
+MAP_MAX_UNIT_CHARS = 4_000
+
+#: Truncation order when a day exceeds the budget: keep the units we are most
+#: confident belong to this day. Mirrors attribution's own signal hierarchy
+#: (metadata day_number > item cross-reference > filename token > term overlap), so
+#: what gets dropped first is what was least certainly this day's material.
+_SIGNAL_PRIORITY = {"raw": 0, "S1": 1, "S2": 2, "S3": 3}
+
+
+def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
+    """Assemble the SOURCES block under MAP_MAX_SOURCE_CHARS.
+
+    Returns ``(body, dropped)`` where ``dropped`` is {"units": n, "chars": n} —
+    empty when everything fit. Truncation is reported, never silent: the caller
+    turns it into a digest review flag so a reviewer can see the day was too large
+    rather than wondering why its extraction looks thin.
+    """
+    def rank(u: Dict[str, Any]) -> int:
+        sig = str(u.get("attribution_signal") or "raw")
+        return _SIGNAL_PRIORITY.get(sig.split(":")[0], 4)
+
+    ordered = sorted(enumerate(llm_units), key=lambda p: (rank(p[1]), p[0]))
+    kept: List[tuple[int, str]] = []
+    used = 0
+    dropped_units = dropped_chars = 0
+    for idx, u in ordered:
+        block = (f"[{u.get('unit_type')}] {u.get('title') or ''}\n"
+                 f"{(u.get('text_content') or '')[:MAP_MAX_UNIT_CHARS]}")
+        if used + len(block) > MAP_MAX_SOURCE_CHARS and kept:
+            dropped_units += 1
+            dropped_chars += len(block)
+            continue
+        kept.append((idx, block))
+        used += len(block)
+    # Restore the original unit order so the prompt still reads in source order.
+    body = "\n\n".join(b for _, b in sorted(kept, key=lambda p: p[0]))
+    dropped = {"units": dropped_units, "chars": dropped_chars} if dropped_units else {}
+    return body, dropped
+
+
 def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: str,
-                 call_llm, safe_json, map_guidance: str = "") -> tuple[Dict[str, Any], int, int]:
-    """Call the extractor and return (fields, tokens_in, tokens_out). Never raises
-    for empty output — parse failures degrade to empty fields.
+                 call_llm, safe_json, map_guidance: str = ""
+                 ) -> tuple[Dict[str, Any], int, int, Dict[str, int]]:
+    """Call the extractor and return (fields, tokens_in, tokens_out, dropped).
+
+    ``dropped`` reports any SOURCES truncation applied to fit MAP_MAX_SOURCE_CHARS.
 
     ``map_guidance`` (optional) is judgment/emphasis instructions distilled from
     the course's selected CDD/Blueprint prompt (see resolve_prompt_guidance) —
@@ -152,95 +322,25 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     the model is told explicitly it may only refine judgment within the fields
     already specified, not add a field or contradict the required JSON shape.
     """
-    body = "\n\n".join(
-        f"[{u.get('unit_type')}] {u.get('title') or ''}\n{(u.get('text_content') or '')[:4000]}"
-        for u in llm_units
-    )
-    prompt = textwrap.dedent(f"""\
-        You are extracting a compact JSON digest of ONE course day for a Block
-        Blueprint / Course Design Document. Extract ONLY these fields. Do not invent
-        a source type that is absent. Be concise. If a field genuinely doesn't
-        apply (e.g. no good interactive/job-aid opportunity, or no source page can
-        be identified), use the "no"/false/"N/A" values shown — do not force one
-        that isn't warranted by the sources.
-
-        List fields (misconceptions, salient_excerpts) must be a genuine JSON array
-        — use [] (empty) when the day has nothing to document (e.g. an assessment or
-        pure-review day has no new misconceptions to list). NEVER put a placeholder
-        string like "no", "N/A", or "none" INSIDE the array as if it were a real
-        item — that renders as a literal, wrong-looking item downstream instead of
-        the clean "none documented" an empty array produces.
-
-        Respond with ONLY the JSON object below — no preamble, no explanation,
-        no markdown fence, nothing before or after it.
-
-        {{"derived_objective": str, "misconceptions": [str],
-        "salient_excerpts": [str], "concept_type": str, "concept_type_explanation": str,
-        "interactive_candidate": bool, "interactive_type": str,
-        "interactive_content": str, "interactive_rationale": str, "interactive_scope": str,
-        "job_aid_candidate": bool, "job_aid_type": str, "job_aid_description": str,
-        "job_aid_source_reference": str}}
-
-        concept_type is one of, or a combination of, the following — pick whichever
-        single label fits best, or combine two with " + " and append " (Mixed)" when
-        a day genuinely blends two of them (e.g. "Conceptual + Skill (Mixed)" for a
-        day that introduces new understanding AND opens hands-on practice of it the
-        same day):
-          - Conceptual: first-encounter understanding — explaining what something IS,
-            why it matters, how pieces relate, or HOW a tool/technique/process is used
-            or its operating principles. This still applies even when the SOURCES
-            describe usage/procedure in prose — being TAUGHT ABOUT how something is
-            done is Conceptual, not Procedural/Skill, unless the day ALSO has the
-            learner actually doing it (a bench task, project activity, lab/hangar
-            exercise). No hands-on practice yet.
-          - Procedural: a sequence of steps/actions the LEARNER THEMSELVES follows to
-            do a task THIS day (not merely reading a description of the steps).
-          - Skill: hands-on practice/application BY THE LEARNER of something already
-            introduced — requires an actual bench task, project, or exercise in the
-            SOURCES this day, not just explanatory description of what skilled use
-            looks like.
-          - Factual: discrete facts, definitions, or terminology to recall, with no
-            process or unifying framework tying them together.
-          - Metacognitive: reflection on one's own learning/strategy — review,
-            self-assessment, or planning how to approach material, not new subject
-            content itself (e.g. a review day with no graded assessment).
-          - Summative Assessment: the day's PURPOSE is administering a graded
-            final/cumulative/block-ending exam — not new instruction and not
-            reflection/review. Use this, not Metacognitive, when the SOURCES show an
-            actual graded test happening this day.
-        concept_type_explanation is one sentence grounding that choice in what the
-        SOURCES below actually contain — never a generic restatement of the label. If
-        you pick Procedural or Skill, name the specific hands-on task/project/exercise
-        from the SOURCES that justifies it, not just the topic being discussed.
-
-        interactive_scope is a short phrase naming what the interactive would cover
-        (e.g. "labeling the parts of a title block"); "" when interactive_candidate
-        is false.
-        job_aid_source_reference names the specific source file or handbook
-        chapter/page (from the SOURCES below) that grounds the job aid content;
-        "N/A" when job_aid_candidate is false or no such source is identifiable —
-        never invent a citation that isn't in the SOURCES.
-        interactive_type/job_aid_type/interactive_content/job_aid_description are
-        "" when their *_candidate is false.
-        """)
-    # Built as a separate dedented block, not interpolated inline above: the
-    # guidance text's own lines carry no leading whitespace, and mixing that
-    # into the middle of the dedented f-string above would confuse textwrap.
-    # dedent's common-prefix calculation for the WHOLE prompt (it would stop
-    # stripping the schema block's indentation too, for every call, not just
-    # ones with guidance). `or "\n"`: _guidance_block already ends the schema
-    # block's own paragraph, so an empty guidance must still supply the blank
-    # line the two dedented blocks used to be separated by in one f-string —
-    # caught by actually executing this and diffing the assembled prompt,
-    # not just reading the source; a bare `prompt += _guidance_block(...)`
-    # silently dropped that blank line whenever there was no guidance.
-    prompt += _guidance_block(map_guidance) or "\n"
-    prompt += textwrap.dedent(f"""\
-        DAY {day.get('day_number')}: {day.get('topic') or ''}
-        LESSON: {day.get('lesson_title') or ''}
-        SOURCES:
-        {body if body.strip() else '(no text-allowed source units for this day)'}
-        """)
+    body, dropped = _source_body(llm_units)
+    if dropped:
+        log.warning("digest MAP day %s: SOURCES truncated to %d chars — dropped %d "
+                    "lowest-confidence unit(s) (%d chars) to fit the extractor's "
+                    "context window", day.get("day_number"), MAP_MAX_SOURCE_CHARS,
+                    dropped["units"], dropped["chars"])
+    template, _template_hash = map_prompt()
+    prompt = prompt_template_render(template, {
+        "schema": MAP_SCHEMA,
+        # _guidance_block already supplies its own surrounding blank lines; `or "\n"`
+        # preserves the blank line the template needs between the rubric and the DAY
+        # header when there is no guidance (the same subtlety the previous
+        # string-concatenation version documented at length).
+        "guidance_block": _guidance_block(map_guidance) or "\n",
+        "day_number": day.get("day_number"),
+        "topic": day.get("topic") or "",
+        "lesson_title": day.get("lesson_title") or "",
+        "sources": body if body.strip() else "(no text-allowed source units for this day)",
+    })
     text, ti, to = call_llm(model, prompt, MAP_MAX_TOKENS)
     data = safe_json(text) or {}
     if not data or "derived_objective" not in data or "concept_type" not in data:
@@ -248,12 +348,25 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         # parse at all (likely truncated mid-JSON for content-rich days) or it
         # parsed into an unrelated shape (e.g. call_llm's exception-path
         # fallback '{"doc_type":"other",...}', which IS valid JSON but has none
-        # of our keys). Either way every field below silently defaults with
-        # digest_status staying "ok" — log the raw text so the actual failure
-        # mode is visible.
+        # of our keys).
+        #
+        # This USED to only log and let every field default, leaving
+        # digest_status="ok". That is the failure mode that shipped a complete-
+        # looking 20-day Blueprint in which every LLM-derived cell was its default
+        # (concept_type="Unknown", objective "—", misconceptions "NONE DOCUMENTED",
+        # every candidate "No") while coverage reported zero failed days and the job
+        # reported success. A silent default is indistinguishable from a real
+        # extraction downstream, so raise instead: build_digest's own per-day
+        # isolation catches this, marks the day digest_status="failed", and the day
+        # then renders "REVIEW NEEDED" and appears in coverage.failed_days — which is
+        # exactly the reviewer-visible convention the AIM reference itself uses.
         log.warning(
             "digest MAP day %s: response missing expected keys (parsed=%r), "
             "raw_text=%r", day.get("day_number"), bool(data), text[:2000],
+        )
+        raise MapExtractionError(
+            f"MAP reply for day {day.get('day_number')} lacks the required keys "
+            f"(derived_objective/concept_type); got keys={sorted(data)[:8]}"
         )
     fields = {
         "derived_objective": data.get("derived_objective", ""),
@@ -261,6 +374,7 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         "salient_excerpts": data.get("salient_excerpts", []) or [],
         "concept_type": data.get("concept_type", "Unknown"),
         "concept_type_explanation": data.get("concept_type_explanation", ""),
+        "concept_scope": data.get("concept_scope", ""),
         "interactive_candidate": bool(data.get("interactive_candidate", False)),
         "interactive_type": data.get("interactive_type", ""),
         "interactive_content": data.get("interactive_content", ""),
@@ -271,7 +385,7 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         "job_aid_description": data.get("job_aid_description", ""),
         "job_aid_source_reference": data.get("job_aid_source_reference", "N/A"),
     }
-    return fields, ti, to
+    return fields, ti, to, dropped
 
 
 def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
@@ -315,7 +429,13 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
         "storyline_source_asset_status": "AVAILABLE" if has_visual_asset else "NEEDS NEW ART",
         "unit_ids": [u.get("content_unit_id") for u in units],
         "digest_schema_version": DIGEST_SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
+        # The EFFECTIVE version (base + template content hash), not the bare base
+        # marker. Recording the base alone made a stored digest's provenance
+        # unreadable: a v6-era digest and one built from a since-edited template
+        # both claimed "map-v6", so the only way to tell which prompt produced a
+        # given digest was to recompute its cache_key. Diagnosing a stale-digest
+        # incident is exactly when this field is needed.
+        "prompt_version": current_prompt_version(),
         "extractor_model": model,
         "cache_key": cache_key(dn, units, model, day_meta=day_signature(day), map_guidance=map_guidance),
         "map_guidance_applied": bool((map_guidance or "").strip()),
@@ -328,8 +448,14 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     llm_units = [u for u in units if text_allowed_for_digest(u, "instructor")]
     digest["text_withheld_units"] = len(units) - len(llm_units)
     try:
-        fields, ti, to = _llm_extract(day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance)
+        fields, ti, to, dropped = _llm_extract(day, llm_units, model, call_llm, safe_json,
+                                               map_guidance=map_guidance)
         digest.update(fields)
+        if dropped:
+            digest["review_flags"].append(
+                f"SOURCES_TRUNCATED — day exceeded the extractor input budget; "
+                f"{dropped['units']} lowest-confidence unit(s) omitted from extraction"
+            )
         if budget is not None:
             budget["calls"] = budget.get("calls", 0) + 1
             budget["tok_in"] = budget.get("tok_in", 0) + ti

@@ -340,7 +340,10 @@ _DEFAULT_RESTRICTED_DOC_TYPES = {"quiz_answer_key", "project_key"}
 # own small constant here (not the full enabled_document_types list) because
 # lesson/project/quiz types ARE reachable as per-day units already and adding
 # them here would risk double-counting.
-_BLOCK_WIDE_REFERENCE_TYPES = ["syllabus", "course_calendar", "ebook_reference"]
+# Sorted for a stable SQL parameter order; the set itself lives in attribution.py
+# (the lowest-level module in this package) because day-attribution must apply the
+# SAME definition when it withholds the term-overlap signal from these documents.
+_BLOCK_WIDE_REFERENCE_TYPES = sorted(attribution.BLOCK_WIDE_REFERENCE_DOC_TYPES)
 
 
 def _block_wide_reference_files(en, cur, schema: str) -> Dict[str, set]:

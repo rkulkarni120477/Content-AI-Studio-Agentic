@@ -44,7 +44,19 @@ def day_is_cached(day: Dict[str, Any], units: List[Dict[str, Any]], model: str,
         return False
     ck = mapper.cache_key(day["day_number"], units, model, day_meta=mapper.day_signature(day),
                           map_guidance=map_guidance)
-    return prev.get("cache_key") == ck and prev.get("digest_status") == "ok"
+    if prev.get("cache_key") != ck or prev.get("digest_status") != "ok":
+        return False
+    if not mapper.has_extraction(prev):
+        # digest_status=="ok" is only as trustworthy as the code that wrote it. Digests
+        # built before MAP failures were surfaced (see mapper.MapExtractionError) were
+        # stored "ok" with every LLM field at its default, and a status-only check
+        # reuses them forever — that is what shipped a 20-day Blueprint whose every
+        # extracted cell was blank. Re-derive instead: one wasted MAP call is strictly
+        # cheaper than an empty deliverable, and it self-heals the stored digest.
+        log.warning("digest cache: day %s matches cache_key but carries no extraction "
+                    "(status=ok, empty fields) — rebuilding", day["day_number"])
+        return False
+    return True
 
 
 def build_one_day(tenant_cfg: TenantConfig, day: Dict[str, Any], units: List[Dict[str, Any]],
