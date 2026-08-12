@@ -1175,6 +1175,12 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
                 "structure_store_upsert": result.get("structure_store_upsert_result", {}),
                 "embedding_generation": result.get("embedding_generation_result", {}),
                 "vector_store_upsert": result.get("vector_store_upsert_result", {}),
+                # LLM spend for this file's ingestion (classification, metadata,
+                # structure and quality-check steps). DIS calls Bedrock on its own
+                # client, so this is the only route by which that spend can reach
+                # CAS's llm_usage_logs and budget accounting — Studio owns those
+                # controls (see services/token_guard.py).
+                "llm_usage": result.get("llm_usage", {}),
             },
             "artifact_urls": result.get("artifact_urls", {}),
             "payload_storage_url": result.get("artifact_urls", {}).get("studio_payload", ""),

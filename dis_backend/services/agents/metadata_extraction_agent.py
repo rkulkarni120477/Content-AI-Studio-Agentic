@@ -53,7 +53,8 @@ class MetadataExtractionAgent(BasePipelineAgent):
                 sample = (state.get('raw_text', '') or '')[:1500]
                 prompt = f'Extract client metadata. Return JSON only.\nClient fields:\n{field_text}\nAlways include title, language, word_count.\nFilename: {state.get("filename", "")}\nDocument excerpt:\n{sample}'
                 resp, inp, out = call_llm(ctx.models.metadata_extraction, prompt, max_tokens=350)
-                ctx.guard.record_usage(inp + out, 'metadata_extraction')
+                ctx.guard.record_usage(inp + out, 'metadata_extraction', tokens_in=inp, tokens_out=out,
+                                      model=ctx.models.metadata_extraction)
                 meta = safe_json(resp)
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
