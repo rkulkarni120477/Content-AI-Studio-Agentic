@@ -23,6 +23,7 @@ from promptops_app.jobs.job_status import (
     set_failed,
     set_running,
 )
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
 
@@ -124,10 +125,12 @@ def run_regenerate_item_job(job_id: str) -> None:
         _log.exception("Regenerate-item job %s failed: %s", job_id, exc)
         if job is not None:
             try:
-                # str(exc), not a generic message — matches generation_jobs.py.
-                # Without this, a BudgetExceededError's actual "$X of $Y used"
-                # message never reaches the user, just an unhelpful retry prompt.
-                set_failed(db, job, str(exc))
+                # BudgetExceededError's real "$X of $Y used" / "N of M tokens
+                # used" message must reach the user — a generic retry prompt
+                # hides that. Every other exception keeps the generic message
+                # rather than leaking raw DB/provider error detail.
+                message = str(exc) if isinstance(exc, BudgetExceededError) else "Item regeneration failed. Please try again."
+                set_failed(db, job, message)
             except Exception:  # pragma: no cover - best-effort status write
                 pass
     finally:

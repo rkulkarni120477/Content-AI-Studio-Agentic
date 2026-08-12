@@ -246,6 +246,11 @@ export function extractErrorMessage(error) {
   if (appError?.code === 'QUOTA_EXCEEDED') {
     const d = appError.detail || {};
     const who = BUDGET_SCOPE_LABELS[d.scope] || 'This scope';
+    if (d.limit_type === 'tokens') {
+      return `${who} has used ${Math.round(d.current_spend ?? 0).toLocaleString()} of its `
+        + `${Math.round(d.limit_usd ?? 0).toLocaleString()} token budget for this period. `
+        + 'Contact your platform admin to raise the limit.';
+    }
     return `${who} has used $${Number(d.current_spend ?? 0).toFixed(2)} of its `
       + `$${Number(d.limit_usd ?? 0).toFixed(2)} AI budget for this period. `
       + 'Contact your platform admin to raise the limit.';
@@ -274,9 +279,17 @@ function myBudget(summary) {
   return (summary?.budgets || []).find((b) => b.scope === 'user') || null;
 }
 
+// A token-capped budget has remaining_usd = null (no $ ceiling at all) —
+// `null <= 0` coerces to true, so this must branch on limit_type rather
+// than reading remaining_usd unconditionally.
+function isOverBudget(b) {
+  if (!b) return false;
+  if (b.limit_type === 'tokens') return (b.remaining_tokens ?? 0) <= 0;
+  return (b.remaining_usd ?? 0) <= 0;
+}
+
 export function hasOverBudget(summary) {
-  const b = myBudget(summary);
-  return Boolean(b && b.remaining_usd <= 0);
+  return isOverBudget(myBudget(summary));
 }
 
 export function formatUsageSummaryMessage(summary) {
@@ -284,7 +297,13 @@ export function formatUsageSummaryMessage(summary) {
   const parts = [`Used $${(summary.cost_usd ?? 0).toFixed(4)} · ${(summary.total_tokens ?? 0).toLocaleString()} tokens`];
   const b = myBudget(summary);
   if (b) {
-    parts.push(b.remaining_usd <= 0 ? 'Your budget: over budget' : `Your budget: $${b.remaining_usd.toFixed(2)} left`);
+    if (isOverBudget(b)) {
+      parts.push('Your budget: over budget');
+    } else if (b.limit_type === 'tokens') {
+      parts.push(`Your budget: ${(b.remaining_tokens ?? 0).toLocaleString()} tokens left`);
+    } else {
+      parts.push(`Your budget: $${(b.remaining_usd ?? 0).toFixed(2)} left`);
+    }
   }
   return `${parts.join('. ')}.`;
 }

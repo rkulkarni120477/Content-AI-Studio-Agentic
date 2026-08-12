@@ -6,15 +6,20 @@ for it — this is what P1.4's trace-detail endpoint looks up by CAS resource id
 tracing was skipped (Langfuse unreachable/unconfigured) or the row predates P1 —
 both are valid, non-error states, so the column is additive and nullable.
 
-Revision ID: 000100000015
-Revises: 000100000014
+Renumbered from 000100000015 (was 000100000015..down 000100000014) — that
+number collided with dev's own 000100000015 (drop_stale_tables), created
+independently on a parallel branch. Re-chained onto dev's real head
+(000100000016, generations_job_id) instead.
+
+Revision ID: 000100000017
+Revises: 000100000016
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000015"
-down_revision = "000100000014"
+revision = "000100000017"
+down_revision = "000100000016"
 branch_labels = None
 depends_on = None
 

@@ -252,6 +252,7 @@ def _call_openai_raw(
     # re-raised as a provider failure (no provider call was ever attempted).
     check_result = check_budget_autocommit(
         usage_ctx, system_prompt=system_prompt, user_prompt=user_prompt, model=target_model,
+        max_tokens=max_tokens,
     )
 
     url = "https://api.openai.com/v1/chat/completions"
@@ -443,6 +444,7 @@ def _call_bedrock_raw(
     # P2.3: pre-flight quota check — see _call_openai_raw's identical comment.
     check_result = check_budget_autocommit(
         usage_ctx, system_prompt=system_prompt, user_prompt=user_prompt, model=target_model_id,
+        max_tokens=max_tokens,
     )
 
     _log.info("llm_call_started", extra={

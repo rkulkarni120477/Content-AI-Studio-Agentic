@@ -46,6 +46,7 @@ from promptops_app.prompt_templates import (
 )
 from promptops_app.services.llm_service import generate_with_metadata as _llm_call
 from promptops_app.services.usage_service import UsageLogContext
+from promptops_app.services.budget_service import BudgetExceededError
 from promptops_app.core.content_utils import (
     build_context_injection,
     fill_template,
@@ -648,7 +649,12 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         )
         if job:
             try:
-                set_failed(db, job, str(exc))
+                # BudgetExceededError's real "$X of $Y used" / "N of M tokens
+                # used" message must reach the user — a generic retry prompt
+                # hides that. Every other exception keeps a generic message
+                # rather than leaking raw DB/provider error detail.
+                message = str(exc) if isinstance(exc, BudgetExceededError) else "Generation failed. Please try again."
+                set_failed(db, job, message)
             except Exception:
                 pass
     finally:

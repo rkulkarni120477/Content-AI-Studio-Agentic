@@ -85,6 +85,15 @@ services:
     env_file:
       - .env
 
+    # Without this, budget_service._live_flag()'s dotenv_values(".env") reads
+    # the .env baked into the image at build time, not the live host file —
+    # api's own bind mount below is what makes BUDGET_ENFORCEMENT_MODE/
+    # BUDGET_ENFORCEMENT_KILLSWITCH flip with no restart there; this worker
+    # runs block-wide generation's most expensive calls, so it needs the same
+    # live read, not a stale one that only updates on a full rebuild.
+    volumes:
+      - .:/app
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

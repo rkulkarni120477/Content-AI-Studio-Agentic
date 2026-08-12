@@ -434,7 +434,18 @@ def get_generation_trace(
     # under its GenerationJob's job_id, not the Generation row's own id — the
     # Generation doesn't exist yet at the moment the call is logged. Join through
     # GenerationJob.result_entity_id (set on job completion) to find it.
-    job = db.query(GenerationJob).filter(GenerationJob.result_entity_id == generation.id).first()
+    # job_type filter matters: result_entity_id is just an int/string column,
+    # not unique across job types (a regenerate_item job's result_entity_id is
+    # a block_id, a block-wide job's is a cdd/blueprint id) — without it,
+    # .first() with no ordering can match an unrelated job whose entity id
+    # happens to collide numerically. Ordered so a retried/duplicate job row
+    # resolves to the most recent one.
+    job = (
+        db.query(GenerationJob)
+        .filter(GenerationJob.result_entity_id == generation.id, GenerationJob.job_type == "generation")
+        .order_by(GenerationJob.id.desc())
+        .first()
+    )
     usage_row = None
     if job is not None:
         usage_row = (

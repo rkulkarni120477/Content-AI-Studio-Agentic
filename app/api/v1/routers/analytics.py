@@ -565,8 +565,17 @@ def get_llm_cost_dashboard(
 
     is_admin = current_user.role == "admin"
     is_lead = current_user.role == "reviewer"
+    is_platform_admin_user = bool(getattr(current_user, "_is_platform_admin", False))
+
+    # Tenant isolation: only a true platform admin may see cross-tenant data
+    # or choose an arbitrary project via the query param. Every tenant-scoped
+    # caller — including a tenant-role "admin" — is force-scoped to their own
+    # tenant, mirroring prompts.py's prompts_by_course. Without this, any
+    # "admin" role (tenant-scoped, not just platform) saw every tenant's
+    # by_project/by_course/by_user rows below, and any non-admin could read
+    # another tenant's per-course spend just by passing its project_id.
+    scoped_project = project_id if is_platform_admin_user else getattr(current_user, "_project_id", None)
     scoped_user = current_user.username if not is_admin else None
-    scoped_project = None if is_admin else project_id
 
     parsed_from = dt.fromisoformat(date_from) if date_from else None
     parsed_to = dt.fromisoformat(date_to) if date_to else None
@@ -592,7 +601,9 @@ def get_llm_cost_dashboard(
         project_id=scoped_project,
     )
 
-    by_project = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to) if is_admin else []
+    # cost_by_project is inherently cross-tenant (groups BY project, no filter
+    # param at all) — platform-admin only, never a tenant-scoped admin.
+    by_project = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to) if is_platform_admin_user else []
     by_course = usage_repository.cost_by_course(
         db, project_id=scoped_project, date_from=parsed_from, date_to=parsed_to,
     )
@@ -605,7 +616,6 @@ def get_llm_cost_dashboard(
     # admin can't see another tenant's users'/courses' spend. cost_by_project
     # is inherently unscoped already (it groups BY project); cost_by_course
     # and cost_by_user just need project_id=None instead of scoped_project.
-    is_platform_admin_user = bool(getattr(current_user, "_is_platform_admin", False))
     if is_platform_admin_user:
         platform_user_usage = usage_repository.cost_by_user(db, project_id=None, date_from=parsed_from, date_to=parsed_to)
         platform_tenant_usage = usage_repository.cost_by_project(db, date_from=parsed_from, date_to=parsed_to)

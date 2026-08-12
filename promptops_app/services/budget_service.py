@@ -63,8 +63,12 @@ class BudgetExceededError(Exception):
             )
         super().__init__(msg)
 
-# Matches the max_tokens already hardcoded in llm_client.py's request bodies —
-# the true worst case a single call can actually request from the provider.
+# Matches llm_client.py's own DEFAULT_MAX_OUTPUT_TOKENS — the worst case for a
+# call that doesn't override its output cap. Callers that DO pass a bigger
+# max_tokens (e.g. block-wide reduce's up-to-32000 catalog ceiling) forward it
+# into check_budget() below instead of relying on this flat floor, so the
+# reservation stays a true worst case rather than under-reserving by up to 2x
+# on the single largest spender — exactly where race-safety matters most.
 WORST_CASE_OUTPUT_TOKENS = 16384
 
 # ponytail: characters/4 is a rough token-count heuristic, not a real tokenizer
@@ -78,8 +82,8 @@ def _estimate_input_tokens(system_prompt: str, user_prompt: str) -> int:
     return (len(system_prompt or "") + len(user_prompt or "")) // _CHARS_PER_TOKEN_ESTIMATE
 
 
-def _worst_case_tokens(system_prompt: str, user_prompt: str) -> int:
-    return _estimate_input_tokens(system_prompt, user_prompt) + WORST_CASE_OUTPUT_TOKENS
+def _worst_case_tokens(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> int:
+    return _estimate_input_tokens(system_prompt, user_prompt) + (max_tokens or WORST_CASE_OUTPUT_TOKENS)
 
 
 def period_key(period: str, now: Optional[datetime] = None) -> str:
@@ -305,7 +309,8 @@ def _levels_for(usage_ctx) -> list[tuple[str, str]]:
     return levels
 
 
-def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: str) -> BudgetCheckResult:
+def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: str,
+                  max_tokens: Optional[int] = None) -> BudgetCheckResult:
     """Pre-flight quota check — the P2.3 choke point, called from
     _call_openai_raw/_call_bedrock_raw before the provider request.
 
@@ -322,16 +327,22 @@ def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: 
     if enforcement_killswitch_active():
         return BudgetCheckResult(reservations=[], warnings=[])
 
+    # Declared before the try so the except block can always release whatever
+    # got reserved before a later level threw — even if the exception happens
+    # before this point (e.g. in _levels_for/estimate_cost), an empty list is
+    # still a no-op release, not a NameError that would mask the real failure.
+    reservations: list[BudgetReservation] = []
+
     try:
         levels = _levels_for(usage_ctx)
         if not levels:
             return BudgetCheckResult(reservations=[], warnings=[])
 
-        worst_case_cost = estimate_cost(model, _estimate_input_tokens(system_prompt, user_prompt), WORST_CASE_OUTPUT_TOKENS)
-        worst_case_tokens = _worst_case_tokens(system_prompt, user_prompt)
+        worst_case_output = max_tokens or WORST_CASE_OUTPUT_TOKENS
+        worst_case_cost = estimate_cost(model, _estimate_input_tokens(system_prompt, user_prompt), worst_case_output)
+        worst_case_tokens = _worst_case_tokens(system_prompt, user_prompt, max_tokens)
         dry_run = enforcement_mode() != "enforce"
 
-        reservations: list[BudgetReservation] = []
         warnings: list[dict] = []
         breaches: list[tuple[str, str, float, float, float, str]] = []  # scope, scope_id, limit, spend, margin, limit_type
 
@@ -391,17 +402,29 @@ def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: 
         raise
     except Exception as exc:
         _log.error("Budget check failed internally — failing OPEN, call proceeds: %s", exc)
+        # A level earlier in the loop may have already reserved successfully
+        # before a later level threw — release those now, or they stay
+        # permanently charged in budget_period_spend with no real cost behind
+        # them (the caller only gets the empty list returned below, so it has
+        # nothing left to reconcile against).
+        for r in reservations:
+            try:
+                reconcile_budget(db, r, actual_cost_usd=0.0, actual_tokens=0)
+            except Exception:
+                pass
         return BudgetCheckResult(reservations=[], warnings=[])
 
 
-def check_budget_autocommit(usage_ctx, *, system_prompt: str, user_prompt: str, model: str) -> BudgetCheckResult:
+def check_budget_autocommit(usage_ctx, *, system_prompt: str, user_prompt: str, model: str,
+                             max_tokens: Optional[int] = None) -> BudgetCheckResult:
     """check_budget() for callers with no open DB session (llm_client.py's raw
     functions) — mirrors usage_service.log_llm_usage_autocommit's pattern.
     """
     from promptops_app.database import SessionLocal
     db = SessionLocal()
     try:
-        return check_budget(db, usage_ctx, system_prompt=system_prompt, user_prompt=user_prompt, model=model)
+        return check_budget(db, usage_ctx, system_prompt=system_prompt, user_prompt=user_prompt, model=model,
+                             max_tokens=max_tokens)
     finally:
         db.close()
 
@@ -432,12 +455,17 @@ def build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Opti
     """
     from promptops_app.database import LLMUsageLog
 
-    usage_row = (
-        db.query(LLMUsageLog)
-        .filter(LLMUsageLog.entity_type == entity_type, LLMUsageLog.entity_id == str(entity_id))
-        .order_by(LLMUsageLog.id.desc())
-        .first()
+    query = db.query(LLMUsageLog).filter(
+        LLMUsageLog.entity_type == entity_type, LLMUsageLog.entity_id == str(entity_id),
     )
+    # Scope to the caller's own username when known — without it, two users
+    # concurrently regenerating the SAME block (same entity_type/entity_id)
+    # race on .first(): whichever row logged most recently wins, so one user
+    # can be shown the other's cost/tokens.
+    actor = getattr(usage_ctx, "user_name", None)
+    if actor:
+        query = query.filter(LLMUsageLog.user_id == actor)
+    usage_row = query.order_by(LLMUsageLog.id.desc()).first()
     if usage_row is None:
         return None
 
@@ -446,7 +474,13 @@ def build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Opti
         policy = _get_policy(db, scope, scope_id)
         if policy is None:
             continue
-        spent_usd, spent_tokens = current_period_usage(db, scope, scope_id, policy.period)
+        # Read from budget_period_spend (check_budget()'s own source of
+        # truth), not a SUM() over LLMUsageLog — the two can disagree (e.g. a
+        # reservation not yet reconciled), and showing the latter here would
+        # let the displayed headroom mismatch what actually blocks the next call.
+        pkey = period_key(policy.period)
+        spent_usd = _current_total(db, scope, scope_id, pkey, "usd")
+        spent_tokens = int(_current_total(db, scope, scope_id, pkey, "tokens"))
         limit_type = policy.limit_type or "usd"
         entry = {
             "scope": scope, "scope_id": scope_id, "limit_type": limit_type,

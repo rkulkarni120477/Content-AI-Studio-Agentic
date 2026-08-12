@@ -38,6 +38,7 @@ export default function ClustersPage() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [cpMgrOpen, setCpMgrOpen] = useState(false);
+  const [projectLoadError, setProjectLoadError] = useState(null);
 
   const pid = Number(projectId);
   const canManage = hasPermission('course.create') || isAdmin;
@@ -53,8 +54,17 @@ export default function ClustersPage() {
       try {
         const p = await dashboardService.getProject(pid);
         dispatch(setSelectedProject(p));
-      } catch {
-        navigate(projectHomeRoute(isPlatformAdmin, authProjectId), { replace: true });
+      } catch (e) {
+        const fallback = projectHomeRoute(isPlatformAdmin, authProjectId);
+        // For a non-platform-admin viewing their own project, the fallback
+        // IS this page's own URL — navigating there is a no-op (no route
+        // change, no effect re-run), so selProj stays null forever and the
+        // loader below spins indefinitely. Show the failure instead.
+        if (fallback === ROUTES.PROJECT_CLUSTERS(pid)) {
+          setProjectLoadError(extractErrorMessage(e) || 'Could not load this project.');
+        } else {
+          navigate(fallback, { replace: true });
+        }
       }
     }
     syncProject();
@@ -97,6 +107,11 @@ export default function ClustersPage() {
     }
   }
 
+  if (projectLoadError) {
+    return (
+      <EmptyState icon="⚠️" title="Couldn't load this project" message={projectLoadError} />
+    );
+  }
   if (!selProj) return <Loader size="xl" overlay />;
 
   return (

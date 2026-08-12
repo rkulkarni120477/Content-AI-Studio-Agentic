@@ -10,15 +10,20 @@ of the three scope columns (project_id, user_id, course_id) without one, and
 P2.2's per-course spend lookup would otherwise table-scan the highest-volume
 table in the system.
 
-Revision ID: 000100000016
-Revises: 000100000015
+Renumbered from 000100000016 (was 000100000016..down 000100000015) — that
+number collided with dev's own 000100000016 (generations_job_id), created
+independently on a parallel branch. Re-chained onto 000100000017
+(llm_usage_langfuse_trace_id, itself renumbered for the same reason).
+
+Revision ID: 000100000018
+Revises: 000100000017
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000016"
-down_revision = "000100000015"
+revision = "000100000018"
+down_revision = "000100000017"
 branch_labels = None
 depends_on = None
 
