@@ -72,10 +72,10 @@ class ProcessingConfig(BaseModel):
 
 # Default model for every text step when a client YAML omits the key.
 #
-# Sonnet 4.5 on the `global.` inference profile: current, and the only viable choice
-# for us-east-1 where Claude 3 Sonnet is end-of-life and Claude 3 Haiku is
-# provider-legacy. Verified invokable in both us-east-1 and ap-south-1 with a role
-# that holds Bedrock model access for it.
+# Sonnet 5 on the `global.` inference profile: the current Sonnet, with a 1M context
+# window — five times Sonnet 4.5's — which is what lets a dense day be extracted
+# whole rather than trimmed to fit. Verified invokable in both ap-south-1 and
+# us-east-1 on this account, as are Opus 5 and Sonnet 4.6.
 #
 # Availability is per-region AND per-role, so this can still be wrong in a given
 # environment — on 2026-08-12 a deployed role could not invoke it and, because
@@ -91,7 +91,7 @@ class ProcessingConfig(BaseModel):
 #
 # To run a different model in a given environment, set DIS_MODEL_TEXT_ALL (or a
 # per-step DIS_MODEL_<STEP>) there rather than editing this file.
-_TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+_TEXT_MODEL = "global.anthropic.claude-sonnet-5"
 
 
 class ModelConfig(BaseModel):

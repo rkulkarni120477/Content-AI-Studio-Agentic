@@ -921,19 +921,16 @@ def test_source_body_passes_everything_through_when_within_budget():
 
 
 def test_source_body_caps_total_and_drops_lowest_confidence_first():
-    # Each unit contributes MAP_MAX_UNIT_CHARS; three of them cannot fit a budget
-    # of two, and the S3 unit is the least certainly this day's material.
-    n = mapper.MAP_MAX_UNIT_CHARS
+    # The budget is now an explicit argument (derived per-model by the caller), so
+    # the test states it directly instead of mutating a module global. Three units of
+    # n chars cannot fit a two-unit budget, and the S3 unit is the least certainly
+    # this day's material.
+    n = 4_000
     units = [_unit("S3:overlap(3/1)", n, "weak"),
              _unit("raw:day_number", n, "strong1"),
              _unit("S1:project 2-1", n, "mid")]
-    monkey_budget = 2 * (n + len("[page] strong1\n")) + 4
-    orig = mapper.MAP_MAX_SOURCE_CHARS
-    try:
-        mapper.MAP_MAX_SOURCE_CHARS = monkey_budget
-        body, dropped = mapper._source_body(units)
-    finally:
-        mapper.MAP_MAX_SOURCE_CHARS = orig
+    budget = 2 * (n + len("[page] strong1\n")) + 4
+    body, dropped = mapper._source_body(units, limit=budget)
     assert dropped["units"] == 1 and dropped["chars"] > 0
     assert "strong1" in body and "mid" in body
     assert "weak" not in body
@@ -1174,10 +1171,9 @@ def test_a_nonzero_cap_still_trims_and_reports(monkeypatch):
     """The flag matters: a trimmed day must be visible, not inferred from thin output."""
     from services.digests import mapper as m
     monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
-    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 5_000)
     units = [{"unit_type": "page", "title": f"t{i}", "text_content": "z" * 4_000,
               "attribution_signal": "raw"} for i in range(5)]
-    body, dropped = m._source_body(units)
+    body, dropped = m._source_body(units, limit=5_000)
     assert dropped.get("units", 0) > 0
     assert len(body) <= 5_000 + 200
 
@@ -1187,3 +1183,70 @@ def test_map_output_ceiling_is_not_the_old_claude3_limit():
     arbitrary cap that can truncate a digest mid-JSON."""
     from services.digests import mapper as m
     assert m.MAP_MAX_TOKENS >= 16_000
+
+
+# --------------------------------------------------------------------------- #
+# Model-aware budget + escalation
+#
+# A single global char budget is wrong by construction: the same number is too small
+# for a 1M-window model and too large for a 200k one. And when a day does not fit,
+# moving UP to a larger-window model keeps all of its evidence, where trimming
+# silently discards the material the extraction is supposed to rest on.
+# --------------------------------------------------------------------------- #
+def test_budget_scales_with_the_models_context_window():
+    from services.digests import mapper as m
+    small = m.context_budget_chars("global.anthropic.claude-sonnet-4-5-20250929-v1:0")  # 200k tok
+    large = m.context_budget_chars("global.anthropic.claude-sonnet-5")                  # 1M tok
+    assert large > small * 4, "a 1M-window model must get a far larger budget"
+    assert small > 100_000
+
+
+def test_unknown_model_gets_the_most_pessimistic_budget():
+    """Being wrong low costs a flagged trim; being wrong high costs the whole day to
+    a hard context-window rejection."""
+    from services.digests import mapper as m
+    unknown = m.context_budget_chars("some.model.nobody.registered")
+    assert unknown <= min(m.context_budget_chars(k) for k in m._CONTEXT_TOKENS)
+
+
+def test_a_day_that_fits_keeps_the_configured_model():
+    from services.digests import mapper as m
+    model, note = m.select_model_for("global.anthropic.claude-sonnet-5", 10_000)
+    assert model == "global.anthropic.claude-sonnet-5" and note is None
+
+
+def test_a_day_that_overflows_escalates_to_a_larger_window_model(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_ESCALATION_MODELS", ["global.anthropic.claude-opus-5"])
+    small = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    need = m.context_budget_chars(small) + 1
+    model, note = m.select_model_for(small, need)
+    assert model == "global.anthropic.claude-opus-5", "did not escalate"
+    assert note and "escalated" in note
+
+
+def test_escalation_is_skipped_when_no_candidate_is_large_enough(monkeypatch):
+    """Falls back to trimming — with a flag — rather than sending a request that the
+    provider will reject outright."""
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_ESCALATION_MODELS",
+                        ["global.anthropic.claude-haiku-4-5-20251001-v1:0"])  # 200k, smaller
+    big = "global.anthropic.claude-sonnet-5"
+    model, note = m.select_model_for(big, m.context_budget_chars(big) + 1)
+    assert model == big and note is None
+
+
+def test_escalation_can_be_disabled(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_ESCALATION_MODELS", [])
+    small = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    model, note = m.select_model_for(small, m.context_budget_chars(small) + 1)
+    assert model == small and note is None
+
+
+def test_an_explicit_override_wins_over_the_derived_budget(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 1_234)
+    assert m.context_budget_chars("global.anthropic.claude-sonnet-5") == 1_234
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)   # 0 = unlimited
+    assert m.context_budget_chars("global.anthropic.claude-sonnet-5") == 0

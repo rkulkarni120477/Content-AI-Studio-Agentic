@@ -51,10 +51,10 @@ log = logging.getLogger(__name__)
 # instruction straddling a window boundary is seen whole by at least one window.
 _WINDOW_OVERLAP_CHARS = 500
 
-# Sonnet 4.5, not Haiku: Haiku 4.5 is not invokable on this AWS account in either
+# Sonnet 5, not Haiku: Haiku 4.5 is not invokable on this AWS account in either
 # deploy region (AccessDeniedException on every prefix form — see core/models.py),
 # so distillation would fail and fall back to OpenAI on every generation.
-_FALLBACK_MODEL = "Claude Sonnet 4.5 (Bedrock)"
+_FALLBACK_MODEL = "Claude Sonnet 5 (Bedrock)"
 
 # Calibration note — this wording was tuned against AIM's real ~15.5k-char Block 2
 # CDD template, and the earlier version FAILED on it: told to "ignore output-format

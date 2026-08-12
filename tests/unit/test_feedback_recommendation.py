@@ -116,8 +116,8 @@ def test_resolve_unknown_override_falls_back():
 
 
 def test_resolve_none_override_uses_course_default():
-    course = SimpleNamespace(config_model_choice="Claude Sonnet 4.5 (Bedrock)")
-    assert fs._resolve_requested_model(None, course) == "Claude Sonnet 4.5 (Bedrock)"
+    course = SimpleNamespace(config_model_choice="Claude Sonnet 5 (Bedrock)")
+    assert fs._resolve_requested_model(None, course) == "Claude Sonnet 5 (Bedrock)"
 
 
 def test_actual_model_on_success_is_requested():
@@ -177,10 +177,10 @@ def test_recommend_honours_valid_model_override(mock_gen, _mock_prompt):
     item = _item(course_id=None)
     fs.recommend_for_items(
         MagicMock(), items=[item], created_by="c",
-        model_override="Claude Sonnet 4.5 (Bedrock)",
+        model_override="Claude Sonnet 5 (Bedrock)",
     )
     # requested Sonnet and the (mocked) call "succeeded" as that model
-    assert item.recommendation_model == "Claude Sonnet 4.5 (Bedrock)"
+    assert item.recommendation_model == "Claude Sonnet 5 (Bedrock)"
 
 
 @patch.object(fs, "_build_recommendation_prompt", return_value=("sys", "user"))

@@ -51,7 +51,7 @@ def test_fallback_caps_max_tokens_to_fallback_models_own_ceiling():
          patch("promptops_app.services.llm_service.settings") as mock_settings:
         mock_settings.openai_api_key = "test-key"
         mock_call.return_value = MagicMock()
-        llm_service._invoke_fallback("Claude Opus 4.8 (Bedrock)", "sys", "user", max_tokens=32000)
+        llm_service._invoke_fallback("Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=32000)
 
     assert mock_call.called
     _, kwargs = mock_call.call_args
@@ -65,23 +65,27 @@ def test_fallback_leaves_max_tokens_untouched_when_already_within_ceiling():
          patch("promptops_app.services.llm_service.settings") as mock_settings:
         mock_settings.openai_api_key = "test-key"
         mock_call.return_value = MagicMock()
-        llm_service._invoke_fallback("Claude Opus 4.8 (Bedrock)", "sys", "user", max_tokens=2000)
+        llm_service._invoke_fallback("Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=2000)
 
     _, kwargs = mock_call.call_args
     assert kwargs["max_tokens"] == 2000
 
 
 # Bedrock model IDs confirmed invokable on this AWS account by direct InvokeModel
-# in BOTH deploy regions (us-east-1 and ap-south-1). A valid-looking
-# inference-profile prefix is NOT evidence of availability: this set is
-# deliberately narrow because `global.anthropic.claude-haiku-4-5-...` and
-# `global.anthropic.claude-opus-4-8` both carry a correct prefix and both return
-# AccessDeniedException — the account has no model access for them.
+# in BOTH deploy regions (ap-south-1 and us-east-1).
+#
+# A valid-looking inference-profile prefix is NOT evidence of availability:
+# `global.anthropic.claude-haiku-4-5-...` and `global.anthropic.claude-opus-4-8`
+# both carry a correct prefix and both return AccessDeniedException, so neither is
+# listed here. Availability is per-region AND per-role.
 #
 # To extend this set, actually invoke the ID in every deploy region first
-# (max_tokens=1 is enough), then add it. Do not add one on the strength of its
+# (max_tokens=4 is enough), then add it. Do not add one on the strength of its
 # shape, or because Bedrock's ListFoundationModels includes the base model.
 VERIFIED_INVOKABLE_BEDROCK_IDS = frozenset({
+    "global.anthropic.claude-opus-5",
+    "global.anthropic.claude-sonnet-5",
+    "global.anthropic.claude-sonnet-4-6",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
 })
 
@@ -169,12 +173,12 @@ def test_dis_default_text_models_are_verified_invokable():
 def test_sibling_candidates_are_same_provider_and_exclude_the_failed_model():
     from promptops_app.services.llm_service import _sibling_candidates
 
-    sibs = _sibling_candidates("Claude Opus 4.8 (Bedrock)")
+    sibs = _sibling_candidates("Claude Opus 5 (Bedrock)")
     assert sibs, "an Opus failure must have somewhere to go on Bedrock"
     assert all(m.provider == "bedrock" for m in sibs), "must not cross providers here"
-    assert all("opus-4-8" not in m.api_model_id for m in sibs), "the failed model was retried"
-    # Sonnet is the natural substitute for Opus and must be reached first.
-    assert "sonnet-4-5" in sibs[0].api_model_id
+    assert all("opus-5" not in m.api_model_id for m in sibs), "the failed model was retried"
+    # Sonnet 5 is the natural substitute for Opus and must be reached first.
+    assert "sonnet-5" in sibs[0].api_model_id
 
 
 def test_openai_primary_gets_openai_siblings():
@@ -224,8 +228,8 @@ def test_a_bedrock_failure_tries_bedrock_before_openai(monkeypatch):
     monkeypatch.setattr(llm_service._cfg, "llm_fallback_enabled", True)
 
     result = llm_service.generate_with_metadata(
-        "Claude Opus 4.8 (Bedrock)", "sys", "user", max_tokens=2000)
+        "Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=2000)
 
     assert "OPENAI" not in order, f"jumped providers too early: {order}"
-    assert any("sonnet-4-5" in m for m in order), f"never tried Sonnet: {order}"
+    assert any("sonnet-5" in m for m in order), f"never tried Sonnet: {order}"
     assert result.status in ("fallback_success", "retry_success", "success")

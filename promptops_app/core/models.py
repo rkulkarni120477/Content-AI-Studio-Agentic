@@ -57,18 +57,20 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
     ),
     # ── AWS Bedrock Models ─────────────────────────────────────────────────
     ModelDef(
-        display_name="Claude Sonnet 4.5 (Bedrock)",
+        display_name="Claude Sonnet 5 (Bedrock)",
         description=(
-            "Anthropic Claude Sonnet on AWS Bedrock — excellent structured "
-            "outputs, instruction-following, and JSON fidelity."
+            "Anthropic Claude Sonnet 5 on AWS Bedrock — excellent structured "
+            "outputs, instruction-following and JSON fidelity, with a 1M-token "
+            "context window."
         ),
         tags=("structured",),
         provider="bedrock",
-        api_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        # Sonnet 4.5's real output ceiling, not a conservative round number: this
-        # value caps the block-wide REDUCE, and a cap below the model's limit
-        # truncates long sectioned output — which shows up as missing worksheet rows
-        # rather than an error. Verified accepted by Bedrock InvokeModel.
+        # Verified invokable via `global.` in BOTH ap-south-1 and us-east-1.
+        api_model_id="global.anthropic.claude-sonnet-5",
+        # A cap below the model's real limit truncates long sectioned output, which
+        # shows up as missing worksheet rows rather than an error. Bedrock does not
+        # reject oversized max_tokens (128000 was accepted in a probe), so this is
+        # sized generously on purpose.
         max_output_tokens=64000,
     ),
     ModelDef(
@@ -93,20 +95,19 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         max_output_tokens=16384,
     ),
     ModelDef(
-        display_name="Claude Opus 4.8 (Bedrock)",
+        display_name="Claude Opus 5 (Bedrock)",
         description=(
-            "Anthropic Claude Opus 4.8 on AWS Bedrock — the most capable "
-            "Opus-tier model, for the hardest reasoning and long-horizon "
-            "content generation tasks."
+            "Anthropic Claude Opus 5 on AWS Bedrock — the most capable model, "
+            "for the hardest reasoning and long-horizon content generation, with "
+            "a 1M-token context window."
         ),
         tags=("reasoning", "premium"),
         provider="bedrock",
-        # NOT CURRENTLY INVOKABLE on this AWS account, same as Haiku 4.5 above:
-        # `global.`/bare are rejected as needing an inference profile and `us.`
-        # returns AccessDeniedException. The base model IS listed by Bedrock in
-        # us-east-1, so this is a model-access grant away, not a wrong ID.
-        api_model_id="global.anthropic.claude-opus-4-8",
-        max_output_tokens=32000,
+        # Verified invokable via `global.` in BOTH ap-south-1 and us-east-1 — unlike
+        # Opus 4.8, which this account has no model access for. Replacing 4.8 with 5
+        # is what makes the 'premium' tier mean something again.
+        api_model_id="global.anthropic.claude-opus-5",
+        max_output_tokens=64000,
     ),
 )
 
@@ -123,9 +124,15 @@ BEDROCK_MODELS: tuple[ModelDef, ...] = tuple(
 
 # Backward-compatible aliases — maps an old display_name stored in cookies /
 # session state to its new canonical display_name.
+# Every name ever shown in the picker must keep resolving: these are stored in
+# cookies, session state, and courses' config_model_choice, so an unmapped old name
+# would silently resolve to the catalog default and change which model a course has
+# been generating with. Point superseded names at their current generation.
 _COMPAT_ALIASES: dict[str, str] = {
-    "Sonnet 4.5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
-    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
+    "Sonnet 4.5 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
+    "Claude Sonnet 4.5 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
+    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
+    "Claude Opus 4.8 (Bedrock)": "Claude Opus 5 (Bedrock)",
 }
 
 _DEFAULT: ModelDef = next((m for m in MODEL_CATALOG if m.is_default), MODEL_CATALOG[0])
@@ -171,18 +178,17 @@ class TierModels:
     max_output_tokens: int
 
 
-# Every tier resolves to Sonnet 4.5 because it is the only Anthropic text model
-# this AWS account can invoke, verified live via InvokeModel in both deploy
-# regions. Haiku 4.5 and Opus 4.8 return AccessDeniedException on every prefix
-# form (global./us./bare) — the account has no Bedrock model access for them, so
-# 'draft' and 'premium' previously failed the entire block-wide generation for
-# those tiers and fell back to OpenAI. Tier selection therefore does NOT currently
-# differentiate model cost or capability; restore the Haiku/Opus entries here once
-# Bedrock model access is granted for them.
+# 'premium' is Opus 5 and 'standard' is Sonnet 5 — both verified invokable via
+# `global.` in ap-south-1 and us-east-1, so the tier choice is real again.
+#
+# 'draft' stays on Sonnet 5 rather than Haiku: Haiku 4.5 returns AccessDeniedException
+# on every prefix form on this account, and a tier that resolves to an uninvokable
+# model fails the whole generation for anyone who picks it. Point draft at Haiku once
+# that model-access grant exists.
 _TIER_REDUCE_MODEL: dict[str, str] = {
-    "draft":    "Claude Sonnet 4.5 (Bedrock)",
-    "standard": "Claude Sonnet 4.5 (Bedrock)",
-    "premium":  "Claude Sonnet 4.5 (Bedrock)",
+    "draft":    "Claude Sonnet 5 (Bedrock)",
+    "standard": "Claude Sonnet 5 (Bedrock)",
+    "premium":  "Claude Opus 5 (Bedrock)",
 }
 DEFAULT_TIER = "standard"
 

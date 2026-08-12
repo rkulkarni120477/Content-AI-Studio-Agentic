@@ -128,15 +128,15 @@ def test_blank_env_var_does_not_blank_the_config(load_config):
 # field empty (2026-08-12: 8/20 days "Unknown", all AM.I.B codes orphaned, job
 # reported success).
 # --------------------------------------------------------------------------- #
-DEFAULT_TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+DEFAULT_TEXT_MODEL = "global.anthropic.claude-sonnet-5"
 TEXT_STEPS = ("classification", "metadata_extraction", "structure_extraction",
               "quality_check", "vision", "digest_extraction")
 
 
 def test_default_extractor_is_the_current_model(load_config):
-    """Sonnet 4.5 — current, and the only viable ID for us-east-1 where Claude 3
-    Sonnet is end-of-life. A role without Bedrock access for it still fails, which
-    is what build.preflight_extractor exists to surface loudly."""
+    """Sonnet 5 — the current Sonnet, with a 1M context window (vs 200k on 4.5), so a
+    dense day is extracted whole rather than trimmed. A role without Bedrock access
+    for it still fails, which is what build.preflight_extractor surfaces loudly."""
     settings = load_config()
     models = settings.get_tenant_config("aim").pipeline.models
     for step in TEXT_STEPS:

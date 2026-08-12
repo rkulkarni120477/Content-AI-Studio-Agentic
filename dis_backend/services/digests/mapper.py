@@ -283,19 +283,101 @@ def _guidance_block(map_guidance: str) -> str:
 #: on Block 2 Day 1 before attribution was tightened. Chosen so that even worst-case
 #: dense text (ACS code lists tokenize at roughly one token per character, far worse
 #: than the usual ~4 chars/token) stays inside a 200k-token window.
-#: Both accept 0 = NO LIMIT (send every unit, whole). Sized for Sonnet 4.5's real
-#: window rather than the 120k/4k that were chosen defensively for Claude 3 while
-#: attribution was still dragging unrelated pages onto a day. Truncating input is a
-#: silent quality tax — the model reasons over less than the day's material and
-#: nothing in the output says so — so the defaults are deliberately generous and any
-#: trimming still raises a SOURCES_TRUNCATED review flag.
+#: Per-model input capacity, in CHARACTERS of assembled SOURCES block.
 #:
-#: They are not zero by default because exceeding the context window is a HARD
-#: Bedrock error ("Input is too long for requested model") that fails the whole day,
-#: which is worse than a flagged trim. Set DIS_MAP_MAX_SOURCE_CHARS=0 /
-#: DIS_MAP_MAX_UNIT_CHARS=0 to accept that trade and never trim.
-MAP_MAX_SOURCE_CHARS = _env_int("DIS_MAP_MAX_SOURCE_CHARS", 600_000)
+#: Derived from each model's context window rather than guessed: a single global
+#: constant is wrong by construction, because the same number is simultaneously too
+#: small for a large-window model and too large for a small one.
+#:
+#: The chars-per-token divisor is deliberately pessimistic. Ordinary prose runs ~4
+#: chars/token, but this content is not ordinary prose — ACS code lists
+#: ("AM.I.B.K1") tokenize closer to 1 token per character, and underestimating here
+#: means a hard "Input is too long" rejection that fails the whole day. 2.5
+#: chars/token leaves room for the prompt scaffold, rubric and guidance that share
+#: the window with the sources.
+_CHARS_PER_TOKEN = 2.5
+_CONTEXT_TOKENS = {
+    # Current generation — verified invokable via `global.` in ap-south-1 AND
+    # us-east-1 on this account (direct InvokeModel).
+    "global.anthropic.claude-opus-5": 1_000_000,
+    "global.anthropic.claude-sonnet-5": 1_000_000,
+    "global.anthropic.claude-sonnet-4-6": 1_000_000,
+    "global.anthropic.claude-fable-5": 1_000_000,
+    # Available on Bedrock but NO model access for this account's role.
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": 200_000,
+    "global.anthropic.claude-opus-4-8": 1_000_000,
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": 200_000,
+    # Legacy Claude 3 — still referenced by academian.yaml / cengage.yaml, so they
+    # need a window here or they would fall to the pessimistic default. Do not use
+    # for new config: Sonnet 3 is end-of-life in us-east-1 and Haiku 3 is
+    # provider-legacy and denied in every region.
+    "anthropic.claude-3-sonnet-20240229-v1:0": 200_000,
+    "anthropic.claude-3-haiku-20240307-v1:0": 200_000,
+}
+#: Reserved for the prompt scaffold (schema, rubric, guidance, day metadata) that
+#: shares the window with the sources.
+_PROMPT_OVERHEAD_CHARS = 40_000
+
+#: Ordered escalation ladder: when a day's sources do not fit the configured model,
+#: move UP to a larger-window model instead of trimming. Comma-separated model IDs,
+#: largest window last is irrelevant — they are sorted by known window.
+#:
+#: Defaults to Opus 5 (1M window, verified invokable in both regions). Escalation is
+#: rare by construction — the configured Sonnet 5 already has a 1M window — so this
+#: is a safety net for a day whose sources genuinely exceed it, not a routine path.
+#: An unusable ID here costs a failed day, so only add models you have invoked from
+#: this environment. Set to an empty string to disable escalation entirely.
+_DEFAULT_ESCALATION = "global.anthropic.claude-opus-5"
+MAP_ESCALATION_MODELS = [
+    m.strip() for m in (
+        os.getenv("DIS_MAP_ESCALATION_MODELS")
+        if os.getenv("DIS_MAP_ESCALATION_MODELS") is not None else _DEFAULT_ESCALATION
+    ).split(",") if m.strip()
+]
+
+#: Hard override of the derived per-model budget. 0 = NO LIMIT (never trim, accept a
+#: hard context-window rejection instead). Unset ⇒ use the model-derived capacity
+#: above, which is the better behaviour and needs no configuration.
+MAP_MAX_SOURCE_CHARS = _env_int("DIS_MAP_MAX_SOURCE_CHARS", -1) if os.getenv(
+    "DIS_MAP_MAX_SOURCE_CHARS") else None
 MAP_MAX_UNIT_CHARS = _env_int("DIS_MAP_MAX_UNIT_CHARS", 0)
+
+
+def context_budget_chars(model: str) -> int:
+    """Characters of SOURCES this model can take. 0 = unlimited (explicit override).
+
+    An unknown model gets the smallest known window rather than an optimistic guess:
+    being wrong low costs a flagged trim, being wrong high costs the whole day.
+    """
+    if MAP_MAX_SOURCE_CHARS is not None:      # explicit operator override wins
+        return MAP_MAX_SOURCE_CHARS
+    tokens = _CONTEXT_TOKENS.get(model) or min(_CONTEXT_TOKENS.values())
+    return max(int(tokens * _CHARS_PER_TOKEN) - _PROMPT_OVERHEAD_CHARS, 10_000)
+
+
+def select_model_for(configured: str, needed_chars: int) -> tuple[str, Optional[str]]:
+    """Pick the model to run this day on, escalating if the sources don't fit.
+
+    Returns ``(model, note)`` where *note* is None when the configured model was
+    kept, else a human-readable reason recorded on the digest so the substitution is
+    visible rather than inferred from a cost report.
+
+    Escalating beats trimming: a larger window keeps ALL of the day's material, where
+    trimming silently removes evidence the extraction is supposed to be based on.
+    """
+    if not needed_chars or needed_chars <= context_budget_chars(configured):
+        return configured, None
+    ladder = sorted(
+        (m for m in MAP_ESCALATION_MODELS if m != configured),
+        key=lambda m: _CONTEXT_TOKENS.get(m, 0),
+    )
+    for candidate in ladder:
+        if needed_chars <= context_budget_chars(candidate):
+            note = (f"escalated from {configured} to {candidate}: sources are "
+                    f"{needed_chars} chars, over that model's capacity")
+            log.warning("MAP %s", note)
+            return candidate, note
+    return configured, None
 
 #: Truncation order when a day exceeds the budget: keep the units we are most
 #: confident belong to this day. Mirrors attribution's own signal hierarchy
@@ -304,8 +386,9 @@ MAP_MAX_UNIT_CHARS = _env_int("DIS_MAP_MAX_UNIT_CHARS", 0)
 _SIGNAL_PRIORITY = {"raw": 0, "S1": 1, "S2": 2, "S3": 3}
 
 
-def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
-    """Assemble the SOURCES block under MAP_MAX_SOURCE_CHARS.
+def _source_body(llm_units: List[Dict[str, Any]],
+                 limit: Optional[int] = None) -> tuple[str, Dict[str, int]]:
+    """Assemble the SOURCES block, trimming to *limit* chars (0/None = no trim).
 
     Returns ``(body, dropped)`` where ``dropped`` is {"units": n, "chars": n} —
     empty when everything fit. Truncation is reported, never silent: the caller
@@ -325,7 +408,7 @@ def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
         if MAP_MAX_UNIT_CHARS:                      # 0 => send the unit whole
             text = text[:MAP_MAX_UNIT_CHARS]
         block = f"[{u.get('unit_type')}] {u.get('title') or ''}\n{text}"
-        if MAP_MAX_SOURCE_CHARS and used + len(block) > MAP_MAX_SOURCE_CHARS and kept:
+        if limit and used + len(block) > limit and kept:
             dropped_units += 1
             dropped_chars += len(block)
             continue
@@ -339,10 +422,11 @@ def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
 
 def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: str,
                  call_llm, safe_json, map_guidance: str = ""
-                 ) -> tuple[Dict[str, Any], int, int, Dict[str, int]]:
-    """Call the extractor and return (fields, tokens_in, tokens_out, dropped).
+                 ) -> tuple[Dict[str, Any], int, int, Dict[str, int], str, Optional[str]]:
+    """Call the extractor and return (fields, tokens_in, tokens_out, dropped,
+    model_used, escalation_note).
 
-    ``dropped`` reports any SOURCES truncation applied to fit MAP_MAX_SOURCE_CHARS.
+    ``dropped`` reports any SOURCES truncation that survived model escalation.
 
     ``map_guidance`` (optional) is judgment/emphasis instructions distilled from
     the course's selected CDD/Blueprint prompt (see resolve_prompt_guidance) —
@@ -350,11 +434,20 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     the model is told explicitly it may only refine judgment within the fields
     already specified, not add a field or contradict the required JSON shape.
     """
-    body, dropped = _source_body(llm_units)
+    # Measure the day untrimmed FIRST, then choose a model that can hold it. Sizing
+    # the content to the model is backwards when a larger-window model is available:
+    # escalating keeps all of the day's evidence, trimming silently discards the very
+    # material the extraction is supposed to rest on.
+    full_body, _ = _source_body(llm_units, limit=0)
+    model, escalation = select_model_for(model, len(full_body))
+
+    budget = context_budget_chars(model)
+    body, dropped = _source_body(llm_units, limit=budget)
     if dropped:
-        log.warning("digest MAP day %s: SOURCES truncated to %d chars — dropped %d "
-                    "lowest-confidence unit(s) (%d chars) to fit the extractor's "
-                    "context window", day.get("day_number"), MAP_MAX_SOURCE_CHARS,
+        log.warning("digest MAP day %s: SOURCES truncated to %d chars for model %s — "
+                    "dropped %d lowest-confidence unit(s) (%d chars). No larger model "
+                    "was available; see DIS_MAP_ESCALATION_MODELS.",
+                    day.get("day_number"), budget, model,
                     dropped["units"], dropped["chars"])
     template, _template_hash = map_prompt()
     prompt = prompt_template_render(template, {
@@ -413,7 +506,7 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         "job_aid_description": data.get("job_aid_description", ""),
         "job_aid_source_reference": data.get("job_aid_source_reference", "N/A"),
     }
-    return fields, ti, to, dropped
+    return fields, ti, to, dropped, model, escalation
 
 
 def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
@@ -476,9 +569,15 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     llm_units = [u for u in units if text_allowed_for_digest(u, "instructor")]
     digest["text_withheld_units"] = len(units) - len(llm_units)
     try:
-        fields, ti, to, dropped = _llm_extract(day, llm_units, model, call_llm, safe_json,
-                                               map_guidance=map_guidance)
+        fields, ti, to, dropped, model_used, escalation = _llm_extract(
+            day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance)
         digest.update(fields)
+        # Record the model that actually ran, not the one configured — an escalated
+        # day is a different extraction and the cache key is keyed on the model, so
+        # the digest must say which one produced it.
+        digest["extractor_model"] = model_used
+        if escalation:
+            digest["review_flags"].append(f"MODEL_ESCALATED — {escalation}")
         if dropped:
             digest["review_flags"].append(
                 f"SOURCES_TRUNCATED — day exceeded the extractor input budget; "
