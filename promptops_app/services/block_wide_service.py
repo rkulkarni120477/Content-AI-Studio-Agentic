@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import replace
 from typing import Any, Dict, Optional
 
@@ -357,9 +358,30 @@ def render_blueprint_markdown(block: Optional[str], result) -> str:
 #: corrects it to the real figure immediately after the build, so the only effect of
 #: being high is that a build starting very close to a cap is refused rather than
 #: allowed to breach it.
-_MAP_ESTIMATE_DAYS = 25
-_MAP_EST_INPUT_TOKENS_PER_DAY = 8_800
-_MAP_EST_OUTPUT_TOKENS_PER_DAY = 750
+def _env_int(name: str, default: int) -> int:
+    """Positive int from the environment, else *default*. Junk and non-positive
+    values fall back rather than becoming a number: a zero or negative estimate here
+    would reserve nothing and make the whole pre-flight check silently vacuous.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        _log.warning("%s=%r is not an integer — using %d", name, raw, default)
+        return default
+    if value <= 0:
+        _log.warning("%s=%d must be positive — using %d", name, value, default)
+        return default
+    return value
+
+
+#: Overridable so an operator can retune the reservation against their own blocks
+#: without a deploy — the same treatment the DIS_MAP_* input budgets get.
+_MAP_ESTIMATE_DAYS = _env_int("CAS_MAP_ESTIMATE_DAYS", 25)
+_MAP_EST_INPUT_TOKENS_PER_DAY = _env_int("CAS_MAP_EST_INPUT_TOKENS_PER_DAY", 8_800)
+_MAP_EST_OUTPUT_TOKENS_PER_DAY = _env_int("CAS_MAP_EST_OUTPUT_TOKENS_PER_DAY", 750)
 
 #: Pricing FAMILY fallback for the reservation, and for a report that predates
 #: ``map_model`` (an older DIS). Not a claim about which model DIS runs — DIS owns
@@ -370,17 +392,29 @@ _MAP_PRICING_MODEL = "anthropic.claude-sonnet"
 
 
 def _map_usage_ctx(deliverable: str, request_body, current_user):
-    """UsageLogContext for the MAP stage, or None if it can't be built.
+    """UsageLogContext for the MAP stage, or None when there is nothing to bill.
 
-    Returns None rather than raising: cost accounting must never be the reason a
-    generation fails, and a None context makes check_budget a documented no-op.
+    Returns None — never raises — in two cases, because cost accounting must not be
+    the reason a generation fails:
+      * building the context itself failed;
+      * none of project/course/user is known. Budgets are keyed on exactly those
+        three (budget_service._levels_for), so a context without any of them can
+        neither be enforced nor attributed, and constructing one would only make the
+        logs claim an attribution that does not exist.
     """
     try:
         from promptops_app.services.usage_service import UsageLogContext
+        project_id = getattr(request_body, "project_id", None)
+        course_id = getattr(request_body, "course_id", None)
+        user_name = getattr(current_user, "username", "") or ""
+        if project_id is None and course_id is None and not user_name:
+            _log.warning("map usage: no project/course/user on this request — MAP spend "
+                         "cannot be attributed or enforced")
+            return None
         return UsageLogContext(
-            user_name=getattr(current_user, "username", "") or "",
-            project_id=getattr(request_body, "project_id", None),
-            course_id=getattr(request_body, "course_id", None),
+            user_name=user_name,
+            project_id=project_id,
+            course_id=course_id,
             entity_type=deliverable,
             entity_id=str(getattr(request_body, "block", "") or "") or None,
             prompt_template="digest_map",
@@ -425,6 +459,12 @@ def _settle_map_usage(db, map_ctx, report: Optional[Dict[str, Any]], reservation
     Never raises. A build that failed before reporting still releases its
     reservation (actuals of zero), because a leaked hold would suppress every later
     generation in the period.
+
+    KNOWN LIMITATION: if the DIS call itself fails (network, 5xx) after DIS has
+    already spent tokens on some days, no report comes back and that spend is
+    unrecorded — CAS has no other way to learn it. The reservation is still released,
+    so the effect is an under-count on a failed build rather than a leak. Closing it
+    would need DIS to report partial usage on the error path.
     """
     from promptops_app.services.budget_service import reconcile_budget
     from promptops_app.services.usage_service import estimate_cost, log_llm_usage
@@ -455,6 +495,12 @@ def _settle_map_usage(db, map_ctx, report: Optional[Dict[str, Any]], reservation
         try:
             from promptops_app.core.llm_client import LLMResult
             ctx = replace(map_ctx, prompt_version=str(rep.get("prompt_version") or ""))
+            # status="success" describes the SPEND, not the deliverable: these tokens
+            # were billed by a call that returned. A day can still land in
+            # coverage.failed_days because its reply lacked the required keys — that is
+            # a content outcome, surfaced by the digest's own status and the job's
+            # warning, and marking the cost row "error" instead would both misreport
+            # real spend and skew any success-rate view built on this table.
             log_llm_usage(db, LLMResult(
                 text="", model=model, prompt_tokens=tok_in, completion_tokens=tok_out,
                 status="success",

@@ -46,12 +46,36 @@ def test_usage_context_attributes_map_spend_to_the_right_scopes():
     assert ctx.prompt_template == "digest_map", "must be distinguishable from REDUCE rows"
 
 
-def test_context_failure_degrades_to_none_rather_than_raising(monkeypatch):
+def test_an_unattributable_request_yields_no_context_at_all():
+    """Budgets key on project/course/user only (budget_service._levels_for), so a
+    request carrying none of them can neither be enforced nor attributed. Returning a
+    context anyway would make the usage log assert an attribution that does not exist,
+    and every level would silently no-op regardless."""
+    assert bws._map_usage_ctx("cdd", types.SimpleNamespace(), None) is None
+
+
+def test_any_single_known_scope_is_enough_to_attribute():
+    """Partial scope is still billable — don't discard spend because one id is absent."""
+    assert bws._map_usage_ctx("cdd", types.SimpleNamespace(project_id=23), None) is not None
+    assert bws._map_usage_ctx("cdd", types.SimpleNamespace(course_id=48), None) is not None
+    assert bws._map_usage_ctx("cdd", types.SimpleNamespace(), _USER) is not None
+
+
+def test_context_construction_never_raises_into_a_generation(monkeypatch):
     """Cost accounting must never be the reason a generation fails."""
-    monkeypatch.setattr(bws, "_log", bws._log)
-    bad = types.SimpleNamespace()          # no project_id/course_id attributes at all
-    ctx = bws._map_usage_ctx("cdd", bad, None)
-    assert ctx is not None and ctx.project_id is None    # getattr defaults, no raise
+    monkeypatch.setattr("promptops_app.services.usage_service.UsageLogContext",
+                        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert bws._map_usage_ctx("cdd", _req(), _USER) is None
+
+
+def test_the_reservation_estimate_is_env_tunable_and_rejects_junk(monkeypatch):
+    """A zero or negative estimate would reserve nothing and make the pre-flight check
+    silently vacuous, so junk must fall back rather than become a number."""
+    monkeypatch.setenv("CAS_MAP_ESTIMATE_DAYS", "40")
+    assert bws._env_int("CAS_MAP_ESTIMATE_DAYS", 25) == 40
+    for bad in ("0", "-5", "many", ""):
+        monkeypatch.setenv("CAS_MAP_ESTIMATE_DAYS", bad)
+        assert bws._env_int("CAS_MAP_ESTIMATE_DAYS", 25) == 25, bad
 
 
 # --------------------------------------------------------------------------- #

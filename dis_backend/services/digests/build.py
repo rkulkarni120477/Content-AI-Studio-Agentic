@@ -20,7 +20,7 @@ never diverge between them.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from config.settings import TenantConfig
 from services import indexing
