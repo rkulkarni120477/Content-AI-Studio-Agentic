@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from services.digests import attribution
@@ -133,13 +134,27 @@ def current_prompt_version() -> str:
 #: Backwards-compatible module attribute. Prefer ``current_prompt_version()``: this is a
 #: snapshot taken at import and does not reflect a later template edit.
 PROMPT_VERSION = PROMPT_VERSION_BASE
-MAP_MAX_TOKENS = 4096  # raised from 900 (itself raised from 600) — 900 was still an artificial
-# ceiling below this model's real limit. aim.yaml's digest_extraction model is Bedrock Claude 3
-# Sonnet, whose actual max output is 4096 — matching that gives every field (derived_objective,
-# misconceptions, salient_excerpts, concept_type, 7 interactive/job-aid fields) full headroom to
-# return complete, untruncated content instead of risking exactly the failure this file's own
-# comment on `_llm_extract` already warned about ("likely truncated mid-JSON for content-rich
-# days"). Matches the fallback fix in llm_service.py: cap to the model's REAL ceiling, not below.
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int limit from the environment. 0 means "no limit"."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer — using default %d", name, raw, default)
+        return default
+    if value < 0:
+        log.warning("%s=%d is negative — using default %d", name, value, default)
+        return default
+    return value
+
+
+#: MAP output ceiling. Every artificial cap below the model's real limit risks a
+#: digest truncated mid-JSON, which surfaces as missing fields rather than an error.
+#: 4096 matched Claude 3 Sonnet's actual maximum; Sonnet 4.5 is far higher, so the
+#: old value became an arbitrary quality cap. Set DIS_MAP_MAX_TOKENS to override.
+MAP_MAX_TOKENS = _env_int("DIS_MAP_MAX_TOKENS", 32_000)
 
 # One canonical "teachable substance" set, shared with ENUMERATE's THIN_DAY logic
 # so the two never disagree about what makes a day thin (was previously a divergent
@@ -268,8 +283,19 @@ def _guidance_block(map_guidance: str) -> str:
 #: on Block 2 Day 1 before attribution was tightened. Chosen so that even worst-case
 #: dense text (ACS code lists tokenize at roughly one token per character, far worse
 #: than the usual ~4 chars/token) stays inside a 200k-token window.
-MAP_MAX_SOURCE_CHARS = 120_000
-MAP_MAX_UNIT_CHARS = 4_000
+#: Both accept 0 = NO LIMIT (send every unit, whole). Sized for Sonnet 4.5's real
+#: window rather than the 120k/4k that were chosen defensively for Claude 3 while
+#: attribution was still dragging unrelated pages onto a day. Truncating input is a
+#: silent quality tax — the model reasons over less than the day's material and
+#: nothing in the output says so — so the defaults are deliberately generous and any
+#: trimming still raises a SOURCES_TRUNCATED review flag.
+#:
+#: They are not zero by default because exceeding the context window is a HARD
+#: Bedrock error ("Input is too long for requested model") that fails the whole day,
+#: which is worse than a flagged trim. Set DIS_MAP_MAX_SOURCE_CHARS=0 /
+#: DIS_MAP_MAX_UNIT_CHARS=0 to accept that trade and never trim.
+MAP_MAX_SOURCE_CHARS = _env_int("DIS_MAP_MAX_SOURCE_CHARS", 600_000)
+MAP_MAX_UNIT_CHARS = _env_int("DIS_MAP_MAX_UNIT_CHARS", 0)
 
 #: Truncation order when a day exceeds the budget: keep the units we are most
 #: confident belong to this day. Mirrors attribution's own signal hierarchy
@@ -295,9 +321,11 @@ def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
     used = 0
     dropped_units = dropped_chars = 0
     for idx, u in ordered:
-        block = (f"[{u.get('unit_type')}] {u.get('title') or ''}\n"
-                 f"{(u.get('text_content') or '')[:MAP_MAX_UNIT_CHARS]}")
-        if used + len(block) > MAP_MAX_SOURCE_CHARS and kept:
+        text = u.get("text_content") or ""
+        if MAP_MAX_UNIT_CHARS:                      # 0 => send the unit whole
+            text = text[:MAP_MAX_UNIT_CHARS]
+        block = f"[{u.get('unit_type')}] {u.get('title') or ''}\n{text}"
+        if MAP_MAX_SOURCE_CHARS and used + len(block) > MAP_MAX_SOURCE_CHARS and kept:
             dropped_units += 1
             dropped_chars += len(block)
             continue

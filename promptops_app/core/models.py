@@ -65,7 +65,11 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         tags=("structured",),
         provider="bedrock",
         api_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        max_output_tokens=32000,
+        # Sonnet 4.5's real output ceiling, not a conservative round number: this
+        # value caps the block-wide REDUCE, and a cap below the model's limit
+        # truncates long sectioned output — which shows up as missing worksheet rows
+        # rather than an error. Verified accepted by Bedrock InvokeModel.
+        max_output_tokens=64000,
     ),
     ModelDef(
         display_name="Claude Haiku 4.5 (Bedrock)",

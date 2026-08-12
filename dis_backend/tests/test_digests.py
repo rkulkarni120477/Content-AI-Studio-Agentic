@@ -1123,3 +1123,67 @@ def test_build_digests_fails_fast_instead_of_writing_empty_digests(monkeypatch):
     with pytest.raises(build_mod.ExtractorUnavailable):
         build_mod.build_digests(_tenant(), "Block 2")
     assert calls["n"] == 1, "must stop after the probe, not run a call per day"
+
+
+# --------------------------------------------------------------------------- #
+# Limits are configurable, and 0 means no limit
+#
+# Truncating MAP input is a silent quality tax: the model reasons over less than
+# the day's material and nothing in the output says so. The caps exist only because
+# exceeding the context window is a hard Bedrock error that fails the whole day, so
+# they must be raisable — and removable — per environment.
+# --------------------------------------------------------------------------- #
+def test_env_int_parses_and_rejects_junk(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setenv("X_LIMIT", "5000")
+    assert m._env_int("X_LIMIT", 1) == 5000
+    monkeypatch.setenv("X_LIMIT", "0")
+    assert m._env_int("X_LIMIT", 1) == 0, "0 must survive as an explicit 'no limit'"
+    for junk in ("abc", "-5", ""):
+        monkeypatch.setenv("X_LIMIT", junk)
+        assert m._env_int("X_LIMIT", 77) == 77, f"{junk!r} should fall back, not crash"
+    monkeypatch.delenv("X_LIMIT")
+    assert m._env_int("X_LIMIT", 42) == 42
+
+
+def test_zero_unit_cap_sends_each_unit_whole(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)
+    long_text = "x" * 50_000
+    body, dropped = m._source_body([
+        {"unit_type": "page", "title": "t", "text_content": long_text,
+         "attribution_signal": "raw"}])
+    assert long_text in body, "unit was trimmed despite MAP_MAX_UNIT_CHARS=0"
+    assert dropped == {}
+
+
+def test_zero_source_cap_keeps_every_unit(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)
+    units = [{"unit_type": "page", "title": f"t{i}", "text_content": "y" * 20_000,
+              "attribution_signal": "raw"} for i in range(20)]
+    body, dropped = m._source_body(units)
+    assert dropped == {}, "units were dropped despite MAP_MAX_SOURCE_CHARS=0"
+    for i in range(20):
+        assert f"t{i}" in body
+
+
+def test_a_nonzero_cap_still_trims_and_reports(monkeypatch):
+    """The flag matters: a trimmed day must be visible, not inferred from thin output."""
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 5_000)
+    units = [{"unit_type": "page", "title": f"t{i}", "text_content": "z" * 4_000,
+              "attribution_signal": "raw"} for i in range(5)]
+    body, dropped = m._source_body(units)
+    assert dropped.get("units", 0) > 0
+    assert len(body) <= 5_000 + 200
+
+
+def test_map_output_ceiling_is_not_the_old_claude3_limit():
+    """4096 was Claude 3 Sonnet's real maximum; against Sonnet 4.5 it became an
+    arbitrary cap that can truncate a digest mid-JSON."""
+    from services.digests import mapper as m
+    assert m.MAP_MAX_TOKENS >= 16_000

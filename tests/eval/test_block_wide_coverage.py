@@ -121,9 +121,11 @@ def test_reduce_coverage_golden():
     assert rows[4]["narrative"].startswith("REVIEW NEEDED")
     # Tier → model + token headroom; the per-day batch is 1 call + 1 patterns_notes call.
     # 'premium' resolves to Sonnet 4.5 (not Opus) while Opus has no model access on
-    # this account; the 32000 headroom is unchanged, since both carry that ceiling.
+    # this account. 64000 is Sonnet 4.5's real output ceiling — a lower cap silently
+    # truncates long sectioned output, which reads as missing worksheet rows rather
+    # than an error.
     assert res.reduce_model == "Claude Sonnet 4.5 (Bedrock)"
-    assert res.max_output_tokens == 32000
+    assert res.max_output_tokens == 64000
     assert res.llm_calls == 2
     # Multi-worksheet shape: 5 sections in a fixed order, even with no overview/
     # inventory/registry data supplied (this test predates Phase 1's aggregates).
