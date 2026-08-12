@@ -4,7 +4,7 @@ All tenant config loaded from YAML files.
 Global settings from environment variables (.env).
 """
 from __future__ import annotations
-import glob, os
+import glob, os, re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -235,6 +235,79 @@ class EmbeddingConfig(BaseModel):
     dimension: int = 1024
     region: str = "us-east-1"
     max_input_chars: int = 50000
+
+# ---------------------------------------------------------------------------
+# Environment-driven store location
+#
+# The client YAMLs are committed, so any connection string written into them is
+# baked into the image and every environment is forced onto the same database.
+# That is how local, dev and prod all ended up pointed at one dev RDS whose
+# security group admits a single hard-coded /32 — a setup that fails the moment
+# an IP changes, and that cannot be repointed without editing a tracked file.
+# (It also means a Postgres password lives in git; rotate it and move it here.)
+#
+# Two mechanisms, both additive — with no environment variables set, behaviour is
+# byte-identical to the YAML literal:
+#
+#   1. ``${VAR}`` / ``${VAR:-fallback}`` placeholders anywhere in the client
+#      config are expanded from the environment.
+#   2. Explicit overrides for the connection-critical fields, so an environment
+#      can repoint a store without the YAML mentioning it at all:
+#
+#        DIS_STRUCTURE_STORE_URL          / DIS_STRUCTURE_STORE_URL_<CLIENT>
+#        DIS_VECTOR_STORE_ENDPOINT        / DIS_VECTOR_STORE_ENDPOINT_<CLIENT>
+#        DIS_VECTOR_STORE_INDEX           / DIS_VECTOR_STORE_INDEX_<CLIENT>
+#
+# Precedence: per-client env > global env > expanded YAML > YAML literal. The
+# per-client form exists because tenants may legitimately diverge (separate
+# databases per client) while sharing one image.
+# ---------------------------------------------------------------------------
+
+_ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _resolve_env_placeholders(value: str) -> str:
+    """Expand ``${VAR}`` and ``${VAR:-fallback}`` in *value*.
+
+    An unset variable with no fallback expands to "" — the same "unconfigured"
+    signal an absent YAML key gives, so ``enabled: true`` with a blank url fails
+    loudly at connect time rather than silently connecting somewhere unintended.
+    """
+    def sub(m: "re.Match[str]") -> str:
+        return os.getenv(m.group(1)) or (m.group(2) if m.group(2) is not None else "")
+    return _ENV_PLACEHOLDER.sub(sub, value)
+
+
+def _expand_env_in_tree(node: Any) -> Any:
+    """Recursively expand env placeholders in every string in a config tree."""
+    if isinstance(node, str):
+        return _resolve_env_placeholders(node)
+    if isinstance(node, dict):
+        return {k: _expand_env_in_tree(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_expand_env_in_tree(v) for v in node]
+    return node
+
+
+# (config section, field) -> env var stem
+_STORE_ENV_OVERRIDES = (
+    ("structure_store", "url", "DIS_STRUCTURE_STORE_URL"),
+    ("vector_store", "endpoint", "DIS_VECTOR_STORE_ENDPOINT"),
+    ("vector_store", "index_name", "DIS_VECTOR_STORE_INDEX"),
+)
+
+
+def _apply_store_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
+    """Point the backing stores wherever this environment says, in place."""
+    suffix = re.sub(r"[^A-Za-z0-9]", "_", str(client_id or "")).upper()
+    for section, field, stem in _STORE_ENV_OVERRIDES:
+        value = (os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem)
+        if not value:
+            continue
+        converted.setdefault(section, {})
+        if isinstance(converted[section], dict):
+            converted[section][field] = value
+
 
 class StructureStoreConfig(BaseModel):
     # Tenant-specific structured store. Default provider is postgres/RDS.
@@ -485,6 +558,11 @@ class TenantRegistry:
         for key in ["ingestion", "processing", "pipeline", "document_processing", "metadata_schemas", "storage", "retrieval", "security", "embedding", "structure_store", "vector_store", "deduplication", "monitoring", "client_rules"]:
             if key in raw:
                 converted[key] = raw[key]
+
+        # Let the environment decide where the backing stores live, so the same
+        # image runs anywhere. See _resolve_env_placeholders / _apply_store_env.
+        converted = _expand_env_in_tree(converted)
+        _apply_store_env_overrides(converted, client_id)
 
         # Client-specific rule blocks stay available at runtime through cfg.client_rules.
         # Example: config/clients/aim.yaml -> aim_content_rules.
