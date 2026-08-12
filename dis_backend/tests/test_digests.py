@@ -1316,3 +1316,93 @@ def test_call_llm_does_not_mask_an_unrelated_validation_error(monkeypatch):
     text, ti, to = common.call_llm("some-model", "hi", max_tokens=8)
     assert len(calls) == 1, "an unrelated ValidationException was retried"
     assert ti == 0 and "doc_type" in text, "should fall through to the stub path"
+
+
+def test_a_malformed_source_budget_falls_back_instead_of_truncating(monkeypatch):
+    """Found in review. DIS_MAP_MAX_SOURCE_CHARS resolved junk to the sentinel -1,
+    which is TRUTHY in the trim comparison — so a single typo in that variable kept
+    only the FIRST source unit of every day and said so in one log line. A malformed
+    limit must never be quieter, or more destructive, than an unset one."""
+    from services.digests import mapper as m
+
+    for bad in ("notanumber", "-1", "12.5", ""):
+        monkeypatch.setenv("DIS_MAP_MAX_SOURCE_CHARS", bad)
+        assert m._env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS") is None, bad
+    monkeypatch.setenv("DIS_MAP_MAX_SOURCE_CHARS", "5000")
+    assert m._env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS") == 5000
+    monkeypatch.setenv("DIS_MAP_MAX_SOURCE_CHARS", "0")
+    assert m._env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS") == 0, "0 means 'no limit'"
+
+
+def test_a_derived_budget_is_never_negative():
+    """The floor matters for the same reason: a negative budget is truthy."""
+    from services.digests import mapper as m
+    for model in list(m._CONTEXT_TOKENS) + ["unregistered.model"]:
+        assert m.context_budget_chars(model) > 0
+
+
+def test_every_unit_survives_when_the_budget_is_malformed(monkeypatch):
+    """End-to-end version of the bug: 5 units in, 5 units out."""
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", None)   # as a junk value now resolves
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    units = [{"unit_type": "page", "title": f"t{i}", "text_content": "x" * 100,
+              "attribution_signal": "raw"} for i in range(5)]
+    budget = m.context_budget_chars("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    body, dropped = m._source_body(units, limit=budget)
+    assert dropped == {}
+    assert all(f"t{i}" in body for i in range(5))
+
+
+def test_preflight_success_is_memoised_so_a_cached_rebuild_stays_free(monkeypatch):
+    """Found in review: the probe ran on EVERY build, so a fully cached rebuild that
+    should cost 0 LLM calls quietly cost 1 — and the build report's map_calls=0 was
+    then untrue of actual spend."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(build_mod, "_PREFLIGHT_OK", set())
+    calls = {"n": 0}
+
+    def probe(*a, **k):
+        calls["n"] += 1
+        return ('{"ok":true}', 9, 2)
+
+    monkeypatch.setattr(common, "call_llm", probe)
+    for _ in range(4):
+        build_mod.preflight_extractor("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    assert calls["n"] == 1, f"probed {calls['n']} times; success should be memoised"
+
+
+def test_preflight_failure_is_never_memoised(monkeypatch):
+    """Caching a failure would let a build sail past a broken extractor on the second
+    attempt — the opposite of what the probe is for."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(build_mod, "_PREFLIGHT_OK", set())
+    calls = {"n": 0}
+
+    def stub(*a, **k):
+        calls["n"] += 1
+        return ('{"doc_type":"other"}', 0, 0)
+
+    monkeypatch.setattr(common, "call_llm", stub)
+    for _ in range(3):
+        with pytest.raises(build_mod.ExtractorUnavailable):
+            build_mod.preflight_extractor("m")
+    assert calls["n"] == 3, "a failing model must be re-probed every build"
+
+
+def test_preflight_is_per_model(monkeypatch):
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(build_mod, "_PREFLIGHT_OK", set())
+    seen = []
+    monkeypatch.setattr(common, "call_llm",
+                        lambda model, *a, **k: (seen.append(model), ('{"ok":1}', 5, 1))[1])
+    build_mod.preflight_extractor("model-a")
+    build_mod.preflight_extractor("model-b")
+    build_mod.preflight_extractor("model-a")
+    assert seen == ["model-a", "model-b"], f"memo is not keyed per model: {seen}"

@@ -134,20 +134,40 @@ def current_prompt_version() -> str:
 #: Backwards-compatible module attribute. Prefer ``current_prompt_version()``: this is a
 #: snapshot taken at import and does not reflect a later template edit.
 PROMPT_VERSION = PROMPT_VERSION_BASE
-def _env_int(name: str, default: int) -> int:
-    """Read a non-negative int limit from the environment. 0 means "no limit"."""
+def _env_int_or_none(name: str) -> Optional[int]:
+    """Operator override for a derived limit: an int (0 = no limit), or None if unset.
+
+    Junk and negative values resolve to None — i.e. "fall back to the default/derived
+    budget" — never to a number. Returning a sentinel like -1 here looks harmless but
+    is not: -1 is truthy, so it flowed straight into the trim comparison and silently
+    kept only the FIRST source unit of every day, leaving nothing but a log line to
+    say so. A malformed limit must never be quieter, or more destructive, than an
+    unset one.
+    """
     raw = (os.getenv(name) or "").strip()
     if not raw:
-        return default
+        return None
     try:
         value = int(raw)
     except ValueError:
-        log.warning("%s=%r is not an integer — using default %d", name, raw, default)
-        return default
+        log.warning("%s=%r is not an integer — ignoring it and using the default "
+                    "(model-derived) budget instead", name, raw)
+        return None
     if value < 0:
-        log.warning("%s=%d is negative — using default %d", name, value, default)
-        return default
+        log.warning("%s=%d is negative — ignoring it and using the default "
+                    "(model-derived) budget instead (use 0 for 'no limit')", name, value)
+        return None
     return value
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int limit from the environment. 0 means "no limit".
+
+    Thin wrapper over :func:`_env_int_or_none` so the parsing and the
+    junk-value-is-not-a-number rule live in exactly one place.
+    """
+    value = _env_int_or_none(name)
+    return default if value is None else value
 
 
 #: MAP output ceiling. Every artificial cap below the model's real limit risks a
@@ -322,26 +342,21 @@ _PROMPT_OVERHEAD_CHARS = 40_000
 #: move UP to a larger-window model instead of trimming. Comma-separated model IDs,
 #: largest window last is irrelevant — they are sorted by known window.
 #:
-#: Defaults to Opus 5 (1M window, verified invokable in both regions). Escalation is
-#: rare by construction — the configured Sonnet 5 already has a 1M window — so this
-#: is a safety net for a day whose sources genuinely exceed it, not a routine path.
-#: An unusable ID here costs a failed day, so only add models you have invoked from
-#: this environment. Set to an empty string to disable escalation entirely.
-# Empty: every larger-window model (Opus 5, Sonnet 5, Sonnet 4.6) measures 0/3 on
-# this account, and escalating to an uninvokable model would fail the day outright.
-_DEFAULT_ESCALATION = ""
+#: Empty by default: on this account every larger-window model (Opus 5, Sonnet 5,
+#: Sonnet 4.6) is AccessDenied for DIS's principal, and escalating to a model that
+#: cannot be invoked would fail the day outright — worse than the trim it avoids.
+#: Populate it once a larger model is genuinely invokable from this environment,
+#: measured on repeated probes rather than one:
+#:     DIS_MAP_ESCALATION_MODELS=global.anthropic.claude-opus-5
 MAP_ESCALATION_MODELS = [
-    m.strip() for m in (
-        os.getenv("DIS_MAP_ESCALATION_MODELS")
-        if os.getenv("DIS_MAP_ESCALATION_MODELS") is not None else _DEFAULT_ESCALATION
-    ).split(",") if m.strip()
+    m.strip() for m in (os.getenv("DIS_MAP_ESCALATION_MODELS") or "").split(",") if m.strip()
 ]
 
-#: Hard override of the derived per-model budget. 0 = NO LIMIT (never trim, accept a
-#: hard context-window rejection instead). Unset ⇒ use the model-derived capacity
-#: above, which is the better behaviour and needs no configuration.
-MAP_MAX_SOURCE_CHARS = _env_int("DIS_MAP_MAX_SOURCE_CHARS", -1) if os.getenv(
-    "DIS_MAP_MAX_SOURCE_CHARS") else None
+
+#: Hard override of the derived per-model budget. 0 = NO LIMIT (never trim; accept a
+#: hard context-window rejection instead). Unset ⇒ use the model-derived capacity,
+#: which is the better behaviour and needs no configuration.
+MAP_MAX_SOURCE_CHARS = _env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS")
 MAP_MAX_UNIT_CHARS = _env_int("DIS_MAP_MAX_UNIT_CHARS", 0)
 
 
@@ -354,6 +369,8 @@ def context_budget_chars(model: str) -> int:
     if MAP_MAX_SOURCE_CHARS is not None:      # explicit operator override wins
         return MAP_MAX_SOURCE_CHARS
     tokens = _CONTEXT_TOKENS.get(model) or min(_CONTEXT_TOKENS.values())
+    # Floored, never negative: a budget below zero is truthy in the trim comparison
+    # and would keep only the first unit of every day.
     return max(int(tokens * _CHARS_PER_TOKEN) - _PROMPT_OVERHEAD_CHARS, 10_000)
 
 

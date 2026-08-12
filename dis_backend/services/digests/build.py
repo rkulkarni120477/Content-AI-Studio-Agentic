@@ -105,6 +105,15 @@ class ExtractorUnavailable(RuntimeError):
     """The configured MAP model cannot be invoked from this environment."""
 
 
+#: Models already proven invokable in THIS process. Successes are memoised, failures
+#: never are — so a build always fails fast while access is broken, and a fully cached
+#: rebuild (0 MAP calls) stays genuinely free instead of paying a probe every time.
+#: Deliberately not a TTL cache: if access is revoked mid-process the MAP calls
+#: themselves fail, and _llm_extract's key check turns that into a failed day rather
+#: than a silent default.
+_PREFLIGHT_OK: set[str] = set()
+
+
 def preflight_extractor(model: str) -> None:
     """Confirm the extractor model is invokable before spending a whole block on it.
 
@@ -121,6 +130,9 @@ def preflight_extractor(model: str) -> None:
 
     Raises ExtractorUnavailable, which the caller surfaces as a failed build.
     """
+    if model in _PREFLIGHT_OK:
+        return                      # already proven in this process — see _PREFLIGHT_OK
+
     # Imported here, not at module scope, so the monkeypatched seam the rest of the
     # digest code uses (services.pipeline.common.call_llm) applies to the probe too.
     from services.pipeline.common import call_llm
@@ -136,6 +148,7 @@ def preflight_extractor(model: str) -> None:
     # would either miss a changed stub or reject a legitimately terse answer.
     if not tokens_in:
         raise ExtractorUnavailable(_unavailable_msg(model, reply[:160]))
+    _PREFLIGHT_OK.add(model)
     log.info("digest preflight ok: model=%s", model)
 
 
