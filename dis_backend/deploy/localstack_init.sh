@@ -6,6 +6,12 @@ aws --endpoint-url=$E s3 mb s3://dis-raw-aim 2>/dev/null
 aws --endpoint-url=$E s3 mb s3://dis-processed-aim 2>/dev/null
 aws --endpoint-url=$E s3 mb s3://dis-raw-default 2>/dev/null
 
+# Actual bucket used by the current S3-only Source Library storage provider
+# (storage/provider.py, DIS_S3_BUCKET in dis_backend/.env) — the buckets above
+# are stale/unused names from an earlier storage layout, kept as harmless
+# no-ops in case anything still references them.
+aws --endpoint-url=$E s3 mb s3://content-ai-studio-local-test 2>/dev/null
+
 aws --endpoint-url=$E sqs create-queue --queue-name dis-queue
 aws --endpoint-url=$E sqs create-queue --queue-name dis-dlq
 

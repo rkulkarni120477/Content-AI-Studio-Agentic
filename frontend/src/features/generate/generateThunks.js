@@ -1,6 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { generateService } from './services/generateService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { JOB_STATUSES } from '@utils/constants';
 import toast from 'react-hot-toast';
 
@@ -32,7 +32,9 @@ export const pollJobThunk = createAsyncThunk(
         return status;
       }
       if (status.status === JOB_STATUSES.COMPLETED) {
-        toast.success('Generation completed!');
+        const usageMsg = formatUsageSummaryMessage(status.usage_summary);
+        const message = usageMsg ? `Generation completed! ${usageMsg}` : 'Generation completed!';
+        if (hasOverBudget(status.usage_summary)) toast.error(message); else toast.success(message);
         let blocks = [];
         if (status.generation_id) {
           try {

@@ -99,6 +99,7 @@ CDD_PHASE1_IMPLEMENTATION.md
 logs/
 .graphify_python
 graphify-out/
+claude_plan_platform_hardening/
 
 # ===================
 *.xlsx

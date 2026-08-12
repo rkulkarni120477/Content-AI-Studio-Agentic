@@ -288,6 +288,11 @@ def bulk_approve(db, block_ids: list, actor: str) -> dict:
     log_event(db, "bulk_approve", actor,
               f"Bulk-approved {len(results['approved'])} of {len(block_ids)} blocks",
               {"approved": results["approved"], "skipped": results["skipped"]})
+    log_audit_event(
+        db, actor, "workflow.bulk_approved",
+        entity_type="block", entity_id=None,
+        metadata={"approved": results["approved"], "skipped": results["skipped"], "errors": results["errors"]},
+    )
     return results
 
 

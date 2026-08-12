@@ -21,6 +21,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.budget import UsageSummary
 from app.schemas.json_fields import parse_optional_json_dict
 
 
@@ -366,6 +367,7 @@ class CDDRegenerateItemResponse(BaseModel):
 
     updated_content: str
     patched_item: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class CDDRegenerateSectionRequest(BaseModel):
@@ -380,3 +382,4 @@ class CDDRegenerateSectionResponse(BaseModel):
     """Freshly generated content for the section."""
 
     updated_content: str
+    usage_summary: Optional[UsageSummary] = None

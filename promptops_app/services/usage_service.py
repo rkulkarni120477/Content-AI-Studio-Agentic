@@ -144,6 +144,7 @@ def log_llm_usage(db, result: "LLMResult", ctx: UsageLogContext) -> None:
             duration_ms     = dur_ms,
             status          = result.status,
             error_message   = result.text if result.is_error else None,
+            langfuse_trace_id = getattr(result, "langfuse_trace_id", None),
             created_at      = datetime.now(timezone.utc),
         )
         db.add(row)

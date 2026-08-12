@@ -455,6 +455,7 @@ def reset_block_to_draft(
 ) -> WorkflowTransitionResponse:
     """Reset approved/rejected/changes_requested blocks to draft (Streamlit parity)."""
     from promptops_app.database import apply_transition_local, log_event
+    from promptops_app.services.audit_service import log_audit_event
 
     block = _get_block_or_404(db, block_id)
     apply_transition_local(db, block, "reset_to_draft", current_user.username)
@@ -464,6 +465,14 @@ def reset_block_to_draft(
         current_user.username,
         f"Block #{block_id} reset to Draft",
         {"block_id": block_id},
+    )
+    generation = block.generation
+    log_audit_event(
+        db, current_user.username, "workflow.reset_draft",
+        entity_type="block", entity_id=block_id,
+        project_id=getattr(generation, "project_id", None) if generation else None,
+        course_id=getattr(generation, "course_id", None) if generation else None,
+        metadata={"block_label": getattr(block, "block_label", None)},
     )
     _log.info("block_reset_draft  user=%s  block_id=%d", current_user.username, block_id)
     return WorkflowTransitionResponse(block_id=block_id, workflow_state="draft")
