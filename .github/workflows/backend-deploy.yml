@@ -50,15 +50,16 @@ jobs:
 
             echo "Starting Langfuse observability stack (self-hosted, P1)..."
             # A separate compose project (see langfuse/docker-compose.yml's own
-            # header) — langfuse/.env holds real secrets and is gitignored, so
-            # it must already exist on this host (one-time manual setup, see
-            # LANGFUSE_SETUP.md). Skip rather than fail the whole deploy if a
-            # host hasn't been provisioned with it yet — Langfuse is
-            # best-effort observability, not a dependency the API needs to boot.
-            if [ -f langfuse/.env ]; then
-              (cd langfuse && docker compose up -d --build --remove-orphans)
+            # header) reading its variables from this same root .env — real
+            # secrets, gitignored, must already be in it (one-time manual
+            # setup, see LANGFUSE_SETUP.md). Skip rather than fail the whole
+            # deploy if a host hasn't been provisioned with them yet —
+            # Langfuse is best-effort observability, not a dependency the API
+            # needs to boot.
+            if grep -q "^LANGFUSE_INIT_ORG_ID=" .env 2>/dev/null; then
+              docker compose -f langfuse/docker-compose.yml --env-file .env up -d --build --remove-orphans
             else
-              echo "langfuse/.env not found — skipping Langfuse startup."
+              echo "Langfuse variables not found in .env — skipping Langfuse startup."
             fi
 
             echo "Cleaning unused Docker images..."

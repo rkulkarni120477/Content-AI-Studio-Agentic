@@ -7,7 +7,11 @@
 #   redis         6379 -> 6389  (6379 is contentai_redis)
 #   postgres      5432 -> 5442  (5432 is occupied by another local Postgres)
 # Everything else matches upstream, including binding non-public services to
-# 127.0.0.1 only. Run from this directory: `docker compose up -d`.
+# 127.0.0.1 only.
+#
+# Variables come from the repo-root .env, not a file in this directory — run
+# from the repo root: `docker compose -f langfuse/docker-compose.yml --env-file .env up -d --build`.
+# See LANGFUSE_SETUP.md for the full list of required keys.
 #
 # CAS's own docker-compose.yml is a separate project — the two stacks don't
 # share a network. CAS's api container reaches this one via
@@ -31,7 +35,11 @@ services:
       - 127.0.0.1:3030:3030
     environment: &langfuse-worker-env
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3001}
-      DATABASE_URL: ${DATABASE_URL}
+      # Named LANGFUSE_DATABASE_URL, not DATABASE_URL — this now shares the
+      # root .env with CAS's own app, which already owns DATABASE_URL for its
+      # (unrelated) RDS connection. Reusing that name here would hand one of
+      # the two services the other's connection string.
+      DATABASE_URL: ${LANGFUSE_DATABASE_URL}
       SALT: ${SALT}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       TELEMETRY_ENABLED: false

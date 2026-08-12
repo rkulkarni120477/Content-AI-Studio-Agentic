@@ -2,16 +2,18 @@
 
 Self-hosted Langfuse (`langfuse/docker-compose.yml`) is a separate compose
 project from the main CAS stack — see the header comment in that file for why.
-The backend deploy workflow (`.github/workflows/backend-deploy.yml`) will
-start it automatically on every deploy **once** the steps below have been
-done once on the EC2 host. Until then, it silently skips Langfuse and deploys
+It reads its variables from the same root `.env` CAS itself uses, not a file
+of its own. The backend deploy workflow (`.github/workflows/backend-deploy.yml`)
+will start it automatically on every deploy **once** the keys below are in
+that file on the EC2 host. Until then, it silently skips Langfuse and deploys
 CAS/DIS as normal — nothing here can break the main deploy.
 
-## 1. Create `langfuse/.env` on the EC2 host
+## 1. Add these keys to the root `.env` on the EC2 host
 
-This file holds real secrets and is gitignored — `git reset --hard` in the
-deploy script will never create or touch it. SSH into the host, `cd
-/opt/content-ai/langfuse`, and create `.env` with these keys:
+Real secrets — the file is gitignored, so `git reset --hard` in the deploy
+script will never create or touch it. SSH into the host, `cd
+/opt/content-ai`, and append these to the existing `.env` (alongside
+`OPENAI_API_KEY`, `JWT_SECRET_KEY`, etc.):
 
 ```
 # Generate each of these three with: openssl rand -hex 32
@@ -24,7 +26,10 @@ NEXTAUTH_URL=http://localhost:3001
 POSTGRES_USER=langfuse
 POSTGRES_PASSWORD=<pick a strong password>
 POSTGRES_DB=langfuse
-DATABASE_URL=postgresql://langfuse:<same password as POSTGRES_PASSWORD>@postgres:5432/langfuse
+# Named LANGFUSE_DATABASE_URL, not DATABASE_URL — this file also has CAS's
+# own DATABASE_URL (its RDS connection); reusing that name would hand one
+# service the other's connection string.
+LANGFUSE_DATABASE_URL=postgresql://langfuse:<same password as POSTGRES_PASSWORD>@postgres:5432/langfuse
 
 CLICKHOUSE_USER=clickhouse
 CLICKHOUSE_PASSWORD=<pick a strong password>
@@ -44,14 +49,19 @@ LANGFUSE_INIT_ORG_ID=cas-org
 LANGFUSE_INIT_ORG_NAME=Content AI Studio
 LANGFUSE_INIT_PROJECT_ID=cas-prod
 LANGFUSE_INIT_PROJECT_NAME=CAS Production
-# Generate these two yourself (any random strings) — they become the API
-# keypair CAS's own .env authenticates with (step 2 below).
+# Generate these two yourself (any random strings) — they double as the API
+# keypair CAS's own app authenticates with below, so they're set only once.
 LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-<random>
 LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-<random>
 # First login user for the Langfuse web UI itself (separate from the API keypair).
 LANGFUSE_INIT_USER_EMAIL=<your email>
 LANGFUSE_INIT_USER_NAME=<your name>
 LANGFUSE_INIT_USER_PASSWORD=<pick a strong password>
+
+# So CAS's own API can actually send traces — reuse the values just above.
+LANGFUSE_HOST=http://host.docker.internal:3001
+LANGFUSE_PUBLIC_KEY=<same as LANGFUSE_INIT_PROJECT_PUBLIC_KEY above>
+LANGFUSE_SECRET_KEY=<same as LANGFUSE_INIT_PROJECT_SECRET_KEY above>
 ```
 
 Every `<...>` placeholder should be a real generated/chosen value — none of
@@ -59,17 +69,7 @@ these have safe defaults. Auto-provisioning (the `LANGFUSE_INIT_*` vars) only
 fires on that project's very first boot; changing them later does nothing
 until the underlying `langfuse_postgres_data` volume is wiped.
 
-## 2. Add 3 values to the root `.env` on the EC2 host
-
-So the CAS API can actually send traces. These must match what you put above:
-
-```
-LANGFUSE_HOST=http://host.docker.internal:3001
-LANGFUSE_PUBLIC_KEY=<same as LANGFUSE_INIT_PROJECT_PUBLIC_KEY above>
-LANGFUSE_SECRET_KEY=<same as LANGFUSE_INIT_PROJECT_SECRET_KEY above>
-```
-
-## 3. Decide who can reach the Langfuse dashboard, then lock it down
+## 2. Decide who can reach the Langfuse dashboard, then lock it down
 
 `langfuse-web` publishes port 3001 on **all interfaces** (`3001:3000`), unlike
 its other services (`clickhouse`/`redis`/`postgres`/`minio`), which are
@@ -91,9 +91,12 @@ CAS API, which already runs on `cas-api.academian.com`.
 
 ## Verifying it worked
 
-After the next deploy (or after running the two steps above and re-running
-`docker compose up -d --build --remove-orphans` from `/opt/content-ai/langfuse`
-by hand once):
+After the next deploy (or after adding the keys above and running this once
+by hand from `/opt/content-ai`):
+
+```bash
+docker compose -f langfuse/docker-compose.yml --env-file .env up -d --build --remove-orphans
+```
 
 ```bash
 docker ps --filter name=langfuse   # 6 containers, all "healthy" or "Up"
