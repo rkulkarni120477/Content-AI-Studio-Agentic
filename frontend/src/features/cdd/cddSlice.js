@@ -27,7 +27,7 @@ const cddSlice = createSlice({
       .addCase(fetchCddsThunk.fulfilled, (s, { payload }) => {
         s.isLoading = false;
         s.cdds = payload?.items ?? payload ?? [];
-        if (payload?.activeCdd) s.activeCdd = payload.activeCdd;
+        s.activeCdd = payload?.activeCdd ?? null;
       })
       .addCase(fetchCddsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
