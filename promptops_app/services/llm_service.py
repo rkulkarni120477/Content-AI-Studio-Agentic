@@ -122,9 +122,51 @@ def _invoke_primary(model_choice: str, system: str, user: str,
     return _call_openai_raw(system, user, model=m.api_model_id, max_tokens=max_tokens)
 
 
+def _sibling_candidates(model_choice: str):
+    """Same-provider models to try before crossing to the other provider.
+
+    Most failures that reach the fallback are scoped to a MODEL ID, not to the
+    provider: end-of-life (``ResourceNotFoundException``), provider-legacy, a
+    missing inference-profile prefix (``ValidationException``), or no Bedrock model
+    access for that ID (``AccessDeniedException``). All four were hit on this
+    account. A sibling model reached over the same connection, credentials and
+    region very likely succeeds, so trying Sonnet after an Opus failure is both
+    cheaper and closer to what the caller asked for than jumping to OpenAI.
+
+    Crossing providers also has costs that belong at the END of the chain, not the
+    start: the prompts and JSON contracts are tuned per model family, per-request
+    cost basis changes, and — the important one — content moves to a different
+    vendor. That is a data-governance decision, and an exception handler is the
+    wrong place to make it silently for instructor-only source material.
+
+    Catalog order, minus the model that just failed.
+    """
+    from promptops_app.core.models import BEDROCK_MODELS, OPENAI_MODELS, resolve_model
+
+    failed = resolve_model(model_choice)
+    pool = BEDROCK_MODELS if failed.provider == "bedrock" else OPENAI_MODELS
+    return [m for m in pool if m.api_model_id != failed.api_model_id]
+
+
+def _invoke_model(model_def, system: str, user: str,
+                  max_tokens: Optional[int] = None) -> LLMResponse:
+    """Call one specific catalog model, capped to its own output ceiling."""
+    capped = (min(max_tokens, model_def.max_output_tokens)
+              if max_tokens is not None else None)
+    if model_def.provider == "bedrock":
+        return _call_bedrock_raw(system, user, model_id=model_def.api_model_id,
+                                 max_tokens=capped)
+    return _call_openai_raw(system, user, model=model_def.api_model_id,
+                            max_tokens=capped)
+
+
 def _invoke_fallback(model_choice: str, system: str, user: str,
                      max_tokens: Optional[int] = None) -> LLMResponse:
     """Fall back to the opposite provider using its first catalog entry.
+
+    This is the LAST resort in the chain — same-provider siblings are tried first
+    (see _sibling_candidates). Reached when every model on the primary's provider
+    failed, which points at the provider/credentials rather than any one model.
 
     ``max_tokens`` is capped to the FALLBACK model's own catalog ceiling, not
     dropped or shrunk arbitrarily — it's sized for the PRIMARY model (e.g.
@@ -243,7 +285,36 @@ def generate_with_metadata(
                 model_choice, last_error_type, exc,
             )
 
-    # ── Attempt 3: cross-provider fallback ───────────────────────────────────
+    # ── Attempt 3: same-provider siblings, cheapest correction first ─────────
+    # A failure that reaches here is usually scoped to the model ID (EOL, legacy,
+    # wrong prefix, no model access) rather than the provider, so a sibling over the
+    # same connection is the closest substitute — Sonnet for an Opus failure, not
+    # GPT. Crossing providers changes prompt/JSON behaviour, cost basis and which
+    # vendor sees the content, so it stays last.
+    if _cfg.llm_fallback_enabled and last_error_type not in ("auth",):
+        for candidate in _sibling_candidates(model_choice):
+            _log.info("Trying same-provider fallback [primary=%s candidate=%s]",
+                      model_choice, candidate.display_name)
+            try:
+                resp = _invoke_model(candidate, system_prompt, user_prompt,
+                                     max_tokens=max_tokens)
+                _log.warning(
+                    "Same-provider fallback succeeded [primary=%s used=%s duration=%.1fs]",
+                    model_choice, candidate.display_name, time.monotonic() - start,
+                )
+                result = _make_result(resp, start, "fallback_success")
+                if usage_ctx is not None:
+                    _log_usage_safe(result, usage_ctx)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                last_error_type = _classify(exc)
+                _log.warning(
+                    "Same-provider fallback failed [candidate=%s type=%s]: %s",
+                    candidate.display_name, last_error_type, exc,
+                )
+
+    # ── Attempt 4: cross-provider fallback (last resort) ─────────────────────
     fallback_label = "OpenAI" if _is_bedrock(model_choice) else "Bedrock"
     if _cfg.llm_fallback_enabled and last_error_type not in ("auth",):
         _log.info(

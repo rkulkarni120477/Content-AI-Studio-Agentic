@@ -161,3 +161,71 @@ def test_dis_default_text_models_are_verified_invokable():
             f"DIS default {step}={getattr(cfg, step)!r} is not verified invokable; "
             f"call_llm would silently return its stub for every {step} call."
         )
+
+
+# --------------------------------------------------------------------------- #
+# Fallback ordering: same provider before crossing to another vendor
+# --------------------------------------------------------------------------- #
+def test_sibling_candidates_are_same_provider_and_exclude_the_failed_model():
+    from promptops_app.services.llm_service import _sibling_candidates
+
+    sibs = _sibling_candidates("Claude Opus 4.8 (Bedrock)")
+    assert sibs, "an Opus failure must have somewhere to go on Bedrock"
+    assert all(m.provider == "bedrock" for m in sibs), "must not cross providers here"
+    assert all("opus-4-8" not in m.api_model_id for m in sibs), "the failed model was retried"
+    # Sonnet is the natural substitute for Opus and must be reached first.
+    assert "sonnet-4-5" in sibs[0].api_model_id
+
+
+def test_openai_primary_gets_openai_siblings():
+    from promptops_app.services.llm_service import _sibling_candidates
+    assert all(m.provider == "openai" for m in _sibling_candidates("GPT-5.4"))
+
+
+def test_invoke_model_caps_tokens_to_that_models_own_ceiling(monkeypatch):
+    """Each candidate has its own real limit; forwarding the primary's value gets a
+    400 before any generation rather than a longer answer."""
+    from promptops_app.core.models import resolve_model
+    from promptops_app.services import llm_service
+
+    seen = {}
+    monkeypatch.setattr(llm_service, "_call_bedrock_raw",
+                        lambda *a, **kw: seen.update(kw) or MagicMock())
+    haiku = resolve_model("Claude Haiku 4.5 (Bedrock)")   # ceiling 16384
+    llm_service._invoke_model(haiku, "sys", "user", max_tokens=32000)
+    assert seen["max_tokens"] == 16384
+    seen.clear()
+    llm_service._invoke_model(haiku, "sys", "user", max_tokens=1000)
+    assert seen["max_tokens"] == 1000
+
+
+def test_a_bedrock_failure_tries_bedrock_before_openai(monkeypatch):
+    """The regression this ordering fixes: an unavailable model ID sent content to a
+    different vendor when a sibling on the same connection would have worked."""
+    from promptops_app.services import llm_service
+
+    order = []
+
+    def bedrock_raw(system, user, model_id=None, max_tokens=None):
+        order.append(model_id)
+        if "opus" in model_id:
+            raise llm_service.LLMProviderError("AccessDeniedException for this model")
+        resp = MagicMock()
+        resp.text, resp.model = "ok", model_id
+        resp.prompt_tokens = resp.completion_tokens = 1
+        return resp
+
+    def openai_raw(*a, **kw):
+        order.append("OPENAI")
+        raise AssertionError("crossed providers before exhausting Bedrock")
+
+    monkeypatch.setattr(llm_service, "_call_bedrock_raw", bedrock_raw)
+    monkeypatch.setattr(llm_service, "_call_openai_raw", openai_raw)
+    monkeypatch.setattr(llm_service._cfg, "llm_fallback_enabled", True)
+
+    result = llm_service.generate_with_metadata(
+        "Claude Opus 4.8 (Bedrock)", "sys", "user", max_tokens=2000)
+
+    assert "OPENAI" not in order, f"jumped providers too early: {order}"
+    assert any("sonnet-4-5" in m for m in order), f"never tried Sonnet: {order}"
+    assert result.status in ("fallback_success", "retry_success", "success")
