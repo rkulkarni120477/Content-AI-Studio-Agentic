@@ -274,7 +274,10 @@ def retry_import(
         course_id=record.course_id,
         job_type="import_reverse",
     )
-    job_runner.submit(import_jobs.run_reverse_gen_job, job_id)
+    # dispatch, not job_runner — this route already imports dispatch and its task
+    # is registered in TASK_FOR_FUNC; calling job_runner directly silently pinned
+    # the job to the in-process threadpool even with Celery enabled.
+    dispatch.submit(import_jobs.run_reverse_gen_job, job_id)
 
     _log.info("import_retry_started  user=%s  import_id=%d  course_id=%s  job=%s",
               current_user.username, record.id, record.course_id, job_id)
