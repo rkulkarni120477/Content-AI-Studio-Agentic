@@ -357,6 +357,23 @@ def update_tenant(
     return _tenant_read(db, project)
 
 
+@router.delete("/{project_id}", status_code=204, summary="Permanently delete a tenant")
+def delete_tenant(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> None:
+    """Hard delete — the tenant and every course/block/generation/etc. under
+    it are gone, irreversibly. See tenant_service.hard_delete_tenant for
+    exactly what is and isn't touched (LLM usage/audit/budget history is
+    deliberately retained)."""
+    project = _get_tenant_or_404(db, project_id)
+    name = project.name
+    tenant_service.hard_delete_tenant(db, project)
+    db.commit()
+    _log.info("tenant_deleted  project_id=%d  name=%r", project_id, name)
+
+
 @router.get("/{project_id}/usage", response_model=TenantUsageResponse, summary="Tenant license usage")
 def tenant_usage(
     project_id: int,

@@ -297,3 +297,98 @@ def delete_custom_role(db: Session, role) -> None:
             f"This role is assigned to {in_use} member(s). Reassign them before deleting it."
         )
     db.delete(role)
+
+
+def hard_delete_tenant(db: Session, project) -> None:
+    """Permanently delete a tenant (Project) and everything scoped under it.
+
+    Per-course content (blocks, generations, blueprints, CDDs, imports, etc.)
+    is purged via course_repository.purge_course, which already implements
+    that full cascade (and commits per course — not one atomic transaction
+    for the whole tenant, matching purge_course's own existing behavior
+    elsewhere). What's left here is everything scoped directly to the
+    project or one of its clusters rather than to a specific course:
+    clusters, memberships, custom roles, the legacy project_user_assignments
+    grant table, and project-level (course_id IS NULL) fixings/preferences/
+    history/jobs/feedback.
+
+    LLM usage logs, audit log entries, and budget policies/spend rows are
+    deliberately left untouched — retained for billing/compliance history
+    even after the tenant itself is gone. They carry a bare project_id/
+    scope_id with no FK, so nothing breaks either way.
+    """
+    from promptops_app.database import (
+        CentralRepository, Cluster, Course, FeedbackDocument, FeedbackItem,
+        GenerationJob, ProjectUserAssignment, PromptFixing, TenantMembership,
+        TenantRole, User, UserPromptHistory, UserPromptPreference,
+    )
+    from promptops_app.repositories.course_repository import purge_course
+
+    project_id = project.id
+
+    course_ids = [c.id for c in db.query(Course.id).filter(Course.project_id == project_id).all()]
+    for course_id in course_ids:
+        purge_course(db, course_id)
+
+    cluster_ids = [c.id for c in db.query(Cluster.id).filter(Cluster.project_id == project_id).all()]
+
+    # Project-level-only rows (course_id IS NULL) — course-scoped rows were
+    # already handled per-course by purge_course above.
+    db.query(PromptFixing).filter(
+        PromptFixing.project_id == project_id, PromptFixing.course_id.is_(None),
+    ).delete(synchronize_session=False)
+    db.query(UserPromptPreference).filter(
+        UserPromptPreference.project_id == project_id, UserPromptPreference.course_id.is_(None),
+    ).delete(synchronize_session=False)
+    db.query(UserPromptHistory).filter(
+        UserPromptHistory.project_id == project_id, UserPromptHistory.course_id.is_(None),
+    ).delete(synchronize_session=False)
+    db.query(GenerationJob).filter(
+        GenerationJob.project_id == project_id, GenerationJob.course_id.is_(None),
+    ).delete(synchronize_session=False)
+
+    fb_doc_ids = [
+        d.id for d in db.query(FeedbackDocument.id)
+        .filter(FeedbackDocument.project_id == project_id, FeedbackDocument.course_id.is_(None))
+        .all()
+    ]
+    if fb_doc_ids:
+        db.query(FeedbackItem).filter(FeedbackItem.document_id.in_(fb_doc_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(FeedbackItem).filter(
+        FeedbackItem.project_id == project_id, FeedbackItem.course_id.is_(None),
+    ).delete(synchronize_session=False)
+    db.query(FeedbackDocument).filter(
+        FeedbackDocument.project_id == project_id, FeedbackDocument.course_id.is_(None),
+    ).delete(synchronize_session=False)
+
+    # Reusable templates stay — just detach them from this (now-gone) project/cluster.
+    db.query(CentralRepository).filter(CentralRepository.project_id == project_id).update(
+        {CentralRepository.project_id: None}, synchronize_session=False,
+    )
+    if cluster_ids:
+        db.query(CentralRepository).filter(CentralRepository.cluster_id.in_(cluster_ids)).update(
+            {CentralRepository.cluster_id: None}, synchronize_session=False,
+        )
+
+    # Membership/role/legacy-assignment rows — delete the grant, never the User.
+    db.query(TenantMembership).filter(TenantMembership.project_id == project_id).delete(
+        synchronize_session=False
+    )
+    db.query(TenantRole).filter(TenantRole.project_id == project_id).delete(
+        synchronize_session=False
+    )
+    db.query(ProjectUserAssignment).filter(ProjectUserAssignment.project_id == project_id).delete(
+        synchronize_session=False
+    )
+    # Just each user's "last-active tenant" pointer, not membership.
+    db.query(User).filter(User.project_id == project_id).update(
+        {User.project_id: None}, synchronize_session=False,
+    )
+
+    # ClusterPrompt rows cascade automatically (DB-level ON DELETE CASCADE).
+    if cluster_ids:
+        db.query(Cluster).filter(Cluster.id.in_(cluster_ids)).delete(synchronize_session=False)
+
+    db.delete(project)

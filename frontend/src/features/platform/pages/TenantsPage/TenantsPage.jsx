@@ -74,6 +74,9 @@ export default function TenantsPage() {
   const [viewContentEvent, setViewContentEvent] = useState(null);
   // Which tenant's labels are being edited; null shows the organization list.
   const [configTenantId, setConfigTenantId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
   const roleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
@@ -129,6 +132,26 @@ export default function TenantsPage() {
       load();
     } catch (e) {
       toast.error(extractErrorMessage(e));
+    }
+  }
+
+  function openDeleteConfirm(t) {
+    setDeleteTarget(t);
+    setDeleteConfirmText('');
+  }
+
+  async function handleDeleteTenant() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await platformService.deleteTenant(deleteTarget.id);
+      toast.success(`${deleteTarget.name} deleted`);
+      setDeleteTarget(null);
+      load();
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -320,6 +343,15 @@ export default function TenantsPage() {
                           </Button>
                           <Button variant="secondary" size="xs" onClick={() => toggleStatus(t)}>
                             {t.status === 'active' ? 'Suspend' : 'Activate'}
+                          </Button>
+                          <Button
+                            variant="danger-ghost"
+                            size="xs"
+                            aria-label={`Delete ${t.name}`}
+                            title="Delete tenant"
+                            onClick={() => openDeleteConfirm(t)}
+                          >
+                            🗑️
                           </Button>
                         </td>
                       </tr>
@@ -673,6 +705,41 @@ export default function TenantsPage() {
                 <pre className={styles.contentBlock__body}>{viewContentEvent.metadata.output}</pre>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Delete tenant"
+        size="sm"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</Button>
+            <Button
+              variant="danger"
+              onClick={handleDeleteTenant}
+              loading={deleting}
+              disabled={deleteConfirmText.trim() !== deleteTarget?.slug}
+            >
+              Delete permanently
+            </Button>
+          </>
+        )}
+      >
+        {deleteTarget && (
+          <div className={styles.form}>
+            <p>
+              This permanently deletes <strong>{deleteTarget.name}</strong> and every course, block,
+              generation, and document under it. This cannot be undone.
+            </p>
+            <Input
+              label={`Type "${deleteTarget.slug}" to confirm`}
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              autoFocus
+            />
           </div>
         )}
       </Modal>
