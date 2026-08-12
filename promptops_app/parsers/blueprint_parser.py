@@ -8,6 +8,7 @@ Extracted from core/shared.py (Phase 3 refactoring).
 
 import re
 import re as _re_engine  # alias used by the item-parsing engine
+from typing import Optional
 
 from promptops_app.prompt_templates import (
     BLUEPRINT_SYSTEM_PROMPT,
@@ -19,6 +20,7 @@ from promptops_app.prompt_templates import (
 )
 from promptops_app.core.llm_client import safe_json_loads
 from promptops_app.services.llm_service import generate_text as call_llm
+from promptops_app.services.usage_service import UsageLogContext
 
 # ---------------------------------------------------------------------------
 # Blueprint section visibility
@@ -203,8 +205,15 @@ def regen_single_item(
     custom_instruction: str,
     model_choice: str = "GPT-5.4",
     learning_signals: str = "",
+    usage_ctx: Optional["UsageLogContext"] = None,
 ) -> str:
-    """Regenerate a single item inside a section using the LLM."""
+    """Regenerate a single item inside a section using the LLM.
+
+    Pass usage_ctx (project/course/user) so this call's cost is attributed in
+    llm_usage_logs — this is a real, live LLM-calling path (cdd.py/blueprints.py/
+    blocks.py all route their per-item regenerate endpoint through here), not a
+    dead one; without it the call still logs, just as unattributed.
+    """
     user_p = (
         f"Section: {section_title}\n\n"
         f"Current item (index {item_index}): {item_text}\n\n"
@@ -213,7 +222,7 @@ def regen_single_item(
         + f"\n\nSection context:\n{section_content}"
     )
     sys_p = _ITEM_REGEN_SYSTEM
-    result = call_llm(model_choice, sys_p, user_p)
+    result = call_llm(model_choice, sys_p, user_p, usage_ctx)
     result = _re_engine.sub(r"^[-*•]\s*", "", result.strip())
     return result.strip()
 

@@ -23,6 +23,7 @@ from promptops_app.jobs.job_status import (
     set_failed,
     set_running,
 )
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def run_regenerate_item_job(job_id: str) -> None:
         )
         from promptops_app.repositories.block_repo import save_block_version
         from promptops_app.services.content_sanitizer import sanitize_stored_content
+        from promptops_app.services.usage_service import UsageLogContext
 
         params = json.loads(job.request_json)
         block_id = params["block_id"]
@@ -76,11 +78,18 @@ def run_regenerate_item_job(job_id: str) -> None:
 
         set_running(db, job, 45, "Regenerating item...")
         target = items[item_index]
+        usage_ctx = UsageLogContext(
+            user_name=user_name,
+            project_id=job.project_id,
+            course_id=job.course_id,
+            entity_type="block_item_regen", entity_id=str(block_id),
+        )
         new_item_text = regen_single_item(
             section_title=section_key or (block.block_label or "content"),
             section_content=original,
             item_index=item_index,
             item_text=target["text"],
+            usage_ctx=usage_ctx,
             custom_instruction=feedback,
             model_choice=model_choice,
         )
@@ -116,7 +125,12 @@ def run_regenerate_item_job(job_id: str) -> None:
         _log.exception("Regenerate-item job %s failed: %s", job_id, exc)
         if job is not None:
             try:
-                set_failed(db, job, "Item regeneration failed. Please try again.")
+                # BudgetExceededError's real "$X of $Y used" / "N of M tokens
+                # used" message must reach the user — a generic retry prompt
+                # hides that. Every other exception keeps the generic message
+                # rather than leaking raw DB/provider error detail.
+                message = str(exc) if isinstance(exc, BudgetExceededError) else "Item regeneration failed. Please try again."
+                set_failed(db, job, message)
             except Exception:  # pragma: no cover - best-effort status write
                 pass
     finally:

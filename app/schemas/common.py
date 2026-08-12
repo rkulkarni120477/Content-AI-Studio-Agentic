@@ -20,6 +20,8 @@ from typing import Generic, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
+from app.schemas.budget import UsageSummary
+
 # TypeVar for the generic paginated list items.
 T = TypeVar("T")
 
@@ -123,6 +125,10 @@ class JobStatusResponse(BaseModel):
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    usage_summary: Optional[UsageSummary] = Field(
+        default=None,
+        description="Cost/tokens for this job's LLM call + remaining budget headroom. Populated on completion.",
+    )
 
 
 # ---------------------------------------------------------------------------

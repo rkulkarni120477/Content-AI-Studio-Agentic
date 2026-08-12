@@ -1,7 +1,9 @@
 import { createSlice } from '@reduxjs/toolkit';
+import { attachBlockJobReducers } from '@features/shared/blockJob';
 import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, activateCddVersionThunk,
+  generateCddBlockThunk, pollCddJobThunk,
 } from './cddThunks';
 
 const initialState = {
@@ -11,6 +13,8 @@ const initialState = {
   isLoading:  false,
   isGenerating: false,
   error:      null,
+  // Block-wide async job tracking (digest pipeline).
+  blockJob:   null,  // { jobId, status, progress, currentStep }
 };
 
 const cddSlice = createSlice({
@@ -20,6 +24,9 @@ const cddSlice = createSlice({
     clearError(s) { s.error = null; },
     clearGenerating(s) { s.isGenerating = false; },
     setActiveCddLocal(s, { payload }) { s.activeCdd = payload; },
+    // Clear stale block-job status so a completed/failed banner from one course
+    // doesn't leak into another course's view on navigation.
+    resetBlockJob(s) { s.blockJob = null; },
   },
   extraReducers: (b) => {
     b
@@ -55,10 +62,13 @@ const cddSlice = createSlice({
           if (idx >= 0) s.cdds[idx] = { ...s.cdds[idx], active_version: payload.detail.active_version };
         }
       });
+
+    // Shared block-wide async-job cases (pending/fulfilled/rejected + poll).
+    attachBlockJobReducers(b, { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk });
   },
 });
 
-export const { clearError, clearGenerating, setActiveCddLocal } = cddSlice.actions;
+export const { clearError, clearGenerating, setActiveCddLocal, resetBlockJob } = cddSlice.actions;
 export default cddSlice.reducer;
 
 export const selectCdds           = (s) => s.cdd.cdds;
@@ -67,3 +77,4 @@ export const selectCddVersions    = (s) => s.cdd.versions;
 export const selectCddLoading     = (s) => s.cdd.isLoading;
 export const selectCddGenerating  = (s) => s.cdd.isGenerating;
 export const selectCddError       = (s) => s.cdd.error;
+export const selectCddBlockJob     = (s) => s.cdd.blockJob;

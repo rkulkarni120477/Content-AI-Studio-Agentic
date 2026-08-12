@@ -237,9 +237,49 @@ class AppSettings(BaseSettings):
     dis_default_client_id: str = Field(default="", alias="DIS_DEFAULT_CLIENT_ID")
     dis_available_clients: str = Field(default="aim,cengage", alias="DIS_AVAILABLE_CLIENTS")
     dis_super_admin_usernames: str = Field(default="", alias="DIS_SUPER_ADMIN_USERNAMES")
+
+    # ── Langfuse observability (P1 of claude_plan_platform_hardening) ────────
+    # Read directly by the langfuse SDK too (LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY
+    # env vars) — these fields exist so app/core/langfuse_client.py's server-side
+    # fetch (P1.4) doesn't need its own separate env-parsing.
+    langfuse_host: str = Field(default="http://localhost:3001", alias="LANGFUSE_HOST")
+    langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
     dis_super_admin_roles: str = Field(default="", alias="DIS_SUPER_ADMIN_ROLES")
     dis_user_client_map: str = Field(default="", alias="DIS_USER_CLIENT_MAP")
     dis_access_config_path: str = Field(default="", alias="DIS_ACCESS_CONFIG_PATH")
+
+    # ── Digest pipeline (block-wide CDD/Blueprint) ────────────────────────────
+    # Master switch for the enumerate→map→reduce→verify digest path. Default OFF:
+    # when false, CDD generation is byte-identical to today (legacy single call).
+    # The allowlist scopes the flag to specific clients so AIM can flip on first
+    # while every other tenant stays on the legacy path (multi-tenant safety).
+    digest_pipeline_enabled: bool = Field(default=False, alias="DIGEST_PIPELINE_ENABLED")
+    digest_pipeline_clients: str = Field(default="aim", alias="DIGEST_PIPELINE_CLIENTS")
+
+    # ── Prompt guidance (DB-maintained prompt → MAP/REDUCE guidance) ──────────
+    # How much of the course's selected CDD/Blueprint prompt reaches the single
+    # distillation call, and how much guidance it may emit. These were previously
+    # hardcoded at 6000/2500/12 — far too small for a real block prompt (AIM's
+    # Block 2 CDD template is ~15.7k chars), which silently dropped ~60% of the
+    # admin's own instructions before the distiller ever saw them. A prompt longer
+    # than the input cap is now WINDOWED (up to `..._max_windows` chunks, each
+    # distilled and merged) rather than truncated, so raising these trades cost for
+    # fidelity instead of correctness.
+    prompt_guidance_max_prompt_chars: int = Field(
+        default=48000, alias="PROMPT_GUIDANCE_MAX_PROMPT_CHARS", gt=0)
+    prompt_guidance_max_chars: int = Field(
+        default=8000, alias="PROMPT_GUIDANCE_MAX_CHARS", gt=0)
+    prompt_guidance_max_items: int = Field(
+        default=24, alias="PROMPT_GUIDANCE_MAX_ITEMS", gt=0)
+    prompt_guidance_max_windows: int = Field(
+        default=4, alias="PROMPT_GUIDANCE_MAX_WINDOWS", gt=0)
+    # In-process memo of distillations, keyed by a content hash of the prompt text.
+    # A block-wide generation is one distillation call per request; the prompt
+    # changes rarely, so this removes a redundant LLM call (and its latency) from
+    # every repeat generation. Content-keyed ⇒ an edited prompt misses naturally.
+    prompt_guidance_cache_size: int = Field(
+        default=64, alias="PROMPT_GUIDANCE_CACHE_SIZE", ge=0)
 
     # ── Validators ────────────────────────────────────────────────────────────
 
@@ -248,6 +288,17 @@ class AppSettings(BaseSettings):
     def _normalise_log_level(cls, value: object) -> object:
         """Normalise log level to uppercase so INFO and info both work."""
         return value.upper() if isinstance(value, str) else value
+
+    def digest_pipeline_on_for(self, client_id: str) -> bool:
+        """Whether the digest pipeline is active for *client_id*.
+
+        Master switch AND (empty allowlist ⇒ all clients, else membership). A
+        blank/unknown client is only enabled when the allowlist is empty.
+        """
+        if not self.digest_pipeline_enabled:
+            return False
+        allow = {c.strip().lower() for c in (self.digest_pipeline_clients or "").split(",") if c.strip()}
+        return not allow or (client_id or "").strip().lower() in allow
 
     # ── Safe plain-text accessors ─────────────────────────────────────────────
     # Use these when an external library needs the raw string.

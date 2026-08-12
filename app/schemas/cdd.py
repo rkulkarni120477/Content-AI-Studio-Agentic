@@ -21,6 +21,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.budget import UsageSummary
 from app.schemas.json_fields import parse_optional_json_dict
 
 
@@ -142,6 +143,25 @@ class CDDGenerateRequest(BaseModel):
             "If provided, replaces the default user prompt template. "
             "The override should already have all variables interpolated."
         ),
+    )
+
+    # ── Digest pipeline (block-wide CDD) ──────────────────────────────────────
+    block: Optional[str] = Field(
+        default=None,
+        description=(
+            "Block label (e.g. 'Block 2') for the block-wide digest pipeline. "
+            "Only used when the digest pipeline is enabled for the course's client; "
+            "when omitted the legacy single-call CDD path runs unchanged."
+        ),
+        examples=["Block 2"],
+    )
+    quality_tier: Optional[str] = Field(
+        default=None,
+        description=(
+            "Quality tier for the block-wide REDUCE model: 'draft' | 'standard' | "
+            "'premium'. Defaults to 'standard'. Ignored by the legacy path."
+        ),
+        examples=["standard", "premium"],
     )
 
 
@@ -347,6 +367,7 @@ class CDDRegenerateItemResponse(BaseModel):
 
     updated_content: str
     patched_item: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class CDDRegenerateSectionRequest(BaseModel):
@@ -361,3 +382,4 @@ class CDDRegenerateSectionResponse(BaseModel):
     """Freshly generated content for the section."""
 
     updated_content: str
+    usage_summary: Optional[UsageSummary] = None

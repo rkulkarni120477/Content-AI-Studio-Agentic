@@ -7,6 +7,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.budget import UsageSummary
 from app.schemas.json_fields import parse_optional_json_dict
 
 
@@ -67,6 +68,35 @@ class BlueprintGenerateRequest(BaseModel):
     system_prompt_override: Optional[str] = None
     user_prompt_override: Optional[str] = None
 
+    # ── Digest pipeline (block-wide Blueprint) ────────────────────────────────
+    block: Optional[str] = Field(
+        default=None,
+        description=(
+            "Block label (e.g. 'Block 2') for the block-wide digest Blueprint. "
+            "When set and the digest pipeline is enabled for the course's client, a "
+            "day-by-day Block Blueprint is produced from source digests (selected_module "
+            "is ignored). When omitted the legacy module-blueprint path runs unchanged."
+        ),
+        examples=["Block 2"],
+    )
+    quality_tier: Optional[str] = Field(
+        default=None,
+        description="Quality tier for the block-wide REDUCE model: 'draft' | 'standard' | 'premium'.",
+        examples=["standard", "premium"],
+    )
+    day_number: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Day number within the block, when selected_module refers to a Day (not a "
+            "Module). Enriches this single-item generation's grounding with the digest "
+            "pipeline's day-scoped context (topic, ACS codes, source units). Does not "
+            "change the output shape and does not engage the whole-block digest "
+            "pipeline — that path is driven by 'block' alone and ignores this field."
+        ),
+        examples=[3],
+    )
+
 
 class BlueprintVersionCreateRequest(BaseModel):
     """Commit manually edited blueprint content as a new version."""
@@ -92,6 +122,7 @@ class BlueprintRegenerateItemResponse(BaseModel):
 
     updated_content: str
     patched_item: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class BlueprintRegenerateSectionRequest(BaseModel):
@@ -107,6 +138,7 @@ class BlueprintRegenerateSectionResponse(BaseModel):
     """Freshly generated content for the section."""
 
     updated_content: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class BlueprintPinRequest(BaseModel):

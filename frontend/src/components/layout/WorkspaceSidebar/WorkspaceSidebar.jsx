@@ -50,7 +50,7 @@ export default function WorkspaceSidebar() {
   const { courseId } = useParams();
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const { logout } = useAuth();
+  const { logout, isPlatformAdmin, projectId: authProjectId } = useAuth();
   const L = useLabels();
   const proj = useAppSelector(selectSelectedProject);
   const cluster = useAppSelector(selectSelectedCluster);
@@ -76,10 +76,18 @@ export default function WorkspaceSidebar() {
   }
 
   function goProjects() {
-    dispatch(setSelectedProject(null));
+    if (isPlatformAdmin) {
+      dispatch(setSelectedProject(null));
+      dispatch(setSelectedCluster(null));
+      dispatch(setSelectedCourse(null));
+      navigate(ROUTES.DASHBOARD);
+      return;
+    }
+    const pid = proj?.id || authProjectId;
+    if (!pid) return;
     dispatch(setSelectedCluster(null));
     dispatch(setSelectedCourse(null));
-    navigate(ROUTES.DASHBOARD);
+    navigate(ROUTES.PROJECT_CLUSTERS(pid));
   }
 
   function goClusters() {

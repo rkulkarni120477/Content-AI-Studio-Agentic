@@ -199,45 +199,32 @@
   @include custom-scrollbar;
 }
 
-/* Wide worksheet tables (DLU day map, ACS registry, source inventory) render as
-   readable grids and scroll left-right within the section (via .section__preview's
-   overflow-x) instead of collapsing into one-character columns. */
+/* Wide worksheet tables (DLU day map, ACS registry) scroll horizontally
+   inside the section body instead of stretching the page. `display: block`
+   on the <table> itself (the previous approach) breaks the table layout
+   algorithm entirely, so the browser never gives it a natural content width
+   to scroll — it just collapses to the container and wraps every cell one
+   character per line. Instead the wrapper scrolls (`overflow-x: auto` here)
+   and the table keeps `display: table` so each column sizes to its content,
+   with a floor/ceiling per cell so no single column can dominate or collapse. */
 .section__preview {
+  overflow-x: auto;
+  @include custom-scrollbar;
+
+  :global(.markdown-content) table,
   table {
-    // `width: auto` + a per-cell min-width lets columns size to content and the
-    // table overflow the container (triggering horizontal scroll) rather than
-    // being squeezed to 100% and collapsing. min-width:100% keeps a small table
-    // filling the width.
-    width: auto;
+    width: max-content;
     min-width: 100%;
-    border-collapse: collapse;
-    margin: $space-2 0;
-    font-size: 0.82rem;
+    table-layout: auto;
   }
 
-  th,
-  td {
-    border: 1px solid $color-gray-200;
-    padding: $space-2 $space-3;
-    min-width: 96px;   // no more 1-character columns
-    max-width: 340px;  // long cells wrap here instead of running off-screen
-    vertical-align: top;
-    text-align: left;
+  :global(.markdown-content) th,
+  :global(.markdown-content) td,
+  th, td {
     white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
-  th {
-    white-space: nowrap;   // headers stay on one line, not letter-by-letter
-    background: $color-gray-50;
-    color: $color-gray-800;
-    font-weight: $font-weight-semibold;
-    position: sticky;      // header stays visible while scrolling the rows
-    top: 0;
-    z-index: 1;
-  }
-
-  tbody tr:nth-child(even) td {
-    background: $color-gray-50;   // subtle zebra striping for readability
+    min-width: 140px;
+    max-width: 320px;
+    word-break: break-word;
+    vertical-align: top;
   }
 }

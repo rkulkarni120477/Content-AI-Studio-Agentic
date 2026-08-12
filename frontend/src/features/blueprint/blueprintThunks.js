@@ -1,8 +1,9 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { blueprintService } from './services/blueprintService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
+import { createBlockJobThunks } from '@features/shared/blockJob';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -54,6 +55,24 @@ export const generateBlueprintThunk = createAsyncThunk(
     }
   },
 );
+
+/**
+ * Block-wide (digest-pipeline) Block Blueprint generation — enqueue + poll via
+ * the shared factory (same robust polling lifecycle as CDD; see
+ * @features/shared/blockJob). Server persists AND pins on completion.
+ */
+export const { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk } =
+  createBlockJobThunks({
+    prefix: 'blueprint',
+    deliverable: 'blueprint',
+    enqueue: (payload) => blueprintService.generateBlueprintBlock(payload),
+    getJobStatus: (jobId) => blueprintService.getJobStatus(jobId),
+    completedMessage: 'Block Blueprint generated and set as active.',
+    failedMessage: 'Blueprint generation failed.',
+    onComplete: (dispatch, courseId) => {
+      if (courseId) dispatch(fetchBlueprintsThunk(courseId));
+    },
+  });
 
 export const setActiveBlueprintThunk = createAsyncThunk(
   'blueprint/setActive',
@@ -109,9 +128,15 @@ export const regenerateBlueprintItemThunk = createAsyncThunk(
   'blueprint/regenerateItem',
   async ({ blueprintId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      return await blueprintService.regenerateItem(blueprintId, {
+      const result = await blueprintService.regenerateItem(blueprintId, {
         sectionKey, sectionContent, itemIndex, feedback, modelChoice,
       });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
+        else toast.success(`Item regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -120,9 +145,15 @@ export const regenerateBlueprintSectionThunk = createAsyncThunk(
   'blueprint/regenerateSection',
   async ({ blueprintId, sectionKey, feedback, modelChoice, teacherMode }, { rejectWithValue }) => {
     try {
-      return await blueprintService.regenerateSection(blueprintId, {
+      const result = await blueprintService.regenerateSection(blueprintId, {
         sectionKey, feedback, modelChoice, teacherMode,
       });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
+        else toast.success(`Section regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

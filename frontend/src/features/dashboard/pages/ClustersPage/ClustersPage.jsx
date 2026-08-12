@@ -18,7 +18,7 @@ import ClusterPromptManager from '@components/cluster/ClusterPromptManager/Clust
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import { useAuth } from '@hooks/useAuth';
-import { ROUTES } from '@utils/constants';
+import { ROUTES, projectHomeRoute } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import gridStyles from '@features/dashboard/styles/selectionGrid.module.scss';
 import pageStyles from './ClustersPage.module.scss';
@@ -27,7 +27,7 @@ export default function ClustersPage() {
   const { projectId } = useParams();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const { hasPermission, isAdmin } = useAuth();
+  const { hasPermission, isAdmin, isPlatformAdmin, projectId: authProjectId } = useAuth();
   const clusters = useAppSelector(selectClusters);
   const selProj = useAppSelector(selectSelectedProject);
   const isLoadingClusters = useAppSelector(selectIsLoadingClusters);
@@ -38,6 +38,7 @@ export default function ClustersPage() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [cpMgrOpen, setCpMgrOpen] = useState(false);
+  const [projectLoadError, setProjectLoadError] = useState(null);
 
   const pid = Number(projectId);
   const canManage = hasPermission('course.create') || isAdmin;
@@ -45,7 +46,7 @@ export default function ClustersPage() {
 
   useEffect(() => {
     if (!pid) {
-      navigate(ROUTES.DASHBOARD, { replace: true });
+      navigate(projectHomeRoute(isPlatformAdmin, authProjectId), { replace: true });
       return;
     }
     async function syncProject() {
@@ -53,12 +54,21 @@ export default function ClustersPage() {
       try {
         const p = await dashboardService.getProject(pid);
         dispatch(setSelectedProject(p));
-      } catch {
-        navigate(ROUTES.DASHBOARD, { replace: true });
+      } catch (e) {
+        const fallback = projectHomeRoute(isPlatformAdmin, authProjectId);
+        // For a non-platform-admin viewing their own project, the fallback
+        // IS this page's own URL — navigating there is a no-op (no route
+        // change, no effect re-run), so selProj stays null forever and the
+        // loader below spins indefinitely. Show the failure instead.
+        if (fallback === ROUTES.PROJECT_CLUSTERS(pid)) {
+          setProjectLoadError(extractErrorMessage(e) || 'Could not load this project.');
+        } else {
+          navigate(fallback, { replace: true });
+        }
       }
     }
     syncProject();
-  }, [pid, selProj?.id, dispatch, navigate]);
+  }, [pid, selProj?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
   useEffect(() => {
     if (pid) dispatch(fetchClustersThunk(pid));
@@ -97,7 +107,12 @@ export default function ClustersPage() {
     }
   }
 
-  if (!selProj) return null;
+  if (projectLoadError) {
+    return (
+      <EmptyState icon="⚠️" title="Couldn't load this project" message={projectLoadError} />
+    );
+  }
+  if (!selProj) return <Loader size="xl" overlay />;
 
   return (
     <SelectionLayout
@@ -141,6 +156,7 @@ export default function ClustersPage() {
               key={cluster.id}
               title={`🗂️ ${cluster.name}`}
               description={cluster.description}
+              descriptionPlaceholder="No description provided."
               footerLine={`${cluster.course_count ?? 0} title${cluster.course_count !== 1 ? 's' : ''}`}
               onOpen={() => handleOpen(cluster)}
               onEdit={() => setEditModal({ type: 'cluster', item: cluster })}

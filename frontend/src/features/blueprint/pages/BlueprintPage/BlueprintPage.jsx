@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,12 +7,13 @@ import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
+  generateBlueprintBlockThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
   selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
   selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintError,
-  selectBlueprintGenerationMode, setGenerationMode,
+  selectBlueprintGenerationMode, setGenerationMode, selectBlueprintBlockJob, resetBlockJob,
 } from '@features/blueprint/blueprintSlice';
 import { selectActiveCdd, selectCdds } from '@features/cdd/cddSlice';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
@@ -24,6 +25,8 @@ import {
 import { selectActiveStyle } from '@features/style/styleSlice';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { selectIsAdmin } from '@features/auth/authSlice';
+import { useAuth } from '@hooks/useAuth';
+import BlockWidePanel from '@components/generation/BlockWidePanel/BlockWidePanel';
 import { adminService } from '@features/admin/services/adminService';
 import {
   buildModuleOptions,
@@ -51,6 +54,7 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { inferBlockLabel } from '@utils/blockLabel';
 import { useLabels } from '@hooks/useLabels';
 import styles from './BlueprintPage.module.scss';
 
@@ -75,9 +79,23 @@ export default function BlueprintPage() {
   const isLoading = useAppSelector(selectBlueprintLoading);
   const isGenerating = useAppSelector(selectBlueprintGenerating);
   const error = useAppSelector(selectBlueprintError);
+  const blockJob = useAppSelector(selectBlueprintBlockJob);
+  const { user } = useAuth();
+  // Block-wide (digest-pipeline) generation is opt-in per DIS client.
+  const digestPipelineEnabled = Boolean(user?.digest_pipeline_enabled);
 
   const [linkedCddId, setLinkedCddId] = useState(null);
   const [cddContent, setCddContent] = useState('');
+  // Block-wide (digest-pipeline) generation inputs.
+  const [blockLabel, setBlockLabel] = useState('');
+  const [qualityTier, setQualityTier] = useState('standard');
+  // See CddPage: once the user edits Block, stop auto-prefilling it — otherwise
+  // clearing the field would read as "needs a prefill" and refill as they delete.
+  const blockLabelTouched = useRef(false);
+  const onBlockLabelChange = useCallback((value) => {
+    blockLabelTouched.current = true;
+    setBlockLabel(value);
+  }, []);
   const [moduleSelKey, setModuleSelKey] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
@@ -141,10 +159,35 @@ export default function BlueprintPage() {
 
   useEffect(() => {
     if (!courseId) return;
+    // Clear any stale block-job banner from a previously-viewed course.
+    dispatch(resetBlockJob());
+    setBlockLabel('');
+    blockLabelTouched.current = false;
     dispatch(fetchBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
+
+  // Prefill Block from the text that names it, most specific source first: the
+  // selected prompt (written for a given block), then the linked CDD, then the
+  // course. Editable — the user sees and can correct what gets sent, because the
+  // label is an exact retrieval key server-side.
+  const inferredBlockLabel = useMemo(
+    () => inferBlockLabel(
+      promptConfig.systemPrompt,
+      promptConfig.userPromptTemplate,
+      linkedCdd?.title,
+      selCourse?.title,
+      selCourse?.name,
+    ),
+    [promptConfig.systemPrompt, promptConfig.userPromptTemplate,
+     linkedCdd?.title, selCourse?.title, selCourse?.name],
+  );
+
+  useEffect(() => {
+    if (!inferredBlockLabel || blockLabelTouched.current) return;
+    setBlockLabel((current) => (current ? current : inferredBlockLabel));
+  }, [inferredBlockLabel]);
 
   useEffect(() => {
     if (activeCdd?.id && linkedCddId === null) {
@@ -303,6 +346,7 @@ export default function BlueprintPage() {
       project_id: selProject.id,
       cdd_id: linkedCddId || null,
       selected_module: moduleRef,
+      day_number: mod.isDay ? mod.key : undefined,
       is_course_end: Boolean(mod.isCourseEnd),
       extra_instructions: titleHint + extraBlock,
       style_id: activeStyle?.id || null,
@@ -332,6 +376,25 @@ export default function BlueprintPage() {
     } catch {
       /* error surfaced via slice */
     }
+  }
+
+  async function onGenerateBlock() {
+    const payload = {
+      block: blockLabel.trim(),
+      course_id: Number(courseId),
+      project_id: selProject?.id ?? projectId,
+      course_title: selCourse?.title || selCourse?.name || '',
+      document_title: documentTitle.trim() || undefined,
+      quality_tier: qualityTier,
+      cdd_id: linkedCddId || undefined,
+      extra_instructions: extraInstructions,
+      model_choice: modelChoice,
+      // See the matching comment in CddPage.onGenerateBlock: without this the server
+      // cannot reach its DB prompt tier and distills guidance from the generic
+      // shipped template instead of the one selected in the dropdown.
+      prompt_id: promptConfig.selectedPromptId || undefined,
+    };
+    await dispatch(generateBlueprintBlockThunk(payload));
   }
 
   async function onPin(bpId) {
@@ -959,6 +1022,20 @@ export default function BlueprintPage() {
                   ⬇️ Download Prompt
                 </Button>
               </div>
+
+              {digestPipelineEnabled && (
+                <BlockWidePanel
+                  label={L.blueprint}
+                  hint={`Generate a whole-block ${L.blueprint} — a day-by-day plan built from every source in the block via enumerate → digest → reduce, with coverage checks. Runs in the background and is pinned as active when it finishes.`}
+                  block={blockLabel}
+                  onBlockChange={onBlockLabelChange}
+                  qualityTier={qualityTier}
+                  onQualityTierChange={setQualityTier}
+                  isGenerating={isGenerating}
+                  blockJob={blockJob}
+                  onGenerate={onGenerateBlock}
+                />
+              )}
             </div>
           </details>
         </div>

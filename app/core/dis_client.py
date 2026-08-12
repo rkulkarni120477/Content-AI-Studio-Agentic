@@ -126,6 +126,60 @@ class DISClient:
     def retrieve_context_sync(self, purpose: str, payload: Dict[str, Any], current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
         return self.request_sync("POST", f"/context/retrieve/{purpose}", json=payload, current_user=current_user, client_id=client_id)
 
+    # ── Digest pipeline (block-wide CDD/Blueprint) ───────────────────────────
+    def enumerate_block_sync(self, block: str, current_user: Any = None, client_id: str = "",
+                             include_units: bool = False) -> Dict[str, Any]:
+        """ENUMERATE a block: deterministic day/unit inventory + attribution +
+        declared-ACS + coverage flags. Read-only."""
+        return self.request_sync("POST", "/context/enumerate",
+                                 json={"block": block, "include_units": include_units},
+                                 current_user=current_user, client_id=client_id)
+
+    def build_digests_sync(self, block: str, force: bool = False, current_user: Any = None,
+                           client_id: str = "", map_guidance: str = "") -> Dict[str, Any]:
+        """Build (or refresh, lazily + cached) the per-day digest tier for a block.
+        Returns the build report (built/cached/failed, flags, attribution).
+
+        ``map_guidance`` (optional) is judgment/emphasis guidance distilled from
+        the course's selected CDD/Blueprint prompt (see
+        promptops_app.services.prompt_guidance.resolve_prompt_guidance) —
+        forwarded to every day's MAP call and folded into the cache key on the
+        DIS side. "" (the default) reproduces this call's exact pre-existing
+        behavior.
+
+        Sequential MAP is O(days) — a real 20-day cold build measured ~5 minutes,
+        already within ~5% of the client-wide self.timeout (300s default). A
+        block with more days, slower Bedrock latency, or per-day retries would
+        exceed that and fail the WHOLE build with no partial credit (the digest
+        cache is per-day, so a retry would be fast, but the first cold run is at
+        real risk). Overrides just this call's timeout rather than raising the
+        global default, which every other (genuinely fast) DIS call also uses —
+        those should keep failing fast on a real outage, not wait minutes."""
+        return self.request_sync("POST", "/context/digests/build",
+                                 json={"block": block, "force": force, "map_guidance": map_guidance},
+                                 current_user=current_user, client_id=client_id,
+                                 timeout=max(self.timeout, 1200.0))
+
+    def get_digests_bundle_sync(self, block: str, current_user: Any = None,
+                                client_id: str = "") -> Dict[str, Any]:
+        """Fetch the REDUCE bundle for a block: {enumerate, digests}. Read-only —
+        call build_digests_sync first to ensure freshness."""
+        return self.request_sync("GET", "/context/digests",
+                                 params={"block": block},
+                                 current_user=current_user, client_id=client_id)
+
+    def get_day_context_sync(self, block: str, day: int, audience: str = "instructor",
+                             supplement_k: int | None = None, current_user: Any = None,
+                             client_id: str = "") -> Dict[str, Any]:
+        """Structured-first day-scoped context (§7) for DLU / Learn It / Today's
+        Mission: every unit on ``block+day`` + the day's digest + a bounded kNN
+        supplement. Pass ``audience='student'`` to withhold instructor-only text."""
+        payload: Dict[str, Any] = {"block": block, "day": int(day), "audience": audience}
+        if supplement_k is not None:
+            payload["supplement_k"] = supplement_k
+        return self.request_sync("POST", "/context/retrieve/day", json=payload,
+                                 current_user=current_user, client_id=client_id)
+
     def documents_library_sync(self, params: Dict[str, Any], current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
         return self.request_sync("GET", "/context/documents/library", params=params, current_user=current_user, client_id=client_id)
 

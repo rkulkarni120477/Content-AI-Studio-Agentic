@@ -1,0 +1,29 @@
+.blockWide {
+  margin-top: $space-5;
+  padding-top: $space-4;
+  border-top: 1px dashed var(--border-color, #d0d0d0);
+
+  &__hint {
+    margin: $space-2 0 $space-3;
+    font-size: 0.85rem;
+    color: var(--text-secondary, #666);
+  }
+
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: $space-3;
+  }
+
+  &__block {
+    flex: 1 1 220px;
+    min-width: 180px;
+  }
+
+  &__status {
+    margin-top: $space-3;
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+}

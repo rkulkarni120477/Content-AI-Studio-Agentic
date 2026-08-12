@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,12 +7,16 @@ import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
   activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
+  generateCddBlockThunk,
 } from '@features/cdd/cddThunks';
 import { cddService } from '@features/cdd/services/cddService';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
-  selectCddLoading, selectCddGenerating, selectCddError,
+  selectCddLoading, selectCddGenerating, selectCddError, selectCddBlockJob,
+  resetBlockJob,
 } from '@features/cdd/cddSlice';
+import { useAuth } from '@hooks/useAuth';
+import BlockWidePanel from '@components/generation/BlockWidePanel/BlockWidePanel';
 import {
   selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
   selectModelChoice, selectExpertDomain, selectTargetAudience, selectAudienceCategory,
@@ -24,6 +28,7 @@ import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi'
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { createCddSchema, commitVersionSchema } from '@utils/validation';
 import { downloadBlob, formatDate } from '@utils/helpers';
+import { inferBlockLabel } from '@utils/blockLabel';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
@@ -68,6 +73,11 @@ export default function CddPage() {
   const isLoading = useAppSelector(selectCddLoading);
   const isGenerating = useAppSelector(selectCddGenerating);
   const error = useAppSelector(selectCddError);
+  const blockJob = useAppSelector(selectCddBlockJob);
+  const { user } = useAuth();
+  // Block-wide (digest-pipeline) generation is opt-in per DIS client; the server
+  // reports the capability on /auth/me so we can hide the control otherwise.
+  const digestPipelineEnabled = Boolean(user?.digest_pipeline_enabled);
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
   const [refDocIds, setRefDocIds] = useState([]);
@@ -87,6 +97,18 @@ export default function CddPage() {
   const [viewVersion, setViewVersion] = useState(null);
   const [versionDetail, setVersionDetail] = useState(null);
   const [savingBlock, setSavingBlock] = useState(false);
+  // Block-wide (digest-pipeline) generation inputs.
+  const [blockLabel, setBlockLabel] = useState('');
+  const [qualityTier, setQualityTier] = useState('standard');
+  // True once the user types in the Block field, so the auto-prefill below stops
+  // competing with them — including when they deliberately clear it (without this,
+  // an empty field would look like "needs a prefill" and we'd refill it as they
+  // delete). Reset per course, alongside blockLabel itself.
+  const blockLabelTouched = useRef(false);
+  const onBlockLabelChange = useCallback((value) => {
+    blockLabelTouched.current = true;
+    setBlockLabel(value);
+  }, []);
 
   const generateForm = useForm({
     resolver: zodResolver(createCddSchema),
@@ -118,9 +140,39 @@ export default function CddPage() {
 
   useEffect(() => {
     if (!courseId) return;
+    // Clear any block-job banner from a previously-viewed course so a stale
+    // completed/failed status can't leak into this course's view.
+    dispatch(resetBlockJob());
+    setBlockLabel('');
+    blockLabelTouched.current = false;
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
+
+  // Prefill the Block field from whatever text names the block, so the common case
+  // (a block-specific prompt on a block-specific course) doesn't ask the user to
+  // retype what's already on screen. Priority order = most specific first: the
+  // selected prompt names the block it was written for ("a Block Blueprint for
+  // Block 2 — Aircraft Drawings…"), which is a stronger signal than a course whose
+  // name may be generic. The value is a real editable field value, not a
+  // placeholder, so the user can see and correct what will be sent — the label is
+  // an exact retrieval key server-side, so a silent guess would be unsafe.
+  const inferredBlockLabel = useMemo(
+    () => inferBlockLabel(
+      promptConfig.systemPrompt,
+      promptConfig.userPromptTemplate,
+      displayCdd?.title,
+      selCourse?.title,
+      selCourse?.name,
+    ),
+    [promptConfig.systemPrompt, promptConfig.userPromptTemplate,
+     displayCdd?.title, selCourse?.title, selCourse?.name],
+  );
+
+  useEffect(() => {
+    if (!inferredBlockLabel || blockLabelTouched.current) return;
+    setBlockLabel((current) => (current ? current : inferredBlockLabel));
+  }, [inferredBlockLabel]);
 
   useEffect(() => {
     if (activeStyle?.id && selectedStyleId === null) {
@@ -254,6 +306,36 @@ export default function CddPage() {
         : undefined,
     };
     await dispatch(generateCddThunk(payload));
+  }
+
+  async function onGenerateBlock() {
+    const data = generateForm.getValues();
+    const payload = {
+      block: blockLabel.trim(),
+      course_id: Number(courseId),
+      project_id: selProject?.id ?? projectId,
+      course_title: data.course_title,
+      document_title: data.document_title,
+      estimated_duration_hours: data.duration_hours || undefined,
+      quality_tier: qualityTier,
+      extra_instructions: extraInstructions,
+      model_choice: modelChoice,
+      target_audience: targetAudience,
+      expert_domain: expertDomain,
+      // The prompt shown in the "Prompt Template" dropdown above. Without this the
+      // server can't reach its DB tier and falls through to the generic shipped
+      // cdd_generation.md file — so the panel would silently distill its guidance
+      // from a template the user never selected (verified: with the id, resolution
+      // is db/v4/14443c; without it, file/v1/1439c).
+      //
+      // Sent whenever a prompt is selected, including when an ad-hoc override is
+      // active: BlockWideGenerateRequest has no *_prompt_override fields, so the
+      // override text cannot be transmitted on this path at all, and the selected
+      // template is a far closer approximation than the generic default. An id that
+      // doesn't resolve to a pipeline row is ignored server-side, so this is safe.
+      prompt_id: promptConfig.selectedPromptId || undefined,
+    };
+    await dispatch(generateCddBlockThunk(payload));
   }
 
   async function onSetActive(cddId) {
@@ -787,6 +869,20 @@ export default function CddPage() {
                   ⬇️ Download Prompt
                 </Button>
               </div>
+
+              {digestPipelineEnabled && (
+                <BlockWidePanel
+                  label={L.cdd}
+                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
+                  block={blockLabel}
+                  onBlockChange={onBlockLabelChange}
+                  qualityTier={qualityTier}
+                  onQualityTierChange={setQualityTier}
+                  isGenerating={isGenerating}
+                  blockJob={blockJob}
+                  onGenerate={onGenerateBlock}
+                />
+              )}
             </div>
           </details>
         </div>

@@ -1,5 +1,8 @@
 import { WORKFLOW_STATES, ROLES, DATE_RANGE_PRESETS } from './constants';
 
+// Application display timezone — backend stores naive UTC; render in IST.
+export const APP_TIMEZONE = 'Asia/Kolkata';
+
 // ─── Formatting ───────────────────────────────────────────────────────────────
 // The backend stores/serializes timestamps as naive UTC (no Z / offset suffix —
 // SQLAlchemy `datetime.utcnow()` columns). `new Date("...")` on a string with no
@@ -16,7 +19,11 @@ function parseServerDate(dateStr) {
 export function formatDate(dateStr, opts = {}) {
   if (!dateStr) return '—';
   return new Intl.DateTimeFormat('en-IN', {
-    year: 'numeric', month: 'short', day: 'numeric', ...opts,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: APP_TIMEZONE,
+    ...opts,
   }).format(parseServerDate(dateStr));
 }
 
@@ -24,14 +31,23 @@ export function formatDateTime(dateStr) {
   return formatDate(dateStr, { hour: '2-digit', minute: '2-digit' });
 }
 
-/** Streamlit audit trail: YYYY-MM-DD HH:MM:SS */
+/** Streamlit audit trail: YYYY-MM-DD HH:MM:SS (IST) */
 export function formatTimestamp(dateStr) {
   if (!dateStr) return '—';
   const d = parseServerDate(dateStr);
   if (Number.isNaN(d.getTime())) return '—';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
-    + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: APP_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type) => parts.find((p) => p.type === type)?.value ?? '00';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
 }
 
 export function formatRelative(dateStr) {
@@ -221,10 +237,24 @@ function formatApiDetail(detail) {
   return String(detail);
 }
 
+const BUDGET_SCOPE_LABELS = { project: 'This project', course: 'This title', user: 'Your account' };
+
 export function extractErrorMessage(error) {
   if (typeof error === 'string') return error;
   // Custom AppError envelope: { error: { code, message, detail } } — see app/main.py.
   const appError = error?.response?.data?.error ?? error?.data?.error;
+  if (appError?.code === 'QUOTA_EXCEEDED') {
+    const d = appError.detail || {};
+    const who = BUDGET_SCOPE_LABELS[d.scope] || 'This scope';
+    if (d.limit_type === 'tokens') {
+      return `${who} has used ${Math.round(d.current_spend ?? 0).toLocaleString()} of its `
+        + `${Math.round(d.limit_usd ?? 0).toLocaleString()} token budget for this period. `
+        + 'Contact your platform admin to raise the limit.';
+    }
+    return `${who} has used $${Number(d.current_spend ?? 0).toFixed(2)} of its `
+      + `$${Number(d.limit_usd ?? 0).toFixed(2)} AI budget for this period. `
+      + 'Contact your platform admin to raise the limit.';
+  }
   if (appError?.message) return appError.message;
 
   const detail = error?.response?.data?.detail
@@ -237,6 +267,45 @@ export function extractErrorMessage(error) {
     error?.message ||
     'An unexpected error occurred.'
   );
+}
+
+// ─── Post-call usage summary (cost/tokens/budget remaining) ───────────────────
+// Shape comes from app/schemas/budget.py's UsageSummary, attached to every
+// generate/regenerate response — see budget_service.build_usage_summary().
+// Only the caller's own user-scope budget is ever mentioned here — project
+// and title budgets are a platform-admin/tenant concern, not something to
+// surface in every individual generation's toast.
+function myBudget(summary) {
+  return (summary?.budgets || []).find((b) => b.scope === 'user') || null;
+}
+
+// A token-capped budget has remaining_usd = null (no $ ceiling at all) —
+// `null <= 0` coerces to true, so this must branch on limit_type rather
+// than reading remaining_usd unconditionally.
+function isOverBudget(b) {
+  if (!b) return false;
+  if (b.limit_type === 'tokens') return (b.remaining_tokens ?? 0) <= 0;
+  return (b.remaining_usd ?? 0) <= 0;
+}
+
+export function hasOverBudget(summary) {
+  return isOverBudget(myBudget(summary));
+}
+
+export function formatUsageSummaryMessage(summary) {
+  if (!summary) return null;
+  const parts = [`Used $${(summary.cost_usd ?? 0).toFixed(4)} · ${(summary.total_tokens ?? 0).toLocaleString()} tokens`];
+  const b = myBudget(summary);
+  if (b) {
+    if (isOverBudget(b)) {
+      parts.push('Your budget: over budget');
+    } else if (b.limit_type === 'tokens') {
+      parts.push(`Your budget: ${(b.remaining_tokens ?? 0).toLocaleString()} tokens left`);
+    } else {
+      parts.push(`Your budget: $${(b.remaining_usd ?? 0).toFixed(2)} left`);
+    }
+  }
+  return `${parts.join('. ')}.`;
 }
 
 // ─── Debounce ─────────────────────────────────────────────────────────────────

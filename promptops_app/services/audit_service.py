@@ -82,8 +82,21 @@ AUDIT_EVENTS: dict[str, dict] = {
     "blueprint.version_activated": {"level": "info","entity": "blueprint",  "icon": "✅", "label": "Blueprint active version changed"},
     "blueprint.pinned":        {"level": "info",    "entity": "blueprint",  "icon": "📌", "label": "Blueprint pinned for generation"},
 
+    # ── Block-wide generation (digest pipeline) ───────────────────────────────
+    # The legacy paths are synchronous, so "requested" and "created" coincide and one
+    # `*.created` event covers both. Block-wide generation is always async, which
+    # splits them: without a request event, a job that fails leaves NO audit trace of
+    # an expensive, user-attributed operation ever having been asked for. These four
+    # close that gap — request and failure are audited separately from `cdd.created` /
+    # `blueprint.created`, which still record the successful outcome.
+    "cdd.block_requested":       {"level": "info",    "entity": "cdd",       "icon": "🧩", "label": "Block-wide CDD generation requested"},
+    "cdd.block_failed":          {"level": "warning", "entity": "cdd",       "icon": "⚠️", "label": "Block-wide CDD generation failed"},
+    "blueprint.block_requested": {"level": "info",    "entity": "blueprint", "icon": "🧩", "label": "Block-wide Blueprint generation requested"},
+    "blueprint.block_failed":    {"level": "warning", "entity": "blueprint", "icon": "⚠️", "label": "Block-wide Blueprint generation failed"},
+
     # ── Content Generation ────────────────────────────────────────────────────
     "generation.launched":     {"level": "info",    "entity": "generation", "icon": "🚀", "label": "Generation launched"},
+    "generation.trace_viewed": {"level": "info",    "entity": "generation", "icon": "🔍", "label": "Generation trace viewed"},
     "content.generated":       {"level": "info",    "entity": "generation", "icon": "⚡", "label": "Content generated"},
     "content.edited":          {"level": "info",    "entity": "block",      "icon": "✏️", "label": "Content block edited"},
     "content.regenerated":     {"level": "info",    "entity": "block",      "icon": "🔄", "label": "Content block regenerated"},

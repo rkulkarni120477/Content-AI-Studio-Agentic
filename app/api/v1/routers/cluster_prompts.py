@@ -196,6 +196,7 @@ def ai_generate_cluster_prompt(
 ) -> ClusterPromptAIGenerateResponse:
     from promptops_app.core.llm_client import safe_json_loads
     from promptops_app.services.llm_service import generate_text
+    from promptops_app.services.usage_service import UsageLogContext
 
     if request_body.mode == "refine":
         system_prompt = (
@@ -223,7 +224,15 @@ def ai_generate_cluster_prompt(
             "Return ONLY the JSON object with system_prompt and user_prompt_template."
         )
 
-    raw = generate_text(request_body.model_choice, system_prompt, user_prompt)
+    # No project/course scope reaches this endpoint by design (a ClusterPrompt
+    # draft isn't tied to one until saved) — attribute to the requesting user
+    # and a distinct entity_type so this cost is still findable, not silently
+    # unattributed.
+    usage_ctx = UsageLogContext(
+        user_name=str(getattr(current_user, "username", "") or ""),
+        entity_type="cluster_prompt_ai_generate",
+    )
+    raw = generate_text(request_body.model_choice, system_prompt, user_prompt, usage_ctx)
     if raw.startswith("ERROR"):
         raise ValidationError(f"LLM error: {raw}")
 

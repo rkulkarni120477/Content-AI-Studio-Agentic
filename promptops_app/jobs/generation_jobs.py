@@ -45,7 +45,8 @@ from promptops_app.prompt_templates import (
     PERSONA_PREFIX_TEMPLATE,
 )
 from promptops_app.services.llm_service import generate_with_metadata as _llm_call
-from promptops_app.services.usage_service import UsageLogContext, log_llm_usage
+from promptops_app.services.usage_service import UsageLogContext
+from promptops_app.services.budget_service import BudgetExceededError
 from promptops_app.core.content_utils import (
     build_context_injection,
     fill_template,
@@ -437,14 +438,16 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         # ── Stage 3 — LLM call ────────────────────────────────────────
         set_running(db, job, *STAGE_LLM)
-        _llm_result = _llm_call(model_choice, system_p, user_p)
-
-        # Log usage using the existing session (avoids extra connection overhead)
-        log_llm_usage(db, _llm_result, UsageLogContext(
+        # usage_ctx passed straight into the call — _llm_call (generate_with_metadata)
+        # logs it at the choke point itself now (see llm_client.py's _log_and_trace).
+        # A separate manual log_llm_usage() call here would double-count this call's
+        # cost, since every attempt is now logged automatically regardless of caller.
+        _llm_result = _llm_call(model_choice, system_p, user_p, UsageLogContext(
             user_name=user_name,
             project_id=project_id,
             course_id=course_id,
             entity_type="generation",
+            entity_id=job_id,
             prompt_template=_tpl_name,
             prompt_version=_tpl_ver,
         ))
@@ -646,7 +649,12 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         )
         if job:
             try:
-                set_failed(db, job, str(exc))
+                # BudgetExceededError's real "$X of $Y used" / "N of M tokens
+                # used" message must reach the user — a generic retry prompt
+                # hides that. Every other exception keeps a generic message
+                # rather than leaking raw DB/provider error detail.
+                message = str(exc) if isinstance(exc, BudgetExceededError) else "Generation failed. Please try again."
+                set_failed(db, job, message)
             except Exception:
                 pass
     finally:

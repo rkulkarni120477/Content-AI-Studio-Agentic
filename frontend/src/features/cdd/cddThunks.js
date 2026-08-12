@@ -1,9 +1,10 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { cddService } from './services/cddService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
+import { createBlockJobThunks } from '@features/shared/blockJob';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -60,6 +61,27 @@ export const generateCddThunk = createAsyncThunk(
   },
 );
 
+/**
+ * Block-wide (digest-pipeline) CDD generation — long-running, so it enqueues a
+ * job and polls. The server persists AND pins the CDD on completion, so the
+ * poller only refreshes the list. All polling-lifecycle robustness (terminal/
+ * cancelled handling, transient-error tolerance, missing-job_id guard) lives in
+ * the shared factory so CDD and Blueprint can't drift apart.
+ */
+export const { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk } =
+  createBlockJobThunks({
+    prefix: 'cdd',
+    deliverable: 'cdd',
+    enqueue: (payload) => cddService.generateCddBlock(payload),
+    getJobStatus: (jobId) => cddService.getJobStatus(jobId),
+    completedMessage: 'CDD generated and set as active.',
+    failedMessage: 'CDD generation failed.',
+    onComplete: (dispatch, courseId) => {
+      queueDeferredToast('CDD created and pinned as active.');
+      if (courseId) dispatch(fetchCddsThunk(courseId));
+    },
+  });
+
 export const setActiveCddThunk = createAsyncThunk(
   'cdd/setActive',
   async ({ cddId, courseId }, { rejectWithValue }) => {
@@ -107,9 +129,15 @@ export const regenerateCddItemThunk = createAsyncThunk(
   'cdd/regenerateItem',
   async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      return await cddService.regenerateItem(cddId, {
+      const result = await cddService.regenerateItem(cddId, {
         sectionKey, sectionContent, itemIndex, feedback, modelChoice,
       });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
+        else toast.success(`Item regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -118,7 +146,13 @@ export const regenerateCddSectionThunk = createAsyncThunk(
   'cdd/regenerateSection',
   async ({ cddId, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      return await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
+      const result = await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
+        else toast.success(`Section regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

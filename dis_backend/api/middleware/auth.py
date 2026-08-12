@@ -1,6 +1,12 @@
 """
 DIS – Auth Middleware + Role System
-Roles: super_admin > client_admin > user
+Roles: super_admin > client_admin > uploader > user
+
+"uploader" is a narrow tier for CAS's ID/author role: allowed to submit
+ingestion (upload/batch/folder-scan) only. Deliberately NOT a synonym for
+client_admin — it must not satisfy require_role("client_admin") anywhere,
+including the restricted-content gate in context.py's
+retrieve_course_generation_context (answer keys / instructor-only material).
 """
 from __future__ import annotations
 import logging, time
@@ -13,7 +19,7 @@ from config.settings import GlobalSettings, TenantConfig, get_settings, get_tena
 
 log = logging.getLogger(__name__)
 
-ROLE_LEVEL = {"super_admin": 3, "client_admin": 2, "user": 1}
+ROLE_LEVEL = {"super_admin": 4, "client_admin": 3, "uploader": 2, "user": 1}
 SKIP_PATHS = {
     "/", "/health", "/docs", "/redoc", "/openapi.json",
     "/docs-super-admin", "/docs-client-admin", "/docs-user",
@@ -73,6 +79,8 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
                 role = "super_admin"
             elif any(r in {"admin", "client_admin", "content_admin", "instructional_designer", "reviewer"} for r in roles):
                 role = "client_admin"
+            elif "uploader" in roles:
+                role = "uploader"
             else:
                 role = "user"
         else:

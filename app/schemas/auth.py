@@ -97,6 +97,13 @@ class UserProfileResponse(BaseModel):
     dis_role: str | None = Field(default=None, description="Resolved DIS role: super_admin | client_admin | user.")
     is_dis_super_admin: bool = Field(default=False, description="Whether this user can switch DIS clients.")
     available_clients: list[str] = Field(default_factory=list, description="Clients visible to this user in Source Library.")
+    # Capability flags the frontend uses to gate opt-in features without a
+    # second round-trip. Digest pipeline = block-wide CDD/Blueprint generation;
+    # resolved per the user's DIS client against the master switch + allowlist.
+    digest_pipeline_enabled: bool = Field(
+        default=False,
+        description="Whether block-wide (digest-pipeline) CDD/Blueprint generation is enabled for this user's DIS client.",
+    )
 
 
 class TokenResponse(BaseModel):

@@ -34,6 +34,13 @@ services:
     volumes:
       - .:/app
 
+    # host.docker.internal resolves automatically on Docker Desktop (local dev)
+    # but not on plain Docker Engine on Linux (prod EC2) — needed for
+    # DIS_API_BASE_URL and LANGFUSE_HOST, both of which point at
+    # host.docker.internal to reach sibling compose projects on this same host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     depends_on:
       redis:
         condition: service_healthy
@@ -77,6 +84,18 @@ services:
 
     env_file:
       - .env
+
+    # Without this, budget_service._live_flag()'s dotenv_values(".env") reads
+    # the .env baked into the image at build time, not the live host file —
+    # api's own bind mount below is what makes BUDGET_ENFORCEMENT_MODE/
+    # BUDGET_ENFORCEMENT_KILLSWITCH flip with no restart there; this worker
+    # runs block-wide generation's most expensive calls, so it needs the same
+    # live read, not a stale one that only updates on a full rebuild.
+    volumes:
+      - .:/app
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     depends_on:
       redis:

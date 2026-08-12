@@ -520,7 +520,7 @@ async def _create_ingestion_job(
 async def upload_file(
     request: Request,
     background_tasks: BackgroundTasks,
-    _=Depends(require_role("client_admin")),
+    _=Depends(require_role("uploader")),
     file: UploadFile = File(...),
     client_id: str = Form(""),
     source_relative_path: str = Form(""),
@@ -632,7 +632,7 @@ async def upload_file(
 @router.post("/batch", status_code=202)
 async def batch_upload(
     request: Request, background_tasks: BackgroundTasks,
-    _=Depends(require_role("client_admin")),
+    _=Depends(require_role("uploader")),
     files: List[UploadFile] = File(...), client_id: str = Form(""),
     course_id: str = Form(""), course_name: str = Form(""),
 ):
@@ -695,7 +695,7 @@ async def batch_upload(
 
 
 @router.post("/folder-scan", status_code=202)
-async def folder_scan(request: Request, body: FolderScanRequest, background_tasks: BackgroundTasks, _=Depends(require_role("client_admin"))):
+async def folder_scan(request: Request, body: FolderScanRequest, background_tasks: BackgroundTasks, _=Depends(require_role("uploader"))):
     """Scan a server-side folder recursively and ingest all supported files.
 
     v7 behavior:

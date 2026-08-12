@@ -85,6 +85,30 @@
   line-height: 1.55;
   color: $color-gray-800;
   font-family: inherit;
+
+  /* Wide worksheet tables (DLU day map, ACS registry) scroll horizontally
+     inside this wrapper instead of squeezing every column down to
+     letter-per-line wrapping — see the matching fix/rationale in
+     CddContentView.module.scss (same shared markdown-content table shape). */
+  overflow-x: auto;
+  @include custom-scrollbar;
+
+  :global(.markdown-content) table,
+  table {
+    width: max-content;
+    min-width: 100%;
+    table-layout: auto;
+  }
+
+  :global(.markdown-content) th,
+  :global(.markdown-content) td,
+  th, td {
+    white-space: normal;
+    min-width: 140px;
+    max-width: 320px;
+    word-break: break-word;
+    vertical-align: top;
+  }
 }
 
 .saveRow {

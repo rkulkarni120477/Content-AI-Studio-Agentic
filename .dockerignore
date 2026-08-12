@@ -1,5 +1,10 @@
 .git
 .gitignore
+# Real secrets — never bake these into an image layer. Both services that
+# read it (api, celery_worker) bind-mount the repo root at runtime, so they
+# see the live host file regardless; this only stops it from being copied in
+# at build time.
+.env
 __pycache__/
 *.pyc
 *.pyo
