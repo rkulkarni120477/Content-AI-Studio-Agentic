@@ -290,8 +290,13 @@ def _day_table_from_rows(rows: list[dict]) -> list[str]:
         # anywhere in this system — see worksheets.py's module docstring).
         quick_check = _cell(r.get("quick_check_targets") or "", default="NO AKTR DATA")
         exam_cluster = _cell(r.get("summative_exam_cluster") or "", default="")
+        # "Day 5", not "5" — the AIM reference's own Day # column is written that way,
+        # and a bare number makes every row read as a mismatch when the two are
+        # compared cell-by-cell. Numeric consumers read day_number off the row dicts,
+        # not this rendered cell.
+        day_label = f"Day {r['day_number']}" if r.get("day_number") is not None else "—"
         cells = [
-            str(r.get("day_number")), topic, handbook, handbook_edition, acs, concept_type,
+            day_label, topic, handbook, handbook_edition, acs, concept_type,
             concept_type_explanation, concept_scope, learn_while_doing, how_it_is_applied,
             hangar_activity, projects, assessment, quick_check, exam_cluster,
             files, objective, misconceptions,

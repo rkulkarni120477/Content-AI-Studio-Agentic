@@ -102,7 +102,10 @@ def _day_cells(result):
     for line in lines[2:]:                      # [1] is the |---| separator
         cells = [c.strip() for c in line.strip("|").split("|")]
         assert len(cells) == len(header), "row/header cell count mismatch"
-        out[cells[0]] = dict(zip(header, cells))
+        # The Day # cell renders as "Day 5" (matching the AIM reference), but these
+        # tests index by the bare number — normalise here so the day format stays a
+        # rendering detail rather than something every assertion has to know.
+        out[cells[0].removeprefix("Day ").strip()] = dict(zip(header, cells))
     return out
 
 
@@ -123,6 +126,8 @@ def test_every_row_has_one_cell_per_column():
     """A cell-count drift silently shifts every value one column left or right,
     which reads as plausible data in the wrong field."""
     cells = _day_cells(_reduce([_OK_DIGEST, {"day_number": 2, "digest_status": "failed"}], _REGISTRY))
+    # Keys are normalised by _day_cells; the rendered "Day N" format is pinned in
+    # test_block_wide_coverage.test_day_table_from_rows_produces_one_line_per_day.
     assert set(cells) == {"1", "2"}
 
 

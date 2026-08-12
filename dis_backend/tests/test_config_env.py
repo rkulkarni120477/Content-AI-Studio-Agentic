@@ -214,9 +214,13 @@ def test_without_bedrock_creds_the_shared_aws_pair_is_used(monkeypatch, load_con
     for k, v in (("AWS_ACCESS_KEY_ID", "AKIASHARED"), ("AWS_SECRET_ACCESS_KEY", "sharedsecret"),
                  ("AWS_REGION", "ap-south-1")):
         monkeypatch.setenv(k, v)
+    # Set to "" rather than deleted: GlobalSettings also reads dis_backend/.env, so
+    # deleting the process env leaves a real deployment's values in play and the test
+    # asserts against whatever that file happens to contain. An explicit empty value
+    # takes precedence over the file and exercises the blank-is-unset rule too.
     for k in ("DIS_BEDROCK_ACCESS_KEY_ID", "DIS_BEDROCK_SECRET_ACCESS_KEY",
               "DIS_BEDROCK_SESSION_TOKEN", "DIS_BEDROCK_REGION"):
-        monkeypatch.delenv(k, raising=False)
+        monkeypatch.setenv(k, "")
     kw = _settings(load_config).bedrock_client_kwargs()
     assert kw["aws_access_key_id"] == "AKIASHARED"
     assert kw["aws_secret_access_key"] == "sharedsecret"
