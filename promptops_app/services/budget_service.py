@@ -82,8 +82,13 @@ def _estimate_input_tokens(system_prompt: str, user_prompt: str) -> int:
     return (len(system_prompt or "") + len(user_prompt or "")) // _CHARS_PER_TOKEN_ESTIMATE
 
 
-def _worst_case_tokens(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> int:
-    return _estimate_input_tokens(system_prompt, user_prompt) + (max_tokens or WORST_CASE_OUTPUT_TOKENS)
+def _worst_case_tokens(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None,
+                       input_tokens: Optional[int] = None,
+                       output_tokens: Optional[int] = None) -> int:
+    """Worst-case total tokens for one call, from explicit estimates when the caller
+    has them (see check_budget's estimated_* params) else from prompt lengths."""
+    est_in = input_tokens if input_tokens is not None else _estimate_input_tokens(system_prompt, user_prompt)
+    return est_in + (output_tokens or max_tokens or WORST_CASE_OUTPUT_TOKENS)
 
 
 def period_key(period: str, now: Optional[datetime] = None) -> str:
@@ -310,9 +315,18 @@ def _levels_for(usage_ctx) -> list[tuple[str, str]]:
 
 
 def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: str,
-                  max_tokens: Optional[int] = None) -> BudgetCheckResult:
+                  max_tokens: Optional[int] = None,
+                  estimated_input_tokens: Optional[int] = None,
+                  estimated_output_tokens: Optional[int] = None) -> BudgetCheckResult:
     """Pre-flight quota check — the P2.3 choke point, called from
     _call_openai_raw/_call_bedrock_raw before the provider request.
+
+    ``estimated_input_tokens`` / ``estimated_output_tokens`` let a caller that knows
+    the SCALE of the work but not the individual prompts reserve honestly. The
+    block-wide digest MAP stage is the case that needs it: it runs N per-day calls
+    inside DIS, on DIS's own Bedrock client, so no single prompt pair exists on this
+    side to size the reservation from. Omitted (the default) ⇒ estimate from the
+    prompt lengths exactly as before, so every existing caller is unchanged.
 
     Checks project/course/user independently (P2.8): the call is blocked if
     ANY configured level would breach; "most-restrictive-wins" governs only
@@ -338,9 +352,14 @@ def check_budget(db, usage_ctx, *, system_prompt: str, user_prompt: str, model: 
         if not levels:
             return BudgetCheckResult(reservations=[], warnings=[])
 
-        worst_case_output = max_tokens or WORST_CASE_OUTPUT_TOKENS
-        worst_case_cost = estimate_cost(model, _estimate_input_tokens(system_prompt, user_prompt), worst_case_output)
-        worst_case_tokens = _worst_case_tokens(system_prompt, user_prompt, max_tokens)
+        worst_case_output = estimated_output_tokens or max_tokens or WORST_CASE_OUTPUT_TOKENS
+        worst_case_input = (estimated_input_tokens
+                            if estimated_input_tokens is not None
+                            else _estimate_input_tokens(system_prompt, user_prompt))
+        worst_case_cost = estimate_cost(model, worst_case_input, worst_case_output)
+        worst_case_tokens = _worst_case_tokens(
+            system_prompt, user_prompt, max_tokens,
+            input_tokens=worst_case_input, output_tokens=worst_case_output)
         dry_run = enforcement_mode() != "enforce"
 
         warnings: list[dict] = []

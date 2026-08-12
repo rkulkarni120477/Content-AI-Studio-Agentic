@@ -46,7 +46,8 @@ class QualityCheckAgent(BasePipelineAgent):
                 sample = (state.get('raw_text', '') or '')[:1200]
                 prompt = f'Review extraction quality. Return JSON only with passed boolean, overall_score 0-1, warnings array. Document type={state.get("doc_type")}. Text sample:\n{sample}'
                 resp, inp, out = call_llm(ctx.models.quality_check, prompt, max_tokens=180)
-                ctx.guard.record_usage(inp + out, 'quality_check')
+                ctx.guard.record_usage(inp + out, 'quality_check', tokens_in=inp, tokens_out=out,
+                                      model=ctx.models.quality_check)
                 llm_report = safe_json(resp)
                 if llm_report:
                     report.update(llm_report)

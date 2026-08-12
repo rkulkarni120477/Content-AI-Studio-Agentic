@@ -20,7 +20,7 @@ never diverge between them.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from config.settings import TenantConfig
 from services import indexing
@@ -80,7 +80,8 @@ def build_one_day(tenant_cfg: TenantConfig, day: Dict[str, Any], units: List[Dic
 
 
 def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
-                     budget: Dict[str, int], strategy: str) -> Dict[str, Any]:
+                     budget: Dict[str, int], strategy: str,
+                     model: str = "") -> Dict[str, Any]:
     built = sum(1 for p in per_day if p["status"] == "built")
     cached = sum(1 for p in per_day if p["status"] == "cached")
     failed = sum(1 for p in per_day if p["status"] == "failed")
@@ -94,11 +95,78 @@ def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
         "map_calls": budget["calls"],
         "map_tokens_in": budget["tok_in"],
         "map_tokens_out": budget["tok_out"],
+        # The extractor that produced those tokens. CAS needs it to price the MAP
+        # spend — token counts alone cannot be costed, and MAP runs on its own
+        # client outside CAS's usage/budget choke point, so this is the only way
+        # that spend reaches llm_usage_logs and the budget dashboards.
+        "map_model": model,
         "strategy": strategy,
         "attribution": en.attribution,
         "flags": en.flags,
         "per_day": sorted(per_day, key=lambda p: p["day_number"]),
     }
+
+
+class ExtractorUnavailable(RuntimeError):
+    """The configured MAP model cannot be invoked from this environment."""
+
+
+#: Models already proven invokable in THIS process. Successes are memoised, failures
+#: never are — so a build always fails fast while access is broken, and a fully cached
+#: rebuild (0 MAP calls) stays genuinely free instead of paying a probe every time.
+#: Deliberately not a TTL cache: if access is revoked mid-process the MAP calls
+#: themselves fail, and _llm_extract's key check turns that into a failed day rather
+#: than a silent default.
+_PREFLIGHT_OK: set[str] = set()
+
+
+def preflight_extractor(model: str) -> None:
+    """Confirm the extractor model is invokable before spending a whole block on it.
+
+    ``call_llm`` swallows every exception and returns a valid-JSON stub, so an
+    unavailable model does not raise — it quietly yields N digests whose fields are
+    all defaults. On 2026-08-12 that produced a Blueprint with 8 of 20 days at
+    concept_type "Unknown", every AM.I.B ACS code orphaned, and a job that reported
+    success; the only visible trace was the exported spreadsheet.
+
+    Model availability is per-region AND per-role, so it cannot be settled in config
+    review — it has to be probed from the environment that will do the work. One
+    cheap call (a handful of tokens) converts a silent block-wide degradation into a
+    single actionable error naming the model.
+
+    Raises ExtractorUnavailable, which the caller surfaces as a failed build.
+    """
+    if model in _PREFLIGHT_OK:
+        return                      # already proven in this process — see _PREFLIGHT_OK
+
+    # Imported here, not at module scope, so the monkeypatched seam the rest of the
+    # digest code uses (services.pipeline.common.call_llm) applies to the probe too.
+    from services.pipeline.common import call_llm
+
+    try:
+        reply, tokens_in, _ = call_llm(model, 'Reply with only: {"ok":true}', max_tokens=8)
+    except Exception as exc:                      # defensive: call_llm swallows today
+        raise ExtractorUnavailable(_unavailable_msg(model, repr(exc))) from exc
+
+    # Keyed on the token count, not the reply text: call_llm's failure path is the
+    # only thing that reports 0 input tokens, whereas every real provider (and the
+    # dev/mock path) reports a positive count. Matching on reply content instead
+    # would either miss a changed stub or reject a legitimately terse answer.
+    if not tokens_in:
+        raise ExtractorUnavailable(_unavailable_msg(model, reply[:160]))
+    _PREFLIGHT_OK.add(model)
+    log.info("digest preflight ok: model=%s", model)
+
+
+def _unavailable_msg(model: str, detail: str) -> str:
+    return (
+        f"Extractor model {model!r} could not be invoked from this environment "
+        f"(probe returned {detail!r}). Availability is per-region AND per-role: check "
+        f"the AWS region, the credentials actually in use, and whether that role has "
+        f"Bedrock model access for this ID. To run a different model here, set "
+        f"DIS_MODEL_DIGEST_EXTRACTION or DIS_MODEL_TEXT_ALL. The preceding "
+        f"'[LLM] failed' log line carries the underlying AWS error."
+    )
 
 
 def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
@@ -118,8 +186,13 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     so an edited prompt correctly busts stale cached digests. "" (the default)
     reproduces this function's exact pre-existing behavior.
     """
-    en = enumerate_block(tenant_cfg, block, client_id)
+    # Cheapest check first: one probe call before any store round-trip, so a
+    # misconfigured model costs a couple of tokens rather than an enumerate + N MAP
+    # calls that all quietly return defaults.
     model = tenant_cfg.pipeline.models.digest_extraction
+    preflight_extractor(model)
+
+    en = enumerate_block(tenant_cfg, block, client_id)
 
     if force:
         indexing.delete_digests(tenant_cfg, block, en.client_id)
@@ -154,7 +227,7 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
             budget[k] += res["budget"].get(k, 0)
         per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
 
-    return _finalize_report(block, en, per_day, budget, strategy="sequential")
+    return _finalize_report(block, en, per_day, budget, strategy="sequential", model=model)
 
 
 def _ensure_digest_index(tenant_cfg: TenantConfig) -> None:

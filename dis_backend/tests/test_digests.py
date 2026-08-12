@@ -921,19 +921,16 @@ def test_source_body_passes_everything_through_when_within_budget():
 
 
 def test_source_body_caps_total_and_drops_lowest_confidence_first():
-    # Each unit contributes MAP_MAX_UNIT_CHARS; three of them cannot fit a budget
-    # of two, and the S3 unit is the least certainly this day's material.
-    n = mapper.MAP_MAX_UNIT_CHARS
+    # The budget is now an explicit argument (derived per-model by the caller), so
+    # the test states it directly instead of mutating a module global. Three units of
+    # n chars cannot fit a two-unit budget, and the S3 unit is the least certainly
+    # this day's material.
+    n = 4_000
     units = [_unit("S3:overlap(3/1)", n, "weak"),
              _unit("raw:day_number", n, "strong1"),
              _unit("S1:project 2-1", n, "mid")]
-    monkey_budget = 2 * (n + len("[page] strong1\n")) + 4
-    orig = mapper.MAP_MAX_SOURCE_CHARS
-    try:
-        mapper.MAP_MAX_SOURCE_CHARS = monkey_budget
-        body, dropped = mapper._source_body(units)
-    finally:
-        mapper.MAP_MAX_SOURCE_CHARS = orig
+    budget = 2 * (n + len("[page] strong1\n")) + 4
+    body, dropped = mapper._source_body(units, limit=budget)
     assert dropped["units"] == 1 and dropped["chars"] > 0
     assert "strong1" in body and "mid" in body
     assert "weak" not in body
@@ -1050,3 +1047,362 @@ def test_numbered_per_day_quiz_is_not_treated_as_the_final_exam():
             "text_content": "", "metadata_json": {"content_type": "quiz"}}
     placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
     assert placed == [2] and signal.startswith("S1:quiz")
+
+
+# --------------------------------------------------------------------------- #
+# Extractor preflight
+#
+# call_llm swallows every exception and returns a valid-JSON stub with 0 tokens, so
+# an unavailable model does not raise — it quietly yields N digests whose fields are
+# all defaults. 2026-08-12: a deployed role could not invoke the configured model,
+# 8 of 20 days came back concept_type "Unknown", every AM.I.B ACS code was orphaned,
+# and the job reported success. One cheap probe turns that into one clear error.
+# --------------------------------------------------------------------------- #
+def test_preflight_rejects_the_stub_signature(monkeypatch):
+    """0 input tokens is uniquely call_llm's exception path."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(common, "call_llm",
+                        lambda *a, **k: ('{"doc_type":"other","classification":"internal"}', 0, 0))
+    with pytest.raises(build_mod.ExtractorUnavailable) as exc:
+        build_mod.preflight_extractor("global.anthropic.some-model-v1:0")
+    msg = str(exc.value)
+    assert "some-model-v1:0" in msg, "the error must name the model"
+    assert "per-role" in msg, "must point at model access, not just region"
+    assert "DIS_MODEL_TEXT_ALL" in msg, "must tell the reader how to override it"
+
+
+def test_preflight_passes_a_real_reply(monkeypatch):
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+    monkeypatch.setattr(common, "call_llm", lambda *a, **k: ('{"ok":true}', 12, 4))
+    build_mod.preflight_extractor("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+
+
+def test_preflight_tolerates_a_terse_or_unexpected_reply(monkeypatch):
+    """It verifies reachability, not obedience: a model that answers something else
+    is still usable, and rejecting it would block builds for no reason."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+    monkeypatch.setattr(common, "call_llm", lambda *a, **k: ("sure!", 9, 2))
+    build_mod.preflight_extractor("m")
+
+
+def test_preflight_converts_a_raised_error_too(monkeypatch):
+    """call_llm swallows today, but a future version may raise; either way the build
+    must fail with the actionable message rather than a bare boto traceback."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("AccessDeniedException: not authorized to invoke")
+
+    monkeypatch.setattr(common, "call_llm", boom)
+    with pytest.raises(build_mod.ExtractorUnavailable) as exc:
+        build_mod.preflight_extractor("m")
+    assert "AccessDenied" in str(exc.value)
+
+
+def test_build_digests_fails_fast_instead_of_writing_empty_digests(monkeypatch):
+    """The point of the probe: one error, not a block-shaped pile of defaults."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    calls = {"n": 0}
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return ('{"doc_type":"other","classification":"internal"}', 0, 0)
+
+    monkeypatch.setattr(common, "call_llm", counting)
+    # enumerate/index are never reached, so no stores are touched.
+    with pytest.raises(build_mod.ExtractorUnavailable):
+        build_mod.build_digests(_tenant(), "Block 2")
+    assert calls["n"] == 1, "must stop after the probe, not run a call per day"
+
+
+# --------------------------------------------------------------------------- #
+# Limits are configurable, and 0 means no limit
+#
+# Truncating MAP input is a silent quality tax: the model reasons over less than
+# the day's material and nothing in the output says so. The caps exist only because
+# exceeding the context window is a hard Bedrock error that fails the whole day, so
+# they must be raisable — and removable — per environment.
+# --------------------------------------------------------------------------- #
+def test_env_int_parses_and_rejects_junk(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setenv("X_LIMIT", "5000")
+    assert m._env_int("X_LIMIT", 1) == 5000
+    monkeypatch.setenv("X_LIMIT", "0")
+    assert m._env_int("X_LIMIT", 1) == 0, "0 must survive as an explicit 'no limit'"
+    for junk in ("abc", "-5", ""):
+        monkeypatch.setenv("X_LIMIT", junk)
+        assert m._env_int("X_LIMIT", 77) == 77, f"{junk!r} should fall back, not crash"
+    monkeypatch.delenv("X_LIMIT")
+    assert m._env_int("X_LIMIT", 42) == 42
+
+
+def test_zero_unit_cap_sends_each_unit_whole(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)
+    long_text = "x" * 50_000
+    body, dropped = m._source_body([
+        {"unit_type": "page", "title": "t", "text_content": long_text,
+         "attribution_signal": "raw"}])
+    assert long_text in body, "unit was trimmed despite MAP_MAX_UNIT_CHARS=0"
+    assert dropped == {}
+
+
+def test_zero_source_cap_keeps_every_unit(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)
+    units = [{"unit_type": "page", "title": f"t{i}", "text_content": "y" * 20_000,
+              "attribution_signal": "raw"} for i in range(20)]
+    body, dropped = m._source_body(units)
+    assert dropped == {}, "units were dropped despite MAP_MAX_SOURCE_CHARS=0"
+    for i in range(20):
+        assert f"t{i}" in body
+
+
+def test_a_nonzero_cap_still_trims_and_reports(monkeypatch):
+    """The flag matters: a trimmed day must be visible, not inferred from thin output."""
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    units = [{"unit_type": "page", "title": f"t{i}", "text_content": "z" * 4_000,
+              "attribution_signal": "raw"} for i in range(5)]
+    body, dropped = m._source_body(units, limit=5_000)
+    assert dropped.get("units", 0) > 0
+    assert len(body) <= 5_000 + 200
+
+
+def test_map_output_ceiling_is_not_the_old_claude3_limit():
+    """4096 was Claude 3 Sonnet's real maximum; against Sonnet 4.5 it became an
+    arbitrary cap that can truncate a digest mid-JSON."""
+    from services.digests import mapper as m
+    assert m.MAP_MAX_TOKENS >= 16_000
+
+
+# --------------------------------------------------------------------------- #
+# Model-aware budget + escalation
+#
+# A single global char budget is wrong by construction: the same number is too small
+# for a 1M-window model and too large for a 200k one. And when a day does not fit,
+# moving UP to a larger-window model keeps all of its evidence, where trimming
+# silently discards the material the extraction is supposed to rest on.
+# --------------------------------------------------------------------------- #
+def test_budget_scales_with_the_models_context_window():
+    from services.digests import mapper as m
+    small = m.context_budget_chars("global.anthropic.claude-sonnet-4-5-20250929-v1:0")  # 200k tok
+    large = m.context_budget_chars("global.anthropic.claude-sonnet-5")                  # 1M tok
+    assert large > small * 4, "a 1M-window model must get a far larger budget"
+    assert small > 100_000
+
+
+def test_unknown_model_gets_the_most_pessimistic_budget():
+    """Being wrong low costs a flagged trim; being wrong high costs the whole day to
+    a hard context-window rejection."""
+    from services.digests import mapper as m
+    unknown = m.context_budget_chars("some.model.nobody.registered")
+    assert unknown <= min(m.context_budget_chars(k) for k in m._CONTEXT_TOKENS)
+
+
+def test_a_day_that_fits_keeps_the_configured_model():
+    from services.digests import mapper as m
+    model, note = m.select_model_for("global.anthropic.claude-sonnet-5", 10_000)
+    assert model == "global.anthropic.claude-sonnet-5" and note is None
+
+
+def test_a_day_that_overflows_escalates_to_a_larger_window_model(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_ESCALATION_MODELS", ["global.anthropic.claude-opus-5"])
+    small = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    need = m.context_budget_chars(small) + 1
+    model, note = m.select_model_for(small, need)
+    assert model == "global.anthropic.claude-opus-5", "did not escalate"
+    assert note and "escalated" in note
+
+
+def test_escalation_is_skipped_when_no_candidate_is_large_enough(monkeypatch):
+    """Falls back to trimming — with a flag — rather than sending a request that the
+    provider will reject outright."""
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_ESCALATION_MODELS",
+                        ["global.anthropic.claude-haiku-4-5-20251001-v1:0"])  # 200k, smaller
+    big = "global.anthropic.claude-sonnet-5"
+    model, note = m.select_model_for(big, m.context_budget_chars(big) + 1)
+    assert model == big and note is None
+
+
+def test_escalation_can_be_disabled(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_ESCALATION_MODELS", [])
+    small = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    model, note = m.select_model_for(small, m.context_budget_chars(small) + 1)
+    assert model == small and note is None
+
+
+def test_an_explicit_override_wins_over_the_derived_budget(monkeypatch):
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 1_234)
+    assert m.context_budget_chars("global.anthropic.claude-sonnet-5") == 1_234
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)   # 0 = unlimited
+    assert m.context_budget_chars("global.anthropic.claude-sonnet-5") == 0
+
+
+# --------------------------------------------------------------------------- #
+# Newer models reject an explicit temperature
+# --------------------------------------------------------------------------- #
+def test_call_llm_retries_without_temperature_when_the_model_rejects_it(monkeypatch):
+    """Sonnet 5 / Opus 5 answer `ValidationException: temperature is deprecated for
+    this model`. Without this retry that exception is swallowed into call_llm's
+    valid-JSON stub, so every day's digest comes back empty and the block reports
+    success — the exact failure this pipeline already shipped once. CAS has had the
+    same retry in core/llm_client.py; DIS did not."""
+    import json as _json
+    import services.pipeline.common as common
+
+    calls = []
+
+    class _Body:
+        @staticmethod
+        def read():
+            return _json.dumps({"content": [{"text": '{"ok":true}'}],
+                                "usage": {"input_tokens": 11, "output_tokens": 3}})
+
+    class _Client:
+        def invoke_model(self, modelId=None, body=None):
+            calls.append(_json.loads(body))
+            if len(calls) == 1:
+                raise Exception("An error occurred (ValidationException) when calling the "
+                                "InvokeModel operation: `temperature` is deprecated for this model.")
+            return {"body": _Body()}
+
+    monkeypatch.setattr(common, "get_settings", lambda: types.SimpleNamespace(
+        environment="production", anthropic_api_key=None, aws_access_key_id="k",
+        use_bedrock=True, bedrock_client_kwargs=lambda: {"region_name": "ap-south-1"}))
+    monkeypatch.setitem(__import__("sys").modules, "boto3",
+                        types.SimpleNamespace(client=lambda *a, **k: _Client()))
+
+    text, ti, to = common.call_llm("global.anthropic.claude-sonnet-5", "hi", max_tokens=8)
+
+    assert (text, ti, to) == ('{"ok":true}', 11, 3), "the retry's result was not returned"
+    assert len(calls) == 2, "did not retry"
+    assert "temperature" in calls[0], "the first attempt should still try temperature 0"
+    assert "temperature" not in calls[1], "the retry must drop temperature"
+
+
+def test_call_llm_does_not_mask_an_unrelated_validation_error(monkeypatch):
+    """Only the temperature case is retried — a different ValidationException must not
+    be retried into a second identical failure that hides the real cause."""
+    import services.pipeline.common as common
+
+    calls = []
+
+    class _Client:
+        def invoke_model(self, modelId=None, body=None):
+            calls.append(body)
+            raise Exception("An error occurred (ValidationException) when calling the "
+                            "InvokeModel operation: model id is not supported.")
+
+    monkeypatch.setattr(common, "get_settings", lambda: types.SimpleNamespace(
+        environment="production", anthropic_api_key=None, aws_access_key_id="k",
+        use_bedrock=True, bedrock_client_kwargs=lambda: {"region_name": "ap-south-1"}))
+    monkeypatch.setitem(__import__("sys").modules, "boto3",
+                        types.SimpleNamespace(client=lambda *a, **k: _Client()))
+
+    text, ti, to = common.call_llm("some-model", "hi", max_tokens=8)
+    assert len(calls) == 1, "an unrelated ValidationException was retried"
+    assert ti == 0 and "doc_type" in text, "should fall through to the stub path"
+
+
+def test_a_malformed_source_budget_falls_back_instead_of_truncating(monkeypatch):
+    """Found in review. DIS_MAP_MAX_SOURCE_CHARS resolved junk to the sentinel -1,
+    which is TRUTHY in the trim comparison — so a single typo in that variable kept
+    only the FIRST source unit of every day and said so in one log line. A malformed
+    limit must never be quieter, or more destructive, than an unset one."""
+    from services.digests import mapper as m
+
+    for bad in ("notanumber", "-1", "12.5", ""):
+        monkeypatch.setenv("DIS_MAP_MAX_SOURCE_CHARS", bad)
+        assert m._env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS") is None, bad
+    monkeypatch.setenv("DIS_MAP_MAX_SOURCE_CHARS", "5000")
+    assert m._env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS") == 5000
+    monkeypatch.setenv("DIS_MAP_MAX_SOURCE_CHARS", "0")
+    assert m._env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS") == 0, "0 means 'no limit'"
+
+
+def test_a_derived_budget_is_never_negative():
+    """The floor matters for the same reason: a negative budget is truthy."""
+    from services.digests import mapper as m
+    for model in list(m._CONTEXT_TOKENS) + ["unregistered.model"]:
+        assert m.context_budget_chars(model) > 0
+
+
+def test_every_unit_survives_when_the_budget_is_malformed(monkeypatch):
+    """End-to-end version of the bug: 5 units in, 5 units out."""
+    from services.digests import mapper as m
+    monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", None)   # as a junk value now resolves
+    monkeypatch.setattr(m, "MAP_MAX_UNIT_CHARS", 0)
+    units = [{"unit_type": "page", "title": f"t{i}", "text_content": "x" * 100,
+              "attribution_signal": "raw"} for i in range(5)]
+    budget = m.context_budget_chars("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    body, dropped = m._source_body(units, limit=budget)
+    assert dropped == {}
+    assert all(f"t{i}" in body for i in range(5))
+
+
+def test_preflight_success_is_memoised_so_a_cached_rebuild_stays_free(monkeypatch):
+    """Found in review: the probe ran on EVERY build, so a fully cached rebuild that
+    should cost 0 LLM calls quietly cost 1 — and the build report's map_calls=0 was
+    then untrue of actual spend."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(build_mod, "_PREFLIGHT_OK", set())
+    calls = {"n": 0}
+
+    def probe(*a, **k):
+        calls["n"] += 1
+        return ('{"ok":true}', 9, 2)
+
+    monkeypatch.setattr(common, "call_llm", probe)
+    for _ in range(4):
+        build_mod.preflight_extractor("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    assert calls["n"] == 1, f"probed {calls['n']} times; success should be memoised"
+
+
+def test_preflight_failure_is_never_memoised(monkeypatch):
+    """Caching a failure would let a build sail past a broken extractor on the second
+    attempt — the opposite of what the probe is for."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(build_mod, "_PREFLIGHT_OK", set())
+    calls = {"n": 0}
+
+    def stub(*a, **k):
+        calls["n"] += 1
+        return ('{"doc_type":"other"}', 0, 0)
+
+    monkeypatch.setattr(common, "call_llm", stub)
+    for _ in range(3):
+        with pytest.raises(build_mod.ExtractorUnavailable):
+            build_mod.preflight_extractor("m")
+    assert calls["n"] == 3, "a failing model must be re-probed every build"
+
+
+def test_preflight_is_per_model(monkeypatch):
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(build_mod, "_PREFLIGHT_OK", set())
+    seen = []
+    monkeypatch.setattr(common, "call_llm",
+                        lambda model, *a, **k: (seen.append(model), ('{"ok":1}', 5, 1))[1])
+    build_mod.preflight_extractor("model-a")
+    build_mod.preflight_extractor("model-b")
+    build_mod.preflight_extractor("model-a")
+    assert seen == ["model-a", "model-b"], f"memo is not keyed per model: {seen}"

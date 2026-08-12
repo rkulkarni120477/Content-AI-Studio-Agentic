@@ -50,7 +50,8 @@ class StructureExtractionAgent(BasePipelineAgent):
                     ctx.guard.check_or_raise(1500, 'structure_extraction')
                     sample = (state.get('raw_text', '') or '')[:1500]
                     resp, inp, out = call_llm(ctx.models.structure_extraction, f'Extract document structure as JSON with sections array. Document:\n{sample}', max_tokens=400)
-                    ctx.guard.record_usage(inp + out, 'structure_extraction')
+                    ctx.guard.record_usage(inp + out, 'structure_extraction', tokens_in=inp, tokens_out=out,
+                                      model=ctx.models.structure_extraction)
                     state['structured_sections'] = safe_json(resp).get('sections', [])
                 except TokenLimitError as exc:
                     state.setdefault('errors', []).append(str(exc))
