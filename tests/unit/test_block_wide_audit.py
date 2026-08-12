@@ -45,7 +45,7 @@ def _prov(**over):
     base = {
         "prompt_source": "digest_pipeline",
         "quality_tier": "standard",
-        "reduce_model": "Claude Sonnet 5 (Bedrock)",
+        "reduce_model": "Claude Sonnet 4.5 (Bedrock)",
         "digest_build": {"built": 18, "cached": 2, "failed": 0, "map_calls": 18},
         "map_guidance_applied": True,
         "map_guidance": "1. Preserve exact FAA/ACS terminology.",
@@ -80,7 +80,7 @@ def test_digest_path_records_the_template_that_drove_the_reduce():
     assert narrative["system_source"] == "db"
     assert out["generation_path"] == "digest_pipeline"
     assert out["quality_tier"] == "standard"
-    assert out["reduce_model"] == "Claude Sonnet 5 (Bedrock)"
+    assert out["reduce_model"] == "Claude Sonnet 4.5 (Bedrock)"
 
 
 def test_digest_path_records_the_guidance_text_not_just_a_flag():

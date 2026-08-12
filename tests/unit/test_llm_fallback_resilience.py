@@ -83,9 +83,6 @@ def test_fallback_leaves_max_tokens_untouched_when_already_within_ceiling():
 # (max_tokens=4 is enough), then add it. Do not add one on the strength of its
 # shape, or because Bedrock's ListFoundationModels includes the base model.
 VERIFIED_INVOKABLE_BEDROCK_IDS = frozenset({
-    "global.anthropic.claude-opus-5",
-    "global.anthropic.claude-sonnet-5",
-    "global.anthropic.claude-sonnet-4-6",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
 })
 
@@ -177,8 +174,8 @@ def test_sibling_candidates_are_same_provider_and_exclude_the_failed_model():
     assert sibs, "an Opus failure must have somewhere to go on Bedrock"
     assert all(m.provider == "bedrock" for m in sibs), "must not cross providers here"
     assert all("opus-5" not in m.api_model_id for m in sibs), "the failed model was retried"
-    # Sonnet 5 is the natural substitute for Opus and must be reached first.
-    assert "sonnet-5" in sibs[0].api_model_id
+    # Sonnet is the natural substitute for Opus and must be reached first.
+    assert "sonnet-4-5" in sibs[0].api_model_id
 
 
 def test_openai_primary_gets_openai_siblings():
@@ -231,5 +228,5 @@ def test_a_bedrock_failure_tries_bedrock_before_openai(monkeypatch):
         "Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=2000)
 
     assert "OPENAI" not in order, f"jumped providers too early: {order}"
-    assert any("sonnet-5" in m for m in order), f"never tried Sonnet: {order}"
+    assert any("sonnet-4-5" in m for m in order), f"never tried Sonnet: {order}"
     assert result.status in ("fallback_success", "retry_success", "success")

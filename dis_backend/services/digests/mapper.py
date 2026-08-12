@@ -327,7 +327,9 @@ _PROMPT_OVERHEAD_CHARS = 40_000
 #: is a safety net for a day whose sources genuinely exceed it, not a routine path.
 #: An unusable ID here costs a failed day, so only add models you have invoked from
 #: this environment. Set to an empty string to disable escalation entirely.
-_DEFAULT_ESCALATION = "global.anthropic.claude-opus-5"
+# Empty: every larger-window model (Opus 5, Sonnet 5, Sonnet 4.6) measures 0/3 on
+# this account, and escalating to an uninvokable model would fail the day outright.
+_DEFAULT_ESCALATION = ""
 MAP_ESCALATION_MODELS = [
     m.strip() for m in (
         os.getenv("DIS_MAP_ESCALATION_MODELS")

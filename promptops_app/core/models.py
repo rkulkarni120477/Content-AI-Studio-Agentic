@@ -57,16 +57,18 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
     ),
     # ── AWS Bedrock Models ─────────────────────────────────────────────────
     ModelDef(
-        display_name="Claude Sonnet 5 (Bedrock)",
+        display_name="Claude Sonnet 4.5 (Bedrock)",
         description=(
-            "Anthropic Claude Sonnet 5 on AWS Bedrock — excellent structured "
-            "outputs, instruction-following and JSON fidelity, with a 1M-token "
-            "context window."
+            "Anthropic Claude Sonnet on AWS Bedrock — excellent structured "
+            "outputs, instruction-following, and JSON fidelity."
         ),
         tags=("structured",),
         provider="bedrock",
-        # Verified invokable via `global.` in BOTH ap-south-1 and us-east-1.
-        api_model_id="global.anthropic.claude-sonnet-5",
+        # The ONLY Anthropic model this account invokes reliably: 3/3 consecutive
+        # InvokeModel calls in both ap-south-1 and us-east-1. Sonnet 5 / Opus 5 /
+        # Sonnet 4.6 are listed by Bedrock but each gave one spurious success then
+        # failed every repeat, so they are not usable yet.
+        api_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
         # A cap below the model's real limit truncates long sectioned output, which
         # shows up as missing worksheet rows rather than an error. Bedrock does not
         # reject oversized max_tokens (128000 was accepted in a probe), so this is
@@ -103,9 +105,11 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         ),
         tags=("reasoning", "premium"),
         provider="bedrock",
-        # Verified invokable via `global.` in BOTH ap-south-1 and us-east-1 — unlike
-        # Opus 4.8, which this account has no model access for. Replacing 4.8 with 5
-        # is what makes the 'premium' tier mean something again.
+        # NOT CURRENTLY INVOKABLE: 0/3 in both regions (AccessDeniedException), same
+        # as Haiku 4.5. It is LISTED by Bedrock and returned one spurious success
+        # during probing, which is exactly why a single OK is not evidence. Kept in
+        # the catalog because it is one model-access grant from being the right
+        # premium model; selecting it degrades to the fallback chain.
         api_model_id="global.anthropic.claude-opus-5",
         max_output_tokens=64000,
     ),
@@ -129,9 +133,9 @@ BEDROCK_MODELS: tuple[ModelDef, ...] = tuple(
 # would silently resolve to the catalog default and change which model a course has
 # been generating with. Point superseded names at their current generation.
 _COMPAT_ALIASES: dict[str, str] = {
-    "Sonnet 4.5 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
-    "Claude Sonnet 4.5 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
-    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
+    "Sonnet 4.5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
+    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
+    "Claude Sonnet 5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
     "Claude Opus 4.8 (Bedrock)": "Claude Opus 5 (Bedrock)",
 }
 
@@ -178,17 +182,18 @@ class TierModels:
     max_output_tokens: int
 
 
-# 'premium' is Opus 5 and 'standard' is Sonnet 5 — both verified invokable via
-# `global.` in ap-south-1 and us-east-1, so the tier choice is real again.
+# All three tiers resolve to Sonnet 4.5: it is the only Anthropic model this account
+# invokes reliably (3/3 per region). Haiku 4.5, Opus 4.8, Opus 5, Sonnet 5 and
+# Sonnet 4.6 all measure 0/3, and a tier resolving to an uninvokable model fails the
+# whole generation for anyone who picks it.
 #
-# 'draft' stays on Sonnet 5 rather than Haiku: Haiku 4.5 returns AccessDeniedException
-# on every prefix form on this account, and a tier that resolves to an uninvokable
-# model fails the whole generation for anyone who picks it. Point draft at Haiku once
-# that model-access grant exists.
+# So tier selection does NOT differentiate model capability today. Restore
+# draft->Haiku and premium->Opus 5 once those access grants land AND the IDs measure
+# clean on repeated probes from the target environment.
 _TIER_REDUCE_MODEL: dict[str, str] = {
-    "draft":    "Claude Sonnet 5 (Bedrock)",
-    "standard": "Claude Sonnet 5 (Bedrock)",
-    "premium":  "Claude Opus 5 (Bedrock)",
+    "draft":    "Claude Sonnet 4.5 (Bedrock)",
+    "standard": "Claude Sonnet 4.5 (Bedrock)",
+    "premium":  "Claude Sonnet 4.5 (Bedrock)",
 }
 DEFAULT_TIER = "standard"
 

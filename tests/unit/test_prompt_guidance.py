@@ -115,7 +115,7 @@ def test_resolve_prompt_guidance_end_to_end_with_override(monkeypatch):
     req = types.SimpleNamespace(
         system_prompt_override="You write CDDs.",
         user_prompt_override="Always cite the AC number.",
-        model_choice="Claude Sonnet 5 (Bedrock)",
+        model_choice="Claude Sonnet 4.5 (Bedrock)",
     )
     result = pg.resolve_prompt_guidance(db=None, request_body=req, deliverable="cdd", current_user=None)
     assert "Name the AC number explicitly." in result

@@ -120,10 +120,10 @@ def test_reduce_coverage_golden():
     assert rows[1]["narrative"] == "Cell for day 1"
     assert rows[4]["narrative"].startswith("REVIEW NEEDED")
     # Tier → model + token headroom; the per-day batch is 1 call + 1 patterns_notes call.
-    # 'premium' is Opus 5 again now that this account can invoke it (verified in both
-    # regions). A cap below the model's real output ceiling silently truncates long
-    # sectioned output, which reads as missing worksheet rows rather than an error.
-    assert res.reduce_model == "Claude Opus 5 (Bedrock)"
+    # All tiers resolve to Sonnet 4.5 — the only model this account invokes reliably
+    # (Opus 5 / Sonnet 5 measure 0/3). A cap below the model's real output ceiling
+    # silently truncates long sectioned output, which reads as missing worksheet rows.
+    assert res.reduce_model == "Claude Sonnet 4.5 (Bedrock)"
     assert res.max_output_tokens == 64000
     assert res.llm_calls == 2
     # Multi-worksheet shape: 5 sections in a fixed order, even with no overview/
@@ -459,13 +459,13 @@ def test_reduce_threads_map_guidance_into_patterns_notes_too():
 
 
 def test_resolve_tier():
-    # 'premium' is Opus 5 — verified invokable in both regions. 'draft' stays on
-    # Sonnet 5 rather than Haiku, which returns AccessDeniedException on this account;
+    # Every tier resolves to Sonnet 4.5: it is the only model this account invokes
+    # reliably (Haiku 4.5, Opus 4.8, Opus 5, Sonnet 5, Sonnet 4.6 all measure 0/3), and
     # a tier resolving to an uninvokable model fails the whole generation for anyone
-    # who picks it. Point draft at Haiku once that access grant exists.
-    assert resolve_tier("draft").reduce_model == "Claude Sonnet 5 (Bedrock)"
-    assert resolve_tier("standard").reduce_model == "Claude Sonnet 5 (Bedrock)"
-    assert resolve_tier("premium").reduce_model == "Claude Opus 5 (Bedrock)"
+    # who picks it. Restore draft->Haiku / premium->Opus once those grants land.
+    assert resolve_tier("draft").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
+    assert resolve_tier("standard").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
+    assert resolve_tier("premium").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
     # Blank/unknown falls back to the default tier, never raises.
     assert resolve_tier(None).tier == "standard"
     assert resolve_tier("bogus").tier == "standard"
@@ -607,7 +607,7 @@ def test_cdd_digest_path_render_and_fallback(monkeypatch):
     gen = cdd_router._generate_cdd_via_digests(db=None, request_body=req, current_user=user, dis_client_id="aim")
     assert gen is not None
     assert gen["prompt_provenance"]["prompt_source"] == "digest_pipeline"
-    assert gen["model_used"] == "Claude Sonnet 5 (Bedrock)"
+    assert gen["model_used"] == "Claude Sonnet 4.5 (Bedrock)"
     assert gen["coverage"]["orphan_acs"] == ["D"]
     assert "| 1 |" in gen["raw_output"] and "| 4 |" in gen["raw_output"]
     assert "REVIEW NEEDED" in gen["raw_output"]
@@ -693,7 +693,7 @@ def test_blueprint_digest_path_render(monkeypatch):
                                                             dis_client_id="aim")
     assert gen is not None
     assert gen["prompt_provenance"]["deliverable"] == "blueprint"
-    assert gen["model_used"] == "Claude Sonnet 5 (Bedrock)"  # draft tier (see resolve_tier)
+    assert gen["model_used"] == "Claude Sonnet 4.5 (Bedrock)"  # draft tier (see resolve_tier)
     assert "Block Blueprint" in gen["raw_output"] and "WORKSHEET 4: DAY-BY-DAY MAP" in gen["raw_output"]
     assert gen["coverage"]["orphan_acs"] == ["D"]
     # Multi-worksheet shape carries through the real generate_blueprint_via_digests
