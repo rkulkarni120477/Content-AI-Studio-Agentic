@@ -80,7 +80,8 @@ def build_one_day(tenant_cfg: TenantConfig, day: Dict[str, Any], units: List[Dic
 
 
 def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
-                     budget: Dict[str, int], strategy: str) -> Dict[str, Any]:
+                     budget: Dict[str, int], strategy: str,
+                     model: str = "") -> Dict[str, Any]:
     built = sum(1 for p in per_day if p["status"] == "built")
     cached = sum(1 for p in per_day if p["status"] == "cached")
     failed = sum(1 for p in per_day if p["status"] == "failed")
@@ -94,6 +95,11 @@ def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
         "map_calls": budget["calls"],
         "map_tokens_in": budget["tok_in"],
         "map_tokens_out": budget["tok_out"],
+        # The extractor that produced those tokens. CAS needs it to price the MAP
+        # spend — token counts alone cannot be costed, and MAP runs on its own
+        # client outside CAS's usage/budget choke point, so this is the only way
+        # that spend reaches llm_usage_logs and the budget dashboards.
+        "map_model": model,
         "strategy": strategy,
         "attribution": en.attribution,
         "flags": en.flags,
@@ -221,7 +227,7 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
             budget[k] += res["budget"].get(k, 0)
         per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
 
-    return _finalize_report(block, en, per_day, budget, strategy="sequential")
+    return _finalize_report(block, en, per_day, budget, strategy="sequential", model=model)
 
 
 def _ensure_digest_index(tenant_cfg: TenantConfig) -> None:

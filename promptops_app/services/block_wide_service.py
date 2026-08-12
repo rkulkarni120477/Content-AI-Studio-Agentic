@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any, Dict, Optional
 
 from app.core.dis_client import dis_client
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
 
@@ -333,6 +335,143 @@ def render_blueprint_markdown(block: Optional[str], result) -> str:
 # --------------------------------------------------------------------------- #
 # Reduce (shared build → bundle → reduce)
 # --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# MAP cost accounting
+#
+# MAP (per-day digest extraction) runs inside DIS, on DIS's own Bedrock client, so
+# it never reaches CAS's usage/budget choke point in core/llm_client.py. Measured on
+# a real 20-day block: MAP ~176k input / 15k output tokens vs REDUCE's ~6k / 2.5k —
+# so without this, ~96% of a block-wide generation's spend was absent from
+# llm_usage_logs, the cost dashboards, and the token-cap budgets, and a budget could
+# never stop a run no matter how large.
+#
+# Two halves, deliberately separate:
+#   * a pre-flight RESERVATION so an over-budget build is refused before it spends;
+#   * a post-build RECORD + RECONCILE using the token counts DIS actually reports,
+#     so attribution is exact rather than estimated.
+# ---------------------------------------------------------------------------
+
+#: Worst-case MAP size used for the pre-flight reservation, from the measured
+#: per-day averages of real AIM blocks (~8.8k in / ~750 out per day) against a
+#: generous 25-day block. Over-reserving is safe and intended: reconcile_budget
+#: corrects it to the real figure immediately after the build, so the only effect of
+#: being high is that a build starting very close to a cap is refused rather than
+#: allowed to breach it.
+_MAP_ESTIMATE_DAYS = 25
+_MAP_EST_INPUT_TOKENS_PER_DAY = 8_800
+_MAP_EST_OUTPUT_TOKENS_PER_DAY = 750
+
+#: Pricing FAMILY fallback for the reservation, and for a report that predates
+#: ``map_model`` (an older DIS). Not a claim about which model DIS runs — DIS owns
+#: that, and the settled figures always use the ``map_model`` it reports.
+#: usage_service._find_pricing matches on substring, so any "claude…sonnet" string
+#: resolves to Sonnet pricing, which is the family every current extractor is in.
+_MAP_PRICING_MODEL = "anthropic.claude-sonnet"
+
+
+def _map_usage_ctx(deliverable: str, request_body, current_user):
+    """UsageLogContext for the MAP stage, or None if it can't be built.
+
+    Returns None rather than raising: cost accounting must never be the reason a
+    generation fails, and a None context makes check_budget a documented no-op.
+    """
+    try:
+        from promptops_app.services.usage_service import UsageLogContext
+        return UsageLogContext(
+            user_name=getattr(current_user, "username", "") or "",
+            project_id=getattr(request_body, "project_id", None),
+            course_id=getattr(request_body, "course_id", None),
+            entity_type=deliverable,
+            entity_id=str(getattr(request_body, "block", "") or "") or None,
+            prompt_template="digest_map",
+            prompt_version="",          # filled from the report's prompt_version below
+        )
+    except Exception:
+        _log.warning("map usage context unavailable — MAP spend will not be attributed",
+                     exc_info=True)
+        return None
+
+
+def _reserve_map_budget(db, map_ctx):
+    """Reserve the worst-case MAP spend. Raises BudgetExceededError on a real breach.
+
+    Deliberately propagates that one exception: refusing an over-budget build before
+    it runs is the entire point, and the HTTP layer turns it into a 402. Every other
+    failure is swallowed — a bug here must not block generation.
+    """
+    if map_ctx is None or db is None:
+        return []
+    try:
+        from promptops_app.services.budget_service import check_budget
+        result = check_budget(
+            db, map_ctx, system_prompt="", user_prompt="",
+            model=_MAP_PRICING_MODEL,
+            estimated_input_tokens=_MAP_ESTIMATE_DAYS * _MAP_EST_INPUT_TOKENS_PER_DAY,
+            estimated_output_tokens=_MAP_ESTIMATE_DAYS * _MAP_EST_OUTPUT_TOKENS_PER_DAY,
+        )
+        for warning in result.warnings or []:
+            _log.warning("map budget warning: %s", warning)
+        return result.reservations or []
+    except BudgetExceededError:
+        raise
+    except Exception:
+        _log.warning("map budget reservation failed — proceeding unreserved", exc_info=True)
+        return []
+
+
+def _settle_map_usage(db, map_ctx, report: Optional[Dict[str, Any]], reservation) -> None:
+    """Write the MAP spend to llm_usage_logs and true up the reservation.
+
+    Never raises. A build that failed before reporting still releases its
+    reservation (actuals of zero), because a leaked hold would suppress every later
+    generation in the period.
+    """
+    from promptops_app.services.budget_service import reconcile_budget
+    from promptops_app.services.usage_service import estimate_cost, log_llm_usage
+
+    # The report is an HTTP response body from DIS, so its shape is not guaranteed:
+    # a non-dict (error string, unexpected payload) must settle the reservation at
+    # zero rather than raise out of a finally block and replace the real result.
+    rep = report if isinstance(report, dict) else {}
+    if report is not None and not isinstance(report, dict):
+        _log.warning("map usage: DIS build report was %s, not a dict — settling at zero",
+                     type(report).__name__)
+    try:
+        tok_in = int(rep.get("map_tokens_in") or 0)
+        tok_out = int(rep.get("map_tokens_out") or 0)
+    except (TypeError, ValueError):
+        _log.warning("map usage: non-numeric token counts in the DIS report — "
+                     "settling at zero", exc_info=True)
+        tok_in = tok_out = 0
+    model = str(rep.get("map_model") or "") or _MAP_PRICING_MODEL
+    cost = 0.0
+    try:
+        cost = estimate_cost(model, tok_in, tok_out)
+    except Exception:
+        _log.warning("map cost estimate failed for model=%s", model, exc_info=True)
+
+    # Record first: a usage row is useful even if reconciliation then fails.
+    if map_ctx is not None and db is not None and (tok_in or tok_out):
+        try:
+            from promptops_app.core.llm_client import LLMResult
+            ctx = replace(map_ctx, prompt_version=str(rep.get("prompt_version") or ""))
+            log_llm_usage(db, LLMResult(
+                text="", model=model, prompt_tokens=tok_in, completion_tokens=tok_out,
+                status="success",
+            ), ctx)
+            _log.info("map usage recorded: calls=%s in=%s out=%s cost=$%.4f model=%s",
+                      rep.get("map_calls"), tok_in, tok_out, cost, model)
+        except Exception:
+            _log.warning("map usage logging failed — spend not attributed", exc_info=True)
+
+    for res in reservation or []:
+        try:
+            reconcile_budget(db, res, cost, tok_in + tok_out)
+        except Exception:
+            _log.warning("map budget reconciliation failed — reservation may leak "
+                         "until the period rolls over", exc_info=True)
+
+
 def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
                       current_user, dis_client_id: str, map_guidance: str = "",
                       *, db=None, request_body=None):
@@ -349,14 +488,32 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     project). Without them ``load_template`` cannot consult the DB at all, so an
     admin's edit in the Prompts UI would never reach generation. Both optional:
     omitted ⇒ file/built-in tiers, exactly as before."""
+    # MAP runs inside DIS on its own Bedrock client, so it never passes through CAS's
+    # usage/budget choke point in core/llm_client.py. Left alone it is the largest
+    # untracked spend in the product — a measured 20-day build is ~176k input tokens
+    # against REDUCE's ~6k, so ~96% of a block-wide generation was invisible to both
+    # the cost dashboards and the token-cap budgets. Reserve before the build,
+    # then record and reconcile against what DIS actually spent.
+    map_ctx = _map_usage_ctx(deliverable, request_body, current_user)
+    reservation = _reserve_map_budget(db, map_ctx)
+    report = None
     try:
         report = dis_client.build_digests_sync(block, current_user=current_user, client_id=dis_client_id,
                                                 map_guidance=map_guidance)
         bundle = dis_client.get_digests_bundle_sync(block, current_user=current_user, client_id=dis_client_id)
+    except BudgetExceededError:
+        # A quota breach must reach the HTTP layer as a real 402, not be folded into
+        # the generic "DIS unavailable" fallback below.
+        raise
     except Exception as exc:
         _log.warning("block_wide_dis_unavailable deliverable=%s block=%s error=%s — falling back",
                      deliverable, block, exc)
         return None, None
+    finally:
+        # In a finally so a failed or partial build still records what it burned and
+        # releases the rest of the reservation — otherwise a failure permanently
+        # leaks its worst-case hold until the budget period rolls over.
+        _settle_map_usage(db, map_ctx, report, reservation)
 
     enumerate_summary = bundle.get("enumerate") or {}
     digests = bundle.get("digests") or []

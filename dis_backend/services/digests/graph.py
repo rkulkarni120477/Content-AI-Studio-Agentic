@@ -152,4 +152,5 @@ def build_digests_via_graph(
             budget[k] += (res.get("budget") or {}).get(k, 0)
         per_day.append({"day_number": res["day_number"], "status": res["status"], "error": res.get("error")})
 
-    return _build._finalize_report(block, en, per_day, budget, strategy="langgraph_send")
+    return _build._finalize_report(block, en, per_day, budget, strategy="langgraph_send",
+                                  model=model)
