@@ -70,14 +70,27 @@ class ProcessingConfig(BaseModel):
     pptx_extract_images: bool = False
     max_extracted_chars: int = 250000
 
-# Defaults used whenever a client YAML omits a model key. These MUST name a model
-# that is invokable in every deploy region: call_llm returns a valid-JSON stub on
-# failure, so an unavailable default degrades silently into empty extractions
-# rather than an error. The Claude 3 defaults these replace were end-of-life in
-# us-east-1 (Sonnet 3) or provider-marked legacy and denied in every region
-# (Haiku 3) — verified live via InvokeModel. Sonnet 4.5 on the `global.` inference
-# profile is the only Anthropic text model invokable on this account in both
-# us-east-1 and ap-south-1.
+# Default model for every text step when a client YAML omits the key.
+#
+# Sonnet 4.5 on the `global.` inference profile: current, and the only viable choice
+# for us-east-1 where Claude 3 Sonnet is end-of-life and Claude 3 Haiku is
+# provider-legacy. Verified invokable in both us-east-1 and ap-south-1 with a role
+# that holds Bedrock model access for it.
+#
+# Availability is per-region AND per-role, so this can still be wrong in a given
+# environment — on 2026-08-12 a deployed role could not invoke it and, because
+# call_llm returns a valid-JSON stub on any exception, the failure was silent:
+# 8 of 20 days came back with concept_type "Unknown" and every AM.I.B ACS code was
+# orphaned while the job reported success. Two guards now exist so that cannot
+# repeat quietly:
+#
+#   * services/digests/build.py preflights the extractor model once per build and
+#     fails the whole build with the AWS error if it cannot be invoked;
+#   * a block whose days all failed is refused rather than persisted, and a
+#     partially-failed one carries a user-visible warning.
+#
+# To run a different model in a given environment, set DIS_MODEL_TEXT_ALL (or a
+# per-step DIS_MODEL_<STEP>) there rather than editing this file.
 _TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
@@ -296,17 +309,66 @@ _STORE_ENV_OVERRIDES = (
     ("vector_store", "index_name", "DIS_VECTOR_STORE_INDEX"),
 )
 
+# Which Bedrock model each pipeline step uses, overridable per environment.
+#
+# Model availability is an environment fact, not a code fact: an ID can be
+# end-of-life in one region, provider-legacy in another, and require a model-access
+# grant the calling role may not hold. Baking one ID into a committed YAML forces
+# every environment onto it, and because call_llm returns a valid-JSON stub on
+# failure, an unavailable model degrades into complete-looking output with every
+# extracted field empty — observed 2026-08-12, where 8 of 20 days produced
+# concept_type "Unknown" and orphaned every AM.I.B ACS code.
+#
+#   DIS_MODEL_DIGEST_EXTRACTION / DIS_MODEL_DIGEST_EXTRACTION_<CLIENT>
+#   DIS_MODEL_CLASSIFICATION, DIS_MODEL_METADATA_EXTRACTION,
+#   DIS_MODEL_STRUCTURE_EXTRACTION, DIS_MODEL_QUALITY_CHECK, DIS_MODEL_VISION
+#   DIS_MODEL_TEXT_ALL  — sets every text step at once (checked last)
+_TEXT_STEPS = ("classification", "metadata_extraction", "structure_extraction",
+               "quality_check", "vision", "digest_extraction")
+
+
+def _client_suffix(client_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "_", str(client_id or "")).upper()
+
+
+def _env_for(stem: str, suffix: str) -> str:
+    """Per-client variable if set, else the global one. Blank counts as unset."""
+    return ((os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem) or "").strip()
+
 
 def _apply_store_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
     """Point the backing stores wherever this environment says, in place."""
-    suffix = re.sub(r"[^A-Za-z0-9]", "_", str(client_id or "")).upper()
+    suffix = _client_suffix(client_id)
     for section, field, stem in _STORE_ENV_OVERRIDES:
-        value = (os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem)
+        value = _env_for(stem, suffix)
         if not value:
             continue
         converted.setdefault(section, {})
         if isinstance(converted[section], dict):
             converted[section][field] = value
+
+
+def _apply_model_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
+    """Select each pipeline step's model from the environment, in place.
+
+    Per-step variables win over ``DIS_MODEL_TEXT_ALL``, which exists because the
+    common case is "this environment can invoke exactly one text model" and
+    repeating it six times invites the six from drifting apart.
+    """
+    suffix = _client_suffix(client_id)
+    pipeline = converted.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+    models = pipeline.get("models")
+    if not isinstance(models, dict):
+        models = {}
+        pipeline["models"] = models
+
+    all_text = _env_for("DIS_MODEL_TEXT_ALL", suffix)
+    for step in _TEXT_STEPS:
+        value = _env_for(f"DIS_MODEL_{step.upper()}", suffix) or all_text
+        if value:
+            models[step] = value
 
 
 class StructureStoreConfig(BaseModel):
@@ -563,6 +625,7 @@ class TenantRegistry:
         # image runs anywhere. See _resolve_env_placeholders / _apply_store_env.
         converted = _expand_env_in_tree(converted)
         _apply_store_env_overrides(converted, client_id)
+        _apply_model_env_overrides(converted, client_id)
 
         # Client-specific rule blocks stay available at runtime through cfg.client_rules.
         # Example: config/clients/aim.yaml -> aim_content_rules.

@@ -101,6 +101,55 @@ def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
     }
 
 
+class ExtractorUnavailable(RuntimeError):
+    """The configured MAP model cannot be invoked from this environment."""
+
+
+def preflight_extractor(model: str) -> None:
+    """Confirm the extractor model is invokable before spending a whole block on it.
+
+    ``call_llm`` swallows every exception and returns a valid-JSON stub, so an
+    unavailable model does not raise — it quietly yields N digests whose fields are
+    all defaults. On 2026-08-12 that produced a Blueprint with 8 of 20 days at
+    concept_type "Unknown", every AM.I.B ACS code orphaned, and a job that reported
+    success; the only visible trace was the exported spreadsheet.
+
+    Model availability is per-region AND per-role, so it cannot be settled in config
+    review — it has to be probed from the environment that will do the work. One
+    cheap call (a handful of tokens) converts a silent block-wide degradation into a
+    single actionable error naming the model.
+
+    Raises ExtractorUnavailable, which the caller surfaces as a failed build.
+    """
+    # Imported here, not at module scope, so the monkeypatched seam the rest of the
+    # digest code uses (services.pipeline.common.call_llm) applies to the probe too.
+    from services.pipeline.common import call_llm
+
+    try:
+        reply, tokens_in, _ = call_llm(model, 'Reply with only: {"ok":true}', max_tokens=8)
+    except Exception as exc:                      # defensive: call_llm swallows today
+        raise ExtractorUnavailable(_unavailable_msg(model, repr(exc))) from exc
+
+    # Keyed on the token count, not the reply text: call_llm's failure path is the
+    # only thing that reports 0 input tokens, whereas every real provider (and the
+    # dev/mock path) reports a positive count. Matching on reply content instead
+    # would either miss a changed stub or reject a legitimately terse answer.
+    if not tokens_in:
+        raise ExtractorUnavailable(_unavailable_msg(model, reply[:160]))
+    log.info("digest preflight ok: model=%s", model)
+
+
+def _unavailable_msg(model: str, detail: str) -> str:
+    return (
+        f"Extractor model {model!r} could not be invoked from this environment "
+        f"(probe returned {detail!r}). Availability is per-region AND per-role: check "
+        f"the AWS region, the credentials actually in use, and whether that role has "
+        f"Bedrock model access for this ID. To run a different model here, set "
+        f"DIS_MODEL_DIGEST_EXTRACTION or DIS_MODEL_TEXT_ALL. The preceding "
+        f"'[LLM] failed' log line carries the underlying AWS error."
+    )
+
+
 def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
                   force: bool = False,
                   use_graph: bool = False, checkpointer: Any = None,
@@ -118,8 +167,13 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     so an edited prompt correctly busts stale cached digests. "" (the default)
     reproduces this function's exact pre-existing behavior.
     """
-    en = enumerate_block(tenant_cfg, block, client_id)
+    # Cheapest check first: one probe call before any store round-trip, so a
+    # misconfigured model costs a couple of tokens rather than an enumerate + N MAP
+    # calls that all quietly return defaults.
     model = tenant_cfg.pipeline.models.digest_extraction
+    preflight_extractor(model)
+
+    en = enumerate_block(tenant_cfg, block, client_id)
 
     if force:
         indexing.delete_digests(tenant_cfg, block, en.client_id)

@@ -13,10 +13,17 @@ const TIER_OPTIONS = [
 
 function statusLine(blockJob, label) {
   if (!blockJob) return null;
-  const { status, currentStep, progress } = blockJob;
+  const { status, currentStep, progress, warning } = blockJob;
   if (status === JOB_STATUSES.FAILED) return `❌ ${label} generation failed — see the error above.`;
   if (status === JOB_STATUSES.CANCELLED) return `⚠️ ${label} generation was cancelled.`;
-  if (status === JOB_STATUSES.COMPLETED) return '✅ Done — pinned as active.';
+  if (status === JOB_STATUSES.COMPLETED) {
+    // A partially-extracted block is still worth keeping, but reporting a bare
+    // "Done" hides real gaps: the failed rows are filled with defaults, not left
+    // blank, so the document looks finished either way.
+    return warning
+      ? `⚠️ Done, with gaps — pinned as active. ${warning}`
+      : '✅ Done — pinned as active.';
+  }
   const pct = progress ? `, ${progress}%` : '';
   return `⏳ ${currentStep || 'Working'}… (${status}${pct})`;
 }

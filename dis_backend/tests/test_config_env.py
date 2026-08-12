@@ -23,7 +23,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-_ENV_PREFIXES = ("DIS_STRUCTURE_STORE_URL", "DIS_VECTOR_STORE_")
+# Every prefix the resolver reads must be cleared, not just the ones a given test
+# sets: otherwise a developer (or CI box) that legitimately exports
+# DIS_MODEL_TEXT_ALL — which is precisely what we tell environments to do — sees
+# the default-value assertions fail for reasons that have nothing to do with the code.
+_ENV_PREFIXES = ("DIS_STRUCTURE_STORE_URL", "DIS_VECTOR_STORE_", "DIS_MODEL_")
 
 
 @pytest.fixture
@@ -111,3 +115,78 @@ def test_blank_env_var_does_not_blank_the_config(load_config):
     but empty var in a shell profile would silently disable a store."""
     settings = load_config({"DIS_STRUCTURE_STORE_URL": ""})
     assert "dis-dev-postgres" in settings.get_tenant_config("aim").structure_store.url
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline model selection
+#
+# Model availability is an environment fact, not a code fact: an ID can be
+# end-of-life in one region, provider-legacy in another, and require a model-access
+# grant the calling role may not hold. Baking one into a committed YAML forces every
+# environment onto it — and because call_llm returns a valid-JSON stub on failure,
+# an unavailable model degrades into complete-looking output with every extracted
+# field empty (2026-08-12: 8/20 days "Unknown", all AM.I.B codes orphaned, job
+# reported success).
+# --------------------------------------------------------------------------- #
+DEFAULT_TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+TEXT_STEPS = ("classification", "metadata_extraction", "structure_extraction",
+              "quality_check", "vision", "digest_extraction")
+
+
+def test_default_extractor_is_the_current_model(load_config):
+    """Sonnet 4.5 — current, and the only viable ID for us-east-1 where Claude 3
+    Sonnet is end-of-life. A role without Bedrock access for it still fails, which
+    is what build.preflight_extractor exists to surface loudly."""
+    settings = load_config()
+    models = settings.get_tenant_config("aim").pipeline.models
+    for step in TEXT_STEPS:
+        assert getattr(models, step) == DEFAULT_TEXT_MODEL
+
+
+def test_text_all_sets_every_step_at_once(load_config):
+    """The common case is "this environment can invoke exactly one text model";
+    repeating it six times invites the six from drifting apart."""
+    # Deliberately NOT the default value — otherwise this passes whether the
+    # override works or not.
+    target = "global.anthropic.some-other-model-v9:0"
+    assert target != DEFAULT_TEXT_MODEL
+    settings = load_config({"DIS_MODEL_TEXT_ALL": target})
+    models = settings.get_tenant_config("aim").pipeline.models
+    for step in TEXT_STEPS:
+        assert getattr(models, step) == target
+
+
+def test_a_single_step_can_be_overridden_on_its_own(load_config):
+    settings = load_config({"DIS_MODEL_DIGEST_EXTRACTION": "model-for-map-only"})
+    models = settings.get_tenant_config("aim").pipeline.models
+    assert models.digest_extraction == "model-for-map-only"
+    assert models.classification == DEFAULT_TEXT_MODEL
+
+
+def test_per_step_beats_text_all(load_config):
+    settings = load_config({"DIS_MODEL_TEXT_ALL": "broad",
+                            "DIS_MODEL_DIGEST_EXTRACTION": "specific"})
+    models = settings.get_tenant_config("aim").pipeline.models
+    assert models.digest_extraction == "specific"
+    assert models.classification == "broad"
+
+
+def test_per_client_model_override(load_config):
+    settings = load_config({"DIS_MODEL_TEXT_ALL": "shared",
+                            "DIS_MODEL_TEXT_ALL_AIM": "aim-only"})
+    assert settings.get_tenant_config("aim").pipeline.models.vision == "aim-only"
+    assert settings.get_tenant_config("cengage").pipeline.models.vision == "shared"
+
+
+def test_embedding_model_is_not_swept_by_text_all(load_config):
+    """TEXT_ALL means text steps. Pointing the embedding model at a text model would
+    break indexing in a way that looks like a search-quality problem."""
+    settings = load_config({"DIS_MODEL_TEXT_ALL": "some-text-model"})
+    assert settings.get_tenant_config("aim").pipeline.models.embedding == \
+        "amazon.titan-embed-text-v2:0"
+
+
+def test_blank_model_var_does_not_blank_the_model(load_config):
+    settings = load_config({"DIS_MODEL_DIGEST_EXTRACTION": "   "})
+    assert settings.get_tenant_config("aim").pipeline.models.digest_extraction == \
+        DEFAULT_TEXT_MODEL

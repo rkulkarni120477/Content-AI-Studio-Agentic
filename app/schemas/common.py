@@ -113,6 +113,16 @@ class JobStatusResponse(BaseModel):
         default=None,
         description="User-safe error description. Populated on failure.",
     )
+    warning: Optional[str] = Field(
+        default=None,
+        description=(
+            "User-safe description of gaps in an otherwise SUCCESSFUL result — e.g. a "
+            "block-wide generation where some days failed extraction. Distinct from "
+            "error_message: the job completed and produced a usable artifact, but it "
+            "is incomplete, and the incomplete rows carry defaults rather than blanks "
+            "so they do not look missing. None when the result is intact."
+        ),
+    )
     queue_position: Optional[int] = Field(
         default=None,
         description=(

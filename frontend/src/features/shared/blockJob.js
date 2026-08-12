@@ -135,6 +135,11 @@ export function attachBlockJobReducers(builder, { generateThunk, pollThunk }, bu
         status: payload?.status,
         progress: payload?.progress ?? 0,
         currentStep: payload?.current_step ?? null,
+        // Gaps in a SUCCESSFUL result (e.g. days whose extraction failed). Not an
+        // error — the deliverable exists and is usable — but "Done" on its own
+        // misrepresents it, and the incomplete rows carry defaults rather than
+        // blanks, so nothing in the document looks missing.
+        warning: payload?.warning ?? null,
       };
       if (isTerminalJobStatus(payload?.status)) s[busyFlag] = false;
     })

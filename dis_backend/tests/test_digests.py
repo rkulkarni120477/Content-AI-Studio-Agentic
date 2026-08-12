@@ -1050,3 +1050,76 @@ def test_numbered_per_day_quiz_is_not_treated_as_the_final_exam():
             "text_content": "", "metadata_json": {"content_type": "quiz"}}
     placed, signal, _ = attribution.attribute(unit, days, proj_ref, quiz_ref, dterms)
     assert placed == [2] and signal.startswith("S1:quiz")
+
+
+# --------------------------------------------------------------------------- #
+# Extractor preflight
+#
+# call_llm swallows every exception and returns a valid-JSON stub with 0 tokens, so
+# an unavailable model does not raise — it quietly yields N digests whose fields are
+# all defaults. 2026-08-12: a deployed role could not invoke the configured model,
+# 8 of 20 days came back concept_type "Unknown", every AM.I.B ACS code was orphaned,
+# and the job reported success. One cheap probe turns that into one clear error.
+# --------------------------------------------------------------------------- #
+def test_preflight_rejects_the_stub_signature(monkeypatch):
+    """0 input tokens is uniquely call_llm's exception path."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    monkeypatch.setattr(common, "call_llm",
+                        lambda *a, **k: ('{"doc_type":"other","classification":"internal"}', 0, 0))
+    with pytest.raises(build_mod.ExtractorUnavailable) as exc:
+        build_mod.preflight_extractor("global.anthropic.some-model-v1:0")
+    msg = str(exc.value)
+    assert "some-model-v1:0" in msg, "the error must name the model"
+    assert "per-role" in msg, "must point at model access, not just region"
+    assert "DIS_MODEL_TEXT_ALL" in msg, "must tell the reader how to override it"
+
+
+def test_preflight_passes_a_real_reply(monkeypatch):
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+    monkeypatch.setattr(common, "call_llm", lambda *a, **k: ('{"ok":true}', 12, 4))
+    build_mod.preflight_extractor("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+
+
+def test_preflight_tolerates_a_terse_or_unexpected_reply(monkeypatch):
+    """It verifies reachability, not obedience: a model that answers something else
+    is still usable, and rejecting it would block builds for no reason."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+    monkeypatch.setattr(common, "call_llm", lambda *a, **k: ("sure!", 9, 2))
+    build_mod.preflight_extractor("m")
+
+
+def test_preflight_converts_a_raised_error_too(monkeypatch):
+    """call_llm swallows today, but a future version may raise; either way the build
+    must fail with the actionable message rather than a bare boto traceback."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("AccessDeniedException: not authorized to invoke")
+
+    monkeypatch.setattr(common, "call_llm", boom)
+    with pytest.raises(build_mod.ExtractorUnavailable) as exc:
+        build_mod.preflight_extractor("m")
+    assert "AccessDenied" in str(exc.value)
+
+
+def test_build_digests_fails_fast_instead_of_writing_empty_digests(monkeypatch):
+    """The point of the probe: one error, not a block-shaped pile of defaults."""
+    import services.pipeline.common as common
+    from services.digests import build as build_mod
+
+    calls = {"n": 0}
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return ('{"doc_type":"other","classification":"internal"}', 0, 0)
+
+    monkeypatch.setattr(common, "call_llm", counting)
+    # enumerate/index are never reached, so no stores are touched.
+    with pytest.raises(build_mod.ExtractorUnavailable):
+        build_mod.build_digests(_tenant(), "Block 2")
+    assert calls["n"] == 1, "must stop after the probe, not run a call per day"
