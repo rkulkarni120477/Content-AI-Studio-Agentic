@@ -191,3 +191,85 @@ def test_blank_model_var_does_not_blank_the_model(load_config):
     settings = load_config({"DIS_MODEL_DIGEST_EXTRACTION": "   "})
     assert settings.get_tenant_config("aim").pipeline.models.digest_extraction == \
         DEFAULT_TEXT_MODEL
+
+
+# --------------------------------------------------------------------------- #
+# Bedrock-only credentials
+#
+# Model access is granted per IAM principal, and the principal that can invoke the
+# models is not necessarily the one that owns the storage. Measured 2026-08-12:
+# promptops-contentAI-Dev (acct 498628474556) invokes Sonnet 5 / Opus 5 / Haiku 4.5
+# 3/3 in both regions; nandkishor-ai-project-access (acct 410453487786), which owns
+# DIS's S3 bucket and OpenSearch domain, invokes only Sonnet 4.5. DIS used ONE
+# credential set for everything, so swapping AWS_* wholesale would buy model access
+# at the cost of the digest store.
+# --------------------------------------------------------------------------- #
+def _settings(load_config, env=None):
+    settings = load_config(env)
+    return settings.GlobalSettings()
+
+
+def test_without_bedrock_creds_the_shared_aws_pair_is_used(monkeypatch, load_config):
+    """Must be a no-op until someone opts in — this cannot change any deployment."""
+    for k, v in (("AWS_ACCESS_KEY_ID", "AKIASHARED"), ("AWS_SECRET_ACCESS_KEY", "sharedsecret"),
+                 ("AWS_REGION", "ap-south-1")):
+        monkeypatch.setenv(k, v)
+    for k in ("DIS_BEDROCK_ACCESS_KEY_ID", "DIS_BEDROCK_SECRET_ACCESS_KEY",
+              "DIS_BEDROCK_SESSION_TOKEN", "DIS_BEDROCK_REGION"):
+        monkeypatch.delenv(k, raising=False)
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert kw["aws_access_key_id"] == "AKIASHARED"
+    assert kw["aws_secret_access_key"] == "sharedsecret"
+    assert kw["region_name"] == "ap-south-1"
+
+
+def test_bedrock_creds_override_only_the_model_calls(monkeypatch, load_config):
+    for k, v in (("AWS_ACCESS_KEY_ID", "AKIASTORAGE"), ("AWS_SECRET_ACCESS_KEY", "storagesecret"),
+                 ("AWS_REGION", "ap-south-1"),
+                 ("DIS_BEDROCK_ACCESS_KEY_ID", "AKIAMODELS"),
+                 ("DIS_BEDROCK_SECRET_ACCESS_KEY", "modelsecret")):
+        monkeypatch.setenv(k, v)
+    s = _settings(load_config)
+    kw = s.bedrock_client_kwargs()
+    assert kw["aws_access_key_id"] == "AKIAMODELS", "model calls did not use the Bedrock pair"
+    # Storage credentials are untouched — that is the whole point of the split.
+    assert s.aws_access_key_id == "AKIASTORAGE"
+
+
+def test_a_shared_session_token_is_not_paired_with_a_different_principals_key(monkeypatch, load_config):
+    """A token belonging to a different principal than the key is rejected outright,
+    so it must not be forwarded alongside the Bedrock key."""
+    for k, v in (("AWS_ACCESS_KEY_ID", "AKIASTORAGE"), ("AWS_SECRET_ACCESS_KEY", "s"),
+                 ("AWS_SESSION_TOKEN", "storage-token"),
+                 ("DIS_BEDROCK_ACCESS_KEY_ID", "AKIAMODELS"),
+                 ("DIS_BEDROCK_SECRET_ACCESS_KEY", "m")):
+        monkeypatch.setenv(k, v)
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert "aws_session_token" not in kw
+
+
+def test_bedrock_session_token_is_forwarded_when_it_belongs_to_the_bedrock_key(monkeypatch, load_config):
+    for k, v in (("DIS_BEDROCK_ACCESS_KEY_ID", "ASIAMODELS"),
+                 ("DIS_BEDROCK_SECRET_ACCESS_KEY", "m"),
+                 ("DIS_BEDROCK_SESSION_TOKEN", "model-token")):
+        monkeypatch.setenv(k, v)
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert kw["aws_session_token"] == "model-token"
+
+
+def test_bedrock_region_can_differ_from_the_storage_region(monkeypatch, load_config):
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    monkeypatch.setenv("DIS_BEDROCK_REGION", "us-east-1")
+    assert _settings(load_config).bedrock_client_kwargs()["region_name"] == "us-east-1"
+
+
+def test_blank_bedrock_vars_fall_back_rather_than_blanking_credentials(monkeypatch, load_config):
+    """An exported-but-empty var in a shell profile must not disable model calls."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIASHARED")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "sharedsecret")
+    monkeypatch.setenv("DIS_BEDROCK_ACCESS_KEY_ID", "   ")
+    monkeypatch.setenv("DIS_BEDROCK_REGION", "  ")
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert kw["aws_access_key_id"] == "AKIASHARED"
+    assert kw["region_name"] == "ap-south-1"

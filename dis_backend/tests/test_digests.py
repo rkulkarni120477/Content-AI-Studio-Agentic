@@ -1250,3 +1250,69 @@ def test_an_explicit_override_wins_over_the_derived_budget(monkeypatch):
     assert m.context_budget_chars("global.anthropic.claude-sonnet-5") == 1_234
     monkeypatch.setattr(m, "MAP_MAX_SOURCE_CHARS", 0)   # 0 = unlimited
     assert m.context_budget_chars("global.anthropic.claude-sonnet-5") == 0
+
+
+# --------------------------------------------------------------------------- #
+# Newer models reject an explicit temperature
+# --------------------------------------------------------------------------- #
+def test_call_llm_retries_without_temperature_when_the_model_rejects_it(monkeypatch):
+    """Sonnet 5 / Opus 5 answer `ValidationException: temperature is deprecated for
+    this model`. Without this retry that exception is swallowed into call_llm's
+    valid-JSON stub, so every day's digest comes back empty and the block reports
+    success — the exact failure this pipeline already shipped once. CAS has had the
+    same retry in core/llm_client.py; DIS did not."""
+    import json as _json
+    import services.pipeline.common as common
+
+    calls = []
+
+    class _Body:
+        @staticmethod
+        def read():
+            return _json.dumps({"content": [{"text": '{"ok":true}'}],
+                                "usage": {"input_tokens": 11, "output_tokens": 3}})
+
+    class _Client:
+        def invoke_model(self, modelId=None, body=None):
+            calls.append(_json.loads(body))
+            if len(calls) == 1:
+                raise Exception("An error occurred (ValidationException) when calling the "
+                                "InvokeModel operation: `temperature` is deprecated for this model.")
+            return {"body": _Body()}
+
+    monkeypatch.setattr(common, "get_settings", lambda: types.SimpleNamespace(
+        environment="production", anthropic_api_key=None, aws_access_key_id="k",
+        use_bedrock=True, bedrock_client_kwargs=lambda: {"region_name": "ap-south-1"}))
+    monkeypatch.setitem(__import__("sys").modules, "boto3",
+                        types.SimpleNamespace(client=lambda *a, **k: _Client()))
+
+    text, ti, to = common.call_llm("global.anthropic.claude-sonnet-5", "hi", max_tokens=8)
+
+    assert (text, ti, to) == ('{"ok":true}', 11, 3), "the retry's result was not returned"
+    assert len(calls) == 2, "did not retry"
+    assert "temperature" in calls[0], "the first attempt should still try temperature 0"
+    assert "temperature" not in calls[1], "the retry must drop temperature"
+
+
+def test_call_llm_does_not_mask_an_unrelated_validation_error(monkeypatch):
+    """Only the temperature case is retried — a different ValidationException must not
+    be retried into a second identical failure that hides the real cause."""
+    import services.pipeline.common as common
+
+    calls = []
+
+    class _Client:
+        def invoke_model(self, modelId=None, body=None):
+            calls.append(body)
+            raise Exception("An error occurred (ValidationException) when calling the "
+                            "InvokeModel operation: model id is not supported.")
+
+    monkeypatch.setattr(common, "get_settings", lambda: types.SimpleNamespace(
+        environment="production", anthropic_api_key=None, aws_access_key_id="k",
+        use_bedrock=True, bedrock_client_kwargs=lambda: {"region_name": "ap-south-1"}))
+    monkeypatch.setitem(__import__("sys").modules, "boto3",
+                        types.SimpleNamespace(client=lambda *a, **k: _Client()))
+
+    text, ti, to = common.call_llm("some-model", "hi", max_tokens=8)
+    assert len(calls) == 1, "an unrelated ValidationException was retried"
+    assert ti == 0 and "doc_type" in text, "should fall through to the stub path"

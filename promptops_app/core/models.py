@@ -56,6 +56,22 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         is_default=True,
     ),
     # ── AWS Bedrock Models ─────────────────────────────────────────────────
+    # Availability below was measured with the credentials CAS actually runs on
+    # (root .env -> promptops-contentAI-Dev, acct 498628474556): 3 consecutive
+    # InvokeModel calls per ID in BOTH ap-south-1 and us-east-1, all 3/3. The other
+    # account's user (which DIS uses) can only invoke Sonnet 4.5 — see
+    # dis_backend/config/settings.py bedrock_client_kwargs for why they differ.
+    ModelDef(
+        display_name="Claude Sonnet 5 (Bedrock)",
+        description=(
+            "Anthropic Claude Sonnet 5 on AWS Bedrock — current Sonnet, with a "
+            "1M-token context window and strong JSON fidelity."
+        ),
+        tags=("structured",),
+        provider="bedrock",
+        api_model_id="global.anthropic.claude-sonnet-5",
+        max_output_tokens=64000,
+    ),
     ModelDef(
         display_name="Claude Sonnet 4.5 (Bedrock)",
         description=(
@@ -64,10 +80,8 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         ),
         tags=("structured",),
         provider="bedrock",
-        # The ONLY Anthropic model this account invokes reliably: 3/3 consecutive
-        # InvokeModel calls in both ap-south-1 and us-east-1. Sonnet 5 / Opus 5 /
-        # Sonnet 4.6 are listed by Bedrock but each gave one spurious success then
-        # failed every repeat, so they are not usable yet.
+        # Kept alongside Sonnet 5: this is the ID DIS runs on, so both sides stay
+        # expressible in one vocabulary.
         api_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
         # A cap below the model's real limit truncates long sectioned output, which
         # shows up as missing worksheet rows rather than an error. Bedrock does not
@@ -83,16 +97,9 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         ),
         tags=("fast",),
         provider="bedrock",
-        # NOT CURRENTLY INVOKABLE on this AWS account. The bare on-demand ID is
-        # rejected ("Retry with the ID or ARN of an inference profile"), and every
-        # inference-profile form returns AccessDeniedException ("Model access is
-        # denied due to IAM user or service role is not authorized") — verified live
-        # via InvokeModel in both us-east-1 and ap-south-1. The account simply has no
-        # Bedrock model access for Haiku 4.5; no prefix fixes that.
-        #
-        # Kept in the catalog so stored user preferences keep resolving and so the
-        # entry is one access-grant away from working. Selecting it falls back to
-        # OpenAI, which is reported honestly as the actual model used.
+        # Invokable on the credentials CAS runs on (3/3 both regions). The BARE
+        # on-demand ID is still rejected — the `global.` inference-profile prefix is
+        # required, which is what an earlier bug got wrong.
         api_model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
         max_output_tokens=16384,
     ),
@@ -105,11 +112,7 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         ),
         tags=("reasoning", "premium"),
         provider="bedrock",
-        # NOT CURRENTLY INVOKABLE: 0/3 in both regions (AccessDeniedException), same
-        # as Haiku 4.5. It is LISTED by Bedrock and returned one spurious success
-        # during probing, which is exactly why a single OK is not evidence. Kept in
-        # the catalog because it is one model-access grant from being the right
-        # premium model; selecting it degrades to the fallback chain.
+        # Invokable on the credentials CAS runs on (3/3 both regions).
         api_model_id="global.anthropic.claude-opus-5",
         max_output_tokens=64000,
     ),
@@ -134,8 +137,7 @@ BEDROCK_MODELS: tuple[ModelDef, ...] = tuple(
 # been generating with. Point superseded names at their current generation.
 _COMPAT_ALIASES: dict[str, str] = {
     "Sonnet 4.5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
-    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
-    "Claude Sonnet 5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
+    "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
     "Claude Opus 4.8 (Bedrock)": "Claude Opus 5 (Bedrock)",
 }
 
@@ -182,18 +184,14 @@ class TierModels:
     max_output_tokens: int
 
 
-# All three tiers resolve to Sonnet 4.5: it is the only Anthropic model this account
-# invokes reliably (3/3 per region). Haiku 4.5, Opus 4.8, Opus 5, Sonnet 5 and
-# Sonnet 4.6 all measure 0/3, and a tier resolving to an uninvokable model fails the
-# whole generation for anyone who picks it.
-#
-# So tier selection does NOT differentiate model capability today. Restore
-# draft->Haiku and premium->Opus 5 once those access grants land AND the IDs measure
-# clean on repeated probes from the target environment.
+# Tiers differentiate again. Each target was measured 3/3 in both regions with the
+# credentials CAS actually runs on — this is the REDUCE path, which uses the root
+# .env principal, not DIS's. A tier resolving to an uninvokable model fails the whole
+# generation for whoever picks it, so nothing goes in here on a single probe.
 _TIER_REDUCE_MODEL: dict[str, str] = {
-    "draft":    "Claude Sonnet 4.5 (Bedrock)",
-    "standard": "Claude Sonnet 4.5 (Bedrock)",
-    "premium":  "Claude Sonnet 4.5 (Bedrock)",
+    "draft":    "Claude Haiku 4.5 (Bedrock)",
+    "standard": "Claude Sonnet 5 (Bedrock)",
+    "premium":  "Claude Opus 5 (Bedrock)",
 }
 DEFAULT_TIER = "standard"
 

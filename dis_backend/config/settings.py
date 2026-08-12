@@ -519,9 +519,65 @@ class GlobalSettings(BaseSettings):
     aws_session_token: Optional[str] = None
     aws_endpoint_url: str = ""          # LocalStack override
 
+    # ── Bedrock-only credentials (optional) ──────────────────────────────────
+    # Model access is granted per IAM principal, and the principal that can invoke
+    # the models is not necessarily the one that owns the storage. Measured on
+    # 2026-08-12: `promptops-contentAI-Dev` (account 498628474556) invokes Sonnet 5,
+    # Opus 5, Haiku 4.5, Sonnet 4.6 and Sonnet 4.5 — 3/3 in both regions — while
+    # `nandkishor-ai-project-access` (account 410453487786), which owns DIS's S3
+    # bucket and OpenSearch domain, can only invoke Sonnet 4.5.
+    #
+    # DIS otherwise uses ONE credential set for Bedrock, S3 and OpenSearch, so
+    # swapping AWS_* wholesale would buy model access at the cost of the digest store
+    # — trading a model problem for a storage problem. These let the model calls use
+    # one principal while storage keeps the other, mirroring what CAS already does
+    # for the shared bucket via DIS_S3_ACCESS_KEY_ID.
+    #
+    # ALL OPTIONAL: blank ⇒ fall back to the AWS_* pair above, which is exactly
+    # today's behaviour. Set them in dis_backend/.env, copying the values from the
+    # root .env (the container cannot read that file itself — its compose env_file is
+    # dis_backend/.env, and adding the root file there would override the storage
+    # credentials too).
+    bedrock_access_key_id: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_ACCESS_KEY_ID"))
+    bedrock_secret_access_key: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_SECRET_ACCESS_KEY"))
+    bedrock_session_token: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_SESSION_TOKEN"))
+    bedrock_region: str = Field(
+        default="", validation_alias=AliasChoices("DIS_BEDROCK_REGION"))
+
     # Bedrock / Anthropic
     use_bedrock: bool = True            # True = Bedrock, False = direct Anthropic API
     anthropic_api_key: Optional[str] = None
+
+    def bedrock_client_kwargs(self) -> Dict[str, Any]:
+        """boto3 kwargs for a bedrock-runtime client.
+
+        Prefers the Bedrock-only credentials when configured, else the shared AWS_*
+        pair. Credentials are passed explicitly rather than left to boto3's ambient
+        chain: this deployment has no instance role, and an implicit fallback there
+        raised NoCredentialsError inside call_llm, which swallowed it and returned a
+        valid-JSON stub — a whole block of empty digests reported as success.
+        """
+        key = (self.bedrock_access_key_id or "").strip() or self.aws_access_key_id
+        secret = ((self.bedrock_secret_access_key or "").strip()
+                  or self.aws_secret_access_key)
+        token = ((self.bedrock_session_token or "").strip()
+                 # Only pair the shared token with the shared key: a token belonging
+                 # to a different principal than the key is rejected outright.
+                 or (self.aws_session_token if not (self.bedrock_access_key_id or "").strip() else None))
+        kwargs: Dict[str, Any] = {
+            "region_name": (self.bedrock_region or "").strip() or self.aws_region,
+        }
+        if self.aws_endpoint_url:
+            kwargs["endpoint_url"] = self.aws_endpoint_url
+        if key:
+            kwargs["aws_access_key_id"] = key
+            kwargs["aws_secret_access_key"] = secret
+            if token:
+                kwargs["aws_session_token"] = token
+        return kwargs
 
     # OpenSearch
     opensearch_endpoint: str = "http://localhost:9200"

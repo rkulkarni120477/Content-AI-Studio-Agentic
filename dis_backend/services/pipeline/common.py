@@ -87,32 +87,40 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
     try:
         if settings.use_bedrock:
             import boto3, json as _json
-            kwargs = {"region_name": settings.aws_region}
-            if settings.aws_endpoint_url:
-                kwargs["endpoint_url"] = settings.aws_endpoint_url
-            # Pass the configured credentials explicitly, exactly as the S3 client in
-            # services/artifacts.py already does. Without this boto3 falls back to
-            # ambient credentials (env / instance role), which are absent in this
-            # deployment — every call then raised NoCredentialsError and returned the
-            # doc_type stub below. Because that stub is VALID JSON, safe_json parsed
-            # it happily and every digest field silently fell to its default
-            # (concept_type="Unknown", derived_objective="", misconceptions=[]),
-            # producing a complete-looking Blueprint with no extracted content.
-            if settings.aws_access_key_id:
-                kwargs["aws_access_key_id"] = settings.aws_access_key_id
-                kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
-                # Only meaningful for temporary STS credentials; omitted for
-                # long-lived IAM keys, which must not carry a token.
-                if getattr(settings, "aws_session_token", None):
-                    kwargs["aws_session_token"] = settings.aws_session_token
-            client = boto3.client("bedrock-runtime", **kwargs)
-            body = _json.dumps({
+            # Credentials come from settings.bedrock_client_kwargs(), which prefers the
+            # Bedrock-only DIS_BEDROCK_* pair when set and otherwise uses the shared
+            # AWS_* one. That split exists because model access is granted per IAM
+            # principal, and the principal that can invoke the newer models is not the
+            # one that owns DIS's S3 bucket and OpenSearch domain — so the model calls
+            # and the storage calls need to be able to use different identities.
+            #
+            # Passing credentials explicitly (rather than relying on boto3's ambient
+            # chain) is load-bearing: this deployment has no instance role, and the
+            # resulting NoCredentialsError was swallowed by the except below into a
+            # valid-JSON stub, which produced a complete-looking Blueprint with every
+            # extracted field at its default.
+            client = boto3.client("bedrock-runtime", **settings.bedrock_client_kwargs())
+            payload = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": max_tokens,
+                # Deterministic extraction is the point of temperature 0 here, so it is
+                # sent when the model accepts it — but newer models REJECT it outright
+                # (`ValidationException: temperature is deprecated for this model`),
+                # which without the retry below is swallowed into the valid-JSON stub
+                # and becomes a block of empty digests. Mirrors the same retry CAS
+                # already has in promptops_app/core/llm_client.py.
                 "temperature": 0.0,
                 "messages": [{"role": "user", "content": prompt}],
-            })
-            resp = client.invoke_model(modelId=model, body=body)
+            }
+            try:
+                resp = client.invoke_model(modelId=model, body=_json.dumps(payload))
+            except Exception as exc:
+                msg = str(exc)
+                if "ValidationException" not in msg or "temperature" not in msg:
+                    raise
+                log.info("[LLM] %s rejects an explicit temperature — retrying without it", model)
+                payload.pop("temperature", None)
+                resp = client.invoke_model(modelId=model, body=_json.dumps(payload))
             result = _json.loads(resp["body"].read())
             text = result["content"][0]["text"]
             usage = result.get("usage", {})
