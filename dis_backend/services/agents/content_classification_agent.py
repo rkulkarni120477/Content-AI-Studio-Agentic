@@ -46,7 +46,8 @@ class ContentClassificationAgent(BasePipelineAgent):
                 allowed = '|'.join(doc_processing.enabled_document_types or [])
                 prompt = f'''Classify this extracted document content. Return JSON only:\n{{"doc_type":"{allowed}", "classification":"public|internal|restricted|exam_secret"}}\nFilename: {state.get('filename')}\nContent:\n{sample}'''
                 resp, inp, out = call_llm(ctx.models.classification, prompt, max_tokens=100)
-                ctx.guard.record_usage(inp + out, 'content_classification')
+                ctx.guard.record_usage(inp + out, 'content_classification', tokens_in=inp, tokens_out=out,
+                                      model=ctx.models.classification)
                 parsed = safe_json(resp)
                 candidate = parsed.get('doc_type')
                 # Never let the LLM (or its failure fallback, which returns

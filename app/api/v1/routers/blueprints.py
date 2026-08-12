@@ -493,7 +493,7 @@ def generate_blueprint_block(
     current_user=Depends(require_permission("blueprint.generate")),
 ) -> BlockWideJobResponse:
     from promptops_app.repositories import job_repository
-    from promptops_app.jobs import job_runner, block_wide_jobs
+    from promptops_app.jobs import dispatch, block_wide_jobs
 
     dis_client_id = resolve_course_dis_client(
         db, course_id=request_body.course_id, project_id=request_body.project_id,
@@ -530,7 +530,10 @@ def generate_blueprint_block(
             "extra_instructions": request_body.extra_instructions,
         },
     )
-    job_runner.submit(block_wide_jobs.run_block_wide_job, job_id)
+    # dispatch, not job_runner: routes to Celery when enabled so a web-container
+    # restart/OOM can't kill a long block-wide run (it falls back to the
+    # threadpool automatically when Celery is off or the broker is unreachable).
+    dispatch.submit(block_wide_jobs.run_block_wide_job, job_id)
     _log.info("blueprint_generate_block_queued  user=%s  course=%d  block=%s  job=%s",
               current_user.username, request_body.course_id, request_body.block, job_id)
     return BlockWideJobResponse(

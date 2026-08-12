@@ -13,7 +13,9 @@ This router only reads and cancels jobs — it never executes them.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -24,6 +26,26 @@ from app.schemas.common import JobStatusResponse
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _result_warning(job) -> Optional[str]:
+    """Read the ``warning`` a completed job recorded in result_json, if any.
+
+    Kept tolerant: result_json is free-form and written by several job types, so a
+    missing key or unparseable payload means "no warning", never an error on a
+    status poll.
+    """
+    raw = getattr(job, "result_json", None)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    warning = payload.get("warning")
+    return warning.strip() if isinstance(warning, str) and warning.strip() else None
 
 
 @router.get(
@@ -97,6 +119,7 @@ def get_job_status(
         current_step=current_step,
         generation_id=job.result_entity_id,
         error_message=job.error_message,
+        warning=_result_warning(job),
         queue_position=queue_position,
         created_at=job.created_at.isoformat() if job.created_at else None,
         updated_at=job.updated_at.isoformat() if job.updated_at else None,

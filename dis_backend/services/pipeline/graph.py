@@ -103,4 +103,15 @@ async def run_pipeline(
         "artifact_urls": {},
         "metadata_hints": metadata_hints or {},
     }
-    return await compiled.ainvoke(initial)
+    state = await compiled.ainvoke(initial)
+    # Surface the run's LLM spend on the returned state. The guard is local to this
+    # function, so without this the ingestion agents' token usage died here — and
+    # since DIS calls Bedrock on its own client, that spend never reached CAS's
+    # usage/budget accounting at all (see token_guard's module docstring: Studio owns
+    # budget controls). try/except because reporting must never fail an ingestion that
+    # already succeeded.
+    try:
+        state["llm_usage"] = guard.usage_summary()
+    except Exception:                                  # pragma: no cover - defensive
+        log.warning("could not summarise ingestion LLM usage", exc_info=True)
+    return state

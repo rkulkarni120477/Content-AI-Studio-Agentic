@@ -66,6 +66,13 @@ async def lifespan(app: FastAPI):
     # process.  This replaces the @st.cache_resource pattern from Streamlit.
     initialise_llm_clients()
 
+    # Fail jobs that a previous process death (OOM kill, restart, redeploy) left
+    # stranded at queued/running. Their run_* handlers never got to record an
+    # error, so without this the row stays "running" forever and the UI shows a
+    # phantom in-flight generation. No-ops when Celery owns the jobs.
+    from promptops_app.jobs.reaper import reap_orphaned_jobs
+    reap_orphaned_jobs()
+
     _log.info("startup_complete  llm_clients=ready")
 
     yield  # Application runs here
