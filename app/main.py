@@ -36,6 +36,7 @@ from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.middleware import RequestLoggingMiddleware
 from app.core.llm_client import initialise_llm_clients
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
 
@@ -75,6 +76,16 @@ async def lifespan(app: FastAPI):
     _log.info("startup_complete  llm_clients=ready")
 
     yield  # Application runs here
+
+    # Langfuse's SDK batches trace exports asynchronously (OTel BatchSpanProcessor);
+    # flush on the way out so a restart doesn't silently drop the last few seconds
+    # of in-flight traces. Best-effort — Langfuse being unreachable at shutdown
+    # must not block or fail the shutdown itself.
+    try:
+        from langfuse import get_client
+        get_client().flush()
+    except Exception as exc:
+        _log.debug("Langfuse flush on shutdown skipped: %s", exc)
 
     # Release reused DIS connection pools (P4.3/F7).
     try:
@@ -145,6 +156,34 @@ def create_application() -> FastAPI:
                     "code": exc.code,
                     "message": exc.message,
                     "detail": exc.detail,
+                }
+            },
+        )
+
+    # P2: a separate handler, not an AppError subclass — BudgetExceededError is
+    # raised from promptops_app/services/budget_service.py, which has no
+    # dependency on this app/ (FastAPI) layer anywhere else; the plain-exception
+    # + dedicated-handler split keeps that boundary intact for this one case too.
+    # 402, not 429 — 429 stays reserved for P5's separate rate limiting.
+    @application.exception_handler(BudgetExceededError)
+    async def budget_exceeded_handler(request: Request, exc: BudgetExceededError) -> JSONResponse:
+        _log.warning(
+            "quota_exceeded  scope=%s  scope_id=%s  path=%s",
+            exc.scope, exc.scope_id, request.url.path,
+        )
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": {
+                    "code": "QUOTA_EXCEEDED",
+                    "message": str(exc),
+                    "detail": {
+                        "scope": exc.scope,
+                        "scope_id": exc.scope_id,
+                        "limit_type": exc.limit_type,
+                        "limit_usd": round(exc.limit_usd, 2),
+                        "current_spend": round(exc.current_spend, 2),
+                    },
                 }
             },
         )

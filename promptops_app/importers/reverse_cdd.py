@@ -24,6 +24,7 @@ from promptops_app.prompts.prompt_builder import build_prompt
 from promptops_app.repositories.cdd_repository import create_cdd_version
 from promptops_app.repositories.course_repository import set_active_cdd
 from promptops_app.services import llm_service
+from promptops_app.services.usage_service import UsageLogContext
 
 _log = logging.getLogger(__name__)
 
@@ -60,7 +61,12 @@ def build_cdd(
             project_id=course.project_id, course_id=course.id,
         )
 
-        llm = llm_service.generate_with_metadata(model_choice, system_prompt, user_prompt)
+        usage_ctx = UsageLogContext(
+            user_name=user_name, project_id=course.project_id, course_id=course.id,
+            entity_type="reverse_cdd", entity_id=str(course.id),
+            prompt_template=tpl_name, prompt_version=tpl_version,
+        )
+        llm = llm_service.generate_with_metadata(model_choice, system_prompt, user_prompt, usage_ctx)
         if llm.status == "error":
             result.warnings.append(f"Course design (CDD) reconstruction skipped: {llm.text}")
             return result

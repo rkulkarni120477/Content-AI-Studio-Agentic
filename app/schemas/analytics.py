@@ -30,18 +30,6 @@ class ProjectAnalyticsRow(BaseModel):
     blueprints: int = 0
 
 
-class PromptPerformanceItem(BaseModel):
-    prompt: str
-    avg_rating: float
-    samples: int
-
-
-class QualityTrendsResponse(BaseModel):
-    """Raw rating values in chronological order — used for the area chart."""
-
-    ratings: list[int]
-
-
 class UsageByModelItem(BaseModel):
     model: str
     prompt_tokens: int = 0
@@ -158,15 +146,6 @@ class ReviewItemRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class SystemLogRead(BaseModel):
-    event_type: str
-    actor: Optional[str] = None
-    details: Optional[str] = None
-    created_at: Optional[datetime] = None
-
-    model_config = {"from_attributes": True}
-
-
 class PromptVersionHistoryRow(BaseModel):
     prompt_id: int
     version: str
@@ -208,6 +187,9 @@ class LlmCostDashboardResponse(BaseModel):
     by_project: list[dict] = Field(default_factory=list)
     by_course: list[dict] = Field(default_factory=list)
     by_user: list[dict] = Field(default_factory=list)
+    platform_user_usage: list[dict] = Field(default_factory=list)
+    platform_tenant_usage: list[dict] = Field(default_factory=list)
+    platform_course_usage: list[dict] = Field(default_factory=list)
 
 
 class GenerationHistoryRow(BaseModel):

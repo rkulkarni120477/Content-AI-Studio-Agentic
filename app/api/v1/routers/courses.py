@@ -88,6 +88,8 @@ def create_course(
         project_id=project_id,
         cluster_id=request_body.cluster_id,
     )
+    if request_body.description is not None:
+        course.description = request_body.description.strip() or None
     db.add(course)
     db.commit()
     db.refresh(course)

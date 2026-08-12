@@ -53,6 +53,12 @@
     font-size: $font-size-sm;
     color: $color-gray-600;
     line-height: 1.45;
+    white-space: pre-wrap;
+  }
+
+  &__descPlaceholder {
+    color: $color-gray-400;
+    font-style: italic;
   }
 
   &__meta {

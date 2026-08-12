@@ -195,7 +195,7 @@ def test_invoke_model_caps_tokens_to_that_models_own_ceiling(monkeypatch):
 
     seen = {}
     monkeypatch.setattr(llm_service, "_call_bedrock_raw",
-                        lambda *a, **kw: seen.update(kw) or MagicMock())
+                        lambda *a, **kw: seen.update(kw) or MagicMock())  # accepts usage_ctx via **kw
     haiku = resolve_model("Claude Haiku 4.5 (Bedrock)")   # ceiling 16384
     llm_service._invoke_model(haiku, "sys", "user", max_tokens=32000)
     assert seen["max_tokens"] == 16384
@@ -211,7 +211,7 @@ def test_a_bedrock_failure_tries_bedrock_before_openai(monkeypatch):
 
     order = []
 
-    def bedrock_raw(system, user, model_id=None, max_tokens=None):
+    def bedrock_raw(system, user, model_id=None, usage_ctx=None, max_tokens=None):
         order.append(model_id)
         if "opus" in model_id:
             raise llm_service.LLMProviderError("AccessDeniedException for this model")

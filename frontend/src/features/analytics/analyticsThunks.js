@@ -2,9 +2,7 @@ import { createAsyncThunk } from '@reduxjs/toolkit';
 import { analyticsService } from './services/analyticsService';
 import { adminService } from './services/adminService';
 import { buildAnalyticsParams } from './utils/analyticsParams';
-import { buildAuditTrailParams } from './utils/auditTrailParams';
 import { extractErrorMessage } from '@utils/helpers';
-import { downloadBlob } from '@utils/helpers';
 import toast from 'react-hot-toast';
 
 function paramsFrom(filters, { getState }) {
@@ -25,24 +23,6 @@ export const fetchProjectAnalyticsThunk = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try { return await analyticsService.getProjectAnalytics(); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchPromptPerfThunk = createAsyncThunk(
-  'analytics/fetchPromptPerf',
-  async (filters, { getState, rejectWithValue }) => {
-    try {
-      return await analyticsService.getPromptPerf(paramsFrom(filters, { getState }));
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchQualityTrendsThunk = createAsyncThunk(
-  'analytics/fetchQualityTrends',
-  async (filters, { getState, rejectWithValue }) => {
-    try {
-      return await analyticsService.getQualityTrends(paramsFrom(filters, { getState }));
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
@@ -114,15 +94,6 @@ export const fetchReviewsThunk = createAsyncThunk(
   },
 );
 
-export const fetchSystemLogsThunk = createAsyncThunk(
-  'analytics/fetchSystemLogs',
-  async ({ page = 1 } = {}, { rejectWithValue }) => {
-    try {
-      return await analyticsService.getSystemLogs({ page, page_size: 50 });
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
 export const fetchLlmCostThunk = createAsyncThunk(
   'analytics/fetchLlmCost',
   async (filters, { getState, rejectWithValue }) => {
@@ -132,65 +103,11 @@ export const fetchLlmCostThunk = createAsyncThunk(
   },
 );
 
-export const fetchAuditTrailFiltersThunk = createAsyncThunk(
-  'analytics/fetchAuditFilters',
-  async (_, { rejectWithValue }) => {
-    try { return await analyticsService.getAuditTrailFilters(); }
+export const fetchGenerationTraceThunk = createAsyncThunk(
+  'analytics/fetchGenerationTrace',
+  async (generationId, { rejectWithValue }) => {
+    try { return await analyticsService.getGenerationTrace(generationId); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchAuditTrailThunk = createAsyncThunk(
-  'analytics/fetchAudit',
-  async ({ page = 1, pageSize = 25, filters = {} } = {}, { rejectWithValue }) => {
-    try {
-      return await analyticsService.getAuditTrail(
-        buildAuditTrailParams({ page, pageSize, filters }),
-      );
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const exportAuditThunk = createAsyncThunk(
-  'analytics/exportAudit',
-  async ({ filters = {} } = {}, { rejectWithValue }) => {
-    try {
-      const response = await analyticsService.exportAudit(
-        buildAuditTrailParams({ page: 1, pageSize: 5000, filters }),
-      );
-      downloadBlob(response.data, 'audit-trail.csv');
-      toast.success('Audit trail exported.');
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const fetchUsersThunk = createAsyncThunk(
-  'analytics/fetchUsers',
-  async (_, { rejectWithValue }) => {
-    try { return await analyticsService.listUsers(); }
-    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const createUserThunk = createAsyncThunk(
-  'analytics/createUser',
-  async (data, { rejectWithValue }) => {
-    try {
-      const result = await analyticsService.createUser(data);
-      toast.success('User created.');
-      return result;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-export const toggleUserActiveThunk = createAsyncThunk(
-  'analytics/toggleUser',
-  async ({ userId, isActive }, { rejectWithValue }) => {
-    try {
-      const result = await analyticsService.toggleUserActive(userId, isActive);
-      toast.success('User status updated.');
-      return result;
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
@@ -218,5 +135,43 @@ export const clearDatabaseThunk = createAsyncThunk(
       toast.success(result?.message || 'Data cleared.');
       return tag;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const fetchBudgetsThunk = createAsyncThunk(
+  'analytics/fetchBudgets',
+  async (params, { rejectWithValue }) => {
+    try { return await adminService.listBudgets(params); }
+    catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const upsertBudgetThunk = createAsyncThunk(
+  'analytics/upsertBudget',
+  async (body, { rejectWithValue }) => {
+    try {
+      const result = await adminService.upsertBudget(body);
+      toast.success('Budget saved.');
+      return result;
+    } catch (e) {
+      const message = extractErrorMessage(e);
+      toast.error(message);
+      return rejectWithValue(message);
+    }
+  },
+);
+
+export const deleteBudgetThunk = createAsyncThunk(
+  'analytics/deleteBudget',
+  async (id, { rejectWithValue }) => {
+    try {
+      await adminService.deleteBudget(id);
+      toast.success('Budget removed.');
+      return id;
+    } catch (e) {
+      const message = extractErrorMessage(e);
+      toast.error(message);
+      return rejectWithValue(message);
+    }
   },
 );

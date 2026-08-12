@@ -8,7 +8,7 @@
 import { useAuth as useHostAuth } from '@hooks/useAuth';
 
 export function useAuth() {
-  const { user, role, isLoading } = useHostAuth();
+  const { user, role, isPlatformAdmin, isLoading } = useHostAuth();
   const mapped = user
     ? {
         username: user.username,
@@ -16,6 +16,7 @@ export function useAuth() {
         role: user.role || role,
         permissions: user.permissions || [],
         team: user.team ?? null,
+        is_platform_admin: isPlatformAdmin,
       }
     : null;
   return { user: mapped, loading: isLoading };

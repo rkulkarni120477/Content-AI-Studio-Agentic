@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@services/apiClient';
 import { BLOCKS, MODULES } from '@services/endpoints';
 import { WORKFLOW_STATES } from '@utils/constants';
-import { truncate, downloadBlob, downloadText } from '@utils/helpers';
+import { truncate, downloadBlob, downloadText, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import Modal from '@components/common/Modal/Modal';
@@ -386,7 +386,10 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
     setRegenIds((prev) => new Set(prev).add(block.id));
     try {
       const res = await api.post(BLOCKS.CANVAS_HTML_REGEN(block.id));
-      toast.success(`HTML regenerated for “${truncate(block.block_label || `Block ${block.id}`, 40)}”.`);
+      const usageMsg = formatUsageSummaryMessage(res.usage_summary);
+      const baseMsg = `HTML regenerated for “${truncate(block.block_label || `Block ${block.id}`, 40)}”.`;
+      const message = usageMsg ? `${baseMsg} ${usageMsg}` : baseMsg;
+      if (hasOverBudget(res.usage_summary)) toast.error(message); else toast.success(message);
       patchBlockInLayout(block.id, { has_html: true });
       if (preview?.block?.id === block.id) {
         setPreview({

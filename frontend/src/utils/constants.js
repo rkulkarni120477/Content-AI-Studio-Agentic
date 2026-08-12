@@ -172,6 +172,13 @@ export const ROUTES = {
   TENANT_ROLES:   (tenantId) => `/tenants/${tenantId}/roles`,
 };
 
+/** Post-login / "back to projects" destination — platform admins use the tenant dashboard; everyone else lands on their project's categories. */
+export function projectHomeRoute(isPlatformAdmin, projectId) {
+  if (isPlatformAdmin) return ROUTES.DASHBOARD;
+  if (projectId) return ROUTES.PROJECT_CLUSTERS(projectId);
+  return ROUTES.LOGIN;
+}
+
 // ─── Local Storage Keys ───────────────────────────────────────────────────────
 export const STORAGE_KEYS = {
   TOKEN:           'content_ai_jwt',

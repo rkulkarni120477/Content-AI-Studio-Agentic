@@ -96,6 +96,7 @@ AUDIT_EVENTS: dict[str, dict] = {
 
     # ── Content Generation ────────────────────────────────────────────────────
     "generation.launched":     {"level": "info",    "entity": "generation", "icon": "🚀", "label": "Generation launched"},
+    "generation.trace_viewed": {"level": "info",    "entity": "generation", "icon": "🔍", "label": "Generation trace viewed"},
     "content.generated":       {"level": "info",    "entity": "generation", "icon": "⚡", "label": "Content generated"},
     "content.edited":          {"level": "info",    "entity": "block",      "icon": "✏️", "label": "Content block edited"},
     "content.regenerated":     {"level": "info",    "entity": "block",      "icon": "🔄", "label": "Content block regenerated"},

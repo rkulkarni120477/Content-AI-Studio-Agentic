@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from promptops_app.database import GenerationJob, SessionLocal
 from promptops_app.jobs.job_status import JobStatus, set_completed, set_failed, set_running
 from promptops_app.services import block_wide_service
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
 
@@ -242,7 +243,13 @@ def run_block_wide_job(job_id: str) -> None:
             except Exception:
                 pass
             try:
-                set_failed(db, job, "Block-wide generation failed. Please try again.")
+                # A quota breach's real "$X of $Y used" / "N of M tokens used"
+                # message must reach the user — a generic retry prompt hides
+                # that the earlier MAP calls already spent real money before
+                # the reduce step's breach. Every other exception keeps the
+                # generic message rather than leaking raw DB/provider detail.
+                message = str(exc) if isinstance(exc, BudgetExceededError) else "Block-wide generation failed. Please try again."
+                set_failed(db, job, message)
             except Exception:
                 _log.exception("Block-wide job %s: could not mark failed", job_id)
             # Audit the failure too. `job` is set, but `deliverable`/`req`/`user` may
