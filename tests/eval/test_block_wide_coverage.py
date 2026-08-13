@@ -11,6 +11,7 @@ Offline + deterministic (stub LLM, no DIS/DB/Bedrock) — safe for CI. Asserts:
 Companion live checks (real dis_db / Bedrock / OpenSearch) live outside CI.
 """
 import json
+import re
 import types
 
 import pytest
@@ -42,7 +43,7 @@ def test_day_table_from_rows_produces_one_line_per_day_even_with_embedded_newlin
         {"day_number": 3, "topic": "Day three"},
     ]
     lines = _day_table_from_rows(rows)
-    day_rows = [l for l in lines if l.startswith("| 1 ") or l.startswith("| 2 ") or l.startswith("| 3 ")]
+    day_rows = [l for l in lines if re.match(r"^\| Day [123] ", l)]
     assert len(day_rows) == 3  # one physical line per day — none swallowed a newline
     # Derived from the header rather than hardcoded: N columns -> N+1 pipes. The
     # previous literal (28, for 27 columns) had to be edited by hand every time a
@@ -120,10 +121,11 @@ def test_reduce_coverage_golden():
     assert rows[1]["narrative"] == "Cell for day 1"
     assert rows[4]["narrative"].startswith("REVIEW NEEDED")
     # Tier → model + token headroom; the per-day batch is 1 call + 1 patterns_notes call.
-    # 'premium' resolves to Sonnet 4.5 (not Opus) while Opus has no model access on
-    # this account; the 32000 headroom is unchanged, since both carry that ceiling.
-    assert res.reduce_model == "Claude Sonnet 4.5 (Bedrock)"
-    assert res.max_output_tokens == 32000
+    # 'premium' is Opus 5 — measured 3/3 in both regions on the credentials CAS runs
+    # on. A cap below the model's real output ceiling silently truncates long
+    # sectioned output, which reads as missing worksheet rows rather than an error.
+    assert res.reduce_model == "Claude Opus 5 (Bedrock)"
+    assert res.max_output_tokens == 64000
     assert res.llm_calls == 2
     # Multi-worksheet shape: 5 sections in a fixed order, even with no overview/
     # inventory/registry data supplied (this test predates Phase 1's aggregates).
@@ -197,7 +199,7 @@ def test_day_table_prefixes_learn_while_doing_reason_with_yes_no_and_uses_hangar
         "hangar_activity_note": "Locating drawing-referenced components on an aircraft.",
     }]
     lines = _day_table_from_rows(rows)
-    day_row = next(l for l in lines if l.startswith("| 1 "))
+    day_row = next(l for l in lines if l.startswith("| Day 1 "))
     assert "No — no project opens this day (Project 2-1 opens Day 2)." in day_row
     assert "Locating drawing-referenced components on an aircraft." in day_row
     # The code-computed fact (which files actually exist) must survive
@@ -219,7 +221,7 @@ def test_day_table_hangar_activity_survives_even_when_note_contradicts_ground_tr
         "hangar_activity_note": "N/A — no hangar activity listed for this day.",
     }]
     lines = _day_table_from_rows(rows)
-    day_row = next(l for l in lines if l.startswith("| 1 "))
+    day_row = next(l for l in lines if l.startswith("| Day 1 "))
     assert "Aircraft Location Scout.pdf" in day_row
 
 
@@ -458,14 +460,11 @@ def test_reduce_threads_map_guidance_into_patterns_notes_too():
 
 
 def test_resolve_tier():
-    # All three tiers currently resolve to Sonnet 4.5 because it is the only
-    # Anthropic text model this AWS account can invoke — Haiku 4.5 and Opus 4.8
-    # return AccessDeniedException in every region (see core/models.py). Tier
-    # selection therefore does not differentiate model capability today; restore
-    # distinct models here once Bedrock model access is granted.
-    assert resolve_tier("draft").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
-    assert resolve_tier("standard").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
-    assert resolve_tier("premium").reduce_model == "Claude Sonnet 4.5 (Bedrock)"
+    # Tiers differentiate: each target measured 3/3 in both regions on the credentials
+    # the REDUCE path actually uses (root .env principal, not DIS's).
+    assert resolve_tier("draft").reduce_model == "Claude Haiku 4.5 (Bedrock)"
+    assert resolve_tier("standard").reduce_model == "Claude Sonnet 5 (Bedrock)"
+    assert resolve_tier("premium").reduce_model == "Claude Opus 5 (Bedrock)"
     # Blank/unknown falls back to the default tier, never raises.
     assert resolve_tier(None).tier == "standard"
     assert resolve_tier("bogus").tier == "standard"
@@ -607,9 +606,9 @@ def test_cdd_digest_path_render_and_fallback(monkeypatch):
     gen = cdd_router._generate_cdd_via_digests(db=None, request_body=req, current_user=user, dis_client_id="aim")
     assert gen is not None
     assert gen["prompt_provenance"]["prompt_source"] == "digest_pipeline"
-    assert gen["model_used"] == "Claude Sonnet 4.5 (Bedrock)"
+    assert gen["model_used"] == "Claude Sonnet 5 (Bedrock)"   # standard tier
     assert gen["coverage"]["orphan_acs"] == ["D"]
-    assert "| 1 |" in gen["raw_output"] and "| 4 |" in gen["raw_output"]
+    assert "| Day 1 |" in gen["raw_output"] and "| Day 4 |" in gen["raw_output"]
     assert "REVIEW NEEDED" in gen["raw_output"]
     assert isinstance(gen["sections"], dict) and gen["sections"]
 
@@ -693,7 +692,7 @@ def test_blueprint_digest_path_render(monkeypatch):
                                                             dis_client_id="aim")
     assert gen is not None
     assert gen["prompt_provenance"]["deliverable"] == "blueprint"
-    assert gen["model_used"] == "Claude Sonnet 4.5 (Bedrock)"  # draft tier (see resolve_tier)
+    assert gen["model_used"] == "Claude Haiku 4.5 (Bedrock)"  # draft tier (see resolve_tier)
     assert "Block Blueprint" in gen["raw_output"] and "WORKSHEET 4: DAY-BY-DAY MAP" in gen["raw_output"]
     assert gen["coverage"]["orphan_acs"] == ["D"]
     # Multi-worksheet shape carries through the real generate_blueprint_via_digests

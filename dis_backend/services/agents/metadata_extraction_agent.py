@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
-from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
+from services.pipeline.common import (LLMCallFailed, PipelineState, call_llm, keywords,
+                                     safe_json)
 from services.pipeline.extractors import ExtractionResult, extract
 from services.specialized_extractors import (
     infer_doc_type,
@@ -53,8 +54,22 @@ class MetadataExtractionAgent(BasePipelineAgent):
                 sample = (state.get('raw_text', '') or '')[:1500]
                 prompt = f'Extract client metadata. Return JSON only.\nClient fields:\n{field_text}\nAlways include title, language, word_count.\nFilename: {state.get("filename", "")}\nDocument excerpt:\n{sample}'
                 resp, inp, out = call_llm(ctx.models.metadata_extraction, prompt, max_tokens=350)
-                ctx.guard.record_usage(inp + out, 'metadata_extraction')
+                ctx.guard.record_usage(inp + out, 'metadata_extraction', tokens_in=inp, tokens_out=out,
+                                      model=ctx.models.metadata_extraction)
                 meta = safe_json(resp)
+            except LLMCallFailed as exc:
+                # Same shape as the token-limit path: fall back to the filename/word-count
+                # defaults below, and say so. Silently defaulted metadata is
+                # indistinguishable from extracted metadata once it is stored.
+                state.setdefault('errors', []).append(f'metadata_extraction: {exc}')
+                # Count the attempt. The provider failed, so token counts are unknown —
+                # recording zero keeps the CALL count honest without inventing numbers,
+                # mirroring how a failed MAP call is counted on the digest side (a
+                # read-timed-out generation is still billed). Skipping it entirely would
+                # report the spend as never having happened.
+                ctx.guard.record_usage(0, 'metadata_extraction', tokens_in=0, tokens_out=0,
+                                       model=ctx.models.metadata_extraction)
+                meta = {}
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
                 meta = {}

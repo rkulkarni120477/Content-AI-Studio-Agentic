@@ -23,7 +23,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-_ENV_PREFIXES = ("DIS_STRUCTURE_STORE_URL", "DIS_VECTOR_STORE_")
+# Every prefix the resolver reads must be cleared, not just the ones a given test
+# sets: otherwise a developer (or CI box) that legitimately exports
+# DIS_MODEL_TEXT_ALL — which is precisely what we tell environments to do — sees
+# the default-value assertions fail for reasons that have nothing to do with the code.
+_ENV_PREFIXES = ("DIS_STRUCTURE_STORE_URL", "DIS_VECTOR_STORE_", "DIS_MODEL_")
 
 
 @pytest.fixture
@@ -111,3 +115,165 @@ def test_blank_env_var_does_not_blank_the_config(load_config):
     but empty var in a shell profile would silently disable a store."""
     settings = load_config({"DIS_STRUCTURE_STORE_URL": ""})
     assert "dis-dev-postgres" in settings.get_tenant_config("aim").structure_store.url
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline model selection
+#
+# Model availability is an environment fact, not a code fact: an ID can be
+# end-of-life in one region, provider-legacy in another, and require a model-access
+# grant the calling role may not hold. Baking one into a committed YAML forces every
+# environment onto it — and because call_llm returns a valid-JSON stub on failure,
+# an unavailable model degrades into complete-looking output with every extracted
+# field empty (2026-08-12: 8/20 days "Unknown", all AM.I.B codes orphaned, job
+# reported success).
+# --------------------------------------------------------------------------- #
+DEFAULT_TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+TEXT_STEPS = ("classification", "metadata_extraction", "structure_extraction",
+              "quality_check", "vision", "digest_extraction")
+
+
+def test_default_extractor_is_the_reliably_invokable_model(load_config):
+    """Sonnet 4.5 — NOT the newest, but the only Anthropic model this account invokes
+    reliably (3/3 per region; Sonnet 5 / Opus 5 / Sonnet 4.6 each gave one spurious
+    success then 0/3). A default that cannot be invoked fails every build, which is
+    what build.preflight_extractor now surfaces loudly instead of silently."""
+    settings = load_config()
+    models = settings.get_tenant_config("aim").pipeline.models
+    for step in TEXT_STEPS:
+        assert getattr(models, step) == DEFAULT_TEXT_MODEL
+
+
+def test_text_all_sets_every_step_at_once(load_config):
+    """The common case is "this environment can invoke exactly one text model";
+    repeating it six times invites the six from drifting apart."""
+    # Deliberately NOT the default value — otherwise this passes whether the
+    # override works or not.
+    target = "global.anthropic.some-other-model-v9:0"
+    assert target != DEFAULT_TEXT_MODEL
+    settings = load_config({"DIS_MODEL_TEXT_ALL": target})
+    models = settings.get_tenant_config("aim").pipeline.models
+    for step in TEXT_STEPS:
+        assert getattr(models, step) == target
+
+
+def test_a_single_step_can_be_overridden_on_its_own(load_config):
+    settings = load_config({"DIS_MODEL_DIGEST_EXTRACTION": "model-for-map-only"})
+    models = settings.get_tenant_config("aim").pipeline.models
+    assert models.digest_extraction == "model-for-map-only"
+    assert models.classification == DEFAULT_TEXT_MODEL
+
+
+def test_per_step_beats_text_all(load_config):
+    settings = load_config({"DIS_MODEL_TEXT_ALL": "broad",
+                            "DIS_MODEL_DIGEST_EXTRACTION": "specific"})
+    models = settings.get_tenant_config("aim").pipeline.models
+    assert models.digest_extraction == "specific"
+    assert models.classification == "broad"
+
+
+def test_per_client_model_override(load_config):
+    settings = load_config({"DIS_MODEL_TEXT_ALL": "shared",
+                            "DIS_MODEL_TEXT_ALL_AIM": "aim-only"})
+    assert settings.get_tenant_config("aim").pipeline.models.vision == "aim-only"
+    assert settings.get_tenant_config("cengage").pipeline.models.vision == "shared"
+
+
+def test_embedding_model_is_not_swept_by_text_all(load_config):
+    """TEXT_ALL means text steps. Pointing the embedding model at a text model would
+    break indexing in a way that looks like a search-quality problem."""
+    settings = load_config({"DIS_MODEL_TEXT_ALL": "some-text-model"})
+    assert settings.get_tenant_config("aim").pipeline.models.embedding == \
+        "amazon.titan-embed-text-v2:0"
+
+
+def test_blank_model_var_does_not_blank_the_model(load_config):
+    settings = load_config({"DIS_MODEL_DIGEST_EXTRACTION": "   "})
+    assert settings.get_tenant_config("aim").pipeline.models.digest_extraction == \
+        DEFAULT_TEXT_MODEL
+
+
+# --------------------------------------------------------------------------- #
+# Bedrock-only credentials
+#
+# Model access is granted per IAM principal, and the principal that can invoke the
+# models is not necessarily the one that owns the storage. Measured 2026-08-12:
+# promptops-contentAI-Dev (acct 498628474556) invokes Sonnet 5 / Opus 5 / Haiku 4.5
+# 3/3 in both regions; nandkishor-ai-project-access (acct 410453487786), which owns
+# DIS's S3 bucket and OpenSearch domain, invokes only Sonnet 4.5. DIS used ONE
+# credential set for everything, so swapping AWS_* wholesale would buy model access
+# at the cost of the digest store.
+# --------------------------------------------------------------------------- #
+def _settings(load_config, env=None):
+    settings = load_config(env)
+    return settings.GlobalSettings()
+
+
+def test_without_bedrock_creds_the_shared_aws_pair_is_used(monkeypatch, load_config):
+    """Must be a no-op until someone opts in — this cannot change any deployment."""
+    for k, v in (("AWS_ACCESS_KEY_ID", "AKIASHARED"), ("AWS_SECRET_ACCESS_KEY", "sharedsecret"),
+                 ("AWS_REGION", "ap-south-1")):
+        monkeypatch.setenv(k, v)
+    # Set to "" rather than deleted: GlobalSettings also reads dis_backend/.env, so
+    # deleting the process env leaves a real deployment's values in play and the test
+    # asserts against whatever that file happens to contain. An explicit empty value
+    # takes precedence over the file and exercises the blank-is-unset rule too.
+    for k in ("DIS_BEDROCK_ACCESS_KEY_ID", "DIS_BEDROCK_SECRET_ACCESS_KEY",
+              "DIS_BEDROCK_SESSION_TOKEN", "DIS_BEDROCK_REGION"):
+        monkeypatch.setenv(k, "")
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert kw["aws_access_key_id"] == "AKIASHARED"
+    assert kw["aws_secret_access_key"] == "sharedsecret"
+    assert kw["region_name"] == "ap-south-1"
+
+
+def test_bedrock_creds_override_only_the_model_calls(monkeypatch, load_config):
+    for k, v in (("AWS_ACCESS_KEY_ID", "AKIASTORAGE"), ("AWS_SECRET_ACCESS_KEY", "storagesecret"),
+                 ("AWS_REGION", "ap-south-1"),
+                 ("DIS_BEDROCK_ACCESS_KEY_ID", "AKIAMODELS"),
+                 ("DIS_BEDROCK_SECRET_ACCESS_KEY", "modelsecret")):
+        monkeypatch.setenv(k, v)
+    s = _settings(load_config)
+    kw = s.bedrock_client_kwargs()
+    assert kw["aws_access_key_id"] == "AKIAMODELS", "model calls did not use the Bedrock pair"
+    # Storage credentials are untouched — that is the whole point of the split.
+    assert s.aws_access_key_id == "AKIASTORAGE"
+
+
+def test_a_shared_session_token_is_not_paired_with_a_different_principals_key(monkeypatch, load_config):
+    """A token belonging to a different principal than the key is rejected outright,
+    so it must not be forwarded alongside the Bedrock key."""
+    for k, v in (("AWS_ACCESS_KEY_ID", "AKIASTORAGE"), ("AWS_SECRET_ACCESS_KEY", "s"),
+                 ("AWS_SESSION_TOKEN", "storage-token"),
+                 ("DIS_BEDROCK_ACCESS_KEY_ID", "AKIAMODELS"),
+                 ("DIS_BEDROCK_SECRET_ACCESS_KEY", "m")):
+        monkeypatch.setenv(k, v)
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert "aws_session_token" not in kw
+
+
+def test_bedrock_session_token_is_forwarded_when_it_belongs_to_the_bedrock_key(monkeypatch, load_config):
+    for k, v in (("DIS_BEDROCK_ACCESS_KEY_ID", "ASIAMODELS"),
+                 ("DIS_BEDROCK_SECRET_ACCESS_KEY", "m"),
+                 ("DIS_BEDROCK_SESSION_TOKEN", "model-token")):
+        monkeypatch.setenv(k, v)
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert kw["aws_session_token"] == "model-token"
+
+
+def test_bedrock_region_can_differ_from_the_storage_region(monkeypatch, load_config):
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    monkeypatch.setenv("DIS_BEDROCK_REGION", "us-east-1")
+    assert _settings(load_config).bedrock_client_kwargs()["region_name"] == "us-east-1"
+
+
+def test_blank_bedrock_vars_fall_back_rather_than_blanking_credentials(monkeypatch, load_config):
+    """An exported-but-empty var in a shell profile must not disable model calls."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIASHARED")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "sharedsecret")
+    monkeypatch.setenv("DIS_BEDROCK_ACCESS_KEY_ID", "   ")
+    monkeypatch.setenv("DIS_BEDROCK_REGION", "  ")
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    kw = _settings(load_config).bedrock_client_kwargs()
+    assert kw["aws_access_key_id"] == "AKIASHARED"
+    assert kw["region_name"] == "ap-south-1"

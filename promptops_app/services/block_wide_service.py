@@ -14,11 +14,35 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+import os
+from contextvars import ContextVar
+from dataclasses import replace
+from typing import Any, Dict, List, Optional
 
 from app.core.dis_client import dis_client
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
+
+# The failure branches in _build_and_reduce log the real cause and then return None,
+# which the job layer renders as one fixed "Digest pipeline unavailable (no enumerated
+# days or DIS error)" string. That string is the ONLY artefact a prod user or on-call
+# engineer sees, and it cannot distinguish causes that need completely different fixes:
+# DIS unreachable, a Bedrock credential/model rejection inside DIS, or a block that
+# genuinely enumerated zero days. Diagnosing 2026-08-13's prod failure meant reading
+# container logs that are not accessible from where the report lands.
+#
+# A ContextVar rather than a return value because two callers (cdd.py's sync branch and
+# run_block_wide_sync) depend on None meaning "fall back to the legacy path" — changing
+# that contract to raise would silently disable their fallback. ContextVar (not a plain
+# global) so concurrent jobs on the job_runner thread pool cannot read each other's
+# reason; Celery's process workers are isolated either way.
+_failure_reason: ContextVar[str] = ContextVar("block_wide_failure_reason", default="")
+
+
+def last_failure_reason() -> str:
+    """Reason for the most recent digest-pipeline failure *in this context*, or ""."""
+    return _failure_reason.get("")
 
 
 def run_block_wide_sync(db, deliverable: str, request_body, current_user):
@@ -290,8 +314,13 @@ def _day_table_from_rows(rows: list[dict]) -> list[str]:
         # anywhere in this system — see worksheets.py's module docstring).
         quick_check = _cell(r.get("quick_check_targets") or "", default="NO AKTR DATA")
         exam_cluster = _cell(r.get("summative_exam_cluster") or "", default="")
+        # "Day 5", not "5" — the AIM reference's own Day # column is written that way,
+        # and a bare number makes every row read as a mismatch when the two are
+        # compared cell-by-cell. Numeric consumers read day_number off the row dicts,
+        # not this rendered cell.
+        day_label = f"Day {r['day_number']}" if r.get("day_number") is not None else "—"
         cells = [
-            str(r.get("day_number")), topic, handbook, handbook_edition, acs, concept_type,
+            day_label, topic, handbook, handbook_edition, acs, concept_type,
             concept_type_explanation, concept_scope, learn_while_doing, how_it_is_applied,
             hangar_activity, projects, assessment, quick_check, exam_cluster,
             files, objective, misconceptions,
@@ -328,6 +357,224 @@ def render_blueprint_markdown(block: Optional[str], result) -> str:
 # --------------------------------------------------------------------------- #
 # Reduce (shared build → bundle → reduce)
 # --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# MAP cost accounting
+#
+# MAP (per-day digest extraction) runs inside DIS, on DIS's own Bedrock client, so
+# it never reaches CAS's usage/budget choke point in core/llm_client.py. Measured on
+# a real 20-day block: MAP ~176k input / 15k output tokens vs REDUCE's ~6k / 2.5k —
+# so without this, ~96% of a block-wide generation's spend was absent from
+# llm_usage_logs, the cost dashboards, and the token-cap budgets, and a budget could
+# never stop a run no matter how large.
+#
+# Two halves, deliberately separate:
+#   * a pre-flight RESERVATION so an over-budget build is refused before it spends;
+#   * a post-build RECORD + RECONCILE using the token counts DIS actually reports,
+#     so attribution is exact rather than estimated.
+# ---------------------------------------------------------------------------
+
+#: Worst-case MAP size used for the pre-flight reservation, from the measured
+#: per-day averages of real AIM blocks (~8.8k in / ~750 out per day) against a
+#: generous 25-day block. Over-reserving is safe and intended: reconcile_budget
+#: corrects it to the real figure immediately after the build, so the only effect of
+#: being high is that a build starting very close to a cap is refused rather than
+#: allowed to breach it.
+def _env_int(name: str, default: int) -> int:
+    """Positive int from the environment, else *default*. Junk and non-positive
+    values fall back rather than becoming a number: a zero or negative estimate here
+    would reserve nothing and make the whole pre-flight check silently vacuous.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        _log.warning("%s=%r is not an integer — using %d", name, raw, default)
+        return default
+    if value <= 0:
+        _log.warning("%s=%d must be positive — using %d", name, value, default)
+        return default
+    return value
+
+
+#: Overridable so an operator can retune the reservation against their own blocks
+#: without a deploy — the same treatment the DIS_MAP_* input budgets get.
+_MAP_ESTIMATE_DAYS = _env_int("CAS_MAP_ESTIMATE_DAYS", 25)
+_MAP_EST_INPUT_TOKENS_PER_DAY = _env_int("CAS_MAP_EST_INPUT_TOKENS_PER_DAY", 8_800)
+_MAP_EST_OUTPUT_TOKENS_PER_DAY = _env_int("CAS_MAP_EST_OUTPUT_TOKENS_PER_DAY", 750)
+
+#: Pricing FAMILY fallback for the reservation, and for a report that predates
+#: ``map_model`` (an older DIS). Not a claim about which model DIS runs — DIS owns
+#: that, and the settled figures always use the ``map_model`` it reports.
+#: usage_service._find_pricing matches on substring, so any "claude…sonnet" string
+#: resolves to Sonnet pricing, which is the family every current extractor is in.
+_MAP_PRICING_MODEL = "anthropic.claude-sonnet"
+
+
+def _map_usage_ctx(deliverable: str, request_body, current_user):
+    """UsageLogContext for the MAP stage, or None when there is nothing to bill.
+
+    Returns None — never raises — in two cases, because cost accounting must not be
+    the reason a generation fails:
+      * building the context itself failed;
+      * none of project/course/user is known. Budgets are keyed on exactly those
+        three (budget_service._levels_for), so a context without any of them can
+        neither be enforced nor attributed, and constructing one would only make the
+        logs claim an attribution that does not exist.
+    """
+    try:
+        from promptops_app.services.usage_service import UsageLogContext
+        project_id = getattr(request_body, "project_id", None)
+        course_id = getattr(request_body, "course_id", None)
+        user_name = getattr(current_user, "username", "") or ""
+        if project_id is None and course_id is None and not user_name:
+            _log.warning("map usage: no project/course/user on this request — MAP spend "
+                         "cannot be attributed or enforced")
+            return None
+        return UsageLogContext(
+            user_name=user_name,
+            project_id=project_id,
+            course_id=course_id,
+            entity_type=deliverable,
+            entity_id=str(getattr(request_body, "block", "") or "") or None,
+            prompt_template="digest_map",
+            prompt_version="",          # filled from the report's prompt_version below
+        )
+    except Exception:
+        _log.warning("map usage context unavailable — MAP spend will not be attributed",
+                     exc_info=True)
+        return None
+
+
+def _reserve_map_budget(db, map_ctx):
+    """Reserve the worst-case MAP spend. Raises BudgetExceededError on a real breach.
+
+    Deliberately propagates that one exception: refusing an over-budget build before
+    it runs is the entire point, and the HTTP layer turns it into a 402. Every other
+    failure is swallowed — a bug here must not block generation.
+    """
+    if map_ctx is None or db is None:
+        return []
+    try:
+        from promptops_app.services.budget_service import check_budget
+        result = check_budget(
+            db, map_ctx, system_prompt="", user_prompt="",
+            model=_MAP_PRICING_MODEL,
+            estimated_input_tokens=_MAP_ESTIMATE_DAYS * _MAP_EST_INPUT_TOKENS_PER_DAY,
+            estimated_output_tokens=_MAP_ESTIMATE_DAYS * _MAP_EST_OUTPUT_TOKENS_PER_DAY,
+        )
+        for warning in result.warnings or []:
+            _log.warning("map budget warning: %s", warning)
+        return result.reservations or []
+    except BudgetExceededError:
+        raise
+    except Exception:
+        _log.warning("map budget reservation failed — proceeding unreserved", exc_info=True)
+        return []
+
+
+def _settle_map_usage(db, map_ctx, report: Optional[Dict[str, Any]], reservation) -> None:
+    """Write the MAP spend to llm_usage_logs and true up the reservation.
+
+    Never raises. A build that failed before reporting still releases its
+    reservation (actuals of zero), because a leaked hold would suppress every later
+    generation in the period.
+
+    KNOWN LIMITATION: if the DIS call itself fails (network, 5xx) after DIS has
+    already spent tokens on some days, no report comes back and that spend is
+    unrecorded — CAS has no other way to learn it. The reservation is still released,
+    so the effect is an under-count on a failed build rather than a leak. Closing it
+    would need DIS to report partial usage on the error path.
+    """
+    from promptops_app.services.budget_service import reconcile_budget
+    from promptops_app.services.usage_service import estimate_cost, log_llm_usage
+
+    # The report is an HTTP response body from DIS, so its shape is not guaranteed:
+    # a non-dict (error string, unexpected payload) must settle the reservation at
+    # zero rather than raise out of a finally block and replace the real result.
+    rep = report if isinstance(report, dict) else {}
+    if report is not None and not isinstance(report, dict):
+        _log.warning("map usage: DIS build report was %s, not a dict — settling at zero",
+                     type(report).__name__)
+    try:
+        tok_in = int(rep.get("map_tokens_in") or 0)
+        tok_out = int(rep.get("map_tokens_out") or 0)
+    except (TypeError, ValueError):
+        _log.warning("map usage: non-numeric token counts in the DIS report — "
+                     "settling at zero", exc_info=True)
+        tok_in = tok_out = 0
+    model = str(rep.get("map_model") or "") or _MAP_PRICING_MODEL
+    cost = 0.0
+    try:
+        cost = estimate_cost(model, tok_in, tok_out)
+    except Exception:
+        _log.warning("map cost estimate failed for model=%s", model, exc_info=True)
+
+    # Record first: a usage row is useful even if reconciliation then fails.
+    if map_ctx is not None and db is not None and (tok_in or tok_out):
+        try:
+            from promptops_app.core.llm_client import LLMResult
+            ctx = replace(map_ctx, prompt_version=str(rep.get("prompt_version") or ""))
+            # status="success" describes the SPEND, not the deliverable: these tokens
+            # were billed by a call that returned. A day can still land in
+            # coverage.failed_days because its reply lacked the required keys — that is
+            # a content outcome, surfaced by the digest's own status and the job's
+            # warning, and marking the cost row "error" instead would both misreport
+            # real spend and skew any success-rate view built on this table.
+            log_llm_usage(db, LLMResult(
+                text="", model=model, prompt_tokens=tok_in, completion_tokens=tok_out,
+                status="success",
+            ), ctx)
+            _log.info("map usage recorded: calls=%s in=%s out=%s cost=$%.4f model=%s",
+                      rep.get("map_calls"), tok_in, tok_out, cost, model)
+        except Exception:
+            _log.warning("map usage logging failed — spend not attributed", exc_info=True)
+
+    for res in reservation or []:
+        try:
+            reconcile_budget(db, res, cost, tok_in + tok_out)
+        except Exception:
+            _log.warning("map budget reconciliation failed — reservation may leak "
+                         "until the period rolls over", exc_info=True)
+
+
+#: Cap on how many distinct MAP failure reasons travel with a generation. When a
+#: block fails wholesale every day usually fails the SAME way, so the first few
+#: distinct reasons carry all the diagnostic value; the rest are repetition that
+#: would bloat every persisted version row and the user-facing warning.
+_MAX_FAILURE_REASONS = 3
+
+
+def _digest_failure_reasons(report: Optional[Dict[str, Any]]) -> List[str]:
+    """Distinct per-day MAP failure reasons from a DIS build report.
+
+    DIS records a real cause for every failed day and returns them under
+    ``per_day[].error``. CAS received that all along and kept only six counters,
+    so the cause was discarded at the boundary and the only surviving signal was
+    *which* days failed — never *why*. Diagnosing prod's 2026-08-13 Block 2 run
+    (20 of 20 days failed) came down to reading DIS container logs that whoever
+    sees the failed generation cannot reach.
+
+    Deduplicated rather than listed per day: 20 days failing identically is one
+    problem reported once, and the day numbers are already in ``failed_days``.
+    """
+    if not isinstance(report, dict):
+        return []
+    reasons: List[str] = []
+    for entry in report.get("per_day") or []:
+        if not isinstance(entry, dict) or entry.get("status") != "failed":
+            continue
+        # A failed day with no recorded error is still worth counting — silently
+        # skipping it would under-report the failure — but it has nothing to say.
+        error = str(entry.get("error") or "").strip()
+        if error and error not in reasons:
+            reasons.append(error)
+        if len(reasons) >= _MAX_FAILURE_REASONS:
+            break
+    return reasons
+
+
 def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
                       current_user, dis_client_id: str, map_guidance: str = "",
                       *, db=None, request_body=None):
@@ -344,19 +591,53 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     project). Without them ``load_template`` cannot consult the DB at all, so an
     admin's edit in the Prompts UI would never reach generation. Both optional:
     omitted ⇒ file/built-in tiers, exactly as before."""
+    # MAP runs inside DIS on its own Bedrock client, so it never passes through CAS's
+    # usage/budget choke point in core/llm_client.py. Left alone it is the largest
+    # untracked spend in the product — a measured 20-day build is ~176k input tokens
+    # against REDUCE's ~6k, so ~96% of a block-wide generation was invisible to both
+    # the cost dashboards and the token-cap budgets. Reserve before the build,
+    # then record and reconcile against what DIS actually spent.
+    map_ctx = _map_usage_ctx(deliverable, request_body, current_user)
+    reservation = _reserve_map_budget(db, map_ctx)
+    report = None
+    # Cleared per attempt so a retry in the same context cannot inherit and report
+    # the previous attempt's cause.
+    _failure_reason.set("")
     try:
         report = dis_client.build_digests_sync(block, current_user=current_user, client_id=dis_client_id,
                                                 map_guidance=map_guidance)
         bundle = dis_client.get_digests_bundle_sync(block, current_user=current_user, client_id=dis_client_id)
+    except BudgetExceededError:
+        # A quota breach must reach the HTTP layer as a real 402, not be folded into
+        # the generic "DIS unavailable" fallback below.
+        raise
     except Exception as exc:
         _log.warning("block_wide_dis_unavailable deliverable=%s block=%s error=%s — falling back",
-                     deliverable, block, exc)
+                     deliverable, block, exc, exc_info=True)
+        # type(exc).__name__ as well as the message: a bare str() on a connection
+        # error is often empty, which would report a blank reason.
+        _failure_reason.set(
+            f"DIS digest build failed for block {block}: {type(exc).__name__}: {exc}".strip()
+        )
         return None, None
+    finally:
+        # In a finally so a failed or partial build still records what it burned and
+        # releases the rest of the reservation — otherwise a failure permanently
+        # leaks its worst-case hold until the budget period rolls over.
+        _settle_map_usage(db, map_ctx, report, reservation)
 
     enumerate_summary = bundle.get("enumerate") or {}
     digests = bundle.get("digests") or []
     if not enumerate_summary.get("days"):
         _log.warning("block_wide_empty_enumerate deliverable=%s block=%s — falling back", deliverable, block)
+        # DIS answered, so this is a content/scope problem (wrong block id, nothing
+        # ingested for it, or a tenant mismatch) — not an outage. Naming the block and
+        # the DIS client keeps that distinct from the exception branch above, which is.
+        _failure_reason.set(
+            f"DIS returned no days for block {block} (dis_client={dis_client_id!r}). "
+            "Nothing is ingested for this block, or the block id does not match what "
+            "was ingested."
+        )
         return None, None
     try:
         from promptops_app.services.block_wide_generator import BlockWideGenerator
@@ -384,8 +665,22 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
         )
     except Exception as exc:
         _log.warning("block_wide_reduce_failed deliverable=%s block=%s error=%s — falling back",
-                     deliverable, block, exc)
+                     deliverable, block, exc, exc_info=True)
+        # Distinct from the DIS branch: the digests were built and paid for, so the
+        # fault is CAS-side (REDUCE model call, prompt, or parsing).
+        _failure_reason.set(
+            f"REDUCE failed for block {block} after digests were built: "
+            f"{type(exc).__name__}: {exc}".strip()
+        )
         return None, None
+    # Carried on coverage, not left on the report: coverage is what reaches the job
+    # layer's warning and the persisted version row, whereas the report is summarised
+    # into six counters by _provenance and then dropped. A run where MAP failed is
+    # still a "successful" generation by every other measure, so this is the only
+    # place the cause can surface to whoever has to act on it.
+    reasons = _digest_failure_reasons(report)
+    if reasons and isinstance(getattr(result, "coverage", None), dict):
+        result.coverage["failure_reasons"] = reasons
     return result, report
 
 
@@ -458,6 +753,10 @@ def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dic
                          ("built", "cached", "failed", "map_calls",
                           "map_tokens_in", "map_tokens_out")}
         if isinstance(report, dict) else {},
+        # The counters above say how many days failed; these say why. Kept on the
+        # version row because that is the durable record — the job row is transient
+        # and the DIS logs holding the original are unreachable from here.
+        "digest_failures": _digest_failure_reasons(report),
         # Traceability (PL↔CAS sync review discipline): whether/what prompt-
         # derived guidance actually reached MAP/REDUCE for this generation, so
         # a reviewer can see it rather than trust it blindly (see prompt_

@@ -79,6 +79,14 @@ export const cddService = {
   generateCddBlock: (data) => api.post(CDD.GENERATE_BLOCK, mapBlockPayload(data)),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
   getJobStatus:  (jobId)          => api.get(GENERATE.JOB_STATUS(jobId)),
+  /**
+   * The caller's in-flight block-wide CDD job for this course, or null. Used on
+   * mount to reattach a reloaded page to a build already running (a cold Block 2
+   * build takes minutes, and the poll chain only ever lived in browser memory).
+   */
+  getActiveBlockJob: (courseId)   => api.get(GENERATE.JOB_ACTIVE(courseId, 'cdd_block')),
+  /** Day-level progress of an in-flight block build. */
+  getBlockJobProgress: (jobId) => api.get(GENERATE.JOB_PROGRESS(jobId)),
   getVersions:   (id)             => api.get(CDD.VERSIONS(id)),
   getVersion:    (id, v)          => api.get(CDD.GET_VERSION(id, v)),
   activateVersion: (id, version)  => api.post(CDD.ACTIVATE_VERSION(id, version)),

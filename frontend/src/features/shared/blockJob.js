@@ -40,7 +40,8 @@ export const MAX_POLL_ERRORS = 4;
  */
 export function createBlockJobThunks(cfg) {
   const {
-    prefix, deliverable, enqueue, getJobStatus, onComplete,
+    prefix, deliverable, enqueue, getJobStatus, getActiveJob, getProgress,
+    selectBlockJob, onComplete,
     completedMessage, failedMessage,
   } = cfg;
 
@@ -49,6 +50,17 @@ export function createBlockJobThunks(cfg) {
     async ({ jobId, courseId, errorCount = 0 }, { dispatch, rejectWithValue }) => {
       try {
         const status = await getJobStatus(jobId);
+        // Day counts, when the caller wired them up. Fetched alongside the status
+        // rather than folded into it because the status endpoint is used by every job
+        // type and must stay one fast DB read. Deliberately awaited AFTER the status
+        // and allowed to fail silently: the poll's job is to detect completion, and a
+        // progress nicety must never delay or break that.
+        if (getProgress && !isTerminalJobStatus(status.status)) {
+          try {
+            const p = await getProgress(jobId);
+            if (p?.progress?.total) status.days = p.progress;
+          } catch { /* progress is optional — never fail a poll over it */ }
+        }
         if (!isTerminalJobStatus(status.status)) {
           setTimeout(
             () => dispatch(pollThunk({ jobId, courseId, errorCount: 0 })),
@@ -100,7 +112,45 @@ export function createBlockJobThunks(cfg) {
     },
   );
 
-  return { generateThunk, pollThunk };
+  /**
+   * Reattach to a build already running server-side. Dispatched on mount.
+   *
+   * The poll chain above lives only in browser memory, so a refresh, a closed
+   * laptop, or a transient network error orphaned the UI while the job kept running
+   * — the user then either watched a dead spinner or re-submitted and paid for a
+   * second concurrent build (observed 2026-08-13 on a 22-minute Block 2 build).
+   *
+   * Resolves to null when nothing is in flight, and swallows its own errors: this is
+   * a background convenience on every page load, so a failed lookup must leave the
+   * page exactly as it would have been rather than surfacing an error the user did
+   * not ask for. `getActiveJob` is optional so a caller that has not wired it up
+   * keeps working unchanged.
+   */
+  const resumeThunk = createAsyncThunk(
+    `${prefix}/resumeBlockJob`,
+    async ({ courseId }, { dispatch, getState }) => {
+      if (!getActiveJob || !courseId) return null;
+      // Never start a SECOND poll chain for a job already being polled. Chains are
+      // setTimeout→dispatch loops on the store and are never cancelled, so they
+      // outlive unmount: navigating away from the page and back would otherwise add
+      // one poller per visit, and on completion every chain would fire its own
+      // success toast and its own list refetch. An explicit selector rather than a
+      // search of the state tree, because both features keep a `blockJob` and a
+      // search could inspect the other one's.
+      if (selectBlockJob && selectBlockJob(getState())?.jobId) return null;
+      try {
+        const res = await getActiveJob(courseId);
+        const job = res?.job ?? null;
+        if (!job?.job_id) return null;
+        dispatch(pollThunk({ jobId: job.job_id, courseId }));
+        return job;
+      } catch {
+        return null;   // never let a resume attempt break a page load
+      }
+    },
+  );
+
+  return { generateThunk, pollThunk, resumeThunk };
 }
 
 /** Initial slice sub-state for a block job. */
@@ -111,7 +161,38 @@ export const initialBlockJobState = { blockJob: null };
  * the boolean the feature uses for "generation in progress" (e.g. 'isGenerating')
  * so this stays compatible with each slice's existing field.
  */
-export function attachBlockJobReducers(builder, { generateThunk, pollThunk }, busyFlag = 'isGenerating') {
+export function attachBlockJobReducers(builder, { generateThunk, pollThunk, resumeThunk },
+                                       busyFlag = 'isGenerating') {
+  if (resumeThunk) {
+    builder
+      // A resume that FINDS a job must put the slice into exactly the state a fresh
+      // enqueue would, so the existing progress UI lights up with no extra branches.
+      // A resume that finds nothing must change nothing at all — mount-time lookups
+      // run on every page load, including the overwhelming majority where no build is
+      // running, and must never clear a state the user is looking at.
+      .addCase(resumeThunk.fulfilled, (s, { payload }) => {
+        if (!payload?.job_id) return;
+        s[busyFlag] = true;
+        s.error = null;
+        s.blockJob = {
+          jobId: payload.job_id,
+          status: payload.status,
+          progress: payload.progress ?? 0,
+          currentStep: payload.current_step ?? null,
+          // Carried so the UI can show how long the build has been going. A cold
+          // block build shows one step for minutes, so elapsed time is the only
+          // signal that distinguishes "working" from "wedged".
+          startedAt: payload.created_at ?? null,
+          // Which block this adopted build is for. A course can hold several, and
+          // /active matches on course + job_type only, so naming it is what stops a
+          // page showing "Block 3" silently reporting a Block 2 completion.
+          block: payload.block ?? null,
+          resumed: true,
+        };
+      });
+    // Deliberately no `rejected` case: the thunk already swallows its errors and
+    // resolves null. A failed background lookup is not the user's problem.
+  }
   builder
     .addCase(generateThunk.pending, (s) => {
       s[busyFlag] = true; s.error = null;
@@ -135,6 +216,23 @@ export function attachBlockJobReducers(builder, { generateThunk, pollThunk }, bu
         status: payload?.status,
         progress: payload?.progress ?? 0,
         currentStep: payload?.current_step ?? null,
+        // Preserved across polls, not rebuilt from each response. This object is
+        // replaced wholesale every ~2s, so anything not carried forward is lost —
+        // which silently dropped the resumed job's start time on its first poll. The
+        // status endpoint returns created_at too, so a freshly enqueued job gets an
+        // elapsed clock as well, not just a resumed one.
+        startedAt: payload?.created_at ?? s.blockJob?.startedAt ?? null,
+        resumed: s.blockJob?.resumed ?? false,
+        // Carried forward for the same reason as startedAt: this object is replaced
+        // wholesale each poll, and a tick where the progress fetch failed would
+        // otherwise blank the day counter mid-build.
+        days: payload?.days ?? s.blockJob?.days ?? null,
+        block: payload?.block ?? s.blockJob?.block ?? null,
+        // Gaps in a SUCCESSFUL result (e.g. days whose extraction failed). Not an
+        // error — the deliverable exists and is usable — but "Done" on its own
+        // misrepresents it, and the incomplete rows carry defaults rather than
+        // blanks, so nothing in the document looks missing.
+        warning: payload?.warning ?? null,
       };
       if (isTerminalJobStatus(payload?.status)) s[busyFlag] = false;
     })

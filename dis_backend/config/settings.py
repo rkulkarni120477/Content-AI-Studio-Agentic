@@ -70,14 +70,30 @@ class ProcessingConfig(BaseModel):
     pptx_extract_images: bool = False
     max_extracted_chars: int = 250000
 
-# Defaults used whenever a client YAML omits a model key. These MUST name a model
-# that is invokable in every deploy region: call_llm returns a valid-JSON stub on
-# failure, so an unavailable default degrades silently into empty extractions
-# rather than an error. The Claude 3 defaults these replace were end-of-life in
-# us-east-1 (Sonnet 3) or provider-marked legacy and denied in every region
-# (Haiku 3) — verified live via InvokeModel. Sonnet 4.5 on the `global.` inference
-# profile is the only Anthropic text model invokable on this account in both
-# us-east-1 and ap-south-1.
+# Default model for every text step when a client YAML omits the key.
+#
+# Sonnet 4.5 on the `global.` inference profile. Not the newest Sonnet — the only
+# Anthropic text model this account invokes RELIABLY (3/3 consecutive InvokeModel
+# calls in both ap-south-1 and us-east-1). Sonnet 5, Opus 5 and Sonnet 4.6 are listed
+# by Bedrock in both regions but each produced one spurious success and then failed
+# every repeat, so they are not usable yet; a single successful probe is not evidence
+# of availability. Switch to Sonnet 5 (1M context) once its access grant lands and it
+# measures clean from the target environment.
+#
+# Availability is per-region AND per-role, so this can still be wrong in a given
+# environment — on 2026-08-12 a deployed role could not invoke it and, because
+# call_llm THEN returned a valid-JSON stub on any exception, the failure was silent:
+# 8 of 20 days came back with concept_type "Unknown" and every AM.I.B ACS code was
+# orphaned while the job reported success. Two guards now exist so that cannot
+# repeat quietly:
+#
+#   * services/digests/build.py preflights the extractor model once per build and
+#     fails the whole build with the AWS error if it cannot be invoked;
+#   * a block whose days all failed is refused rather than persisted, and a
+#     partially-failed one carries a user-visible warning.
+#
+# To run a different model in a given environment, set DIS_MODEL_TEXT_ALL (or a
+# per-step DIS_MODEL_<STEP>) there rather than editing this file.
 _TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
@@ -296,17 +312,68 @@ _STORE_ENV_OVERRIDES = (
     ("vector_store", "index_name", "DIS_VECTOR_STORE_INDEX"),
 )
 
+# Which Bedrock model each pipeline step uses, overridable per environment.
+#
+# Model availability is an environment fact, not a code fact: an ID can be
+# end-of-life in one region, provider-legacy in another, and require a model-access
+# grant the calling role may not hold. Baking one ID into a committed YAML forces
+# every environment onto it. When call_llm still returned a valid-JSON stub on
+# failure, an unavailable model degraded into complete-looking output with every
+# extracted field empty — observed 2026-08-12, where 8 of 20 days produced
+# concept_type "Unknown" and orphaned every AM.I.B ACS code. call_llm now raises
+# LLMCallFailed instead, so that specific silence is closed; the ID being wrong for
+# an environment is still an environment fact this file cannot settle.
+#
+#   DIS_MODEL_DIGEST_EXTRACTION / DIS_MODEL_DIGEST_EXTRACTION_<CLIENT>
+#   DIS_MODEL_CLASSIFICATION, DIS_MODEL_METADATA_EXTRACTION,
+#   DIS_MODEL_STRUCTURE_EXTRACTION, DIS_MODEL_QUALITY_CHECK, DIS_MODEL_VISION
+#   DIS_MODEL_TEXT_ALL  — sets every text step at once (checked last)
+_TEXT_STEPS = ("classification", "metadata_extraction", "structure_extraction",
+               "quality_check", "vision", "digest_extraction")
+
+
+def _client_suffix(client_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "_", str(client_id or "")).upper()
+
+
+def _env_for(stem: str, suffix: str) -> str:
+    """Per-client variable if set, else the global one. Blank counts as unset."""
+    return ((os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem) or "").strip()
+
 
 def _apply_store_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
     """Point the backing stores wherever this environment says, in place."""
-    suffix = re.sub(r"[^A-Za-z0-9]", "_", str(client_id or "")).upper()
+    suffix = _client_suffix(client_id)
     for section, field, stem in _STORE_ENV_OVERRIDES:
-        value = (os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem)
+        value = _env_for(stem, suffix)
         if not value:
             continue
         converted.setdefault(section, {})
         if isinstance(converted[section], dict):
             converted[section][field] = value
+
+
+def _apply_model_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
+    """Select each pipeline step's model from the environment, in place.
+
+    Per-step variables win over ``DIS_MODEL_TEXT_ALL``, which exists because the
+    common case is "this environment can invoke exactly one text model" and
+    repeating it six times invites the six from drifting apart.
+    """
+    suffix = _client_suffix(client_id)
+    pipeline = converted.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+    models = pipeline.get("models")
+    if not isinstance(models, dict):
+        models = {}
+        pipeline["models"] = models
+
+    all_text = _env_for("DIS_MODEL_TEXT_ALL", suffix)
+    for step in _TEXT_STEPS:
+        value = _env_for(f"DIS_MODEL_{step.upper()}", suffix) or all_text
+        if value:
+            models[step] = value
 
 
 class StructureStoreConfig(BaseModel):
@@ -454,9 +521,67 @@ class GlobalSettings(BaseSettings):
     aws_session_token: Optional[str] = None
     aws_endpoint_url: str = ""          # LocalStack override
 
+    # ── Bedrock-only credentials (optional) ──────────────────────────────────
+    # Model access is granted per IAM principal, and the principal that can invoke
+    # the models is not necessarily the one that owns the storage. Measured on
+    # 2026-08-12: `promptops-contentAI-Dev` (account 498628474556) invokes Sonnet 5,
+    # Opus 5, Haiku 4.5, Sonnet 4.6 and Sonnet 4.5 — 3/3 in both regions — while
+    # `nandkishor-ai-project-access` (account 410453487786), which owns DIS's S3
+    # bucket and OpenSearch domain, can only invoke Sonnet 4.5.
+    #
+    # DIS otherwise uses ONE credential set for Bedrock, S3 and OpenSearch, so
+    # swapping AWS_* wholesale would buy model access at the cost of the digest store
+    # — trading a model problem for a storage problem. These let the model calls use
+    # one principal while storage keeps the other, mirroring what CAS already does
+    # for the shared bucket via DIS_S3_ACCESS_KEY_ID.
+    #
+    # ALL OPTIONAL: blank ⇒ fall back to the AWS_* pair above, which is exactly
+    # today's behaviour. Set them in dis_backend/.env, copying the values from the
+    # root .env (the container cannot read that file itself — its compose env_file is
+    # dis_backend/.env, and adding the root file there would override the storage
+    # credentials too).
+    bedrock_access_key_id: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_ACCESS_KEY_ID"))
+    bedrock_secret_access_key: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_SECRET_ACCESS_KEY"))
+    bedrock_session_token: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_SESSION_TOKEN"))
+    bedrock_region: str = Field(
+        default="", validation_alias=AliasChoices("DIS_BEDROCK_REGION"))
+
     # Bedrock / Anthropic
     use_bedrock: bool = True            # True = Bedrock, False = direct Anthropic API
     anthropic_api_key: Optional[str] = None
+
+    def bedrock_client_kwargs(self) -> Dict[str, Any]:
+        """boto3 kwargs for a bedrock-runtime client.
+
+        Prefers the Bedrock-only credentials when configured, else the shared AWS_*
+        pair. Credentials are passed explicitly rather than left to boto3's ambient
+        chain: this deployment has no instance role, and an implicit fallback there
+        raised NoCredentialsError inside call_llm, which at the time swallowed it and
+        returned a valid-JSON stub — a whole block of empty digests reported as
+        success. call_llm raises LLMCallFailed now, but passing credentials explicitly
+        is still what keeps that error from happening at all.
+        """
+        key = (self.bedrock_access_key_id or "").strip() or self.aws_access_key_id
+        secret = ((self.bedrock_secret_access_key or "").strip()
+                  or self.aws_secret_access_key)
+        token = ((self.bedrock_session_token or "").strip()
+                 # Only pair the shared token with the shared key: a token belonging
+                 # to a different principal than the key is rejected outright.
+                 or (self.aws_session_token if not (self.bedrock_access_key_id or "").strip() else None))
+        kwargs: Dict[str, Any] = {
+            "region_name": (self.bedrock_region or "").strip() or self.aws_region,
+        }
+        if self.aws_endpoint_url:
+            kwargs["endpoint_url"] = self.aws_endpoint_url
+        if key:
+            kwargs["aws_access_key_id"] = key
+            kwargs["aws_secret_access_key"] = secret
+            if token:
+                kwargs["aws_session_token"] = token
+        return kwargs
 
     # OpenSearch
     opensearch_endpoint: str = "http://localhost:9200"
@@ -563,6 +688,7 @@ class TenantRegistry:
         # image runs anywhere. See _resolve_env_placeholders / _apply_store_env.
         converted = _expand_env_in_tree(converted)
         _apply_store_env_overrides(converted, client_id)
+        _apply_model_env_overrides(converted, client_id)
 
         # Client-specific rule blocks stay available at runtime through cfg.client_rules.
         # Example: config/clients/aim.yaml -> aim_content_rules.

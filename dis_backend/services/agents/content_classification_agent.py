@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
-from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
+from services.pipeline.common import (LLMCallFailed, PipelineState, call_llm, keywords,
+                                     safe_json)
 from services.pipeline.extractors import ExtractionResult, extract
 from services.specialized_extractors import (
     infer_doc_type,
@@ -46,7 +47,8 @@ class ContentClassificationAgent(BasePipelineAgent):
                 allowed = '|'.join(doc_processing.enabled_document_types or [])
                 prompt = f'''Classify this extracted document content. Return JSON only:\n{{"doc_type":"{allowed}", "classification":"public|internal|restricted|exam_secret"}}\nFilename: {state.get('filename')}\nContent:\n{sample}'''
                 resp, inp, out = call_llm(ctx.models.classification, prompt, max_tokens=100)
-                ctx.guard.record_usage(inp + out, 'content_classification')
+                ctx.guard.record_usage(inp + out, 'content_classification', tokens_in=inp, tokens_out=out,
+                                      model=ctx.models.classification)
                 parsed = safe_json(resp)
                 candidate = parsed.get('doc_type')
                 # Never let the LLM (or its failure fallback, which returns
@@ -55,6 +57,20 @@ class ContentClassificationAgent(BasePipelineAgent):
                 if candidate in (doc_processing.enabled_document_types or []) and candidate != 'other':
                     state['doc_type'] = candidate
                 state['classification'] = parsed.get('classification', state.get('classification', 'internal'))
+            except LLMCallFailed as exc:
+                # Degrade to the deterministic inference above rather than failing the
+                # document — but RECORD it. call_llm used to return {"doc_type":"other"}
+                # here, which the guard below already ignored, so the provider failure
+                # left no trace at all and a whole ingestion run could be classified by
+                # fallback without anyone knowing.
+                state.setdefault('errors', []).append(f'content_classification: {exc}')
+                # Count the attempt. The provider failed, so token counts are unknown —
+                # recording zero keeps the CALL count honest without inventing numbers,
+                # mirroring how a failed MAP call is counted on the digest side (a
+                # read-timed-out generation is still billed). Skipping it entirely would
+                # report the spend as never having happened.
+                ctx.guard.record_usage(0, 'content_classification', tokens_in=0, tokens_out=0,
+                                       model=ctx.models.classification)
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
         return ctx.step_done(state, 'content_classification')

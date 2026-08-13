@@ -78,6 +78,13 @@ export const blueprintService = {
   }),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
   getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId)),
+  /**
+   * The caller's in-flight block-wide Blueprint job for this course, or null.
+   * Lets a reloaded page reattach instead of orphaning a running build.
+   */
+  getActiveBlockJob: (courseId) => api.get(GENERATE.JOB_ACTIVE(courseId, 'blueprint_block')),
+  /** Day-level progress of an in-flight block build. */
+  getBlockJobProgress: (jobId) => api.get(GENERATE.JOB_PROGRESS(jobId)),
 
   getVersions: (id) => api.get(BLUEPRINT.VERSIONS(id)),
   getVersion: (id, v) => api.get(BLUEPRINT.GET_VERSION(id, v)),

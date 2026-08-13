@@ -8,6 +8,7 @@ import {
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   generateBlueprintBlockThunk,
+  resumeBlueprintJobThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
@@ -194,6 +195,19 @@ export default function BlueprintPage() {
       setLinkedCddId(activeCdd.id);
     }
   }, [activeCdd, linkedCddId]);
+
+  // Reattach to a block-wide build already running server-side — see the identical
+  // effect in CddPage. Declared after the resetBlockJob effect above so a course
+  // switch clears the previous course's banner before this adopts the new one's job.
+  useEffect(() => {
+    if (courseId) dispatch(resumeBlueprintJobThunk({ courseId: Number(courseId) }));
+    // projectId is in the deps because the resetBlockJob effect above lists it too:
+    // projectId arrives asynchronously and commonly flips undefined→number just after
+    // mount, which re-runs that effect and nulls blockJob while leaving isGenerating
+    // true — a disabled button with no status line. Re-running here re-adopts the job.
+    // The thunk bails out when a job is already being polled, so this cannot stack up
+    // duplicate poll chains.
+  }, [dispatch, courseId, projectId]);
 
   useEffect(() => {
     if (activeBlueprint?.id) {
