@@ -107,7 +107,15 @@ def _coverage_warning(coverage: Dict[str, Any]) -> Optional[str]:
                      f"({shown}{more})")
     if not parts:
         return None
-    return "; ".join(parts) + "."
+    summary = "; ".join(parts) + "."
+    # Why those days failed, not just which. "18 of 20 days could not be extracted"
+    # is actionable only if the reader already knows the cause; on 2026-08-13 it sent
+    # us to Bedrock credentials, then to the block id, then to truncation, while the
+    # real reason sat in a DIS log line nobody reading the warning could open.
+    reasons = [str(r).strip() for r in (coverage.get("failure_reasons") or []) if str(r).strip()]
+    if reasons:
+        summary += (" Cause: " if len(reasons) == 1 else " Causes: ") + " | ".join(reasons)
+    return summary
 
 
 def _audit_failure(db, deliverable: str, req, user, job_id: str, reason: str,

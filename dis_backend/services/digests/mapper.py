@@ -75,7 +75,23 @@ class MapExtractionError(RuntimeError):
     ``coverage.failed_days`` entry. A silently-defaulted day is indistinguishable
     downstream from a genuinely extracted one, which is how an entire block once
     rendered with every LLM field at its default while reporting success.
+
+    Carries the token counts and the model of the call that produced the bad reply.
+    A rejected reply was still generated and still billed, and ``build_digest``'s
+    ``except`` branch is the only place that spend can be recorded — the success
+    path's counter is never reached. Without this, prod's 2026-08-13 Block 2 build
+    reported ``map_calls=0`` and $0 spent for 20 days that had each made a real
+    Bedrock call. ``model`` matters just as much: ``_llm_extract`` may ESCALATE a
+    content-rich day to a larger-context model, so the model that failed is often
+    not the one configured, and the failed digest is the only record of which.
     """
+
+    def __init__(self, message: str, *, tokens_in: int = 0, tokens_out: int = 0,
+                 model: str = "") -> None:
+        super().__init__(message)
+        self.tokens_in = int(tokens_in or 0)
+        self.tokens_out = int(tokens_out or 0)
+        self.model = model or ""
 
 #: Last-resort fallback if ``templates/digest_map.md`` is missing, empty, unreadable, or
 #: fails the reply-key contract check. Deliberately a COMPACT prompt rather than a
@@ -503,9 +519,18 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
             "digest MAP day %s: response missing expected keys (parsed=%r), "
             "raw_text=%r", day.get("day_number"), bool(data), text[:2000],
         )
+        # The reply snippet is the discriminator, and this message is the only
+        # artefact that leaves the DIS process: call_llm's exception stub
+        # ('{"doc_type":"other",...}') means the model could not be invoked, while a
+        # body cut off mid-JSON means the token budget was too small. Those need
+        # completely different fixes, and the raw_text above is logged where whoever
+        # reads the failed generation cannot see it. Naming the model too, because
+        # escalation may have swapped it for one this account cannot invoke.
         raise MapExtractionError(
             f"MAP reply for day {day.get('day_number')} lacks the required keys "
-            f"(derived_objective/concept_type); got keys={sorted(data)[:8]}"
+            f"(derived_objective/concept_type); model={model} "
+            f"keys={sorted(data)[:8]} reply[:160]={text[:160]!r}",
+            tokens_in=ti, tokens_out=to, model=model,
         )
     fields = {
         "derived_objective": data.get("derived_objective", ""),
@@ -609,6 +634,25 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
         log.warning("digest MAP failed for day %s: %s", dn, exc)
         digest["digest_status"] = "failed"
         digest["error"] = str(exc)
+        # The success path's counter above is only reached when _llm_extract
+        # RETURNS, so before this every failed day contributed zero calls and zero
+        # tokens to the build report — prod's 2026-08-13 Block 2 build reported
+        # map_calls=0 while all 20 days had made a real, billed Bedrock call, and
+        # the cost dashboard recorded $0 for it. Only MapExtractionError knows a
+        # call actually happened; anything else raised before or around the call
+        # with no usable counts, and inventing numbers for it would be worse than
+        # reporting none.
+        if isinstance(exc, MapExtractionError):
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+                budget["tok_in"] = budget.get("tok_in", 0) + exc.tokens_in
+                budget["tok_out"] = budget.get("tok_out", 0) + exc.tokens_out
+            # The model that actually ran, which escalation may have changed from
+            # the configured one. On the success path this is recorded from
+            # model_used; a failed day needs it for the same reason and is exactly
+            # the case where "which model was this?" is the question being asked.
+            if exc.model:
+                digest["extractor_model"] = exc.model
 
     # Structural review flags.
     if not substantive:
