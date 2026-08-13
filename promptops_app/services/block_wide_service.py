@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,26 @@ from app.core.dis_client import dis_client
 from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
+
+# The failure branches in _build_and_reduce log the real cause and then return None,
+# which the job layer renders as one fixed "Digest pipeline unavailable (no enumerated
+# days or DIS error)" string. That string is the ONLY artefact a prod user or on-call
+# engineer sees, and it cannot distinguish causes that need completely different fixes:
+# DIS unreachable, a Bedrock credential/model rejection inside DIS, or a block that
+# genuinely enumerated zero days. Diagnosing 2026-08-13's prod failure meant reading
+# container logs that are not accessible from where the report lands.
+#
+# A ContextVar rather than a return value because two callers (cdd.py's sync branch and
+# run_block_wide_sync) depend on None meaning "fall back to the legacy path" — changing
+# that contract to raise would silently disable their fallback. ContextVar (not a plain
+# global) so concurrent jobs on the job_runner thread pool cannot read each other's
+# reason; Celery's process workers are isolated either way.
+_failure_reason: ContextVar[str] = ContextVar("block_wide_failure_reason", default="")
+
+
+def last_failure_reason() -> str:
+    """Reason for the most recent digest-pipeline failure *in this context*, or ""."""
+    return _failure_reason.get("")
 
 
 def run_block_wide_sync(db, deliverable: str, request_body, current_user):
@@ -543,6 +564,9 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     map_ctx = _map_usage_ctx(deliverable, request_body, current_user)
     reservation = _reserve_map_budget(db, map_ctx)
     report = None
+    # Cleared per attempt so a retry in the same context cannot inherit and report
+    # the previous attempt's cause.
+    _failure_reason.set("")
     try:
         report = dis_client.build_digests_sync(block, current_user=current_user, client_id=dis_client_id,
                                                 map_guidance=map_guidance)
@@ -553,7 +577,12 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
         raise
     except Exception as exc:
         _log.warning("block_wide_dis_unavailable deliverable=%s block=%s error=%s — falling back",
-                     deliverable, block, exc)
+                     deliverable, block, exc, exc_info=True)
+        # type(exc).__name__ as well as the message: a bare str() on a connection
+        # error is often empty, which would report a blank reason.
+        _failure_reason.set(
+            f"DIS digest build failed for block {block}: {type(exc).__name__}: {exc}".strip()
+        )
         return None, None
     finally:
         # In a finally so a failed or partial build still records what it burned and
@@ -565,6 +594,14 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     digests = bundle.get("digests") or []
     if not enumerate_summary.get("days"):
         _log.warning("block_wide_empty_enumerate deliverable=%s block=%s — falling back", deliverable, block)
+        # DIS answered, so this is a content/scope problem (wrong block id, nothing
+        # ingested for it, or a tenant mismatch) — not an outage. Naming the block and
+        # the DIS client keeps that distinct from the exception branch above, which is.
+        _failure_reason.set(
+            f"DIS returned no days for block {block} (dis_client={dis_client_id!r}). "
+            "Nothing is ingested for this block, or the block id does not match what "
+            "was ingested."
+        )
         return None, None
     try:
         from promptops_app.services.block_wide_generator import BlockWideGenerator
@@ -592,7 +629,13 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
         )
     except Exception as exc:
         _log.warning("block_wide_reduce_failed deliverable=%s block=%s error=%s — falling back",
-                     deliverable, block, exc)
+                     deliverable, block, exc, exc_info=True)
+        # Distinct from the DIS branch: the digests were built and paid for, so the
+        # fault is CAS-side (REDUCE model call, prompt, or parsing).
+        _failure_reason.set(
+            f"REDUCE failed for block {block} after digests were built: "
+            f"{type(exc).__name__}: {exc}".strip()
+        )
         return None, None
     return result, report
 
