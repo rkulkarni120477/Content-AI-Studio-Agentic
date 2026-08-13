@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
-from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
+from services.pipeline.common import (LLMCallFailed, PipelineState, call_llm, keywords,
+                                     safe_json)
 from services.pipeline.extractors import ExtractionResult, extract
 from services.specialized_extractors import (
     infer_doc_type,
@@ -53,6 +54,9 @@ class StructureExtractionAgent(BasePipelineAgent):
                     ctx.guard.record_usage(inp + out, 'structure_extraction', tokens_in=inp, tokens_out=out,
                                       model=ctx.models.structure_extraction)
                     state['structured_sections'] = safe_json(resp).get('sections', [])
+                except LLMCallFailed as exc:
+                    state.setdefault('errors', []).append(f'structure_extraction: {exc}')
+                    state['structured_sections'] = []
                 except TokenLimitError as exc:
                     state.setdefault('errors', []).append(str(exc))
                     state['structured_sections'] = []

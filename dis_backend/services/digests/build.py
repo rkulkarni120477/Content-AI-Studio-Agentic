@@ -145,7 +145,11 @@ def preflight_extractor(model: str) -> None:
 
     try:
         reply, tokens_in, _ = call_llm(model, 'Reply with only: {"ok":true}', max_tokens=8)
-    except Exception as exc:                      # defensive: call_llm swallows today
+    except Exception as exc:
+        # call_llm now RAISES LLMCallFailed on a provider error, so this is the primary
+        # path for a genuinely unavailable model rather than a defensive branch. The
+        # zero-token check below still catches the dev mock, which returns canned text
+        # without calling anything.
         raise ExtractorUnavailable(_unavailable_msg(model, repr(exc))) from exc
 
     # Keyed on the token count, not the reply text: call_llm's failure path is the

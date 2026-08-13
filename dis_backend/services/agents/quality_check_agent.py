@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
-from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
+from services.pipeline.common import (LLMCallFailed, PipelineState, call_llm, keywords,
+                                     safe_json)
 from services.pipeline.extractors import ExtractionResult, extract
 from services.specialized_extractors import (
     infer_doc_type,
@@ -52,6 +53,11 @@ class QualityCheckAgent(BasePipelineAgent):
                 if llm_report:
                     report.update(llm_report)
                     report['mode'] = 'llm'
+            except LLMCallFailed as exc:
+                # The deterministic report already in `report` stands, and mode stays
+                # non-llm — so a reader can tell this document was never LLM-reviewed
+                # instead of seeing an llm-labelled report built from a failure stub.
+                state.setdefault('errors', []).append(f'quality_check: {exc}')
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
         state['quality_report'] = report

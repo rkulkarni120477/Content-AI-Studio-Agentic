@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
-from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
+from services.pipeline.common import (LLMCallFailed, PipelineState, call_llm, keywords,
+                                     safe_json)
 from services.pipeline.extractors import ExtractionResult, extract
 from services.specialized_extractors import (
     infer_doc_type,
@@ -56,6 +57,12 @@ class MetadataExtractionAgent(BasePipelineAgent):
                 ctx.guard.record_usage(inp + out, 'metadata_extraction', tokens_in=inp, tokens_out=out,
                                       model=ctx.models.metadata_extraction)
                 meta = safe_json(resp)
+            except LLMCallFailed as exc:
+                # Same shape as the token-limit path: fall back to the filename/word-count
+                # defaults below, and say so. Silently defaulted metadata is
+                # indistinguishable from extracted metadata once it is stored.
+                state.setdefault('errors', []).append(f'metadata_extraction: {exc}')
+                meta = {}
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
                 meta = {}

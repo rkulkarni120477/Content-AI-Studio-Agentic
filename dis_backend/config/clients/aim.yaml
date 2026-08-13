@@ -85,6 +85,23 @@ pipeline:
     # Haiku for a tier-shared cache (D2); Haiku is unavailable on this account in
     # either region, so MAP runs on the shared text model.
     digest_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # Digest MAP fan-out (plan D4). Sequential MAP is O(days) and Block 2 has 20, which
+  # does not fit the product: a cold build measured ~6.5 min locally and EXCEEDED the
+  # 1200s ceiling on build_digests_sync in prod on 2026-08-13 (~22 min), failing the
+  # whole generation with "DIS unavailable: timed out" after every day's work was
+  # already paid for. Wall clock is also the user-facing problem in its own right —
+  # nobody can sit on a page for twenty minutes.
+  #
+  # Enabled for AIM specifically rather than flipping the global default: this is the
+  # tenant with 20-day blocks and the one whose timings are measured. Concurrency 5 is
+  # the shipped default and puts a 20-day build at roughly four sequential rounds.
+  #
+  # Safe to raise the concurrency only after watching for ThrottlingException in the
+  # '[LLM] failed' lines — five concurrent InvokeModel calls is the point where a
+  # per-account Bedrock quota starts to bite, and retries are already adaptive
+  # (services/pipeline/common.py:bedrock_invoke_config).
+  digest_fanout_enabled: true
+  digest_fanout_max_concurrency: 5
   llm_temperature: 0.0
   chunking_strategy: semantic
   chunk_size: 512

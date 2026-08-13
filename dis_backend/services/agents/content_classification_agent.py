@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
-from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
+from services.pipeline.common import (LLMCallFailed, PipelineState, call_llm, keywords,
+                                     safe_json)
 from services.pipeline.extractors import ExtractionResult, extract
 from services.specialized_extractors import (
     infer_doc_type,
@@ -56,6 +57,13 @@ class ContentClassificationAgent(BasePipelineAgent):
                 if candidate in (doc_processing.enabled_document_types or []) and candidate != 'other':
                     state['doc_type'] = candidate
                 state['classification'] = parsed.get('classification', state.get('classification', 'internal'))
+            except LLMCallFailed as exc:
+                # Degrade to the deterministic inference above rather than failing the
+                # document — but RECORD it. call_llm used to return {"doc_type":"other"}
+                # here, which the guard below already ignored, so the provider failure
+                # left no trace at all and a whole ingestion run could be classified by
+                # fallback without anyone knowing.
+                state.setdefault('errors', []).append(f'content_classification: {exc}')
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
         return ctx.step_done(state, 'content_classification')

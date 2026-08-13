@@ -76,7 +76,42 @@ class PipelineContext:
             log.warning("[%s] step artifact failed for %s: %s", state.get("job_id"), name, exc)
         return state
 
-#: What ``call_llm`` returns when the provider call raises. Named, and exported, so a
+class LLMCallFailed(RuntimeError):
+    """The provider call did not succeed. No output was produced.
+
+    ``call_llm`` used to swallow every exception and return valid JSON, on the theory
+    that a degraded answer beats a crash. In practice that inverted the failure: a
+    timeout, a throttle, a revoked credential and a missing model all became
+    well-formed output that every downstream step accepted. 2026-08-13's incident is
+    the full cost of it — a 20-day block built entirely from fallback stubs, every
+    field defaulted, reported to the user as a successful generation, with the real
+    cause visible only in a log line nobody reading the result could reach.
+
+    Raising instead does not make callers fragile: each of the six call sites already
+    sits inside per-item isolation (a per-day digest, a per-document pipeline step), so
+    a failure still degrades exactly one unit. The difference is that degrading is now
+    a decision each caller makes and records, rather than something that happens to it
+    silently.
+
+    Carries ``model`` and the originating exception's type name so the caller can
+    report what failed without re-reading logs.
+    """
+
+    def __init__(self, model: str, cause: BaseException) -> None:
+        self.model = model or ""
+        self.cause_type = type(cause).__name__
+        detail = str(cause).strip()
+        super().__init__(
+            f"LLM call to {self.model!r} failed: {self.cause_type}"
+            + (f": {detail}" if detail else "")
+        )
+
+
+#: What ``call_llm`` USED to return when the provider call raised, and what older
+#: persisted digests therefore recorded. Retained so a stored failure remains
+#: identifiable, and because a model can in principle reply with this shape. Live
+#: provider failures now raise :class:`LLMCallFailed` instead of returning it.
+#: Named, and exported, so a
 #: caller can tell "the call never succeeded" from "the model answered in the wrong
 #: shape" — the JSON is valid either way, so downstream schema checks report both as a
 #: malformed reply. Those need opposite fixes (credentials/timeouts/quota vs prompt or
@@ -247,10 +282,12 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
     except Exception as exc:
         # type(exc).__name__ as well as the text: a ReadTimeoutError's str() is often
         # nearly empty, and "which AWS exception was it" is the whole question when a
-        # day silently degrades. This log line is the ONLY record of the provider error
-        # — the return value below deliberately looks like ordinary output.
+        # unit of work degrades.
         log.warning("[LLM] failed: %s: %s", type(exc).__name__, exc)
-        return LLM_FAILURE_STUB, 0, 0
+        # Raise rather than returning valid-looking JSON — see LLMCallFailed. Every
+        # caller sits inside per-item isolation, so this still degrades one day or one
+        # document; it just can no longer be mistaken for output.
+        raise LLMCallFailed(model, exc) from exc
 
 def safe_json(text: str) -> Dict[str, Any]:
     clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()

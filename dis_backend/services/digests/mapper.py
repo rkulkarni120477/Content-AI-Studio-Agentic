@@ -649,7 +649,20 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     except Exception as exc:  # per-day failure isolation (§8.3)
         log.warning("digest MAP failed for day %s: %s", dn, exc)
         digest["digest_status"] = "failed"
+        # A provider failure now arrives as LLMCallFailed carrying the real AWS
+        # exception, so the stored error names the actual cause (e.g.
+        # "ReadTimeoutError") instead of describing the fallback stub's shape.
         digest["error"] = str(exc)
+        from services.pipeline.common import LLMCallFailed
+        if isinstance(exc, LLMCallFailed):
+            # An attempt was made and, for a read timeout, the model generated and AWS
+            # billed it — so count the call even though no token counts came back.
+            # Reporting zero calls here is what made prod's build look like it never
+            # contacted a model.
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+            if exc.model:
+                digest["extractor_model"] = exc.model
         # The success path's counter above is only reached when _llm_extract
         # RETURNS, so before this every failed day contributed zero calls and zero
         # tokens to the build report — prod's 2026-08-13 Block 2 build reported
