@@ -184,11 +184,18 @@ def run_block_wide_job(job_id: str) -> None:
             gen = block_wide_service.generate_cdd_via_digests(db, req, user, dis_client_id, map_guidance)
 
         if gen is None:
-            set_failed(db, job, "Digest pipeline unavailable (no enumerated days or DIS error).")
-            _audit_failure(db, deliverable, req, user, job_id,
-                           "Digest pipeline unavailable (no enumerated days or DIS error).",
+            # Prefer the specific cause the service recorded. The generic sentence is
+            # only a fallback for a None that arrived without one, because a failure
+            # message that cannot tell "DIS is down" from "nothing is ingested for this
+            # block" sends whoever reads it down the wrong path — and in prod the job
+            # row is the only place the failure surfaces.
+            reason = block_wide_service.last_failure_reason() or (
+                "Digest pipeline unavailable (no enumerated days or DIS error)."
+            )
+            set_failed(db, job, reason)
+            _audit_failure(db, deliverable, req, user, job_id, reason,
                            map_guidance_applied=bool((map_guidance or "").strip()))
-            _log.warning("Block-wide job %s: digest pipeline returned no result", job_id)
+            _log.warning("Block-wide job %s: digest pipeline returned no result — %s", job_id, reason)
             return
 
         # A block whose days all failed extraction is not a deliverable — every
