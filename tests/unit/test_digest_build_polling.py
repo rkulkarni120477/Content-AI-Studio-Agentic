@@ -40,11 +40,13 @@ class FakeClock:
         self.t += seconds
 
 
-def make_client(monkeypatch, *, snapshots, start_reply=None, deadline=600, interval=5):
+def make_client(monkeypatch, *, snapshots, start_reply=None, deadline=600, interval=5,
+                start_errors=()):
     """A DISClient whose DIS is a script.
 
     ``snapshots`` is consumed one per poll; an entry may be a dict (the ``progress``
     payload, or None for "no such build"), or an Exception instance to raise.
+    ``start_errors`` is consumed one per POST, raising instead of replying.
     """
     client = dis_mod.DISClient()
     clock = FakeClock()
@@ -56,10 +58,15 @@ def make_client(monkeypatch, *, snapshots, start_reply=None, deadline=600, inter
 
     calls = {"start": [], "poll": 0}
     queue = list(snapshots)
+    start_queue = list(start_errors)
 
     def _fake_request(method, path, **kwargs):
         if path.endswith("/digests/build"):
             calls["start"].append(kwargs.get("json") or {})
+            if start_queue:
+                err = start_queue.pop(0)
+                if err is not None:  # None = this POST succeeds
+                    raise err
             return start_reply if start_reply is not None else {"started": True}
         if path.endswith("/digests/progress"):
             calls["poll"] += 1
@@ -156,6 +163,28 @@ def test_sustained_unreachability_is_reported_rather_than_waited_out(monkeypatch
     assert "no route" in str(exc.value.detail)
 
 
+# ── starting is retried, because starting is idempotent ─────────────────────────
+
+def test_a_dropped_packet_on_the_start_call_does_not_fail_the_generation(monkeypatch):
+    """The start call takes milliseconds, but it is still a network call. Failing a
+    whole generation on one lost packet — before any work has begun — is exactly the
+    fragility this rewrite exists to remove. Safe to retry because DIS's single-flight
+    reservation answers "already_running" rather than launching a second build."""
+    client, calls, _ = make_client(monkeypatch, snapshots=[done()],
+                                   start_errors=[OSError("connection reset")])
+    assert client.build_digests_sync("Block 2", client_id="aim") == REPORT
+    assert len(calls["start"]) == 2
+
+
+def test_starting_is_not_retried_forever(monkeypatch):
+    client, calls, _ = make_client(monkeypatch, snapshots=[],
+                                   start_errors=[OSError("down")] * 10)
+    with pytest.raises(HTTPException) as exc:
+        client.build_digests_sync("Block 2", client_id="aim")
+    assert exc.value.status_code == 503
+    assert len(calls["start"]) == 3
+
+
 # ── a missing entry is a restart, not a success ─────────────────────────────────
 
 def test_a_vanished_build_is_re_issued_rather_than_reported_complete(monkeypatch):
@@ -180,6 +209,19 @@ def test_a_re_issued_build_keeps_the_original_arguments(monkeypatch):
 
     assert calls["start"][1]["force"] is True
     assert calls["start"][1]["map_guidance"] == "Emphasize safety."
+
+
+def test_a_re_issue_that_itself_fails_is_treated_as_transient(monkeypatch):
+    """A DIS that just restarted may not be accepting requests yet. Letting that
+    escape would abandon the build over a blip during recovery."""
+    client, calls, _ = make_client(
+        monkeypatch, snapshots=[running(3), None, running(8), done()],
+        start_errors=[None, ConnectionRefusedError("still booting")])
+
+    # The first start succeeds (None = no error), the re-issue is refused, and polling
+    # continues to a successful finish.
+    assert client.build_digests_sync("Block 2", client_id="aim") == REPORT
+    assert len(calls["start"]) == 2
 
 
 def test_re_issuing_is_bounded(monkeypatch):

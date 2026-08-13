@@ -182,6 +182,13 @@ def complete(client_id: str, block: str, report: Dict[str, Any]) -> None:
     The report is the deliverable of the whole build. Holding it here is what makes
     the starting request disposable: the caller collects it on a later poll, so a
     dropped connection costs a poll interval instead of the entire build.
+
+    A vanished entry (evicted under cap pressure, or lost to a restart that this
+    process somehow survived) is a no-op rather than a re-creation, and that direction
+    is deliberate: the slot may since have been re-reserved by a newer build for the
+    same block, and re-creating would hand that build's poller this build's report.
+    Dropping the report costs a re-issue over cached days; serving the wrong one is
+    silently incorrect output.
     """
     with _lock:
         entry = _builds.get(_key(client_id, block))

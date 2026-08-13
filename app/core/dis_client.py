@@ -168,7 +168,26 @@ class DISClient:
         """
         deadline_s = float(_get_setting("dis_digest_build_deadline_seconds", 2400))
         interval_s = float(_get_setting("dis_digest_build_poll_seconds", 5))
-        reply = self._start_digest_build(block, force, current_user, client_id, map_guidance)
+        # Retried because starting is now idempotent and cheap. DIS holds a
+        # single-flight reservation per block, so a start whose response was lost
+        # answers "already_running" the second time rather than launching a duplicate.
+        # Without this, one dropped packet on a millisecond-long call fails a
+        # generation before any work begins.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                reply = self._start_digest_build(block, force, current_user, client_id,
+                                                 map_guidance)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                _log.warning("starting the digest build for %s failed (attempt %s/3): %s",
+                             block, attempt + 1, exc)
+                if attempt < 2:
+                    time.sleep(min(interval_s, 5.0))
+        else:
+            raise HTTPException(
+                503, f"Could not start the digest build for {block}: {last_exc}")
         # A DIS that predates the async build ran it inline and returned the report.
         # Recognised so a mixed-version window during a rolling rebuild degrades to the
         # old behavior instead of failing outright.
@@ -180,7 +199,19 @@ class DISClient:
 
     def _start_digest_build(self, block: str, force: bool, current_user: Any,
                             client_id: str, map_guidance: str) -> Dict[str, Any]:
-        """Ask DIS to begin a build. Returns as soon as it is running, not when done."""
+        """Ask DIS to begin a build. Returns as soon as it is running, not when done.
+
+        Idempotent per block: DIS reserves a single-flight slot, so calling this while a
+        build is live answers ``already_running`` instead of starting a second one. That
+        is what makes the retry above safe.
+
+        Caveat worth knowing: because the reservation is keyed on the block alone, a
+        caller that joins an in-flight build inherits *that* build's ``force`` and
+        ``map_guidance``, not its own. Two users generating the same block from
+        different prompts at the same moment is the only way to reach it, and waiting
+        for the running build beats refusing to build at all — but the second user's
+        guidance is not what produced the digests they get.
+        """
         reply = self.request_sync(
             "POST", "/context/digests/build",
             json={"block": block, "force": force, "map_guidance": map_guidance,
@@ -258,7 +289,19 @@ class DISClient:
                 missing_streak = 0
                 _log.warning("digest build for %s is not tracked by DIS (restart?) — "
                              "re-issuing, attempt %s", block, restarts + 1)
-                self._start_digest_build(block, force, current_user, client_id, map_guidance)
+                try:
+                    self._start_digest_build(block, force, current_user, client_id,
+                                             map_guidance)
+                except Exception as exc:  # noqa: BLE001
+                    # A DIS that just restarted may not be accepting requests yet. That
+                    # is the same transient condition as a failed poll, and letting it
+                    # escape here would abandon a build over a blip during recovery —
+                    # the precise class of bug this rewrite exists to remove. The next
+                    # pass retries, and `restarts` still bounds the attempts.
+                    consecutive_errors += 1
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    _log.warning("re-issuing the digest build for %s failed: %s",
+                                 block, last_error)
                 continue
 
             seen_entry = True
