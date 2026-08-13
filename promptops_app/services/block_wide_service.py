@@ -17,7 +17,7 @@ import logging
 import os
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.dis_client import dis_client
 from promptops_app.services.budget_service import BudgetExceededError
@@ -539,6 +539,42 @@ def _settle_map_usage(db, map_ctx, report: Optional[Dict[str, Any]], reservation
                          "until the period rolls over", exc_info=True)
 
 
+#: Cap on how many distinct MAP failure reasons travel with a generation. When a
+#: block fails wholesale every day usually fails the SAME way, so the first few
+#: distinct reasons carry all the diagnostic value; the rest are repetition that
+#: would bloat every persisted version row and the user-facing warning.
+_MAX_FAILURE_REASONS = 3
+
+
+def _digest_failure_reasons(report: Optional[Dict[str, Any]]) -> List[str]:
+    """Distinct per-day MAP failure reasons from a DIS build report.
+
+    DIS records a real cause for every failed day and returns them under
+    ``per_day[].error``. CAS received that all along and kept only six counters,
+    so the cause was discarded at the boundary and the only surviving signal was
+    *which* days failed — never *why*. Diagnosing prod's 2026-08-13 Block 2 run
+    (20 of 20 days failed) came down to reading DIS container logs that whoever
+    sees the failed generation cannot reach.
+
+    Deduplicated rather than listed per day: 20 days failing identically is one
+    problem reported once, and the day numbers are already in ``failed_days``.
+    """
+    if not isinstance(report, dict):
+        return []
+    reasons: List[str] = []
+    for entry in report.get("per_day") or []:
+        if not isinstance(entry, dict) or entry.get("status") != "failed":
+            continue
+        # A failed day with no recorded error is still worth counting — silently
+        # skipping it would under-report the failure — but it has nothing to say.
+        error = str(entry.get("error") or "").strip()
+        if error and error not in reasons:
+            reasons.append(error)
+        if len(reasons) >= _MAX_FAILURE_REASONS:
+            break
+    return reasons
+
+
 def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
                       current_user, dis_client_id: str, map_guidance: str = "",
                       *, db=None, request_body=None):
@@ -637,6 +673,14 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
             f"{type(exc).__name__}: {exc}".strip()
         )
         return None, None
+    # Carried on coverage, not left on the report: coverage is what reaches the job
+    # layer's warning and the persisted version row, whereas the report is summarised
+    # into six counters by _provenance and then dropped. A run where MAP failed is
+    # still a "successful" generation by every other measure, so this is the only
+    # place the cause can surface to whoever has to act on it.
+    reasons = _digest_failure_reasons(report)
+    if reasons and isinstance(getattr(result, "coverage", None), dict):
+        result.coverage["failure_reasons"] = reasons
     return result, report
 
 
@@ -709,6 +753,10 @@ def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dic
                          ("built", "cached", "failed", "map_calls",
                           "map_tokens_in", "map_tokens_out")}
         if isinstance(report, dict) else {},
+        # The counters above say how many days failed; these say why. Kept on the
+        # version row because that is the durable record — the job row is transient
+        # and the DIS logs holding the original are unreachable from here.
+        "digest_failures": _digest_failure_reasons(report),
         # Traceability (PL↔CAS sync review discipline): whether/what prompt-
         # derived guidance actually reached MAP/REDUCE for this generation, so
         # a reviewer can see it rather than trust it blindly (see prompt_
