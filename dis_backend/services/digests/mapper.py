@@ -526,6 +526,22 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         # completely different fixes, and the raw_text above is logged where whoever
         # reads the failed generation cannot see it. Naming the model too, because
         # escalation may have swapped it for one this account cannot invoke.
+        # Distinguish the two causes explicitly. call_llm swallows every provider
+        # exception into a valid-JSON stub, so a timeout, a throttle and a quota
+        # rejection all arrive here looking exactly like a model that answered in the
+        # wrong shape — and the fixes are unrelated. Saying "lacks the required keys"
+        # for a call that never succeeded is what sent 2026-08-13's diagnosis to the
+        # prompt and the token budget instead of to a 60-second read timeout.
+        from services.pipeline.common import is_llm_failure_stub
+        if is_llm_failure_stub(text):
+            raise MapExtractionError(
+                f"MAP call for day {day.get('day_number')} FAILED at the provider "
+                f"(model={model}) — call_llm returned its failure stub, so no "
+                f"extraction happened. This is a credentials/timeout/throttling/quota "
+                f"problem, not a prompt or schema one. The preceding '[LLM] failed' log "
+                f"line names the underlying AWS exception.",
+                tokens_in=ti, tokens_out=to, model=model,
+            )
         raise MapExtractionError(
             f"MAP reply for day {day.get('day_number')} lacks the required keys "
             f"(derived_objective/concept_type); model={model} "

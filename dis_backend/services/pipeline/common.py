@@ -5,6 +5,7 @@ Keep this file small. If one step fails, open services/pipeline/steps.py and sea
 from __future__ import annotations
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List, TypedDict
 
@@ -75,6 +76,73 @@ class PipelineContext:
             log.warning("[%s] step artifact failed for %s: %s", state.get("job_id"), name, exc)
         return state
 
+#: What ``call_llm`` returns when the provider call raises. Named, and exported, so a
+#: caller can tell "the call never succeeded" from "the model answered in the wrong
+#: shape" — the JSON is valid either way, so downstream schema checks report both as a
+#: malformed reply. Those need opposite fixes (credentials/timeouts/quota vs prompt or
+#: token budget), and conflating them cost most of 2026-08-13.
+LLM_FAILURE_STUB = '{"doc_type":"other","classification":"internal"}'
+
+
+def is_llm_failure_stub(text: str) -> bool:
+    """True when *text* is ``call_llm``'s failure fallback rather than model output.
+
+    Compares parsed content, not the raw string: the stub reaches callers through
+    ``safe_json`` and JSON formatting is not stable enough to match on bytes.
+    """
+    try:
+        data = json.loads((text or "").strip())
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    return data.get("doc_type") == "other" and data.get("classification") == "internal"
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    """A positive int from the environment, else *default*. Junk never becomes 0 —
+    a zero timeout or zero attempts would be a far more destructive misreading of a
+    typo than simply ignoring it."""
+    try:
+        value = int((os.getenv(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def bedrock_invoke_config() -> Any:
+    """botocore Config for Bedrock ``InvokeModel``: explicit timeouts and retries.
+
+    botocore's defaults are wrong for this call. Its read timeout is 60 seconds, and
+    a content-rich MAP day routinely generates for longer — the socket then raises
+    ReadTimeoutError, which ``call_llm``'s blanket ``except`` turns into a valid-JSON
+    stub, i.e. a whole day of filler indistinguishable from real extraction.
+
+    Measured on 2026-08-13: prod's 20-day Block 2 build lost exactly the five heaviest
+    days (3, 6, 7, 8, 9) this way while the other fifteen succeeded, and each recorded
+    ``{"doc_type":"other"}`` — the signature of that swallowed exception. CAS's own
+    Bedrock client has used ``read_timeout=600`` since it hit the same wall
+    (promptops_app/core/llm_client.py); DIS duplicates this helper by design and so
+    never inherited the fix.
+
+    Retries are ``adaptive`` rather than the legacy default: a block build issues one
+    call per day, so throttling is a question of when rather than if, and adaptive
+    mode backs off across calls using observed throttle rates instead of retrying each
+    call in isolation. Note that botocore does NOT retry a read timeout that the
+    server is still working on, which is why the timeout itself has to be right.
+    """
+    from botocore.config import Config as BotoConfig
+
+    return BotoConfig(
+        read_timeout=_env_positive_int("DIS_BEDROCK_READ_TIMEOUT", 600),
+        connect_timeout=_env_positive_int("DIS_BEDROCK_CONNECT_TIMEOUT", 30),
+        retries={
+            "max_attempts": _env_positive_int("DIS_BEDROCK_MAX_ATTEMPTS", 4),
+            "mode": "adaptive",
+        },
+    )
+
+
 def llm_is_mocked(settings: Any = None) -> bool:
     """True when :func:`call_llm` will serve canned replies instead of calling a model.
 
@@ -134,7 +202,8 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
             # resulting NoCredentialsError was swallowed by the except below into a
             # valid-JSON stub, which produced a complete-looking Blueprint with every
             # extracted field at its default.
-            client = boto3.client("bedrock-runtime", **settings.bedrock_client_kwargs())
+            client = boto3.client("bedrock-runtime", config=bedrock_invoke_config(),
+                                  **settings.bedrock_client_kwargs())
             payload = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": max_tokens,
@@ -176,8 +245,12 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
         )
         return msg.content[0].text, msg.usage.input_tokens, msg.usage.output_tokens
     except Exception as exc:
-        log.warning("[LLM] failed: %s", exc)
-        return '{"doc_type":"other","classification":"internal"}', 0, 0
+        # type(exc).__name__ as well as the text: a ReadTimeoutError's str() is often
+        # nearly empty, and "which AWS exception was it" is the whole question when a
+        # day silently degrades. This log line is the ONLY record of the provider error
+        # — the return value below deliberately looks like ordinary output.
+        log.warning("[LLM] failed: %s: %s", type(exc).__name__, exc)
+        return LLM_FAILURE_STUB, 0, 0
 
 def safe_json(text: str) -> Dict[str, Any]:
     clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
