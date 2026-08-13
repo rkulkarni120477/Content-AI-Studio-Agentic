@@ -197,6 +197,32 @@ def _unavailable_msg(model: str, detail: str) -> str:
     )
 
 
+def run_tracked_build(tenant_cfg: TenantConfig, block: str, client_id: str = "",
+                      **kwargs: Any) -> Dict[str, Any]:
+    """``build_digests`` with its outcome published to the progress registry.
+
+    This is what makes the request that starts a build disposable. ``build_digests``
+    reports per-day progress but returns its report only to its caller, so when that
+    caller was a minutes-long HTTP request, losing the connection lost the report of a
+    build that had completed and been billed — exactly the production failure on
+    2026-08-13 (all 20 days ``ok``, then ``503 ... timed out`` at 8m07s, report gone).
+    Publishing the outcome means a caller can collect it on any later poll.
+
+    Re-raises after recording, so the synchronous path can still map ``LookupError``
+    and ``RuntimeError`` onto 404/400 as before.
+    """
+    try:
+        report = build_digests(tenant_cfg, block, client_id=client_id, **kwargs)
+    except BaseException as exc:
+        # BaseException, not Exception: a build cancelled by shutdown must still leave
+        # a terminal state behind, or its poller waits out the full deadline on a
+        # build that is definitively not coming back.
+        progress.fail(client_id, block, f"{type(exc).__name__}: {exc}".strip())
+        raise
+    progress.complete(client_id, block, report)
+    return report
+
+
 def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
                   force: bool = False,
                   use_graph: bool = False, checkpointer: Any = None,

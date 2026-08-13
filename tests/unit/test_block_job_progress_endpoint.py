@@ -36,14 +36,18 @@ def _call(monkeypatch, job, dis_reply=None, dis_error=None):
     captured = {}
 
     class _Client:
-        def get_digest_progress_sync(self, block, current_user=None, client_id=""):
-            captured.update(block=block, client_id=client_id)
+        def get_digest_progress_sync(self, block, current_user=None, client_id="",
+                                     include_result=False, timeout=10.0):
+            captured.update(block=block, client_id=client_id,
+                            include_result=include_result)
             if dis_error:
                 raise dis_error
             return dis_reply
 
     import app.core.dis_client as dis_mod
-    monkeypatch.setattr(dis_mod, "DISClient", _Client)
+    # The singleton, not the class: the route deliberately reuses the shared client
+    # rather than constructing one per poll (see test_the_shared_client_is_reused).
+    monkeypatch.setattr(dis_mod, "dis_client", _Client())
     return jobs_router.get_block_job_progress(job_id="j1", db=object(),
                                               current_user=_user()), captured
 
@@ -64,7 +68,11 @@ def test_the_build_is_looked_up_by_the_jobs_own_block_and_client(monkeypatch):
     one job's progress bar showing another block's build."""
     _, captured = _call(monkeypatch, _job(block="Block 7", dis_client_id="aim"),
                         dis_reply={"progress": SNAPSHOT})
-    assert captured == {"block": "Block 7", "client_id": "aim"}
+    assert captured["block"] == "Block 7"
+    assert captured["client_id"] == "aim"
+    assert captured["include_result"] is False, (
+        "the browser polls this every 2 seconds and has no use for the build report"
+    )
 
 
 @pytest.mark.parametrize("job_type", ["generation", "regenerate_item", "import_course"])
@@ -104,6 +112,34 @@ def test_a_missing_job_is_still_a_real_404(monkeypatch):
     monkeypatch.setattr(job_repository, "get_job", lambda db, jid: None)
     with pytest.raises(JobNotFoundError):
         jobs_router.get_block_job_progress(job_id="nope", db=object(), current_user=_user())
+
+
+def test_the_shared_client_is_reused_rather_than_one_built_per_poll(monkeypatch):
+    """This route fires every 2 seconds for the length of a build.
+
+    ``DISClient()`` lazily creates its own ``httpx.Client`` and nothing closes it, so
+    constructing one per poll leaked a client and its connection pool every 2 seconds
+    — roughly 240 over the 8-minute production build on 2026-08-13 — while defeating
+    the connection reuse the pooling exists to provide.
+    """
+    import app.core.dis_client as dis_mod
+
+    monkeypatch.setattr(job_repository, "get_job", lambda db, jid: _job())
+    constructed = []
+    real_init = dis_mod.DISClient.__init__
+
+    def _counting_init(self, *a, **kw):
+        constructed.append(1)
+        real_init(self, *a, **kw)
+
+    monkeypatch.setattr(dis_mod.DISClient, "__init__", _counting_init)
+    monkeypatch.setattr(dis_mod.dis_client, "get_digest_progress_sync",
+                        lambda *a, **kw: {"progress": SNAPSHOT})
+
+    for _ in range(5):
+        jobs_router.get_block_job_progress(job_id="j1", db=object(), current_user=_user())
+
+    assert constructed == [], "a DISClient was constructed inside the poll path"
 
 
 def test_progress_is_a_separate_route_from_the_status_poll():

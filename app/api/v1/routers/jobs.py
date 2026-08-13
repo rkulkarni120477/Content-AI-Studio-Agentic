@@ -186,9 +186,14 @@ def get_block_job_progress(
         block = params.get("block")
         if not block:
             return {"progress": None}
-        from app.core.dis_client import DISClient
+        # The module singleton, NOT DISClient(): each instance lazily builds its own
+        # httpx.Client and nothing closes it, so constructing one per poll leaked a
+        # client (and its connection pool) every 2 seconds for the whole build —
+        # roughly 240 of them over an 8-minute run — while defeating the reuse the
+        # pooling in DISClient exists to provide.
+        from app.core.dis_client import dis_client
 
-        reply = DISClient().get_digest_progress_sync(
+        reply = dis_client.get_digest_progress_sync(
             block, current_user=current_user, client_id=params.get("dis_client_id") or "",
         )
         progress = reply.get("progress") if isinstance(reply, dict) else None
