@@ -153,6 +153,24 @@ def preflight_extractor(model: str) -> None:
     # dev/mock path) reports a positive count. Matching on reply content instead
     # would either miss a changed stub or reject a legitimately terse answer.
     if not tokens_in:
+        # Distinguish "no credentials at all, so canned replies are being served" from
+        # "credentials exist but this model is not invokable". They look identical at
+        # this point — both surface as a zero-token probe — but the first is a
+        # deployment that never contacted a provider, and telling an operator to check
+        # region and model access sends them hunting the wrong thing entirely (it did,
+        # for most of 2026-08-13).
+        from services.pipeline.common import llm_is_mocked
+        if llm_is_mocked():
+            raise ExtractorUnavailable(
+                "DIS is serving MOCK LLM replies, so no model was contacted and every "
+                "digest would be canned filler. This happens when environment is "
+                "'development' (its default) AND no model credentials are visible to "
+                "this process. Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or "
+                "DIS_BEDROCK_ACCESS_KEY_ID/DIS_BEDROCK_SECRET_ACCESS_KEY), and set "
+                "ENVIRONMENT=production, in the env file this container actually reads "
+                "— for the dis_backend service that is dis_backend/.env, NOT the root "
+                ".env."
+            )
         raise ExtractorUnavailable(_unavailable_msg(model, reply[:160]))
     _PREFLIGHT_OK.add(model)
     log.info("digest preflight ok: model=%s", model)

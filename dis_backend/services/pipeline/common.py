@@ -75,14 +75,50 @@ class PipelineContext:
             log.warning("[%s] step artifact failed for %s: %s", state.get("job_id"), name, exc)
         return state
 
+def llm_is_mocked(settings: Any = None) -> bool:
+    """True when :func:`call_llm` will serve canned replies instead of calling a model.
+
+    Split out of ``call_llm`` so the condition can be asked about rather than only
+    experienced. A mock that is indistinguishable from a working model is the worst
+    kind of failure: on 2026-08-13 prod's DIS built an entire 20-day block out of
+    canned replies, every extracted field defaulted, and the pipeline reported it as
+    a successful generation.
+
+    ``bedrock_client_kwargs()`` is the single source of truth for the credentials the
+    Bedrock client will ACTUALLY use, and it prefers the Bedrock-only DIS_BEDROCK_*
+    pair over the shared AWS_* one. The previous check read ``aws_access_key_id``
+    directly, so a deployment setting only DIS_BEDROCK_* kept serving mock replies
+    while holding perfectly good credentials it never used — the two conditions must
+    be derived from the same place or they drift exactly when it matters.
+    """
+    settings = settings if settings is not None else get_settings()
+    if getattr(settings, "environment", "") != "development":
+        return False
+    if getattr(settings, "anthropic_api_key", None):
+        return False
+    try:
+        return not (settings.bedrock_client_kwargs() or {}).get("aws_access_key_id")
+    except Exception:
+        # Never let a settings-shape surprise decide this. Falling back to the
+        # narrower check keeps the old behaviour rather than silently flipping a
+        # credentialled deployment onto the mock.
+        return not getattr(settings, "aws_access_key_id", None)
+
+
 def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, int]:
     settings = get_settings()
-    if settings.environment == "development" and not settings.anthropic_api_key and not settings.aws_access_key_id:
+    if llm_is_mocked(settings):
+        # Zero tokens, deliberately. This is what the real failure path at the bottom
+        # of this function reports, and it is the signal digests.build's
+        # preflight_extractor keys on to refuse a build outright. Reporting 400 made
+        # the mock look like a working model to the one guard written to catch
+        # precisely this, so preflight passed and 20 days of canned replies were
+        # built and charged for. Zero is also simply honest: nothing was spent.
         if "document structure" in prompt.lower():
-            return '{"sections":[{"heading":"Extracted Content","summary":"Main extracted document content.","page":1}]}', 400, 50
+            return '{"sections":[{"heading":"Extracted Content","summary":"Main extracted document content.","page":1}]}', 0, 0
         if "extract metadata" in prompt.lower():
-            return '{"title":"Untitled Source","language":"en","word_count":100}', 400, 60
-        return '{"doc_type":"study_material","classification":"internal"}', 400, 40
+            return '{"title":"Untitled Source","language":"en","word_count":100}', 0, 0
+        return '{"doc_type":"study_material","classification":"internal"}', 0, 0
     try:
         if settings.use_bedrock:
             import boto3, json as _json
