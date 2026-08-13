@@ -501,9 +501,9 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     if not data or "derived_objective" not in data or "concept_type" not in data:
         # safe_json's json.loads is strict — either the raw response didn't
         # parse at all (likely truncated mid-JSON for content-rich days) or it
-        # parsed into an unrelated shape (e.g. call_llm's exception-path
-        # fallback '{"doc_type":"other",...}', which IS valid JSON but has none
-        # of our keys).
+        # parsed into an unrelated shape. A provider error no longer arrives here
+        # at all: call_llm raises LLMCallFailed, which build_digest catches. So this
+        # branch now means what it says — the model answered, in the wrong shape.
         #
         # This USED to only log and let every field default, leaving
         # digest_status="ok". That is the failure mode that shipped a complete-
@@ -519,13 +519,29 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
             "digest MAP day %s: response missing expected keys (parsed=%r), "
             "raw_text=%r", day.get("day_number"), bool(data), text[:2000],
         )
-        # The reply snippet is the discriminator, and this message is the only
-        # artefact that leaves the DIS process: call_llm's exception stub
-        # ('{"doc_type":"other",...}') means the model could not be invoked, while a
-        # body cut off mid-JSON means the token budget was too small. Those need
-        # completely different fixes, and the raw_text above is logged where whoever
-        # reads the failed generation cannot see it. Naming the model too, because
-        # escalation may have swapped it for one this account cannot invoke.
+        # These messages are the only artefact that leaves the DIS process, so they
+        # carry the reply snippet and the model: a body cut off mid-JSON means the
+        # token budget was too small, and the model matters because escalation may
+        # have swapped in one this account cannot invoke. The raw_text logged above is
+        # not reachable by whoever reads the failed generation.
+        #
+        # The stub branch below is now DEFENSIVE, not the main path: call_llm raises
+        # LLMCallFailed on a provider error rather than returning
+        # '{"doc_type":"other",...}', so a timeout or throttle never reaches here. It
+        # is kept because a stored digest from before that change carries this shape,
+        # and because a model could in principle reply with it — in which case
+        # reporting "lacks the required keys" would repeat 2026-08-13's mistake of
+        # sending diagnosis to the prompt instead of to a 60-second read timeout.
+        from services.pipeline.common import is_llm_failure_stub
+        if is_llm_failure_stub(text):
+            raise MapExtractionError(
+                f"MAP call for day {day.get('day_number')} FAILED at the provider "
+                f"(model={model}) — the reply is call_llm's failure stub, so no "
+                f"extraction happened. This is a credentials/timeout/throttling/quota "
+                f"problem, not a prompt or schema one. The preceding '[LLM] failed' log "
+                f"line names the underlying AWS exception.",
+                tokens_in=ti, tokens_out=to, model=model,
+            )
         raise MapExtractionError(
             f"MAP reply for day {day.get('day_number')} lacks the required keys "
             f"(derived_objective/concept_type); model={model} "
@@ -633,7 +649,20 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     except Exception as exc:  # per-day failure isolation (§8.3)
         log.warning("digest MAP failed for day %s: %s", dn, exc)
         digest["digest_status"] = "failed"
+        # A provider failure now arrives as LLMCallFailed carrying the real AWS
+        # exception, so the stored error names the actual cause (e.g.
+        # "ReadTimeoutError") instead of describing the fallback stub's shape.
         digest["error"] = str(exc)
+        from services.pipeline.common import LLMCallFailed
+        if isinstance(exc, LLMCallFailed):
+            # An attempt was made and, for a read timeout, the model generated and AWS
+            # billed it — so count the call even though no token counts came back.
+            # Reporting zero calls here is what made prod's build look like it never
+            # contacted a model.
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+            if exc.model:
+                digest["extractor_model"] = exc.model
         # The success path's counter above is only reached when _llm_extract
         # RETURNS, so before this every failed day contributed zero calls and zero
         # tokens to the build report — prod's 2026-08-13 Block 2 build reported

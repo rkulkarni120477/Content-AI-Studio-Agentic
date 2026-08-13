@@ -1285,6 +1285,10 @@ def test_call_llm_retries_without_temperature_when_the_model_rejects_it(monkeypa
         use_bedrock=True, bedrock_client_kwargs=lambda: {"region_name": "ap-south-1"}))
     monkeypatch.setitem(__import__("sys").modules, "boto3",
                         types.SimpleNamespace(client=lambda *a, **k: _Client()))
+    # call_llm reuses one client per credential set, so a client cached by an earlier
+    # test would be used instead of the fake above.
+    import services.pipeline.common as _c
+    _c.reset_bedrock_clients()
 
     text, ti, to = common.call_llm("global.anthropic.claude-sonnet-5", "hi", max_tokens=8)
 
@@ -1312,10 +1316,18 @@ def test_call_llm_does_not_mask_an_unrelated_validation_error(monkeypatch):
         use_bedrock=True, bedrock_client_kwargs=lambda: {"region_name": "ap-south-1"}))
     monkeypatch.setitem(__import__("sys").modules, "boto3",
                         types.SimpleNamespace(client=lambda *a, **k: _Client()))
+    # call_llm reuses one client per credential set, so a client cached by an earlier
+    # test would be used instead of the fake above.
+    import services.pipeline.common as _c
+    _c.reset_bedrock_clients()
 
-    text, ti, to = common.call_llm("some-model", "hi", max_tokens=8)
+    # call_llm now RAISES on a provider error instead of returning a valid-JSON stub
+    # (see common.LLMCallFailed). The point of this test is unchanged: exactly ONE
+    # invoke_model call, because only the temperature ValidationException is retried.
+    with pytest.raises(common.LLMCallFailed) as excinfo:
+        common.call_llm("some-model", "hi", max_tokens=8)
     assert len(calls) == 1, "an unrelated ValidationException was retried"
-    assert ti == 0 and "doc_type" in text, "should fall through to the stub path"
+    assert "model id is not supported" in str(excinfo.value), "the real cause must survive"
 
 
 def test_a_malformed_source_budget_falls_back_instead_of_truncating(monkeypatch):

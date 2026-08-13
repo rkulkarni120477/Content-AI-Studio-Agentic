@@ -3,7 +3,7 @@ import { attachBlockJobReducers } from '@features/shared/blockJob';
 import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, fetchBlueprintComponentsThunk,
-  activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk,
+  activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk, resumeBlueprintJobThunk,
 } from './blueprintThunks';
 
 const initialState = {
@@ -66,7 +66,8 @@ const blueprintSlice = createSlice({
       });
 
     // Shared block-wide async-job cases (pending/fulfilled/rejected + poll).
-    attachBlockJobReducers(b, { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk });
+    attachBlockJobReducers(b, { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk,
+                                 resumeThunk: resumeBlueprintJobThunk });
   },
 });
 
