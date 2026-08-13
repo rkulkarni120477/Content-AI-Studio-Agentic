@@ -61,12 +61,17 @@ export const generateBlueprintThunk = createAsyncThunk(
  * the shared factory (same robust polling lifecycle as CDD; see
  * @features/shared/blockJob). Server persists AND pins on completion.
  */
-export const { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk } =
+export const {
+  generateThunk: generateBlueprintBlockThunk,
+  pollThunk: pollBlueprintJobThunk,
+  resumeThunk: resumeBlueprintJobThunk,
+} =
   createBlockJobThunks({
     prefix: 'blueprint',
     deliverable: 'blueprint',
     enqueue: (payload) => blueprintService.generateBlueprintBlock(payload),
     getJobStatus: (jobId) => blueprintService.getJobStatus(jobId),
+    getActiveJob: (courseId) => blueprintService.getActiveBlockJob(courseId),
     completedMessage: 'Block Blueprint generated and set as active.',
     failedMessage: 'Blueprint generation failed.',
     onComplete: (dispatch, courseId) => {

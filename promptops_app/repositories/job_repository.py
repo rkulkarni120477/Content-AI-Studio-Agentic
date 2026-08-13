@@ -127,8 +127,20 @@ def count_jobs(
     return q.count()
 
 
-def get_active_job_for_user(db, user_name: str, project_id: int = None):
-    """Return the most recent queued-or-running job for this user, or None."""
+def get_active_job_for_user(db, user_name: str, project_id: int = None,
+                            course_id: int = None, job_types: list[str] = None):
+    """Return the most recent queued-or-running job for this user, or None.
+
+    Scoped to ``created_by`` deliberately. This backs the frontend's reattach-after-
+    refresh flow (GET /api/v1/jobs/active), and a job row carries a user's own cost
+    and error detail — so "resume MY in-flight job" is the safe semantic. Widening it
+    to everyone working on a course would need a real course-access check, which this
+    codebase does not yet have anywhere.
+
+    ``course_id`` and ``job_types`` narrow it further so a CDD page reattaches to a CDD
+    build rather than to whatever unrelated job the user happens to be running
+    elsewhere in the app.
+    """
     q = (
         db.query(GenerationJob)
         .filter(
@@ -138,6 +150,10 @@ def get_active_job_for_user(db, user_name: str, project_id: int = None):
     )
     if project_id:
         q = q.filter(GenerationJob.project_id == project_id)
+    if course_id:
+        q = q.filter(GenerationJob.course_id == course_id)
+    if job_types:
+        q = q.filter(GenerationJob.job_type.in_(list(job_types)))
     return q.order_by(GenerationJob.created_at.desc()).first()
 
 

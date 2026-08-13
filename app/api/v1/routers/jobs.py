@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import JobNotFoundError
-from app.schemas.common import JobStatusResponse
+from app.schemas.common import ActiveJobResponse, JobStatusResponse
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -46,6 +46,62 @@ def _result_warning(job) -> Optional[str]:
         return None
     warning = payload.get("warning")
     return warning.strip() if isinstance(warning, str) and warning.strip() else None
+
+
+@router.get(
+    "/active",
+    response_model=ActiveJobResponse,
+    summary="Find the caller's in-flight job for a course",
+    description=(
+        "Returns the caller's most recent queued-or-running job for a course, or "
+        "`{\"job\": null}` when there is none. The frontend calls this on mount so a "
+        "page refresh reattaches to a build already in progress instead of losing it."
+    ),
+)
+def get_active_job(
+    course_id: Optional[int] = None,
+    job_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> ActiveJobResponse:
+    """Let a reloaded page find the job it was already watching.
+
+    Block-wide generation runs for minutes, and the poll chain lived only in browser
+    memory: a refresh (or a closed laptop, or the network blip that surfaced as
+    "Network error. Check your connection.") orphaned the UI while the job kept
+    running server-side. Users then either sat on a dead spinner or re-submitted,
+    paying for a second concurrent build. Observed 2026-08-13 on a 22-minute Block 2
+    build.
+
+    Deliberately server-authoritative rather than a job id kept in localStorage: it
+    survives a cleared cache, a different tab, and a different machine, and it cannot
+    disagree with the database about whether the job is still alive.
+
+    ``job_type`` accepts a comma-separated list so a page watching one deliverable
+    ("cdd_block") is not reattached to an unrelated job the same user started
+    elsewhere.
+    """
+    from promptops_app.repositories import job_repository
+
+    job_types = [t.strip() for t in (job_type or "").split(",") if t.strip()] or None
+    job = job_repository.get_active_job_for_user(
+        db, current_user.username, course_id=course_id, job_types=job_types,
+    )
+    if not job:
+        return ActiveJobResponse(job=None)
+    # Reuses the same shape the poller already consumes, so reattaching needs no
+    # second response format. usage_summary/warning are absent by construction: this
+    # only ever returns queued or running jobs.
+    return ActiveJobResponse(job=JobStatusResponse(
+        job_id=str(job.id),
+        status=job.status,
+        progress=job.progress or 0,
+        current_step=job.current_step,
+        generation_id=job.result_entity_id,
+        error_message=job.error_message,
+        created_at=job.created_at.isoformat() if job.created_at else None,
+        updated_at=job.updated_at.isoformat() if job.updated_at else None,
+    ))
 
 
 @router.get(

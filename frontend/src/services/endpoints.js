@@ -199,6 +199,13 @@ export const GENERATE = {
   COURSE_COMPLETION: (courseId) => `/api/v1/generations/course/${courseId}/completion-status`,
   JOB_STATUS:       (jobId)    => `/api/v1/jobs/${jobId}`,
   JOB_CANCEL:       (jobId)    => `/api/v1/jobs/${jobId}`,
+  // "Is one of my builds still running?" — asked on mount so a refreshed page
+  // reattaches to an in-flight job instead of orphaning it. Server-authoritative
+  // (see the endpoint's docstring): a job id in localStorage would not survive a
+  // cleared cache or another tab, and could disagree with the database.
+  JOB_ACTIVE:       (courseId, jobType) =>
+    `/api/v1/jobs/active?course_id=${encodeURIComponent(courseId)}`
+    + (jobType ? `&job_type=${encodeURIComponent(jobType)}` : ''),
   TRACE:            (id)       => `/api/v1/generations/${id}/trace`,
 };
 

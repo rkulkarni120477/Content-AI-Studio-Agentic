@@ -141,6 +141,25 @@ class JobStatusResponse(BaseModel):
     )
 
 
+class ActiveJobResponse(BaseModel):
+    """The caller's in-flight job for a course, if there is one.
+
+    A wrapper rather than a nullable ``JobStatusResponse`` so "no job running" is an
+    ordinary 200 with an explicit ``null`` — a bare ``null`` body reads as an error to
+    most clients, and a 404 would make the common case look like a failure in logs and
+    monitoring.
+    """
+
+    job: Optional[JobStatusResponse] = Field(
+        default=None,
+        description=(
+            "The most recent queued-or-running job the caller owns for the requested "
+            "course, in the same shape the status poller consumes, so a reloaded page "
+            "can resume polling directly. None when nothing is in flight."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic success message (for operations that return no data)
 # ---------------------------------------------------------------------------

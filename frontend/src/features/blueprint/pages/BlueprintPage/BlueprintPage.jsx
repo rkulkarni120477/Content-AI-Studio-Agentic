@@ -8,6 +8,7 @@ import {
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   generateBlueprintBlockThunk,
+  resumeBlueprintJobThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
@@ -194,6 +195,13 @@ export default function BlueprintPage() {
       setLinkedCddId(activeCdd.id);
     }
   }, [activeCdd, linkedCddId]);
+
+  // Reattach to a block-wide build already running server-side — see the identical
+  // effect in CddPage. Declared after the resetBlockJob effect above so a course
+  // switch clears the previous course's banner before this adopts the new one's job.
+  useEffect(() => {
+    if (courseId) dispatch(resumeBlueprintJobThunk({ courseId: Number(courseId) }));
+  }, [dispatch, courseId]);
 
   useEffect(() => {
     if (activeBlueprint?.id) {

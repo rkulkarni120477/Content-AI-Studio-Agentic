@@ -68,12 +68,17 @@ export const generateCddThunk = createAsyncThunk(
  * cancelled handling, transient-error tolerance, missing-job_id guard) lives in
  * the shared factory so CDD and Blueprint can't drift apart.
  */
-export const { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk } =
+export const {
+  generateThunk: generateCddBlockThunk,
+  pollThunk: pollCddJobThunk,
+  resumeThunk: resumeCddJobThunk,
+} =
   createBlockJobThunks({
     prefix: 'cdd',
     deliverable: 'cdd',
     enqueue: (payload) => cddService.generateCddBlock(payload),
     getJobStatus: (jobId) => cddService.getJobStatus(jobId),
+    getActiveJob: (courseId) => cddService.getActiveBlockJob(courseId),
     completedMessage: 'CDD generated and set as active.',
     failedMessage: 'CDD generation failed.',
     onComplete: (dispatch, courseId) => {
