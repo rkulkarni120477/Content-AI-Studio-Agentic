@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 
 from config.settings import TenantConfig
 from services import indexing
-from services.digests import mapper
+from services.digests import mapper, progress
 from services.digests.enumerate import enumerate_block
 
 log = logging.getLogger(__name__)
@@ -123,11 +123,17 @@ _PREFLIGHT_OK: set[str] = set()
 def preflight_extractor(model: str) -> None:
     """Confirm the extractor model is invokable before spending a whole block on it.
 
-    ``call_llm`` swallows every exception and returns a valid-JSON stub, so an
-    unavailable model does not raise — it quietly yields N digests whose fields are
+    ``call_llm`` used to swallow every exception and return a valid-JSON stub, so an
+    unavailable model did not raise — it quietly yielded N digests whose fields were
     all defaults. On 2026-08-12 that produced a Blueprint with 8 of 20 days at
     concept_type "Unknown", every AM.I.B ACS code orphaned, and a job that reported
     success; the only visible trace was the exported spreadsheet.
+
+    ``call_llm`` raises ``LLMCallFailed`` now, so a per-day failure is honest on its
+    own. This probe is still worth its couple of tokens: it turns "every one of N days
+    failed for the same reason" into ONE error raised before the block is attempted,
+    and it is the only thing that catches the dev MOCK, which returns canned text
+    without contacting a provider at all and so raises nothing.
 
     Model availability is per-region AND per-role, so it cannot be settled in config
     review — it has to be probed from the environment that will do the work. One
@@ -238,16 +244,27 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
 
     budget: Dict[str, int] = {"calls": 0, "tok_in": 0, "tok_out": 0}
     per_day: List[Dict[str, Any]] = []
-    for day in en.days:
-        dn = day["day_number"]
-        units = en.units_by_day.get(dn, [])
-        if day_is_cached(day, units, model, existing, force, map_guidance=map_guidance):
-            per_day.append({"day_number": dn, "status": "cached"})
-            continue
-        res = build_one_day(tenant_cfg, day, units, model, en.client_id, block, map_guidance=map_guidance)
-        for k in budget:
-            budget[k] += res["budget"].get(k, 0)
-        per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
+    # Report progress per day so a caller can show "day 7 of 20" while this runs. The
+    # build holds one HTTP request open for minutes, so this registry is the only way
+    # anything outside can see inside it.
+    progress.start(en.client_id, block, total=len(en.days))
+    try:
+        for day in en.days:
+            dn = day["day_number"]
+            units = en.units_by_day.get(dn, [])
+            if day_is_cached(day, units, model, existing, force, map_guidance=map_guidance):
+                per_day.append({"day_number": dn, "status": "cached"})
+                progress.record(en.client_id, block, "cached")
+                continue
+            res = build_one_day(tenant_cfg, day, units, model, en.client_id, block, map_guidance=map_guidance)
+            for k in budget:
+                budget[k] += res["budget"].get(k, 0)
+            per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
+            progress.record(en.client_id, block, res["status"])
+    finally:
+        # In a finally so a build that raises still stops reporting itself as in
+        # flight — otherwise the UI would sit on a bar that never completes.
+        progress.finish(en.client_id, block)
 
     return _finalize_report(block, en, per_day, budget, strategy="sequential", model=model)
 

@@ -82,7 +82,7 @@ class ProcessingConfig(BaseModel):
 #
 # Availability is per-region AND per-role, so this can still be wrong in a given
 # environment — on 2026-08-12 a deployed role could not invoke it and, because
-# call_llm returns a valid-JSON stub on any exception, the failure was silent:
+# call_llm THEN returned a valid-JSON stub on any exception, the failure was silent:
 # 8 of 20 days came back with concept_type "Unknown" and every AM.I.B ACS code was
 # orphaned while the job reported success. Two guards now exist so that cannot
 # repeat quietly:
@@ -317,10 +317,12 @@ _STORE_ENV_OVERRIDES = (
 # Model availability is an environment fact, not a code fact: an ID can be
 # end-of-life in one region, provider-legacy in another, and require a model-access
 # grant the calling role may not hold. Baking one ID into a committed YAML forces
-# every environment onto it, and because call_llm returns a valid-JSON stub on
-# failure, an unavailable model degrades into complete-looking output with every
+# every environment onto it. When call_llm still returned a valid-JSON stub on
+# failure, an unavailable model degraded into complete-looking output with every
 # extracted field empty — observed 2026-08-12, where 8 of 20 days produced
-# concept_type "Unknown" and orphaned every AM.I.B ACS code.
+# concept_type "Unknown" and orphaned every AM.I.B ACS code. call_llm now raises
+# LLMCallFailed instead, so that specific silence is closed; the ID being wrong for
+# an environment is still an environment fact this file cannot settle.
 #
 #   DIS_MODEL_DIGEST_EXTRACTION / DIS_MODEL_DIGEST_EXTRACTION_<CLIENT>
 #   DIS_MODEL_CLASSIFICATION, DIS_MODEL_METADATA_EXTRACTION,
@@ -557,8 +559,10 @@ class GlobalSettings(BaseSettings):
         Prefers the Bedrock-only credentials when configured, else the shared AWS_*
         pair. Credentials are passed explicitly rather than left to boto3's ambient
         chain: this deployment has no instance role, and an implicit fallback there
-        raised NoCredentialsError inside call_llm, which swallowed it and returned a
-        valid-JSON stub — a whole block of empty digests reported as success.
+        raised NoCredentialsError inside call_llm, which at the time swallowed it and
+        returned a valid-JSON stub — a whole block of empty digests reported as
+        success. call_llm raises LLMCallFailed now, but passing credentials explicitly
+        is still what keeps that error from happening at all.
         """
         key = (self.bedrock_access_key_id or "").strip() or self.aws_access_key_id
         secret = ((self.bedrock_secret_access_key or "").strip()

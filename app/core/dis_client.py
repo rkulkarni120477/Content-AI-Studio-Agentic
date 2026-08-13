@@ -160,6 +160,20 @@ class DISClient:
                                  current_user=current_user, client_id=client_id,
                                  timeout=max(self.timeout, 1200.0))
 
+    def get_digest_progress_sync(self, block: str, current_user: Any = None,
+                                 client_id: str = "") -> Dict[str, Any]:
+        """Live per-day progress of an in-flight digest build for *block*.
+
+        Backs the UI's "day 7 of 20" while build_digests_sync holds its own request
+        open. Given a short timeout of its own: this is called on a 2-second UI poll,
+        so it must fail fast rather than inherit the client-wide 300s default and hang
+        a progress request behind a slow DIS.
+        """
+        return self.request_sync("GET", "/context/digests/progress",
+                                 params={"block": block},
+                                 current_user=current_user, client_id=client_id,
+                                 timeout=10.0)
+
     def get_digests_bundle_sync(self, block: str, current_user: Any = None,
                                 client_id: str = "") -> Dict[str, Any]:
         """Fetch the REDUCE bundle for a block: {enumerate, digests}. Read-only —

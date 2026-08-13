@@ -128,3 +128,67 @@ describe('resumeThunk', () => {
     expect(store.getState().blockJob).toBeNull();
   });
 });
+
+describe('resumeThunk duplicate-chain guard', () => {
+  it('does not start a second poll chain for a job already being polled', async () => {
+    // Chains are setTimeout→dispatch loops on the store and are never cancelled, so
+    // they outlive unmount. Navigating away and back would otherwise add one poller
+    // per visit, and on completion each would fire its own toast and list refetch.
+    const getActiveJob = vi.fn(async () => ({ job: RUNNING_JOB }));
+    const thunks = createBlockJobThunks({
+      prefix: 'g', deliverable: 'cdd',
+      enqueue: async () => ({ job_id: 'j', status: 'queued' }),
+      getJobStatus: async (jobId) => ({ status: 'running', job_id: jobId, progress: 20 }),
+      getActiveJob,
+      selectBlockJob: (state) => state.blockJob,
+      completedMessage: 'done', failedMessage: 'failed',
+    });
+    const slice = createSlice({
+      name: 'g',
+      initialState: { isGenerating: false, error: null, ...initialBlockJobState },
+      reducers: {},
+      extraReducers: (b) => attachBlockJobReducers(b, thunks),
+    });
+    const store = configureStore({ reducer: slice.reducer });
+
+    await store.dispatch(thunks.resumeThunk({ courseId: 48 }));
+    expect(getActiveJob).toHaveBeenCalledTimes(1);
+
+    // A remount while the first chain is live must be a no-op.
+    await store.dispatch(thunks.resumeThunk({ courseId: 48 }));
+    expect(getActiveJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('still adopts after the banner is reset', async () => {
+    // resetBlockJob nulls blockJob (it fires when projectId resolves), so the guard
+    // must not permanently block a legitimate re-adoption.
+    const getActiveJob = vi.fn(async () => ({ job: RUNNING_JOB }));
+    const thunks = createBlockJobThunks({
+      prefix: 'h', deliverable: 'cdd',
+      enqueue: async () => ({ job_id: 'j', status: 'queued' }),
+      getJobStatus: async (jobId) => ({ status: 'running', job_id: jobId, progress: 20 }),
+      getActiveJob,
+      selectBlockJob: (state) => state.blockJob,
+      completedMessage: 'done', failedMessage: 'failed',
+    });
+    const slice = createSlice({
+      name: 'h',
+      initialState: { isGenerating: false, error: null, ...initialBlockJobState },
+      reducers: { resetBlockJob(s) { s.blockJob = null; } },
+      extraReducers: (b) => attachBlockJobReducers(b, thunks),
+    });
+    const store = configureStore({ reducer: slice.reducer });
+
+    await store.dispatch(thunks.resumeThunk({ courseId: 48 }));
+    store.dispatch(slice.actions.resetBlockJob());
+    await store.dispatch(thunks.resumeThunk({ courseId: 48 }));
+    expect(getActiveJob).toHaveBeenCalledTimes(2);
+    expect(store.getState().blockJob.jobId).toBe('resumed-1');
+  });
+
+  it('reports which block the adopted build is for', async () => {
+    const { thunks, store } = makeStore({ active: { ...RUNNING_JOB, block: 'Block 2' } });
+    await store.dispatch(thunks.resumeThunk({ courseId: 48 }));
+    expect(store.getState().blockJob.block).toBe('Block 2');
+  });
+});

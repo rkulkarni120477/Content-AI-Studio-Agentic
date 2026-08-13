@@ -79,6 +79,10 @@ export const {
     enqueue: (payload) => cddService.generateCddBlock(payload),
     getJobStatus: (jobId) => cddService.getJobStatus(jobId),
     getActiveJob: (courseId) => cddService.getActiveBlockJob(courseId),
+    getProgress: (jobId) => cddService.getBlockJobProgress(jobId),
+    // Lets resumeThunk refuse to start a duplicate poll chain for a job it is
+    // already polling (one per remount would mean one success toast per remount).
+    selectBlockJob: (state) => state.cdd?.blockJob,
     completedMessage: 'CDD generated and set as active.',
     failedMessage: 'CDD generation failed.',
     onComplete: (dispatch, courseId) => {

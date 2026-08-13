@@ -56,6 +56,13 @@ class StructureExtractionAgent(BasePipelineAgent):
                     state['structured_sections'] = safe_json(resp).get('sections', [])
                 except LLMCallFailed as exc:
                     state.setdefault('errors', []).append(f'structure_extraction: {exc}')
+                    # Count the attempt. The provider failed, so token counts are unknown —
+                    # recording zero keeps the CALL count honest without inventing numbers,
+                    # mirroring how a failed MAP call is counted on the digest side (a
+                    # read-timed-out generation is still billed). Skipping it entirely would
+                    # report the spend as never having happened.
+                    ctx.guard.record_usage(0, 'structure_extraction', tokens_in=0, tokens_out=0,
+                                           model=ctx.models.structure_extraction)
                     state['structured_sections'] = []
                 except TokenLimitError as exc:
                     state.setdefault('errors', []).append(str(exc))

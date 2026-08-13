@@ -20,6 +20,15 @@ from services.digests import mapper
 from services.pipeline import common
 
 
+@pytest.fixture(autouse=True)
+def _no_cached_client():
+    """These tests swap the boto3 module, so a client cached by an earlier test would
+    be reused and the swap silently ignored."""
+    common.reset_bedrock_clients()
+    yield
+    common.reset_bedrock_clients()
+
+
 def _bedrock_settings():
     return types.SimpleNamespace(
         environment="production", anthropic_api_key=None, aws_access_key_id="k",

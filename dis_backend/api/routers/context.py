@@ -382,6 +382,30 @@ async def build_block_digests(request: Request, body: DigestBuildRequest):
         raise HTTPException(400, str(exc))
 
 
+@router.get("/digests/progress")
+async def get_block_digest_progress(
+    request: Request,
+    block: str = Query(..., description="Block label, e.g. 'Block 2'."),
+    client_id: str = Query("", description="Super admin only. Inspect another client/workspace."),
+):
+    """Live per-day progress of an in-flight digest build: how many days are done.
+
+    A cold build holds /digests/build open for minutes and the job row it belongs to
+    only moves at stage boundaries, so without this the UI can show "Building day
+    digests..." and nothing else for the whole run — indistinguishable from a wedged
+    build. Reported BY the build (see services/digests/progress.py), never inferred
+    from the digest store: digests persist between attempts, so counting them would
+    report a retry as complete before it began.
+
+    Returns ``{"progress": null}`` when no build has been tracked for this block —
+    an ordinary answer, not an error, since the usual case is that nothing is running.
+    """
+    from services.digests import progress as digest_progress
+
+    _tenant, resolved_client_id, _role = _resolve_block_scope(request, client_id or None)
+    return {"progress": digest_progress.snapshot(resolved_client_id, block)}
+
+
 @router.get("/digests")
 async def get_block_digests(
     request: Request,

@@ -189,7 +189,13 @@ export default function CddPage() {
   // in flight, so the common case costs one cheap request and changes no state.
   useEffect(() => {
     if (courseId) dispatch(resumeCddJobThunk({ courseId: Number(courseId) }));
-  }, [dispatch, courseId]);
+    // projectId is in the deps because the resetBlockJob effect above lists it too:
+    // projectId arrives asynchronously and commonly flips undefined→number just after
+    // mount, which re-runs that effect and nulls blockJob while leaving isGenerating
+    // true — a disabled button with no status line. Re-running here re-adopts the job.
+    // The thunk bails out when a job is already being polled, so this cannot stack up
+    // duplicate poll chains.
+  }, [dispatch, courseId, projectId]);
 
   // Reference-document selector options. Same source as the Style tab: every
   // ingested Source Library document for this course's client (DIS `status` is a

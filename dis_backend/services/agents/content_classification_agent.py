@@ -64,6 +64,13 @@ class ContentClassificationAgent(BasePipelineAgent):
                 # left no trace at all and a whole ingestion run could be classified by
                 # fallback without anyone knowing.
                 state.setdefault('errors', []).append(f'content_classification: {exc}')
+                # Count the attempt. The provider failed, so token counts are unknown —
+                # recording zero keeps the CALL count honest without inventing numbers,
+                # mirroring how a failed MAP call is counted on the digest side (a
+                # read-timed-out generation is still billed). Skipping it entirely would
+                # report the spend as never having happened.
+                ctx.guard.record_usage(0, 'content_classification', tokens_in=0, tokens_out=0,
+                                       model=ctx.models.classification)
             except TokenLimitError as exc:
                 state.setdefault('errors', []).append(str(exc))
         return ctx.step_done(state, 'content_classification')

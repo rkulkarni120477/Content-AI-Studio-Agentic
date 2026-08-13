@@ -201,7 +201,13 @@ export default function BlueprintPage() {
   // switch clears the previous course's banner before this adopts the new one's job.
   useEffect(() => {
     if (courseId) dispatch(resumeBlueprintJobThunk({ courseId: Number(courseId) }));
-  }, [dispatch, courseId]);
+    // projectId is in the deps because the resetBlockJob effect above lists it too:
+    // projectId arrives asynchronously and commonly flips undefined→number just after
+    // mount, which re-runs that effect and nulls blockJob while leaving isGenerating
+    // true — a disabled button with no status line. Re-running here re-adopts the job.
+    // The thunk bails out when a job is already being polled, so this cannot stack up
+    // duplicate poll chains.
+  }, [dispatch, courseId, projectId]);
 
   useEffect(() => {
     if (activeBlueprint?.id) {

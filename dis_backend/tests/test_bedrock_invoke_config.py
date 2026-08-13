@@ -26,6 +26,9 @@ def test_the_read_timeout_is_far_above_botocores_default():
     bug — a number, not a code path."""
     cfg = common.bedrock_invoke_config()
     assert cfg.read_timeout >= 300, "a content-rich day generates for minutes"
+    # Bounded, not just large: ReadTimeoutError IS retried by adaptive mode, so the
+    # timeout multiplies by attempts against dis_client's 1200s ceiling on the build.
+    assert cfg.read_timeout * cfg.retries["max_attempts"] <= 1200
     assert cfg.connect_timeout and cfg.connect_timeout <= 60
 
 
@@ -49,7 +52,7 @@ def test_a_malformed_override_falls_back_and_never_becomes_zero(monkeypatch, jun
     than ignoring it."""
     monkeypatch.setenv("DIS_BEDROCK_READ_TIMEOUT", junk)
     cfg = common.bedrock_invoke_config()
-    assert cfg.read_timeout == 600
+    assert cfg.read_timeout == 300
 
 
 def test_the_failure_stub_is_recognisable():

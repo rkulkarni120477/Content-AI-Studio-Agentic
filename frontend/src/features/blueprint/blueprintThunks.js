@@ -72,6 +72,10 @@ export const {
     enqueue: (payload) => blueprintService.generateBlueprintBlock(payload),
     getJobStatus: (jobId) => blueprintService.getJobStatus(jobId),
     getActiveJob: (courseId) => blueprintService.getActiveBlockJob(courseId),
+    getProgress: (jobId) => blueprintService.getBlockJobProgress(jobId),
+    // Lets resumeThunk refuse to start a duplicate poll chain for a job it is
+    // already polling (one per remount would mean one success toast per remount).
+    selectBlockJob: (state) => state.blueprint?.blockJob,
     completedMessage: 'Block Blueprint generated and set as active.',
     failedMessage: 'Blueprint generation failed.',
     onComplete: (dispatch, courseId) => {

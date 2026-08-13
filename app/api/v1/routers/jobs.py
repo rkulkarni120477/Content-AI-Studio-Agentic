@@ -28,6 +28,46 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _utc_iso(value) -> Optional[str]:
+    """ISO-8601 with an explicit UTC marker, or None.
+
+    ``created_at``/``updated_at`` are written with ``datetime.utcnow()``, i.e. naive
+    but UTC. A bare ``.isoformat()`` therefore emits "2026-08-13T06:25:22" with no
+    offset, and JavaScript's ``new Date(...)`` parses an offset-less timestamp as
+    LOCAL time — so a browser in IST reads a build that started 5.5 hours in the
+    future, and any elapsed-time calculation comes out negative. Appending the marker
+    is the fix; guessing in the client would only move the bug.
+    """
+    if value is None:
+        return None
+    text = value.isoformat()
+    # Only stamp genuinely naive values: a tz-aware column would already carry an
+    # offset, and appending Z to that would produce an invalid timestamp.
+    if value.tzinfo is None and not text.endswith("Z"):
+        return text + "Z"
+    return text
+
+
+def _active_block(job) -> Optional[str]:
+    """The block a block-wide job is building, if it is one.
+
+    Returned so a reattached page can say WHICH block is running. ``/active`` matches
+    on user + course + job_type, and a course can hold several blocks — so a page
+    showing "Block 3" could otherwise adopt a running Block 2 build and, on
+    completion, report "Done — pinned as active" for a block the user was not looking
+    at. Naming it makes that visible instead of silently wrong.
+    """
+    raw = getattr(job, "request_json", None)
+    if not raw:
+        return None
+    try:
+        params = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    block = params.get("block") if isinstance(params, dict) else None
+    return str(block) if block else None
+
+
 def _result_warning(job) -> Optional[str]:
     """Read the ``warning`` a completed job recorded in result_json, if any.
 
@@ -99,9 +139,66 @@ def get_active_job(
         current_step=job.current_step,
         generation_id=job.result_entity_id,
         error_message=job.error_message,
-        created_at=job.created_at.isoformat() if job.created_at else None,
-        updated_at=job.updated_at.isoformat() if job.updated_at else None,
+        created_at=_utc_iso(job.created_at),
+        updated_at=_utc_iso(job.updated_at),
+        block=_active_block(job),
     ))
+
+
+@router.get(
+    "/{job_id}/progress",
+    summary="Per-day progress of a block-wide build",
+    description=(
+        "Day-level progress for a block-wide CDD/Blueprint job — how many of the "
+        "block's days are done. Returns `{\"progress\": null}` for any job that is "
+        "not a block-wide build, or when the build is not reporting."
+    ),
+)
+def get_block_job_progress(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> dict:
+    """Let the UI show "day 7 of 20" instead of a bar frozen at 20%.
+
+    The job row only moves at stage boundaries (20% "Building day digests..." → 90%
+    "Saving output..."), so a cold 20-day build shows one label for its entire
+    duration and cannot be told apart from a wedged one. The day counts live in the
+    DIS process actually doing the work, so this reads them from there.
+
+    Separate from the status poll rather than folded into it: that endpoint is hit by
+    every job type in the app and must stay a single fast DB read, not gain a
+    cross-service call. Failures here degrade to ``null`` — progress is a nicety, and
+    it must never be able to break the poll the UI depends on to detect completion.
+    """
+    import json as _json
+
+    from promptops_app.repositories import job_repository
+
+    job = job_repository.get_job(db, job_id)
+    if not job:
+        raise JobNotFoundError(job_id)
+    if job.job_type not in ("cdd_block", "blueprint_block"):
+        return {"progress": None}
+
+    try:
+        params = _json.loads(job.request_json or "{}")
+        block = params.get("block")
+        if not block:
+            return {"progress": None}
+        from app.core.dis_client import DISClient
+
+        reply = DISClient().get_digest_progress_sync(
+            block, current_user=current_user, client_id=params.get("dis_client_id") or "",
+        )
+        progress = reply.get("progress") if isinstance(reply, dict) else None
+        return {"progress": progress}
+    except Exception:
+        # Debug, not warning: DIS being momentarily unreachable during a 2-second poll
+        # is unremarkable, and logging it at warning would bury real problems under one
+        # line per poll per user.
+        _log.debug("block job %s: day progress unavailable", job_id, exc_info=True)
+        return {"progress": None}
 
 
 @router.get(
@@ -177,8 +274,8 @@ def get_job_status(
         error_message=job.error_message,
         warning=_result_warning(job),
         queue_position=queue_position,
-        created_at=job.created_at.isoformat() if job.created_at else None,
-        updated_at=job.updated_at.isoformat() if job.updated_at else None,
+        created_at=_utc_iso(job.created_at),
+        updated_at=_utc_iso(job.updated_at),
         usage_summary=usage_summary,
     )
 

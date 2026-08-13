@@ -122,3 +122,60 @@ def test_the_repository_filters_are_all_optional():
     sig = inspect.signature(job_repository.get_active_job_for_user)
     for name in ("project_id", "course_id", "job_types"):
         assert sig.parameters[name].default is None, name
+
+
+def test_a_zombie_row_is_not_adopted(monkeypatch):
+    """The regression this endpoint could otherwise introduce.
+
+    A process death leaves a row at `running` forever — the reaper runs only at
+    startup. Adopting one sets isGenerating on every mount, and BlockWidePanel renders
+    `disabled={isGenerating || !block.trim()}` with no cancel control, so the user
+    would be locked out of that course permanently. Before the reattach feature, a page
+    reload was the escape hatch; this bound is what replaces it.
+    """
+    import inspect
+
+    from promptops_app.jobs.reaper import DEFAULT_STALE_AFTER_MINUTES
+
+    src = inspect.getsource(job_repository.get_active_job_for_user)
+    assert "DEFAULT_STALE_AFTER_MINUTES" in src, (
+        "the adoption window must come from the reaper's own threshold so a row the "
+        "reaper calls stranded can never be adopted as live"
+    )
+    assert "updated_at" in src
+    assert DEFAULT_STALE_AFTER_MINUTES >= 30, (
+        "updated_at does not advance during a build, so the window must still cover a "
+        "real cold build"
+    )
+
+
+def test_the_staleness_window_is_overridable_but_defaults_to_the_reaper():
+    import inspect
+
+    sig = inspect.signature(job_repository.get_active_job_for_user)
+    assert sig.parameters["max_age_minutes"].default is None
+
+
+def test_the_block_is_reported_so_a_page_can_name_what_it_adopted(monkeypatch):
+    """/active matches on course + job_type, and a course holds several blocks — so a
+    page showing "Block 3" can adopt a running Block 2 build. Naming it makes that
+    visible instead of reporting Block 2's completion as Block 3's."""
+    import json as _json
+
+    job = _Job()
+    job.request_json = _json.dumps({"block": "Block 2", "deliverable": "cdd"})
+    resp, _ = _call(monkeypatch, job)
+    assert resp.job.block == "Block 2"
+
+
+def test_timestamps_carry_an_explicit_utc_marker(monkeypatch):
+    """created_at is naive UTC; without a marker JavaScript parses it as LOCAL time, so
+    an elapsed-time calculation in IST comes out ~5.5h negative and never displays."""
+    import datetime as _dt
+    from app.api.v1.routers import jobs as jobs_mod
+
+    naive = _dt.datetime(2026, 8, 13, 6, 25, 22)
+    assert jobs_mod._utc_iso(naive) == "2026-08-13T06:25:22Z"
+    assert jobs_mod._utc_iso(None) is None
+    aware = _dt.datetime(2026, 8, 13, 6, 25, 22, tzinfo=_dt.timezone.utc)
+    assert jobs_mod._utc_iso(aware).endswith("+00:00"), "must not double-stamp"

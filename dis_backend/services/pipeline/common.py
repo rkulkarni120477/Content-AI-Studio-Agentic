@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 from typing import Any, Dict, List, TypedDict
 
 from config.settings import TenantConfig, get_settings
@@ -161,21 +162,79 @@ def bedrock_invoke_config() -> Any:
     never inherited the fix.
 
     Retries are ``adaptive`` rather than the legacy default: a block build issues one
-    call per day, so throttling is a question of when rather than if, and adaptive
-    mode backs off across calls using observed throttle rates instead of retrying each
-    call in isolation. Note that botocore does NOT retry a read timeout that the
-    server is still working on, which is why the timeout itself has to be right.
+    call per day, so throttling is a question of when rather than if, and adaptive mode
+    backs off using observed throttle rates instead of retrying each call in isolation.
+
+    The attempt count is capped at 2, and that cap matters as much as the timeout.
+    ``ReadTimeoutError`` subclasses ``HTTPClientError``, which botocore's standard and
+    adaptive modes DO treat as transient and retry — so attempts multiply the timeout
+    rather than bounding it. At the 600s read timeout with 4 attempts, a single hung
+    day could hold for ~40 minutes against ``dis_client``'s 1200s ceiling on the whole
+    build, reproducing the very timeout this exists to prevent, ten times slower and
+    after paying for up to four full generations. 300s is already ~5x the slowest
+    per-day latency measured (roughly 20s/day locally, slower in prod), so two
+    attempts covers a transient blip while keeping the worst case for one day at 600s.
     """
     from botocore.config import Config as BotoConfig
 
     return BotoConfig(
-        read_timeout=_env_positive_int("DIS_BEDROCK_READ_TIMEOUT", 600),
+        read_timeout=_env_positive_int("DIS_BEDROCK_READ_TIMEOUT", 300),
         connect_timeout=_env_positive_int("DIS_BEDROCK_CONNECT_TIMEOUT", 30),
         retries={
-            "max_attempts": _env_positive_int("DIS_BEDROCK_MAX_ATTEMPTS", 4),
+            "max_attempts": _env_positive_int("DIS_BEDROCK_MAX_ATTEMPTS", 2),
             "mode": "adaptive",
         },
     )
+
+
+#: One Bedrock client per (credentials, region), created once and reused.
+#:
+#: Two reasons, both load-bearing now that AIM's MAP stage fans out five ways:
+#:
+#: * botocore registers the adaptive ``ClientRateLimiter`` PER CLIENT, so a client built
+#:   per call throws away the observed-throttle state that made ``adaptive`` worth
+#:   choosing — there would be no cross-call backoff at all, precisely when 5
+#:   concurrent calls make throttling likely.
+#: * ``boto3.client()`` on the default session is not thread-safe during construction,
+#:   and ``build_digests_via_graph`` builds days on concurrent worker threads. A raise
+#:   inside botocore's loader now becomes a failed day rather than a silent stub, so the
+#:   race would be visible as lost work.
+#:
+#: Clients themselves ARE thread-safe for calls, so one shared instance is correct.
+_bedrock_clients: "Dict[tuple, Any]" = {}
+_bedrock_client_lock = threading.Lock()
+
+
+def reset_bedrock_clients() -> None:
+    """Drop every cached Bedrock client.
+
+    Two callers. Tests that swap the ``boto3`` module need it, because a client cached
+    from a previous test would otherwise be reused and the swap silently ignored. And
+    it is the hook to call if credentials are ever rotated in-process: a cached client
+    keeps the credentials it was constructed with.
+    """
+    with _bedrock_client_lock:
+        _bedrock_clients.clear()
+
+
+def _bedrock_client(client_kwargs: Dict[str, Any]) -> Any:
+    """Return the shared Bedrock client for these credentials/region."""
+    import boto3
+
+    key = tuple(sorted((k, str(v)) for k, v in client_kwargs.items()))
+    client = _bedrock_clients.get(key)
+    if client is not None:
+        return client
+    with _bedrock_client_lock:
+        # Re-check inside the lock: several MAP threads reach this together on a cold
+        # build, and without it they would each construct a client — the race this
+        # exists to remove.
+        client = _bedrock_clients.get(key)
+        if client is None:
+            client = boto3.client("bedrock-runtime", config=bedrock_invoke_config(),
+                                  **client_kwargs)
+            _bedrock_clients[key] = client
+        return client
 
 
 def llm_is_mocked(settings: Any = None) -> bool:
@@ -237,8 +296,7 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
             # resulting NoCredentialsError was swallowed by the except below into a
             # valid-JSON stub, which produced a complete-looking Blueprint with every
             # extracted field at its default.
-            client = boto3.client("bedrock-runtime", config=bedrock_invoke_config(),
-                                  **settings.bedrock_client_kwargs())
+            client = _bedrock_client(settings.bedrock_client_kwargs())
             payload = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": max_tokens,

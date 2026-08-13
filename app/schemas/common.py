@@ -135,6 +135,15 @@ class JobStatusResponse(BaseModel):
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    block: Optional[str] = Field(
+        default=None,
+        description=(
+            "For a block-wide CDD/Blueprint job: the block it is building (e.g. "
+            "'Block 2'). Lets a reattached page name which block is in flight, since a "
+            "course can hold several and adopting the wrong one would report a "
+            "completion for a block the user was not looking at. None for other jobs."
+        ),
+    )
     usage_summary: Optional[UsageSummary] = Field(
         default=None,
         description="Cost/tokens for this job's LLM call + remaining budget headroom. Populated on completion.",

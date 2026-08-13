@@ -83,6 +83,8 @@ export const blueprintService = {
    * Lets a reloaded page reattach instead of orphaning a running build.
    */
   getActiveBlockJob: (courseId) => api.get(GENERATE.JOB_ACTIVE(courseId, 'blueprint_block')),
+  /** Day-level progress of an in-flight block build. */
+  getBlockJobProgress: (jobId) => api.get(GENERATE.JOB_PROGRESS(jobId)),
 
   getVersions: (id) => api.get(BLUEPRINT.VERSIONS(id)),
   getVersion: (id, v) => api.get(BLUEPRINT.GET_VERSION(id, v)),
