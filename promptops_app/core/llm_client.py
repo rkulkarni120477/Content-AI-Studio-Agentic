@@ -359,6 +359,33 @@ def _get_bedrock_client():
     return _bedrock_client
 
 
+def bedrock_text(response_body: dict) -> str:
+    """Join the text of every ``text`` block in an Anthropic Bedrock response.
+
+    Deliberately NOT ``content[0]["text"]``. Reasoning models emit a ``thinking``
+    block first, so index 0 carries no ``text`` key and the old read returned ""
+    — indistinguishable here from a genuinely empty completion, which then raised
+    "Bedrock returned an empty response body."
+
+    That is not theoretical. Sonnet 5 and Opus 5 emit a leading thinking block
+    only SOMETIMES for the same prompt, so the old read failed at random and read
+    as a flaky endpoint rather than a parse bug. Measured 2026-08-14: every REDUCE
+    call of the block-wide digest pipeline lost its primary model this way, burned
+    ~40s per discarded response, silently fell back to Sonnet 4.5, and still
+    recorded the primary in the audit row. The same misreading is what put
+    "sonnet-5 0/3, opus-5 0/3, sonnet-4-6 0/3" in dis_backend/config/clients/
+    aim.yaml — a live re-probe with this function returns 3/3 for all three.
+
+    Joins rather than taking the first text block: a response may interleave
+    several, and dropping the tail would silently truncate an answer.
+    """
+    return "".join(
+        block.get("text") or ""
+        for block in (response_body.get("content") or [])
+        if isinstance(block, dict) and block.get("type", "text") == "text"
+    )
+
+
 def _bedrock_body(system_prompt: str, user_prompt: str, max_tokens: Optional[int],
                   include_temperature: bool = True) -> str:
     body: dict = {
@@ -410,7 +437,8 @@ def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] =
     Note: the legacy empty-response case returned the bare string
     "ERROR: Empty response from Bedrock"; _call_bedrock_raw raises
     LLMProviderError for that case instead, so this now returns
-    "ERROR (Bedrock - <model>): Bedrock returned an empty response body."
+    "ERROR (Bedrock - <model>): Bedrock returned an empty response body.
+    (stop_reason=..., blocks=[...])" — the suffix names why it was empty.
     Both satisfy every real caller's .startswith("ERROR") check; only the
     exact wording differs for this one edge case.
     """
@@ -471,9 +499,20 @@ def _call_bedrock_raw(
             raise LLMProviderError(f"Bedrock invoke error: {exc}") from exc
 
         response_body = json.loads(response.get("body").read())
-        text = response_body.get("content", [{}])[0].get("text", "")
+        text = bedrock_text(response_body)
         if not text:
-            raise LLMProviderError("Bedrock returned an empty response body.")
+            # Say WHY it was empty. The bare old message sent a reader looking for a
+            # provider outage when the actual causes are diagnosable and different:
+            # stop_reason="max_tokens" with no text means the model spent the whole
+            # budget thinking (raise max_tokens), while block types tell a
+            # thinking-only or tool-use reply from a genuinely silent one.
+            stop = response_body.get("stop_reason")
+            kinds = [b.get("type", "text") for b in (response_body.get("content") or [])
+                     if isinstance(b, dict)]
+            detail = f" (stop_reason={stop}, blocks={kinds or 'none'})"
+            if stop == "max_tokens":
+                detail += " — the output cap was consumed before any text; raise max_tokens"
+            raise LLMProviderError(f"Bedrock returned an empty response body.{detail}")
 
         usage = response_body.get("usage", {})
         result = LLMResponse(
