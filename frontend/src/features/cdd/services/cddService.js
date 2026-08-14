@@ -1,5 +1,8 @@
 import { api } from '@services/apiClient';
 import { CDD, COURSES, GENERATE } from '@services/endpoints';
+// Poll requests carry their own short timeout instead of the app-wide 120s one —
+// see blockJob.POLL_REQUEST_TIMEOUT_MS for why that default was the wrong tool here.
+import { POLL_REQUEST_CONFIG } from '@features/shared/blockJob';
 
 /**
  * Payload for block-wide (digest-pipeline) async generation. Deliberately
@@ -78,7 +81,7 @@ export const cddService = {
    */
   generateCddBlock: (data) => api.post(CDD.GENERATE_BLOCK, mapBlockPayload(data)),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
-  getJobStatus:  (jobId)          => api.get(GENERATE.JOB_STATUS(jobId)),
+  getJobStatus:  (jobId)          => api.get(GENERATE.JOB_STATUS(jobId), POLL_REQUEST_CONFIG),
   /**
    * The caller's in-flight block-wide CDD job for this course, or null. Used on
    * mount to reattach a reloaded page to a build already running (a cold Block 2
@@ -86,7 +89,7 @@ export const cddService = {
    */
   getActiveBlockJob: (courseId)   => api.get(GENERATE.JOB_ACTIVE(courseId, 'cdd_block')),
   /** Day-level progress of an in-flight block build. */
-  getBlockJobProgress: (jobId) => api.get(GENERATE.JOB_PROGRESS(jobId)),
+  getBlockJobProgress: (jobId) => api.get(GENERATE.JOB_PROGRESS(jobId), POLL_REQUEST_CONFIG),
   getVersions:   (id)             => api.get(CDD.VERSIONS(id)),
   getVersion:    (id, v)          => api.get(CDD.GET_VERSION(id, v)),
   activateVersion: (id, version)  => api.post(CDD.ACTIVATE_VERSION(id, version)),

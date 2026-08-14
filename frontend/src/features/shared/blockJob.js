@@ -24,7 +24,32 @@ import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
  *    navigated away can't overwrite another course's view.
  */
 export const JOB_POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
-export const MAX_POLL_ERRORS = 4;
+
+/**
+ * Per-request timeout for the poll calls ONLY — deliberately not the app-wide
+ * `VITE_API_TIMEOUT_MS` (120s), which these used to inherit.
+ *
+ * A status poll is one indexed DB read. If it has not answered in 15s the answer
+ * is not coming, and the useful response is to try again on the next tick rather
+ * than block the chain. Inheriting the app default made each stalled poll occupy
+ * two full minutes, so the four-error allowance below — meant to ride out blips —
+ * could stretch to eight minutes of a frozen UI before it gave up.
+ */
+export const POLL_REQUEST_TIMEOUT_MS =
+  Number(import.meta.env.VITE_JOB_POLL_TIMEOUT_MS) || 15_000;
+
+/** Pass to `api.get` for poll requests. Exported so both features share one value. */
+export const POLL_REQUEST_CONFIG = { timeout: POLL_REQUEST_TIMEOUT_MS };
+
+/**
+ * Consecutive failed polls tolerated before the UI stops trying.
+ *
+ * Raised from 4. With the short timeout above this is ~2 minutes of grace at the
+ * 2s interval, where 4 was chosen against fast-failing errors and gave up while
+ * the server was still working. Giving up no longer claims the job failed — see
+ * `lostContact` — so erring long costs nothing but a spinner.
+ */
+export const MAX_POLL_ERRORS = 20;
 
 /**
  * Build the {generate, poll} thunk pair for one deliverable.
@@ -88,7 +113,20 @@ export function createBlockJobThunks(cfg) {
           );
           return { status: JOB_STATUSES.RUNNING, transientError: true };
         }
-        return rejectWithValue(extractErrorMessage(e));
+        // Out of retries — but this says NOTHING about the job, which is still
+        // running on the server. Only the browser's view of it has stopped.
+        //
+        // This distinction is the whole point of the change. Reported as a failure,
+        // it produced exactly the wrong conclusion on 2026-08-14: six block-wide
+        // builds completed server-side (CDDs 162-167, 113-204s each) while the user
+        // was told "generation failed" and retried four times, each retry paying for
+        // another full build. `lostContact` lets the UI say what is true — we stopped
+        // watching — and point at the reattach that already exists (resumeThunk runs
+        // on mount, so a reload picks the build back up).
+        return rejectWithValue({
+          lostContact: true,
+          message: extractErrorMessage(e),
+        });
       }
     },
   );
@@ -237,7 +275,20 @@ export function attachBlockJobReducers(builder, { generateThunk, pollThunk, resu
       if (isTerminalJobStatus(payload?.status)) s[busyFlag] = false;
     })
     .addCase(pollThunk.rejected, (s, { payload }) => {
-      s[busyFlag] = false; s.error = payload;
+      s[busyFlag] = false;
+      // Losing contact is not a failed job. Marking the blockJob FAILED here made
+      // the panel report a build that was still running — and that finished fine —
+      // as an error, which is what drove four needless retries on 2026-08-14.
+      // Leave the last known status intact and flag the disconnect separately, so
+      // the panel can tell the user the build continues and a reload reattaches.
+      if (payload?.lostContact) {
+        if (s.blockJob) s.blockJob = { ...s.blockJob, lostContact: true };
+        // Not surfaced as a page-level `error` either: that renders the full
+        // ErrorState over the list, which reads as "everything broke" when in fact
+        // only the poll stopped.
+        return;
+      }
+      s.error = payload;
       if (s.blockJob) s.blockJob = { ...s.blockJob, status: JOB_STATUSES.FAILED };
     });
 }
