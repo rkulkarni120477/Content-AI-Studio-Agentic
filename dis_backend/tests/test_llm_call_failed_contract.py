@@ -131,3 +131,72 @@ def test_every_ingestion_agent_handles_the_new_exception(agent_module, step):
     assert step in src
     # The recorded message must reach state['errors'], not just a log.
     assert "errors" in src
+
+
+# ---------------------------------------------------------------------------
+# Reasoning models put a `thinking` block first (2026-08-14)
+# ---------------------------------------------------------------------------
+
+def _install_bedrock_returning(monkeypatch, payload: str):
+    class _Body:
+        @staticmethod
+        def read():
+            return payload.encode()
+
+    class _Client:
+        def invoke_model(self, modelId=None, body=None):
+            return {"body": _Body()}
+
+    monkeypatch.setattr(common, "get_settings", _bedrock_settings)
+    monkeypatch.setitem(__import__("sys").modules, "boto3",
+                        types.SimpleNamespace(client=lambda *a, **k: _Client()))
+
+
+def test_a_leading_thinking_block_does_not_destroy_a_good_answer(monkeypatch):
+    """``result["content"][0]["text"]`` raised KeyError('text') on a reasoning
+    model's reply, and the broad except turned that into LLMCallFailed — so a
+    perfectly good extraction became a failed day.
+
+    DIS has not been bitten only because aim.yaml pins Sonnet 4.5. The moment any
+    client is pointed at Sonnet 5 or Opus 5 this fires, and INTERMITTENTLY: the
+    same model emits the thinking block only sometimes, so it would read as a
+    flaky provider rather than a parse bug. CAS lost every REDUCE call of a
+    block-wide build to the identical read on 2026-08-14.
+    """
+    _install_bedrock_returning(monkeypatch, (
+        '{"content": [{"type": "thinking", "thinking": "considering the source"},'
+        '{"type": "text", "text": "{\\"day\\": 1}"}],'
+        '"usage": {"input_tokens": 900, "output_tokens": 40}}'
+    ))
+    text, tin, tout = common.call_llm("global.anthropic.claude-sonnet-5", "extract")
+    assert text == '{"day": 1}'
+    # Real usage, not the 500/100 placeholders the old path fell back to.
+    assert (tin, tout) == (900, 40)
+
+
+def test_the_ordinary_single_text_block_is_unchanged(monkeypatch):
+    _install_bedrock_returning(monkeypatch, (
+        '{"content": [{"type": "text", "text": "plain answer"}],'
+        '"usage": {"input_tokens": 10, "output_tokens": 2}}'
+    ))
+    assert common.call_llm("global.anthropic.claude-sonnet-4-5", "hi")[0] == "plain answer"
+
+
+def test_several_text_blocks_are_joined_rather_than_truncated(monkeypatch):
+    """Taking only the FIRST text block would be a quieter version of the same bug."""
+    _install_bedrock_returning(monkeypatch, (
+        '{"content": [{"type": "thinking", "thinking": "..."},'
+        '{"type": "text", "text": "first half "},'
+        '{"type": "text", "text": "second half"}]}'
+    ))
+    assert common.call_llm("m", "hi")[0] == "first half second half"
+
+
+def test_a_reply_with_no_text_block_at_all_still_fails_loudly(monkeypatch):
+    """The fix must not convert a genuinely contentless reply into empty output that
+    downstream steps accept — that is exactly the stub behaviour this module exists
+    to prevent."""
+    _install_bedrock_returning(monkeypatch,
+                               '{"content": [{"type": "thinking", "thinking": "..."}]}')
+    with pytest.raises(common.LLMCallFailed):
+        common.call_llm("global.anthropic.claude-opus-5", "extract")

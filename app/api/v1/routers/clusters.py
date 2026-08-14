@@ -30,7 +30,8 @@ from app.schemas.cluster import (
     ClusterUpdateRequest,
 )
 from app.schemas.common import MessageResponse, PaginatedResponse
-from app.schemas.course import CourseListItem
+from app.core.dis_access import digest_pipeline_enabled_for_course
+from app.schemas.course import CourseListItem, build_course_list_item
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -261,15 +262,20 @@ def list_courses_in_cluster(
     """Return courses inside a cluster."""
     from promptops_app.repositories import course_repository
 
-    _get_cluster_or_404(db, cluster_id)
+    cluster = _get_cluster_or_404(db, cluster_id)
 
     courses = course_repository.list_courses_for_cluster(
         db, cluster_id, include_archived=include_archived
     )
+    # Once for the cluster, not per course: every course under a cluster belongs to
+    # the cluster's project, so the answer is the same for all of them.
+    digest_on = digest_pipeline_enabled_for_course(
+        db, project_id=getattr(cluster, "project_id", None))
     total = len(courses)
     start = (page - 1) * page_size
     return PaginatedResponse.create(
-        items=[CourseListItem.model_validate(c) for c in courses[start: start + page_size]],
+        items=[build_course_list_item(c, digest_pipeline_enabled=digest_on)
+               for c in courses[start: start + page_size]],
         total=total,
         page=page,
         page_size=page_size,

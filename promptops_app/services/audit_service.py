@@ -91,8 +91,10 @@ AUDIT_EVENTS: dict[str, dict] = {
     # `blueprint.created`, which still record the successful outcome.
     "cdd.block_requested":       {"level": "info",    "entity": "cdd",       "icon": "🧩", "label": "Block-wide CDD generation requested"},
     "cdd.block_failed":          {"level": "warning", "entity": "cdd",       "icon": "⚠️", "label": "Block-wide CDD generation failed"},
+    "cdd.block_refused":         {"level": "warning", "entity": "cdd",       "icon": "🚫", "label": "Block-wide CDD generation refused (client not enabled)"},
     "blueprint.block_requested": {"level": "info",    "entity": "blueprint", "icon": "🧩", "label": "Block-wide Blueprint generation requested"},
     "blueprint.block_failed":    {"level": "warning", "entity": "blueprint", "icon": "⚠️", "label": "Block-wide Blueprint generation failed"},
+    "blueprint.block_refused":   {"level": "warning", "entity": "blueprint", "icon": "🚫", "label": "Block-wide Blueprint generation refused (client not enabled)"},
 
     # ── Content Generation ────────────────────────────────────────────────────
     "generation.launched":     {"level": "info",    "entity": "generation", "icon": "🚀", "label": "Generation launched"},

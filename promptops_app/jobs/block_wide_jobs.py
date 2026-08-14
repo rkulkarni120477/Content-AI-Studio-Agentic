@@ -54,6 +54,11 @@ def _reconstruct_request(params: dict) -> types.SimpleNamespace:
         model_choice=params.get("model_choice", ""),
         cdd_id=params.get("cdd_id"),
         prompt_id=params.get("prompt_id"),
+        # Every field the user can steer generation with has to survive the trip
+        # through the job row, since the worker rebuilds the request from JSON and
+        # anything omitted here is indistinguishable from "not supplied". style_id
+        # was the field this rebuild was missing (see user_directives).
+        style_id=params.get("style_id"),
     )
 
 
@@ -118,8 +123,48 @@ def _coverage_warning(coverage: Dict[str, Any]) -> Optional[str]:
     return summary
 
 
+def _directives_hint(prompt_provenance: Optional[Dict[str, Any]],
+                     coverage: Optional[Dict[str, Any]] = None) -> str:
+    """One sentence naming the requester's own inputs as a candidate cause, or "".
+
+    Since 2026-08-13 the style and additional instructions from the generation form are
+    appended to MAP's extraction contract, which means a user's own wording can now
+    break extraction on every day of a block — a genuinely new failure mode, and the one
+    with the cheapest fix. Reporting "20 of 20 days could not be extracted" without
+    mentioning it sends someone to Bedrock credentials and the block id first, which is
+    precisely the wild goose chase the failure_reasons plumbing was added to stop.
+
+    Gated on EXTRACTION having gone wrong — failed or thin days — and not merely on
+    there being a coverage warning, because _coverage_warning also fires for uncovered
+    ACS codes alone. Those come from the source material not declaring what the block
+    claims; blaming a user's phrasing for them would be a wrong turn dressed up as
+    help. The gate lives here rather than at the call sites so the two cannot disagree.
+
+    Deliberately phrased as a candidate, not a diagnosis: these directives are usually
+    innocent, and claiming otherwise would be its own wrong turn.
+    """
+    cov = coverage or {}
+    if not (cov.get("failed_days") or cov.get("thin_days")):
+        return ""
+    applied = ((prompt_provenance or {}).get("user_directives") or {})
+    reached_map = [
+        name for name, present in (
+            ("additional instructions", applied.get("extra_instructions_applied")),
+            ("style", applied.get("style_applied_to_map")),
+        ) if present
+    ]
+    if not reached_map:
+        return ""
+    return (
+        f" Note: your {' and '.join(reached_map)} were applied to the per-day "
+        f"extraction for this run — if this repeats, generating once without them "
+        f"will show whether they are the cause."
+    )
+
+
 def _audit_failure(db, deliverable: str, req, user, job_id: str, reason: str,
-                   *, map_guidance_applied: bool | None = None) -> None:
+                   *, map_guidance_applied: bool | None = None,
+                   user_directives: Optional[Dict[str, Any]] = None) -> None:
     """Record a ``*.block_failed`` audit event.
 
     Closes the async gap: the request is audited at enqueue and success is audited by
@@ -142,6 +187,12 @@ def _audit_failure(db, deliverable: str, req, user, job_id: str, reason: str,
     }
     if map_guidance_applied is not None:
         metadata["map_guidance_applied"] = map_guidance_applied
+    if user_directives:
+        # Only on the branches that HAVE them (a run that reached extraction). The
+        # ``gen is None`` branches — DIS unreachable, zero enumerated days — fail
+        # before any directive could matter, and recording them there would invite
+        # blaming a user's instructions for an outage.
+        metadata["user_directives"] = user_directives
     try:
         log_audit_event(
             db, getattr(user, "username", "") or "cas-user", action,
@@ -212,11 +263,14 @@ def run_block_wide_job(job_id: str) -> None:
         # finished work (2026-08-12: 8/20 days empty, all AM.I.B codes orphaned,
         # job reported success; the spreadsheet was the only place it showed).
         coverage = gen.get("coverage") or {}
+        applied_directives = (gen.get("prompt_provenance") or {}).get("user_directives") or {}
+        hint = _directives_hint(gen.get("prompt_provenance"), coverage)
         if _all_days_failed(coverage):
-            reason = _coverage_warning(coverage) or "Every day failed extraction."
+            reason = (_coverage_warning(coverage) or "Every day failed extraction.") + hint
             set_failed(db, job, f"Generation produced no usable content. {reason}")
             _audit_failure(db, deliverable, req, user, job_id, reason,
-                           map_guidance_applied=bool((map_guidance or "").strip()))
+                           map_guidance_applied=bool((map_guidance or "").strip()),
+                           user_directives=applied_directives)
             _log.error("Block-wide job %s: every day failed extraction — refusing to "
                        "persist an empty deliverable. %s", job_id, reason)
             return
@@ -233,6 +287,8 @@ def run_block_wide_job(job_id: str) -> None:
         # partially-extracted block is real work worth keeping, but "✅ Done" alone
         # misrepresents it.
         warning = _coverage_warning(coverage)
+        if warning:
+            warning += hint
         job.result_json = json.dumps({
             "deliverable": deliverable,
             "entity_id": entity_id,

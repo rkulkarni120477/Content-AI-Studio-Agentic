@@ -222,3 +222,159 @@ def test_injected_llm_seam_still_bypasses_usage_logging():
     gen = BlockWideGenerator(llm=lambda m, s, u: seen.append((m, s, u)) or "{}")
     assert gen._call("m", "sys", "usr") == "{}"
     assert seen == [("m", "sys", "usr")]
+
+
+# ---------------------------------------------------------------------------
+# Which model actually wrote it (2026-08-14)
+# ---------------------------------------------------------------------------
+
+def test_the_model_that_actually_answered_is_recorded_not_the_one_requested():
+    """A CDD built 2026-08-14 recorded reduce_model="Claude Sonnet 5 (Bedrock)"
+    while Sonnet 4.5 wrote every word: the primary failed on a parse bug, the
+    reliability layer fell back, and only the tier's REQUEST reached the record.
+
+    Two runs of the same tier written by different models are then
+    indistinguishable in the audit trail — which is exactly the question a
+    "why does this block read differently?" review starts from.
+    """
+    from promptops_app.services.block_wide_generator import BlockWideGenerator
+    import promptops_app.services.llm_service as llm_service
+
+    gen = BlockWideGenerator()
+    gen._max_tokens = 4096
+
+    calls = []
+
+    def fake(model_choice, system, user, max_tokens=None, usage_ctx=None):
+        calls.append(model_choice)
+        # The fallback answered, not the model asked for.
+        return types.SimpleNamespace(status="success", text="{}",
+                                     model="global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+
+    orig = llm_service.generate_with_metadata
+    llm_service.generate_with_metadata = fake
+    try:
+        gen._call("Claude Sonnet 5 (Bedrock)", "sys", "usr")
+        gen._call("Claude Sonnet 5 (Bedrock)", "sys", "usr")
+    finally:
+        llm_service.generate_with_metadata = orig
+
+    assert calls == ["Claude Sonnet 5 (Bedrock)"] * 2, "the tier's choice is still what we ask for"
+    assert gen.reduce_models_used == ["global.anthropic.claude-sonnet-4-5-20250929-v1:0"] * 2
+
+
+def test_the_actual_models_survive_into_the_audit_row_with_their_call_counts():
+    """Recording it on the generator is not enough — it has to reach the durable
+    record without an auditor joining another table.
+
+    Counts rather than a set: one section out of twelve coming from the fallback is
+    a blip, twelve out of twelve is a dead primary, and both are urgent in different
+    ways. A set answers "which models" and silently loses "how much".
+    """
+    from promptops_app.services.block_wide_service import _provenance
+
+    result = types.SimpleNamespace(
+        reduce_model="Claude Sonnet 5 (Bedrock)", tier="standard", prompt_provenance={},
+        reduce_models_used=["m-4-5", "m-4-5", "m-5"],
+    )
+    prov = _provenance("cdd", result, {}, map_guidance="")
+    assert prov["reduce_model"] == "Claude Sonnet 5 (Bedrock)"
+    assert prov["reduce_models_used"] == {"m-4-5": 2, "m-5": 1}
+
+    md = _audit_provenance(prov, None)
+    assert md["reduce_models_used"] == {"m-4-5": 2, "m-5": 1}
+
+
+def test_a_run_with_no_fallback_reports_the_requested_model_as_the_used_one():
+    """The healthy case must not read as suspicious: when nothing fell back, the
+    requested and used models agree, and that agreement is visible."""
+    from promptops_app.services.block_wide_service import _provenance
+
+    result = types.SimpleNamespace(reduce_model="Claude Sonnet 5 (Bedrock)", tier="standard",
+                                   prompt_provenance={}, reduce_models_used=["sonnet-5"] * 3)
+    assert _provenance("cdd", result, {}, map_guidance="")["reduce_models_used"] == {"sonnet-5": 3}
+
+
+def test_model_counts_read_in_the_order_the_run_actually_went():
+    """The primary answered twice, then died and the fallback took over. Sorting
+    would put the fallback first and invert the story the row tells."""
+    from promptops_app.services.block_wide_service import _model_call_counts
+    assert list(_model_call_counts(["sonnet-5", "sonnet-5", "aaa-fallback"])) == [
+        "sonnet-5", "aaa-fallback"]
+
+
+def test_no_models_recorded_is_an_empty_mapping_not_a_missing_key():
+    """The legacy path and the injected-llm seam have no model to report; the key
+    must still exist so a consumer never has to distinguish absent from empty."""
+    from promptops_app.services.block_wide_service import _model_call_counts
+    assert _model_call_counts(None) == {} and _model_call_counts([]) == {}
+
+
+def test_the_injected_llm_seam_records_no_model_rather_than_a_wrong_one():
+    """Tests inject a bare text fn with no model to report. Inventing one (e.g.
+    echoing model_choice) would make the seam claim a call that never happened."""
+    from promptops_app.services.block_wide_generator import BlockWideGenerator
+    gen = BlockWideGenerator(llm=lambda m, s, u: "{}")
+    gen._call("Claude Sonnet 5 (Bedrock)", "sys", "usr")
+    assert gen.reduce_models_used == []
+
+
+def test_the_legacy_path_gains_no_model_key():
+    """_audit_provenance({}) must stay empty — the legacy path has no reduce stage."""
+    assert "reduce_models_used" not in _audit_provenance({}, _COVERAGE)
+
+
+def test_a_digest_run_always_carries_the_key_even_with_nothing_to_report():
+    """A digest-path row must never omit it: a consumer asking "did this fall back?"
+    should read {} (nothing recorded), not KeyError."""
+    out = _audit_provenance({"prompt_source": "digest_pipeline"}, None)
+    assert out["reduce_models_used"] == {}
+
+
+def test_prompt_guidance_distillation_is_attributed_to_the_requesting_course():
+    """Its call landed in llm_usage_logs as entity_type="unattributed" with NULL
+    project and course, so a block-wide generation's cost report excluded its own
+    first LLM call (measured 2026-08-14: $0.0106 outside the block's total)."""
+    from promptops_app.services.prompt_guidance import _usage_ctx
+    from promptops_app.services.usage_service import UsageLogContext
+
+    req = types.SimpleNamespace(project_id=23, course_id=48, block="Block 2")
+    ctx = _usage_ctx(req, "cdd", types.SimpleNamespace(username="platformadmin"))
+
+    assert isinstance(ctx, UsageLogContext)
+    assert (ctx.project_id, ctx.course_id) == (23, 48)
+    assert ctx.entity_type == "cdd" and ctx.entity_id == "Block 2"
+    assert ctx.user_name == "platformadmin"
+    # Distinguishable from the REDUCE rows of the same block, which carry the
+    # reduce template name — otherwise the two stages are one undifferentiated bill.
+    assert ctx.prompt_template == "prompt_guidance_distill"
+
+
+def test_prompt_guidance_attribution_failure_never_breaks_a_generation():
+    from promptops_app.services.prompt_guidance import _usage_ctx
+
+    class Boom:
+        @property
+        def project_id(self):
+            raise RuntimeError("boom")
+    assert _usage_ctx(Boom(), "cdd", None) is None
+
+
+def test_the_distillation_call_actually_carries_the_context():
+    """_usage_ctx existing proves nothing if _digest_prompt drops it on the floor."""
+    import promptops_app.services.prompt_guidance as pg
+    seen = {}
+
+    def fake_generate_text(model, system, user, usage_ctx=None):
+        seen["ctx"] = usage_ctx
+        return "1. do the thing"
+
+    import promptops_app.services.llm_service as llm_service
+    orig = llm_service.generate_text
+    llm_service.generate_text = fake_generate_text
+    try:
+        pg._digest_prompt("some prompt text", "GPT-5.4", usage_ctx="SENTINEL")
+    finally:
+        llm_service.generate_text = orig
+
+    assert seen["ctx"] == "SENTINEL"

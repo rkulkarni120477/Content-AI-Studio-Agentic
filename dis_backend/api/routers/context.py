@@ -343,10 +343,18 @@ class DigestBuildRequest(BaseModel):
                     "false = sequential. None ⇒ tenant/global config default (D4).",
     )
     map_guidance: str = Field(
-        "", description="Optional judgment/emphasis guidance distilled from the course's "
-                        "selected CDD/Blueprint prompt (see the CAS-side prompt_guidance "
-                        "service) — appended to every day's MAP extraction call and folded "
-                        "into the cache key. Empty string reproduces today's behavior exactly.",
+        "", description="Optional generation guidance appended to every day's MAP "
+                        "extraction call and folded into the digest cache key. CAS "
+                        "composes two layers into this one field: judgment/emphasis "
+                        "distilled from the course's selected CDD/Blueprint prompt "
+                        "(prompt_guidance) and the requester's own directives for this "
+                        "run — style and additional instructions (user_directives). "
+                        "Composed caller-side rather than split into two fields on "
+                        "purpose: this field is already part of the cache key, so an "
+                        "older DIS still invalidates the right digests, whereas a new "
+                        "field it did not know would be ignored AND leave stale digests "
+                        "looking valid. Empty string reproduces the original behavior "
+                        "exactly.",
     )
     wait: bool = Field(
         True,

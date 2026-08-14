@@ -216,6 +216,28 @@ def resolve_course_dis_client(db: Any, *, course_id: Any = None, project_id: Any
     return ""
 
 
+def digest_pipeline_enabled_for_course(db: Any, *, course_id: Any = None,
+                                       project_id: Any = None) -> bool:
+    """Can the block-wide digest pipeline run against THIS course?
+
+    The one question the generate-block endpoints actually gate on, so the UI can
+    ask it too instead of guessing. Deliberately keyed on the COURSE's client and
+    not the caller's: the pipeline enumerates the course's own DIS Source Library,
+    so a user whose personal client is allowlisted still has nothing to read from
+    on a course belonging to a client that is not.
+
+    That divergence was a live bug. The generation panel was gated on
+    ``UserProfileResponse.digest_pipeline_enabled`` — the CALLER's client — while
+    ``POST /cdd/generate-block`` gated on this. Measured 2026-08-13, 71 of 106
+    courses would have shown the panel and then failed with a 400, before the job
+    row and before the audit write, leaving the failure with no trace anywhere.
+    """
+    from app.core.config import settings
+    return settings.digest_pipeline_on_for(
+        resolve_course_dis_client(db, course_id=course_id, project_id=project_id)
+    )
+
+
 def _membership_clients(current_user: Any) -> list[tuple[str, str]]:
     """Return [(client_id, membership_role)] from the user's active project
     memberships, newest membership first.

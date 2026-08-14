@@ -291,6 +291,23 @@ class AppSettings(BaseSettings):
     prompt_guidance_cache_size: int = Field(
         default=64, alias="PROMPT_GUIDANCE_CACHE_SIZE", ge=0)
 
+    # ── User directives (the generation form's own inputs → MAP/REDUCE) ───────
+    # How much of the selected style reaches each stage. Two caps, not one,
+    # because the two stages have very different economics: REDUCE is a handful
+    # of calls, MAP is one call PER DAY (20 on AIM's Block 2), so a character
+    # sent to MAP costs ~20x what the same character costs at REDUCE — and it
+    # also eats the MAP context headroom that mapper.py's source budget reserves
+    # for "the prompt scaffold, rubric and guidance".
+    #
+    # Bounding this is not optional: build_style_context (database.py) embeds
+    # whole style reference DOCUMENTS when a style has no generated_summary, so
+    # an uncapped style could be tens of thousands of characters and would fail
+    # every day of a build with a hard "Input is too long" from Bedrock.
+    block_wide_style_chars_reduce: int = Field(
+        default=12000, alias="BLOCK_WIDE_STYLE_CHARS_REDUCE", gt=0)
+    block_wide_style_chars_map: int = Field(
+        default=2000, alias="BLOCK_WIDE_STYLE_CHARS_MAP", gt=0)
+
     # ── Validators ────────────────────────────────────────────────────────────
 
     @field_validator("log_level", mode="before")

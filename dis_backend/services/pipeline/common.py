@@ -319,7 +319,20 @@ def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, 
                 payload.pop("temperature", None)
                 resp = client.invoke_model(modelId=model, body=_json.dumps(payload))
             result = _json.loads(resp["body"].read())
-            text = result["content"][0]["text"]
+            # Every text block, not content[0] — reasoning models (Sonnet 5, Opus 5)
+            # put a `thinking` block first, so indexing 0 raises KeyError('text') and
+            # the except below turns a perfectly good completion into LLMCallFailed.
+            # DIS has not been bitten only because aim.yaml pins Sonnet 4.5; pointing
+            # any client at a reasoning model would fail whole blocks at random. CAS
+            # has the identical helper in promptops_app/core/llm_client.bedrock_text —
+            # duplicated because the two deployables share no import path.
+            text = "".join(
+                b.get("text") or ""
+                for b in (result.get("content") or [])
+                if isinstance(b, dict) and b.get("type", "text") == "text"
+            )
+            if not text:
+                raise ValueError(f"{model} returned no text block")
             usage = result.get("usage", {})
             return text, usage.get("input_tokens", 500), usage.get("output_tokens", 100)
         import anthropic

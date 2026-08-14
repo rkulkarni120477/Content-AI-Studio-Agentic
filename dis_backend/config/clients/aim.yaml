@@ -47,25 +47,33 @@ processing:
 pipeline:
   models:
     embedding: amazon.titan-embed-text-v2:0
-    # Sonnet 4.5 on the `global.` inference profile. It is NOT the newest Sonnet — it
-    # is the only Anthropic text model this account can RELIABLY invoke, measured by
-    # 3 consecutive InvokeModel calls per ID per region:
+    # Sonnet 4.5 on the `global.` inference profile.
     #
-    #   global.anthropic.claude-sonnet-4-5-20250929-v1:0  3/3 ap-south-1  3/3 us-east-1
-    #   global.anthropic.claude-sonnet-5                  0/3 both
-    #   global.anthropic.claude-opus-5                    0/3 both
-    #   global.anthropic.claude-sonnet-4-6                0/3 both
-    #   global.anthropic.claude-fable-5                   0/3 both
-    #   *.anthropic.claude-haiku-4-5-20251001-v1:0        0/3 both (AccessDenied)
-    #   global.anthropic.claude-opus-4-8                  0/3 both (AccessDenied)
+    # CORRECTED 2026-08-14. An earlier note here recorded sonnet-5, opus-5,
+    # sonnet-4-6, opus-4-8 and haiku-4-5 as "0/3 — cannot invoke" and concluded this
+    # account could reliably run only Sonnet 4.5. That was a PARSE BUG in the probe,
+    # not an access problem: it read the answer from `content[0]["text"]`, and a
+    # reasoning model puts a `thinking` block at index 0. The "single spurious
+    # success before failing every repeat" that the old note found so suspicious was
+    # the tell — the same model emits a thinking block only sometimes, so the probe
+    # passed exactly when it happened not to. Re-measured with correct parsing,
+    # 3 consecutive InvokeModel calls per ID from ap-south-1:
+    #
+    #   global.anthropic.claude-sonnet-4-5-20250929-v1:0  3/3
+    #   global.anthropic.claude-sonnet-5                  3/3
+    #   global.anthropic.claude-opus-5                    3/3  (thinking block on 2 of 3)
+    #   global.anthropic.claude-sonnet-4-6                3/3
+    #   global.anthropic.claude-opus-4-8                  3/3
+    #   global.anthropic.claude-haiku-4-5-20251001-v1:0   3/3
+    #   global.anthropic.claude-fable-5                   0/3  ValidationException (real)
     #   anthropic.claude-3-sonnet-20240229-v1:0           ap-south-1 OK, us-east-1 EOL
     #
-    # Sonnet 5, Opus 5 and Sonnet 4.6 are all LISTED by Bedrock in both regions and
-    # each returned a single spurious success before failing every repeat — so a
-    # one-shot probe is not evidence of availability. Always measure repeatedly, and
-    # from the environment that will run the work: model access is per-role.
-    # All of these become available the moment their Bedrock model-access grant lands;
-    # prefer Sonnet 5 (1M context) then Opus 5 once they measure clean.
+    # The pins below stay on Sonnet 4.5 pending a deliberate model change, not
+    # because the others are unavailable. Moving MAP to Haiku is now actually open
+    # (see digest_extraction) — it was ruled out on this bad measurement.
+    #
+    # Lesson worth keeping: measure repeatedly AND check what a failure actually was.
+    # "0/3" here never distinguished a refused call from a misread one.
     #
     # A ROLE THAT LACKS BEDROCK MODEL ACCESS FOR THIS ID WILL STILL FAIL. On
     # 2026-08-12 a deployed role could not invoke it and, because call_llm returns a
@@ -82,8 +90,11 @@ pipeline:
     quality_check: global.anthropic.claude-sonnet-4-5-20250929-v1:0
     vision: global.anthropic.claude-sonnet-4-5-20250929-v1:0
     # Per-day digest (MAP) for block-wide CDD/Blueprint. The design pins this to
-    # Haiku for a tier-shared cache (D2); Haiku is unavailable on this account in
-    # either region, so MAP runs on the shared text model.
+    # Haiku for a tier-shared cache (D2). Left on the shared text model because
+    # Haiku measured AccessDenied — a reading now known to be wrong (see above:
+    # haiku-4-5 is 3/3). Switching is a real option and a real cost saving, but it
+    # changes the digest cache key and rebuilds every day of every block, so it
+    # wants to be a deliberate change with a rebuild window, not a drive-by edit.
     digest_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
   # Digest MAP fan-out (plan D4). Sequential MAP is O(days) and Block 2 has 20, which
   # does not fit the product: a cold build measured ~6.5 min locally and EXCEEDED the
