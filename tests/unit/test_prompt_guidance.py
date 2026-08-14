@@ -111,7 +111,8 @@ def test_digest_prompt_returns_checklist_verbatim_on_success(monkeypatch):
 
 def test_resolve_prompt_guidance_end_to_end_with_override(monkeypatch):
     monkeypatch.setattr("promptops_app.services.llm_service.generate_text",
-                        lambda model_choice, system, user: "1. Name the AC number explicitly.")
+                        lambda model_choice, system, user, usage_ctx=None:
+                        "1. Name the AC number explicitly.")
     req = types.SimpleNamespace(
         system_prompt_override="You write CDDs.",
         user_prompt_override="Always cite the AC number.",
@@ -171,7 +172,7 @@ def test_long_prompt_is_windowed_not_truncated(monkeypatch):
     long_prompt = head + ("x" * 3000) + tail
     seen = []
 
-    def capture(model, system, user):
+    def capture(model, system, user, usage_ctx=None):
         seen.append(user)
         return "1. Something substantive."
 
@@ -221,7 +222,7 @@ def test_short_prompt_still_makes_exactly_one_call(monkeypatch):
     pg.reset_cache()
     calls = []
     monkeypatch.setattr("promptops_app.services.llm_service.generate_text",
-                        lambda m, s, u: calls.append(u) or "1. Item.")
+                        lambda m, s, u, usage_ctx=None: calls.append(u) or "1. Item.")
     pg._digest_prompt("a short prompt", "model")
     assert len(calls) == 1
     assert calls[0] == "GENERATION PROMPT TEMPLATE:\na short prompt"
@@ -233,7 +234,7 @@ def test_item_cap_is_configurable_and_reaches_the_system_prompt(monkeypatch):
     monkeypatch.setattr(settings, "prompt_guidance_max_items", 30)
     systems = []
     monkeypatch.setattr("promptops_app.services.llm_service.generate_text",
-                        lambda m, s, u: systems.append(s) or "1. Item.")
+                        lambda m, s, u, usage_ctx=None: systems.append(s) or "1. Item.")
     pg._digest_prompt("prompt", "model")
     assert "at most 30 items" in systems[0]
 
@@ -263,7 +264,7 @@ def test_edited_prompt_misses_the_memo(monkeypatch):
     monkeypatch.setattr("promptops_app.prompts.prompt_builder.build_prompt",
                         lambda *a, **k: ("sys", text["v"], "n", "v"))
     monkeypatch.setattr("promptops_app.services.llm_service.generate_text",
-                        lambda m, s, u: calls.append(u) or f"1. From {len(calls)}.")
+                        lambda m, s, u, usage_ctx=None: calls.append(u) or f"1. From {len(calls)}.")
     req = types.SimpleNamespace(course_id=1, project_id=1, prompt_id=None, model_choice="m")
     pg.resolve_prompt_guidance(db=None, request_body=req, deliverable="cdd", current_user=None)
     text["v"] = "a materially edited set of instructions"

@@ -638,6 +638,21 @@ def generate_cdd_block(
         db, course_id=request_body.course_id, project_id=request_body.project_id,
     )
     if not settings.digest_pipeline_on_for(dis_client_id):
+        # Audited before raising. This refusal happens BEFORE create_job and before
+        # the *.block_requested write below, so without this a rejected request left
+        # no job row and no audit row — the user saw an error the system had no
+        # record of. The UI now gates on the same question (courses carry
+        # digest_pipeline_enabled), so reaching here means a stale client, a direct
+        # API call, or the two checks drifting apart again; all three are worth
+        # seeing.
+        from promptops_app.services.audit_service import log_audit_event
+        log_audit_event(
+            db, current_user.username, "cdd.block_refused",
+            entity_type="cdd", entity_id=None,
+            project_id=request_body.project_id, course_id=request_body.course_id,
+            metadata={"block": request_body.block, "dis_client_id": dis_client_id,
+                      "reason": "digest_pipeline_disabled_for_client"},
+        )
         raise HTTPException(400, "Digest pipeline is not enabled for this course's client.")
 
     params = request_body.model_dump()
@@ -671,6 +686,14 @@ def generate_cdd_block(
             "prompt_id": request_body.prompt_id,
             "course_title": request_body.course_title,
             "extra_instructions": request_body.extra_instructions,
+            # The other two user-steerable inputs, recorded at enqueue for the same
+            # reason extra_instructions is: the audit row should show what the user
+            # asked for, not just that they asked. Whether each one actually reached
+            # a model is recorded separately on the version row's provenance
+            # (user_directives), because the two can differ — a style id can point at
+            # a deleted style.
+            "style_id": request_body.style_id,
+            "estimated_duration_hours": request_body.estimated_duration_hours,
         },
     )
     # dispatch, not job_runner: routes to Celery when enabled so a web-container

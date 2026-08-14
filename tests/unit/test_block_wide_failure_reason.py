@@ -32,7 +32,7 @@ class _User:
 
 
 def _build(monkeypatch, *, build=None, bundle=None):
-    """Run _build_and_reduce with DIS stubbed; return (result, report)."""
+    """Run _build_and_reduce with DIS stubbed; return (result, report, directives)."""
     class _Stub:
         def build_digests_sync(self, block, **kw):
             if callable(build):
@@ -57,7 +57,7 @@ def test_a_dis_outage_names_the_exception_rather_than_the_generic_sentence(monke
     def boom():
         raise ConnectionError("connection to server at 'dis-dev-postgres' failed")
 
-    assert _build(monkeypatch, build=boom) == (None, None)
+    assert _build(monkeypatch, build=boom)[:2] == (None, None)
     reason = svc.last_failure_reason()
     assert "ConnectionError" in reason
     assert "dis-dev-postgres" in reason
@@ -78,7 +78,7 @@ def test_an_exception_with_an_empty_message_still_reports_something_useful(monke
 def test_zero_enumerated_days_reads_as_a_content_problem_not_an_outage(monkeypatch):
     """DIS answered — so pointing an operator at infrastructure would waste the
     call. This is a wrong block id / nothing-ingested problem."""
-    assert _build(monkeypatch, bundle={"enumerate": {"days": []}}) == (None, None)
+    assert _build(monkeypatch, bundle={"enumerate": {"days": []}})[:2] == (None, None)
     reason = svc.last_failure_reason()
     assert "no days" in reason.lower()
     assert "aim" in reason, "the DIS client is what scopes the lookup"
@@ -109,7 +109,7 @@ def test_a_reduce_failure_is_distinguished_from_a_build_failure(monkeypatch):
     import promptops_app.services.block_wide_generator as bwg
     monkeypatch.setattr(bwg, "BlockWideGenerator", _Gen)
 
-    assert _build(monkeypatch, bundle={"enumerate": {"days": [1]}}) == (None, None)
+    assert _build(monkeypatch, bundle={"enumerate": {"days": [1]}})[:2] == (None, None)
     reason = svc.last_failure_reason()
     assert "REDUCE" in reason and "ValueError" in reason
     assert "after digests were built" in reason
@@ -133,7 +133,7 @@ def test_a_stale_reason_is_not_reported_by_a_later_attempt(monkeypatch):
     import promptops_app.services.block_wide_generator as bwg
     monkeypatch.setattr(bwg, "BlockWideGenerator", _Gen)
 
-    result, _ = _build(monkeypatch, bundle=ok_bundle)
+    result, _, _ = _build(monkeypatch, bundle=ok_bundle)
     assert result == {"ok": True}
     assert svc.last_failure_reason() == "", "a success must clear the reason"
 

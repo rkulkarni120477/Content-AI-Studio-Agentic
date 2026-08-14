@@ -296,10 +296,24 @@ def _acs_codes(unit: Dict[str, Any]) -> List[str]:
 
 
 def _guidance_block(map_guidance: str) -> str:
-    """Render the optional prompt-derived guidance as a clearly-delimited,
-    contract-safe addendum — "" (no extra lines) when there is none, so a day
-    with no guidance produces byte-identical prompt text to before this
-    feature existed."""
+    """Render the optional guidance as a clearly-delimited, contract-safe addendum —
+    "" (no extra lines) when there is none, so a day with no guidance produces
+    byte-identical prompt text to before this feature existed.
+
+    CAREFUL — the heading below says "derived from the course's selected prompt
+    template", and since 2026-08-13 that is only half true: CAS composes TWO layers
+    into this one string (the distilled template, then the requester's own style and
+    instructions — see promptops_app/services/user_directives.py), each carrying its
+    own inner heading. The wrapper's CONSTRAINTS still apply correctly to both, which
+    is what matters for the extraction contract; only its attribution clause is loose.
+
+    It is left loose on purpose. Every character of this function's output is part of
+    the MAP prompt, and the prompt version is ``PROMPT_VERSION_BASE`` + the template
+    hash — which does NOT cover this module — so rewording the heading changes what
+    every client's digests were built from WITHOUT invalidating them. Fixing the
+    wording therefore means bumping PROMPT_VERSION_BASE, which rebuilds every day of
+    every block for every tenant. Worth doing alongside a schema bump; not worth doing
+    on its own for an attribution nicety."""
     text = (map_guidance or "").strip()
     if not text:
         return ""

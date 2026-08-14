@@ -204,11 +204,19 @@ def _windows(text: str, window: int, max_windows: int) -> tuple[list[str], int]:
     return out, min(len(text), last_start + window)
 
 
-def _digest_one(chunk: str, system: str, model_choice: str) -> str:
-    """One distillation LLM call. Returns "" on empty/failed/"NONE" output."""
+def _digest_one(chunk: str, system: str, model_choice: str, usage_ctx: Any = None) -> str:
+    """One distillation LLM call. Returns "" on empty/failed/"NONE" output.
+
+    ``usage_ctx`` attributes the call's cost to the requesting project/course/user.
+    Without it the call still logs, but under entity_type="unattributed" with NULL
+    project and course — so a block-wide generation's total spend silently excluded
+    its own first LLM call. Optional because ``_digest_prompt`` is also called
+    directly by tests with no request behind it.
+    """
     from promptops_app.services.llm_service import generate_text
 
-    result = generate_text(model_choice, system, f"GENERATION PROMPT TEMPLATE:\n{chunk}")
+    result = generate_text(model_choice, system, f"GENERATION PROMPT TEMPLATE:\n{chunk}",
+                           usage_ctx=usage_ctx)
     if not result or result.startswith("ERROR"):
         return ""
     result = result.strip()
@@ -243,7 +251,8 @@ def _digest_prompt(prompt_text: str, model_choice: str, *,
                    max_prompt_chars: int | None = None,
                    max_chars: int | None = None,
                    max_items: int | None = None,
-                   max_windows: int | None = None) -> str:
+                   max_windows: int | None = None,
+                   usage_ctx: Any = None) -> str:
     """Distill prompt_text's substantive instructions into a short checklist.
 
     Windows the input rather than truncating it, then merges and renumbers. Any
@@ -281,7 +290,7 @@ def _digest_prompt(prompt_text: str, model_choice: str, *,
 
     collected: list[str] = []
     for chunk in chunks:
-        piece = _digest_one(chunk, system, model_choice)
+        piece = _digest_one(chunk, system, model_choice, usage_ctx)
         if piece:
             collected.extend(piece.splitlines())
     if not collected:
@@ -294,6 +303,37 @@ def _digest_prompt(prompt_text: str, model_choice: str, *,
                     len(merged), max_chars)
         merged = merged[:max_chars]
     return merged
+
+
+def _usage_ctx(request_body: Any, deliverable: str, current_user: Any) -> Any:
+    """Cost attribution for the distillation call, mirroring the REDUCE stage's
+    context (BlockWideGenerator._build_usage_ctx) so both halves of a block-wide
+    generation group under the same project/course/entity in llm_usage_logs.
+
+    ``entity_id`` is the block label for the same reason it is there: no deliverable
+    row exists yet. Returns None on any failure — accounting must never be able to
+    break a generation, which is also why the caller runs inside a broad try.
+
+    Known and accepted: the distillation is memoized on prompt text, so only the
+    FIRST generation to use a given prompt pays, and later ones — possibly on another
+    course — get it free and log no row. That makes this an attribution of who paid,
+    not a per-run cost. At roughly a cent a call it is not worth defeating the memo
+    to even out; it is written down here so a cost review does not read the gaps as
+    missing data.
+    """
+    try:
+        from promptops_app.services.usage_service import UsageLogContext
+        return UsageLogContext(
+            user_name=getattr(current_user, "username", "") or "",
+            project_id=getattr(request_body, "project_id", None),
+            course_id=getattr(request_body, "course_id", None),
+            entity_type=deliverable,
+            entity_id=str(getattr(request_body, "block", "") or ""),
+            prompt_template="prompt_guidance_distill",
+        )
+    except Exception as exc:   # noqa: BLE001 — accounting, never load-bearing
+        log.debug("prompt-guidance usage context unavailable: %s", exc)
+        return None
 
 
 def resolve_prompt_guidance(db: Any, request_body: Any, deliverable: str, current_user: Any) -> str:
@@ -329,6 +369,7 @@ def resolve_prompt_guidance(db: Any, request_body: Any, deliverable: str, curren
             max_chars=max_chars,
             max_items=max_items,
             max_windows=settings.prompt_guidance_max_windows,
+            usage_ctx=_usage_ctx(request_body, deliverable, current_user),
         )
         # Memoize even an empty result: a prompt with no substantive guidance
         # would otherwise pay for the same "NONE" call on every generation.
