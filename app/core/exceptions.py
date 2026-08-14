@@ -187,3 +187,30 @@ class DuplicateResourceError(AppError):
             message=f"A {resource_name} with identifier '{identifier}' already exists.",
             detail={"resource": resource_name, "identifier": identifier},
         )
+
+
+class ResourceInUseError(AppError):
+    """
+    Raised when a destructive operation is refused because other rows depend on
+    the target — e.g. permanently deleting a CDD that blueprints were derived
+    from, which would cascade those blueprints away with it.
+
+    Distinct from ValidationError (422): the request is well-formed and would be
+    valid at a different time, so the caller can act on it (detach the
+    dependents, or archive instead). ``detail["blockers"]`` lists what is in the
+    way, so the UI can say *why* rather than just refusing.
+
+    HTTP 409 Conflict.
+    """
+
+    status_code = 409
+    code = "RESOURCE_IN_USE"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        blockers: list[str] | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, {**(detail or {}), "blockers": blockers or []})

@@ -5,11 +5,12 @@ import { BLUEPRINT, GENERATE } from '@services/endpoints';
 import { POLL_REQUEST_CONFIG } from '@features/shared/blockJob';
 
 export const blueprintService = {
-  listBlueprints: async ({ courseId, projectId } = {}) => {
+  listBlueprints: async ({ courseId, projectId, includeArchived = false } = {}) => {
     const res = await api.get(BLUEPRINT.LIST, {
       params: {
         course_id: courseId,
         project_id: projectId,
+        include_archived: includeArchived || undefined,
         page: 1,
         page_size: 100,
       },
@@ -36,6 +37,24 @@ export const blueprintService = {
   },
 
   getBlueprint: (id) => api.get(BLUEPRINT.GET(id)),
+
+  /**
+   * Archive a blueprint — reversible, nothing is deleted. See
+   * cddService.archiveCdd for why `unpin` is a separate, deliberate step.
+   */
+  archiveBlueprint: (id, { unpin = false } = {}) =>
+    api.delete(BLUEPRINT.ARCHIVE(id), { params: { unpin } }),
+  restoreBlueprint: (id) => api.post(BLUEPRINT.RESTORE(id)),
+  /** Irreversible, admin-only, and refused by the server if anything references it. */
+  purgeBlueprint: (id) => api.delete(BLUEPRINT.PURGE(id)),
+  bulkArchiveBlueprints: ({ ids, unpin = false, courseId, projectId }) =>
+    api.post(BLUEPRINT.BULK_ARCHIVE, {
+      ids,
+      unpin,
+      course_id: courseId ?? undefined,
+      project_id: projectId ?? undefined,
+    }),
+  getBlueprintReferences: (id) => api.get(BLUEPRINT.REFERENCES(id)),
 
   generateBlueprint: async (data) => {
     const body = {

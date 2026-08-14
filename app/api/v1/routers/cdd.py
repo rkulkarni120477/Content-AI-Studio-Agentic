@@ -22,12 +22,17 @@ How this maps to the Streamlit UI
   "Save as New Version"            → POST   /api/v1/cdd/{cdd_id}/versions
   "📌 Set as Active CDD"           → POST   /api/v1/cdd/{cdd_id}/pin
   "⬇️ Word (.docx)"                → GET    /api/v1/cdd/{cdd_id}/export
+  "🗄️ Archive"                     → DELETE /api/v1/cdd/{cdd_id}
+  "♻️ Restore"                     → POST   /api/v1/cdd/{cdd_id}/restore
+  "🗑️ Delete permanently"          → DELETE /api/v1/cdd/{cdd_id}/permanent
 
 RBAC permissions used
 ---------------------
   cdd.generate  → Generate a new CDD with AI
   cdd.pin       → Pin a CDD for generation
   cdd.version   → Create or activate a CDD version
+  cdd.archive   → Archive or restore a CDD (reversible)
+  cdd.purge     → Permanently delete an archived CDD (admin only)
   export.course → Download a CDD as a file
 """
 
@@ -47,6 +52,13 @@ from app.core.exceptions import (
     NotFoundError,
     PromptConfigurationError,
     WorkflowError,
+)
+from app.schemas.archive import (
+    ArchiveResponse,
+    BulkArchiveRequest,
+    BulkArchiveResponse,
+    DocumentReferences,
+    PurgeResponse,
 )
 from app.schemas.cdd import (
     CDDActivateVersionResponse,
@@ -202,12 +214,17 @@ def _get_cdd_or_404(db: Session, cdd_id: int):
     summary="List Course Design Documents",
     description=(
         "Returns a paginated list of CDDs scoped to the given project. "
-        "Admin users can omit project_id to see all CDDs across all projects."
+        "Admin users can omit project_id to see all CDDs across all projects. "
+        "Archived CDDs are excluded unless include_archived=true."
     ),
 )
 def list_cdds(
     project_id: int | None = Query(default=None, description="Filter by project ID."),
     course_id: int | None = Query(default=None, description="Optional course ID for legacy row matching."),
+    include_archived: bool = Query(
+        default=False,
+        description="Include archived CDDs. Off by default — the archive is a bin, not the list.",
+    ),
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)."),
     page_size: int = Query(default=100, ge=1, le=200, description="Items per page."),
     db: Session = Depends(get_db),
@@ -218,8 +235,13 @@ def list_cdds(
 
     Non-admin users are automatically scoped to their assigned project.
     Admin users can pass any project_id or omit it to see all CDDs.
+
+    Each row carries what references it, resolved in one batched pass over the
+    page rather than a query per row, so a 100-row page costs the same handful
+    of queries as a 1-row page.
     """
     from promptops_app.repositories import cdd_repository
+    from app.services import design_doc_archive as archive_svc
 
     effective_project_id = project_id if current_user.role == "admin" else (
         project_id or getattr(current_user, "default_project_id", None)
@@ -228,15 +250,20 @@ def list_cdds(
     if effective_project_id:
         all_cdds = cdd_repository.list_cdds_for_scope(
             db, project_id=effective_project_id, course_id=course_id,
+            include_archived=include_archived,
         )
     elif course_id:
-        all_cdds = cdd_repository.list_cdds_for_scope(db, course_id=course_id)
+        all_cdds = cdd_repository.list_cdds_for_scope(
+            db, course_id=course_id, include_archived=include_archived,
+        )
     else:
-        all_cdds = cdd_repository.list_all_cdds(db)
+        all_cdds = cdd_repository.list_all_cdds(db, include_archived=include_archived)
 
     total = len(all_cdds)
     start = (page - 1) * page_size
     page_items = all_cdds[start : start + page_size]
+
+    refs = archive_svc.reference_counts(db, archive_svc.CDD, [c.id for c in page_items])
 
     items = []
     for c in page_items:
@@ -246,7 +273,14 @@ def list_cdds(
             course_title=c.course_title,
             active_version=c.active_version,
             workflow_state=c.workflow_state or "draft",
+            created_by=c.created_by,
             created_at=c.created_at,
+            is_archived=archive_svc.is_archived(c),
+            deleted_at=getattr(c, "deleted_at", None),
+            deleted_by=getattr(c, "deleted_by", None),
+            references=DocumentReferences.from_refs(
+                refs.get(c.id, archive_svc.DocReferences())
+            ),
         ))
 
     return PaginatedResponse.create(
@@ -709,6 +743,245 @@ def generate_cdd_block(
 
 
 # ---------------------------------------------------------------------------
+# Archive / restore / permanently delete
+#
+# Three endpoints rather than one because the two states differ in kind:
+# archiving is an everyday tidy-up that anyone can undo, and purging destroys
+# version history that cannot be recovered. The rules live in
+# app/services/design_doc_archive.py so CDDs and Blueprints cannot drift apart.
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/bulk-archive",
+    response_model=BulkArchiveResponse,
+    summary="Archive several CDDs at once",
+    description=(
+        "Archives every CDD named in `ids`, reporting each id's outcome. Takes "
+        "explicit ids only — there is no predicate form, because a filter-driven "
+        "mass delete is one mistake away from emptying a workspace. Ids that are "
+        "missing, out of scope or pinned are skipped, not failed, so one bad id "
+        "does not abandon the rest of the batch."
+    ),
+    responses={
+        403: {"description": "Requires the cdd.archive permission."},
+        422: {"description": "More ids than a single request may carry."},
+    },
+)
+def bulk_archive_cdds(
+    request_body: BulkArchiveRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.archive")),
+) -> BulkArchiveResponse:
+    """Archive a batch of CDDs, returning a row per id."""
+    from app.services import design_doc_archive as archive_svc
+    from promptops_app.services.audit_service import log_audit_event
+
+    outcomes = archive_svc.bulk_archive(
+        db, archive_svc.CDD, request_body.ids,
+        actor=current_user.username,
+        unpin=request_body.unpin,
+        scope_course_id=request_body.course_id,
+        scope_project_id=request_body.project_id,
+    )
+    response = BulkArchiveResponse.from_outcomes(outcomes)
+
+    # One audit row for the batch, naming exactly which ids moved. A row per id
+    # would bury the operation; a row saying "12 archived" would not survive the
+    # question "which twelve?".
+    archived_ids = [o.doc_id for o in outcomes if o.status == "archived"]
+    if archived_ids:
+        log_audit_event(
+            db, current_user.username, "cdd.archived",
+            entity_type="cdd", entity_id=",".join(str(i) for i in archived_ids[:50]),
+            course_id=request_body.course_id, project_id=request_body.project_id,
+            metadata={
+                "bulk": True,
+                "archived_ids": archived_ids,
+                "archived": response.archived,
+                "skipped": response.skipped,
+                "already_archived": response.already_archived,
+                "unpin": request_body.unpin,
+            },
+        )
+    _log.info("cdd_bulk_archived  user=%s  archived=%d  skipped=%d",
+              current_user.username, response.archived, response.skipped)
+    return response
+
+
+@router.get(
+    "/{cdd_id}/references",
+    response_model=DocumentReferences,
+    summary="What currently references this CDD",
+    description=(
+        "Everything pointing at the CDD, and whether it can be permanently "
+        "deleted. Use this to explain a refusal rather than just reporting one."
+    ),
+    responses={404: {"description": "CDD not found."}},
+)
+def get_cdd_references(
+    cdd_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> DocumentReferences:
+    """Return the reference/blocker snapshot for one CDD."""
+    from app.services import design_doc_archive as archive_svc
+
+    _get_cdd_or_404(db, cdd_id)
+    return DocumentReferences.from_refs(
+        archive_svc.references_for(db, archive_svc.CDD, cdd_id)
+    )
+
+
+@router.delete(
+    "/{cdd_id}",
+    response_model=ArchiveResponse,
+    summary="Archive a CDD",
+    description=(
+        "Removes the CDD from the list without deleting anything — it can be "
+        "restored. A CDD pinned as active on a course is refused unless "
+        "`unpin=true`, so nobody silently removes the document the next "
+        "generation depends on."
+    ),
+    responses={
+        404: {"description": "CDD not found."},
+        403: {"description": "Requires the cdd.archive permission."},
+        409: {"description": "Pinned as active and unpin was not requested."},
+    },
+)
+def archive_cdd(
+    cdd_id: int,
+    unpin: bool = Query(
+        default=False,
+        description="Clear the course's active-CDD pin so a pinned CDD can be archived.",
+    ),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.archive")),
+) -> ArchiveResponse:
+    """Soft-delete one CDD."""
+    from app.services import design_doc_archive as archive_svc
+    from app.core.exceptions import ResourceInUseError
+    from promptops_app.services.audit_service import log_audit_event
+
+    cdd = _get_cdd_or_404(db, cdd_id)
+    outcome = archive_svc.archive(
+        db, archive_svc.CDD, cdd, actor=current_user.username, unpin=unpin,
+    )
+    if not outcome.ok:
+        raise ResourceInUseError(outcome.reason, blockers=[outcome.reason], detail={"id": cdd_id})
+
+    if outcome.status == "archived":
+        log_audit_event(
+            db, current_user.username, "cdd.archived",
+            entity_type="cdd", entity_id=cdd_id,
+            course_id=cdd.course_id, project_id=cdd.project_id,
+            metadata={"title": cdd.title, "unpinned_courses": list(outcome.unpinned_courses)},
+        )
+        _log.info("cdd_archived  user=%s  cdd_id=%d  unpinned=%s",
+                  current_user.username, cdd_id, outcome.unpinned_courses or "none")
+
+    return ArchiveResponse(
+        id=cdd_id,
+        archived=True,
+        unpinned_courses=list(outcome.unpinned_courses),
+        message=(
+            "Already archived." if outcome.status == "already_archived"
+            else "Archived. Restore it any time from the archived list."
+        ),
+    )
+
+
+@router.post(
+    "/{cdd_id}/restore",
+    response_model=ArchiveResponse,
+    summary="Restore an archived CDD",
+    description=(
+        "Returns the CDD to the list. Deliberately does not re-pin it: which "
+        "document a course generates from is an explicit decision."
+    ),
+    responses={
+        404: {"description": "CDD not found."},
+        403: {"description": "Requires the cdd.archive permission."},
+    },
+)
+def restore_cdd(
+    cdd_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.archive")),
+) -> ArchiveResponse:
+    """Undo an archive."""
+    from app.services import design_doc_archive as archive_svc
+    from promptops_app.services.audit_service import log_audit_event
+
+    cdd = _get_cdd_or_404(db, cdd_id)
+    changed = archive_svc.restore(db, archive_svc.CDD, cdd)
+    if changed:
+        log_audit_event(
+            db, current_user.username, "cdd.restored",
+            entity_type="cdd", entity_id=cdd_id,
+            course_id=cdd.course_id, project_id=cdd.project_id,
+            metadata={"title": cdd.title},
+        )
+        _log.info("cdd_restored  user=%s  cdd_id=%d", current_user.username, cdd_id)
+
+    return ArchiveResponse(
+        id=cdd_id,
+        archived=False,
+        message=(
+            "Restored. Pin it if you want generation to use it."
+            if changed else "That CDD was not archived."
+        ),
+    )
+
+
+@router.delete(
+    "/{cdd_id}/permanent",
+    response_model=PurgeResponse,
+    summary="Permanently delete an archived CDD",
+    description=(
+        "Irreversible. Refused unless the CDD is archived first and nothing "
+        "references it — deleting a CDD cascades to every blueprint derived "
+        "from it and their whole version history, so a referenced CDD stays "
+        "archived instead. Admin only."
+    ),
+    responses={
+        404: {"description": "CDD not found."},
+        403: {"description": "Requires the cdd.purge permission (admin)."},
+        409: {"description": "Something still references it; see detail.blockers."},
+        422: {"description": "Not archived yet — archive it first."},
+    },
+)
+def permanently_delete_cdd(
+    cdd_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.purge")),
+) -> PurgeResponse:
+    """Hard-delete an archived, unreferenced CDD and its versions."""
+    from app.services import design_doc_archive as archive_svc
+    from promptops_app.services.audit_service import log_audit_event
+
+    cdd = _get_cdd_or_404(db, cdd_id)
+    title, course_id, project_id = cdd.title, cdd.course_id, cdd.project_id
+
+    refs = archive_svc.purge(db, archive_svc.CDD, cdd)
+
+    # Logged after the delete succeeds, with the version count it destroyed —
+    # the row itself is gone, so the audit entry is the only remaining record
+    # that it ever existed.
+    log_audit_event(
+        db, current_user.username, "cdd.purged",
+        entity_type="cdd", entity_id=cdd_id,
+        course_id=course_id, project_id=project_id,
+        metadata={"title": title, "versions_deleted": refs.version_count},
+    )
+    _log.warning("cdd_purged  user=%s  cdd_id=%d  versions=%d",
+                 current_user.username, cdd_id, refs.version_count)
+    return PurgeResponse(
+        id=cdd_id, deleted=True,
+        message=f"Permanently deleted, along with {refs.version_count} saved version(s).",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Get a single CDD
 # ---------------------------------------------------------------------------
 
@@ -1080,8 +1353,12 @@ def pin_cdd(
     the auto-pin after generation and the manual pin button in the Streamlit UI.
     """
     from promptops_app.repositories.course_repository import set_active_cdd
+    from app.services import design_doc_archive as archive_svc
 
-    _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id)
+    # Pinning an archive would quietly put a document someone deliberately
+    # retired back in front of every generation for this course.
+    archive_svc.assert_live(cdd, archive_svc.CDD)
     set_active_cdd(db, request_body.course_id, cdd_id)
 
     _log.info(

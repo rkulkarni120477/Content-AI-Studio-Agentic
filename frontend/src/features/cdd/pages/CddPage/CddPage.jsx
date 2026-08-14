@@ -9,15 +9,19 @@ import {
   activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
   generateCddBlockThunk,
   resumeCddJobThunk,
+  fetchArchivedCddsThunk, archiveCddThunk, restoreCddThunk, purgeCddThunk,
+  bulkArchiveCddsThunk,
 } from '@features/cdd/cddThunks';
 import { cddService } from '@features/cdd/services/cddService';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
   selectCddLoading, selectCddGenerating, selectCddError, selectCddBlockJob,
-  resetBlockJob,
+  selectArchivedCdds, selectCddArchiving, selectCddArchiveRefusal,
+  resetBlockJob, clearArchiveRefusal,
 } from '@features/cdd/cddSlice';
 import { useAuth } from '@hooks/useAuth';
 import BlockWidePanel from '@components/generation/BlockWidePanel/BlockWidePanel';
+import DocumentArchivePanel from '@components/generation/DocumentArchivePanel/DocumentArchivePanel';
 import {
   selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
   selectModelChoice, selectExpertDomain, selectTargetAudience, selectAudienceCategory,
@@ -75,6 +79,9 @@ export default function CddPage() {
   const isGenerating = useAppSelector(selectCddGenerating);
   const error = useAppSelector(selectCddError);
   const blockJob = useAppSelector(selectCddBlockJob);
+  const archivedCdds = useAppSelector(selectArchivedCdds);
+  const isArchiving = useAppSelector(selectCddArchiving);
+  const archiveRefusal = useAppSelector(selectCddArchiveRefusal);
   const { user } = useAuth();
   // Block-wide (digest-pipeline) generation is opt-in per DIS client — and the
   // client that matters is the COURSE'S, not the viewer's, because the pipeline
@@ -156,6 +163,10 @@ export default function CddPage() {
     setBlockLabel('');
     blockLabelTouched.current = false;
     dispatch(fetchCddsThunk(courseId));
+    // Loaded on mount rather than on first expand: the count is shown on the
+    // toggle itself, and a "Show archived" button that appears a second late
+    // reads as the page still loading.
+    dispatch(fetchArchivedCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
 
@@ -373,6 +384,31 @@ export default function CddPage() {
   async function onSetActive(cddId) {
     await dispatch(setActiveCddThunk({ cddId, courseId: Number(courseId) }));
     setViewCddId(cddId);
+  }
+
+  // ── Archive management ────────────────────────────────────────────────────
+  // Every handler passes courseId so the shared thunks can refetch both the
+  // live and archived lists — archiving moves a row between them.
+  const cid = Number(courseId);
+
+  function onArchiveCdd(cddId, { unpin } = {}) {
+    // The selection follows the row out of the list, so the page does not keep
+    // showing the contents of a document that is no longer in it.
+    if (viewCddId === cddId) setViewCddId(null);
+    dispatch(archiveCddThunk({ id: cddId, courseId: cid, unpin }));
+  }
+
+  function onRestoreCdd(cddId) {
+    dispatch(restoreCddThunk({ id: cddId, courseId: cid }));
+  }
+
+  function onPurgeCdd(cddId) {
+    dispatch(purgeCddThunk({ id: cddId, courseId: cid }));
+  }
+
+  function onBulkArchiveCdds(ids) {
+    if (ids.includes(viewCddId)) setViewCddId(null);
+    dispatch(bulkArchiveCddsThunk({ ids, courseId: cid, projectId }));
   }
 
   async function onCommitVersion(data) {
@@ -730,9 +766,16 @@ export default function CddPage() {
                 <>
                   <Select
                     label={`Select ${L.cdd} to View/Edit`}
+                    // Title alone does not identify a row — a course can hold
+                    // dozens whose titles are character-for-character identical.
+                    // The date and author are what make the option pickable.
                     options={cdds.map((c) => ({
                       value: String(c.id),
-                      label: `${c.title || c.course_title} (ID: ${c.id})`,
+                      label: [
+                        `${c.title || c.course_title} (ID: ${c.id})`,
+                        formatDate(c.created_at),
+                        c.created_by,
+                      ].filter(Boolean).join(' — '),
                     }))}
                     value={viewCddId != null ? String(viewCddId) : ''}
                     onChange={(e) => {
@@ -762,26 +805,27 @@ export default function CddPage() {
                         </div>
                       </div>
 
-                      <ul className={styles.list}>
-                        {cdds.map((cdd) => (
-                          <li
-                            key={cdd.id}
-                            className={`${styles.listItem} ${viewCddId === cdd.id ? styles['listItem--active'] : ''}`}
-                          >
-                            <div className={styles.listItem__info}>
-                              <span className={styles.listItem__title}>{cdd.title || cdd.course_title}</span>
-                              <span className={styles.listItem__meta}>{formatDate(cdd.created_at)}</span>
-                            </div>
-                            {activeCdd?.id === cdd.id ? (
-                              <span className={styles.badge__active}>Active</span>
-                            ) : (
-                              <Button variant="ghost" size="sm" onClick={() => onSetActive(cdd.id)}>
-                                Set Active
-                              </Button>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
+                      <DocumentArchivePanel
+                        label={L.cdd}
+                        docs={cdds}
+                        archivedDocs={archivedCdds}
+                        activeId={activeCdd?.id ?? null}
+                        selectedId={viewCddId}
+                        busy={isArchiving}
+                        canPurge={user?.role === 'admin'}
+                        onSelect={(id) => {
+                          setViewCddId(id);
+                          setSelectedCddId(id);
+                          dispatch(fetchCddVersionsThunk(id));
+                        }}
+                        onSetActive={onSetActive}
+                        onArchive={onArchiveCdd}
+                        onRestore={onRestoreCdd}
+                        onPurge={onPurgeCdd}
+                        onBulkArchive={onBulkArchiveCdds}
+                        refusal={archiveRefusal}
+                        onDismissRefusal={() => dispatch(clearArchiveRefusal())}
+                      />
 
                       <div className={styles.activeContent}>
                         <div className={styles.activeContent__header}>

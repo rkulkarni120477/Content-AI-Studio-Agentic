@@ -4,6 +4,7 @@ import { dashboardService } from '@features/dashboard/services/dashboardService'
 import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
 import { createBlockJobThunks } from '@features/shared/blockJob';
+import { createArchiveThunks } from '@features/shared/documentArchive';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -188,3 +189,51 @@ export const fetchBlueprintComponentsThunk = createAsyncThunk(
     }
   },
 );
+
+/**
+ * The archived blueprints for a course, kept apart from the live ones.
+ *
+ * Deliberately not merged into `blueprints` behind a flag: that array feeds the
+ * module picker and the generation flow, and one missed filter there would put
+ * a retired document back into a prompt.
+ */
+export const fetchArchivedBlueprintsThunk = createAsyncThunk(
+  'blueprint/fetchArchived',
+  async (courseId, { getState, rejectWithValue }) => {
+    try {
+      const items = await blueprintService.listBlueprints({
+        courseId: Number(courseId),
+        projectId: resolveProjectId(getState) ?? undefined,
+        includeArchived: true,
+      });
+      return items.filter((b) => b.is_archived);
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+/**
+ * Archive / restore / permanently delete. Same rules and refusal handling as
+ * CDDs — see features/shared/documentArchive.js.
+ */
+const blueprintArchiveThunks = createArchiveThunks({
+  name: 'blueprint',
+  label: 'Blueprint',
+  api: {
+    archive: blueprintService.archiveBlueprint,
+    restore: blueprintService.restoreBlueprint,
+    purge: blueprintService.purgeBlueprint,
+    bulkArchive: blueprintService.bulkArchiveBlueprints,
+  },
+  refetch: (courseId) => async (dispatch) => {
+    await Promise.all([
+      dispatch(fetchBlueprintsThunk(courseId)),
+      dispatch(fetchArchivedBlueprintsThunk(courseId)),
+    ]);
+  },
+});
+
+export const archiveBlueprintThunk = blueprintArchiveThunks.archiveThunk;
+export const restoreBlueprintThunk = blueprintArchiveThunks.restoreThunk;
+export const purgeBlueprintThunk = blueprintArchiveThunks.purgeThunk;
+export const bulkArchiveBlueprintsThunk = blueprintArchiveThunks.bulkArchiveThunk;
+export { blueprintArchiveThunks };

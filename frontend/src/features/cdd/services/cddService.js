@@ -57,6 +57,31 @@ export const cddService = {
     const res = await api.get(CDD.LIST(), { params: query });
     return res?.items ?? (Array.isArray(res) ? res : []);
   },
+
+  /**
+   * Archive a CDD — reversible, nothing is deleted.
+   *
+   * `unpin` is a deliberate second step: the server refuses to archive the CDD a
+   * course has pinned as active unless it is set, so nobody silently removes the
+   * document the next generation depends on.
+   */
+  archiveCdd: (cddId, { unpin = false } = {}) =>
+    api.delete(CDD.ARCHIVE(cddId), { params: { unpin } }),
+  restoreCdd: (cddId) => api.post(CDD.RESTORE(cddId)),
+  /** Irreversible, admin-only, and refused by the server if anything references it. */
+  purgeCdd: (cddId) => api.delete(CDD.PURGE(cddId)),
+  /**
+   * Archive many at once. Explicit ids only — the server has no predicate form,
+   * so a bad filter can never widen into a mass delete.
+   */
+  bulkArchiveCdds: ({ ids, unpin = false, courseId, projectId }) =>
+    api.post(CDD.BULK_ARCHIVE, {
+      ids,
+      unpin,
+      course_id: courseId ?? undefined,
+      project_id: projectId ?? undefined,
+    }),
+  getCddReferences: (cddId) => api.get(CDD.REFERENCES(cddId)),
   listAllCdds: async (params = {}) => {
     const res = await api.get(CDD.LIST_ALL, {
       params: { page: 1, page_size: 100, ...params },

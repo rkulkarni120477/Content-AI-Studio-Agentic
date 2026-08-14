@@ -30,4 +30,9 @@ def build_cdd_read(db: Session, cdd) -> CDDRead:
                 raise
 
     base = CDDRead.model_validate(cdd)
-    return base.model_copy(update={"active_content": active_content})
+    # is_archived is derived, not an ORM column, so model_validate cannot fill
+    # it — without this the detail view of an archived CDD looks live.
+    return base.model_copy(update={
+        "active_content": active_content,
+        "is_archived": getattr(cdd, "deleted_at", None) is not None,
+    })

@@ -167,6 +167,14 @@ export const CDD = {
   PIN:              (id)       => `/api/v1/cdd/${id}/pin`,
   SET_ACTIVE:       (id)       => `/api/v1/cdd/${id}/pin`,
   EXPORT:           (id)       => `/api/v1/cdd/${id}/export`,
+  // Archive is reversible and is the everyday cleanup; PURGE is not and is
+  // admin-only. Separate routes so the destructive one can never be reached by
+  // a stray retry of the safe one.
+  ARCHIVE:          (id)       => `/api/v1/cdd/${id}`,
+  RESTORE:          (id)       => `/api/v1/cdd/${id}/restore`,
+  PURGE:            (id)       => `/api/v1/cdd/${id}/permanent`,
+  BULK_ARCHIVE:     '/api/v1/cdd/bulk-archive',
+  REFERENCES:       (id)       => `/api/v1/cdd/${id}/references`,
 };
 
 // ─── Blueprint ────────────────────────────────────────────────────────────────
@@ -188,6 +196,12 @@ export const BLUEPRINT = {
   EXPORT_LESSONS:   (id)       => `/api/v1/blueprints/${id}/export-lessons`,
   PARSE_COMPONENTS: (id)       => `/api/v1/blueprints/${id}/components`,
   COMPLETION:       (id)       => `/api/v1/blueprints/${id}/completion-status`,
+  // See CDD.ARCHIVE — same split between the reversible and the irreversible.
+  ARCHIVE:          (id)       => `/api/v1/blueprints/${id}`,
+  RESTORE:          (id)       => `/api/v1/blueprints/${id}/restore`,
+  PURGE:            (id)       => `/api/v1/blueprints/${id}/permanent`,
+  BULK_ARCHIVE:     '/api/v1/blueprints/bulk-archive',
+  REFERENCES:       (id)       => `/api/v1/blueprints/${id}/references`,
 };
 
 // ─── Generate ─────────────────────────────────────────────────────────────────

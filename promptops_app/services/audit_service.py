@@ -74,6 +74,9 @@ AUDIT_EVENTS: dict[str, dict] = {
     "cdd.version_committed":   {"level": "info",    "entity": "cdd",        "icon": "💾", "label": "CDD version committed"},
     "cdd.version_activated":   {"level": "info",    "entity": "cdd",        "icon": "✅", "label": "CDD active version changed"},
     "cdd.pinned":              {"level": "info",    "entity": "cdd",        "icon": "📌", "label": "CDD pinned for generation"},
+    "cdd.archived":            {"level": "warning", "entity": "cdd",        "icon": "🗄️", "label": "CDD archived"},
+    "cdd.restored":            {"level": "info",    "entity": "cdd",        "icon": "♻️", "label": "CDD restored from archive"},
+    "cdd.purged":              {"level": "critical","entity": "cdd",        "icon": "🗑️", "label": "CDD permanently deleted"},
 
     # ── Blueprint ─────────────────────────────────────────────────────────────
     "blueprint.generated":     {"level": "info",    "entity": "blueprint",  "icon": "🗂️", "label": "Blueprint generated"},
@@ -81,6 +84,9 @@ AUDIT_EVENTS: dict[str, dict] = {
     "blueprint.version_committed": {"level": "info","entity": "blueprint",  "icon": "💾", "label": "Blueprint version committed"},
     "blueprint.version_activated": {"level": "info","entity": "blueprint",  "icon": "✅", "label": "Blueprint active version changed"},
     "blueprint.pinned":        {"level": "info",    "entity": "blueprint",  "icon": "📌", "label": "Blueprint pinned for generation"},
+    "blueprint.archived":      {"level": "warning", "entity": "blueprint",  "icon": "🗄️", "label": "Blueprint archived"},
+    "blueprint.restored":      {"level": "info",    "entity": "blueprint",  "icon": "♻️", "label": "Blueprint restored from archive"},
+    "blueprint.purged":        {"level": "critical","entity": "blueprint",  "icon": "🗑️", "label": "Blueprint permanently deleted"},
 
     # ── Block-wide generation (digest pipeline) ───────────────────────────────
     # The legacy paths are synchronous, so "requested" and "created" coincide and one

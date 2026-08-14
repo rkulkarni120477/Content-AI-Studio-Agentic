@@ -5,6 +5,7 @@ import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@
 import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
 import { createBlockJobThunks } from '@features/shared/blockJob';
+import { createArchiveThunks } from '@features/shared/documentArchive';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -173,3 +174,56 @@ export const exportCddThunk = createAsyncThunk(
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
+
+/**
+ * The archived CDDs for a course, kept in a separate list from the live ones.
+ *
+ * Deliberately not merged into `cdds` behind a flag: that array feeds the
+ * "select a CDD" dropdown and the generation flow, and one missed filter there
+ * would put a retired document back into a prompt.
+ */
+export const fetchArchivedCddsThunk = createAsyncThunk(
+  'cdd/fetchArchived',
+  async (courseId, { getState, rejectWithValue }) => {
+    try {
+      const cid = Number(courseId);
+      const items = await cddService.listCdds(cid, {
+        project_id: resolveProjectId(getState) ?? undefined,
+        course_id: cid,
+        include_archived: true,
+      });
+      return items.filter((c) => c.is_archived);
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+/**
+ * Archive / restore / permanently delete. The rules and the refusal handling
+ * are shared with Blueprints — see features/shared/documentArchive.js.
+ *
+ * Each one refetches both lists on success: archiving moves a row from one to
+ * the other, so refreshing only the list that was showing would leave the other
+ * stale until the next navigation.
+ */
+const cddArchiveThunks = createArchiveThunks({
+  name: 'cdd',
+  label: 'CDD',
+  api: {
+    archive: cddService.archiveCdd,
+    restore: cddService.restoreCdd,
+    purge: cddService.purgeCdd,
+    bulkArchive: cddService.bulkArchiveCdds,
+  },
+  refetch: (courseId) => async (dispatch) => {
+    await Promise.all([
+      dispatch(fetchCddsThunk(courseId)),
+      dispatch(fetchArchivedCddsThunk(courseId)),
+    ]);
+  },
+});
+
+export const archiveCddThunk = cddArchiveThunks.archiveThunk;
+export const restoreCddThunk = cddArchiveThunks.restoreThunk;
+export const purgeCddThunk = cddArchiveThunks.purgeThunk;
+export const bulkArchiveCddsThunk = cddArchiveThunks.bulkArchiveThunk;
+export { cddArchiveThunks };

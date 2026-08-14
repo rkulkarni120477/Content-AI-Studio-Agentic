@@ -77,6 +77,10 @@ _PERMISSIONS: dict[str, list[str]] = {
     "cdd.review":            [_ADMIN, _REVIEWER],
     "cdd.pin":               [_ADMIN, _REVIEWER, _AUTHOR],
     "cdd.version":           [_ADMIN, _REVIEWER, _AUTHOR],
+    # Archiving is reversible, so authors clean up after themselves — they are
+    # the ones who create the duplicates. Purging is not reversible: admin only.
+    "cdd.archive":           [_ADMIN, _REVIEWER, _AUTHOR],
+    "cdd.purge":             [_ADMIN],
 
     # ── Blueprint pipeline ────────────────────────────────────────────────────
     "blueprint.generate":    [_ADMIN, _REVIEWER, _AUTHOR],
@@ -84,6 +88,8 @@ _PERMISSIONS: dict[str, list[str]] = {
     "blueprint.review":      [_ADMIN, _REVIEWER],
     "blueprint.pin":         [_ADMIN, _REVIEWER, _AUTHOR],
     "blueprint.version":     [_ADMIN, _REVIEWER, _AUTHOR],
+    "blueprint.archive":     [_ADMIN, _REVIEWER, _AUTHOR],
+    "blueprint.purge":       [_ADMIN],
 
     # ── Content generation and editing ────────────────────────────────────────
     "generate.run":          [_ADMIN, _REVIEWER, _AUTHOR],
@@ -185,6 +191,8 @@ _REVIEWER_BLOCKLIST: frozenset[str] = frozenset({
     "cluster_prompt.create",
     "cluster_prompt.delete",
     "course.delete",
+    "cdd.purge",
+    "blueprint.purge",
     "workflow.bulk_approve",
     "workflow.archive",
     "system.clear_db",

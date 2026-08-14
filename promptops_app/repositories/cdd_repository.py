@@ -5,10 +5,26 @@ from sqlalchemy import or_
 from promptops_app.database import CourseDesignDocument, CDDVersion
 
 
-def list_cdds_for_project(db, project_id: int, limit: int = 100):
+def _live_only(q, *, include_archived: bool):
+    """Exclude archived CDDs unless the caller explicitly asks for them.
+
+    Applied in SQL rather than filtered in the caller so that pagination counts,
+    limits and every consumer of these helpers agree on what "the list" means.
+    Archived rows are still reachable by id — see ``get_cdd_by_id`` — because
+    restoring and inspecting one has to work.
+    """
+    if include_archived:
+        return q
+    return q.filter(CourseDesignDocument.deleted_at.is_(None))
+
+
+def list_cdds_for_project(db, project_id: int, limit: int = 100, *, include_archived: bool = False):
     return (
-        db.query(CourseDesignDocument)
-        .filter(CourseDesignDocument.project_id == project_id)
+        _live_only(
+            db.query(CourseDesignDocument)
+            .filter(CourseDesignDocument.project_id == project_id),
+            include_archived=include_archived,
+        )
         .order_by(CourseDesignDocument.created_at.desc())
         .limit(limit)
         .all()
@@ -20,6 +36,8 @@ def list_cdds_for_scope(
     project_id: int | None = None,
     course_id: int | None = None,
     limit: int = 200,
+    *,
+    include_archived: bool = False,
 ):
     """List CDDs for a project/course.
 
@@ -27,7 +45,7 @@ def list_cdds_for_scope(
     courses in the same project must never leak in. Legacy rows with a null
     ``project_id`` are matched by course_id alone rather than excluded.
     """
-    q = db.query(CourseDesignDocument)
+    q = _live_only(db.query(CourseDesignDocument), include_archived=include_archived)
     if course_id is not None:
         if project_id is not None:
             q = q.filter(
@@ -48,9 +66,9 @@ def list_cdds_for_scope(
     )
 
 
-def list_all_cdds(db, limit: int = 200):
+def list_all_cdds(db, limit: int = 200, *, include_archived: bool = False):
     return (
-        db.query(CourseDesignDocument)
+        _live_only(db.query(CourseDesignDocument), include_archived=include_archived)
         .order_by(CourseDesignDocument.created_at.desc())
         .limit(limit)
         .all()
@@ -58,6 +76,12 @@ def list_all_cdds(db, limit: int = 200):
 
 
 def get_cdd_by_id(db, cdd_id: int):
+    """Fetch by id, archived or not.
+
+    Deliberately unfiltered: an archived CDD still exists, and restoring it,
+    inspecting it or refusing to pin it all need the row. Callers that must not
+    act on an archive use ``design_doc_archive.assert_live``.
+    """
     return (
         db.query(CourseDesignDocument)
         .filter(CourseDesignDocument.id == cdd_id)
@@ -149,8 +173,9 @@ def restore_cdd_version(
     return new_ver, None
 
 
-def count_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True) -> int:
-    q = db.query(CourseDesignDocument)
+def count_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True,
+                      *, include_archived: bool = False) -> int:
+    q = _live_only(db.query(CourseDesignDocument), include_archived=include_archived)
     if not is_admin and user_name:
         q = q.filter(CourseDesignDocument.created_by == user_name)
         if project_id:
@@ -158,8 +183,9 @@ def count_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admi
     return q.count()
 
 
-def list_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True):
-    q = db.query(CourseDesignDocument)
+def list_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True,
+                     *, include_archived: bool = False):
+    q = _live_only(db.query(CourseDesignDocument), include_archived=include_archived)
     if not is_admin and user_name:
         q = q.filter(CourseDesignDocument.created_by == user_name)
         if project_id:

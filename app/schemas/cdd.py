@@ -21,6 +21,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.archive import DocumentReferences
 from app.schemas.budget import UsageSummary
 from app.schemas.json_fields import parse_optional_json_dict
 
@@ -265,6 +266,12 @@ class CDDRead(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    # Archive state — an archived CDD is still readable (that is how it gets
+    # inspected before a restore), so the detail view has to be able to say so.
+    is_archived: bool = False
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
+
     # Embedded active version content (avoids a second request)
     active_content: Optional[CDDVersionRead] = None
 
@@ -285,6 +292,11 @@ class CDDListItem(BaseModel):
     """
     Lightweight CDD summary for paginated list responses.
     Returned by GET /api/v1/cdd.
+
+    ``created_by`` and ``references.version_count`` are here because titles alone
+    do not identify a row: a course can hold dozens of CDDs whose titles are
+    character-for-character identical, and the picker has to be able to tell
+    them apart.
     """
 
     id: int
@@ -292,7 +304,17 @@ class CDDListItem(BaseModel):
     course_title: Optional[str] = None
     active_version: Optional[str] = None
     workflow_state: str = "draft"
+    created_by: Optional[str] = None
     created_at: Optional[datetime] = None
+
+    # ── Archive state ────────────────────────────────────────────────────────
+    is_archived: bool = False
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
+
+    # What points at this CDD — populated in one batched pass per page, so the
+    # list can show "safe to delete" per row without a query per row.
+    references: DocumentReferences = Field(default_factory=DocumentReferences)
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -979,7 +979,14 @@ class CourseDesignDocument(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     project_id = Column(Integer, nullable=True)   # FK to projects.id (nullable for backward compat)
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    # Archive (soft delete). NULL = live. Indexed because every list query filters on it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(100), nullable=True)
     versions = relationship("CDDVersion", back_populates="cdd", cascade="all, delete-orphan")
+    # NOTE: this cascade means ``db.delete(cdd)`` also deletes every blueprint
+    # derived from it, and (through ModuleBlueprint.versions) their whole version
+    # history. Never hard-delete a CDD without first checking for referencing
+    # blueprints — app/services/design_doc_archive.py enforces that.
     blueprints = relationship("ModuleBlueprint", back_populates="cdd", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -1018,6 +1025,9 @@ class ModuleBlueprint(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     project_id = Column(Integer, nullable=True)   # FK to projects.id
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    # Archive (soft delete). NULL = live. Indexed because every list query filters on it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(100), nullable=True)
     cdd = relationship("CourseDesignDocument", back_populates="blueprints")
     versions = relationship("BlueprintVersion", back_populates="blueprint", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -1453,6 +1463,11 @@ def _run_legacy_ddl():
         # module_blueprints (v18)
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS course_id INTEGER",
+        # course_design_documents / module_blueprints — archive (soft delete) (v22)
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
         # generations (v18)
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS course_id INTEGER",
@@ -1622,6 +1637,10 @@ def _run_legacy_ddl():
             # styles — workspace ownership scoping (v21)
             "CREATE INDEX IF NOT EXISTS idx_styles_course_id ON styles(course_id)",
             "CREATE INDEX IF NOT EXISTS idx_styles_project_id ON styles(project_id)",
+            # Archive (v22) — partial indexes: every list query asks for the live
+            # rows, so indexing only those keeps the index small as the archive grows.
+            "CREATE INDEX IF NOT EXISTS idx_cdd_live ON course_design_documents(course_id) WHERE deleted_at IS NULL",
+            "CREATE INDEX IF NOT EXISTS idx_blueprint_live ON module_blueprints(course_id) WHERE deleted_at IS NULL",
             "CREATE INDEX IF NOT EXISTS idx_cdd_versions_version_number ON cdd_versions(cdd_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_blueprint_versions_version_number ON blueprint_versions(blueprint_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC)",
