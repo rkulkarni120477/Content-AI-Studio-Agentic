@@ -15,13 +15,39 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.dis_client import dis_client
 from promptops_app.services.budget_service import BudgetExceededError
+from promptops_app.services.user_directives import (
+    compose_guidance,
+    fingerprint,
+    resolve_user_directives,
+)
 
 _log = logging.getLogger(__name__)
+
+# The failure branches in _build_and_reduce log the real cause and then return None,
+# which the job layer renders as one fixed "Digest pipeline unavailable (no enumerated
+# days or DIS error)" string. That string is the ONLY artefact a prod user or on-call
+# engineer sees, and it cannot distinguish causes that need completely different fixes:
+# DIS unreachable, a Bedrock credential/model rejection inside DIS, or a block that
+# genuinely enumerated zero days. Diagnosing 2026-08-13's prod failure meant reading
+# container logs that are not accessible from where the report lands.
+#
+# A ContextVar rather than a return value because two callers (cdd.py's sync branch and
+# run_block_wide_sync) depend on None meaning "fall back to the legacy path" — changing
+# that contract to raise would silently disable their fallback. ContextVar (not a plain
+# global) so concurrent jobs on the job_runner thread pool cannot read each other's
+# reason; Celery's process workers are isolated either way.
+_failure_reason: ContextVar[str] = ContextVar("block_wide_failure_reason", default="")
+
+
+def last_failure_reason() -> str:
+    """Reason for the most recent digest-pipeline failure *in this context*, or ""."""
+    return _failure_reason.get("")
 
 
 def run_block_wide_sync(db, deliverable: str, request_body, current_user):
@@ -379,6 +405,18 @@ def _env_int(name: str, default: int) -> int:
 
 #: Overridable so an operator can retune the reservation against their own blocks
 #: without a deploy — the same treatment the DIS_MAP_* input budgets get.
+#:
+#: The per-day figure predates user directives (style + additional instructions are
+#: now appended to every day's MAP prompt — see user_directives), which adds up to
+#: ~1.7k tokens per day when a requester supplies both. Measured Block 2 was already
+#: ~9.3k/day against the 8.8k default, so a 20-day block with full directives runs
+#: nearer 11k/day: still inside the reservation only because ESTIMATE_DAYS (25) pads
+#: past the real day count. That padding is now doing real work rather than being
+#: slack, so raise CAS_MAP_EST_INPUT_TOKENS_PER_DAY before raising ESTIMATE_DAYS if
+#: blocks get longer. The consequence of being low is bounded and one-sided:
+#: reconcile_budget corrects to actuals immediately after the build, so a build
+#: starting very close to a cap could be admitted and then overshoot it slightly,
+#: rather than spend going unrecorded.
 _MAP_ESTIMATE_DAYS = _env_int("CAS_MAP_ESTIMATE_DAYS", 25)
 _MAP_EST_INPUT_TOKENS_PER_DAY = _env_int("CAS_MAP_EST_INPUT_TOKENS_PER_DAY", 8_800)
 _MAP_EST_OUTPUT_TOKENS_PER_DAY = _env_int("CAS_MAP_EST_OUTPUT_TOKENS_PER_DAY", 750)
@@ -518,10 +556,67 @@ def _settle_map_usage(db, map_ctx, report: Optional[Dict[str, Any]], reservation
                          "until the period rolls over", exc_info=True)
 
 
+#: Cap on how many distinct MAP failure reasons travel with a generation. When a
+#: block fails wholesale every day usually fails the SAME way, so the first few
+#: distinct reasons carry all the diagnostic value; the rest are repetition that
+#: would bloat every persisted version row and the user-facing warning.
+_MAX_FAILURE_REASONS = 3
+
+
+def _digest_failure_reasons(report: Optional[Dict[str, Any]]) -> List[str]:
+    """Distinct per-day MAP failure reasons from a DIS build report.
+
+    DIS records a real cause for every failed day and returns them under
+    ``per_day[].error``. CAS received that all along and kept only six counters,
+    so the cause was discarded at the boundary and the only surviving signal was
+    *which* days failed — never *why*. Diagnosing prod's 2026-08-13 Block 2 run
+    (20 of 20 days failed) came down to reading DIS container logs that whoever
+    sees the failed generation cannot reach.
+
+    Deduplicated rather than listed per day: 20 days failing identically is one
+    problem reported once, and the day numbers are already in ``failed_days``.
+    """
+    if not isinstance(report, dict):
+        return []
+    reasons: List[str] = []
+    for entry in report.get("per_day") or []:
+        if not isinstance(entry, dict) or entry.get("status") != "failed":
+            continue
+        # A failed day with no recorded error is still worth counting — silently
+        # skipping it would under-report the failure — but it has nothing to say.
+        error = str(entry.get("error") or "").strip()
+        if error and error not in reasons:
+            reasons.append(error)
+        if len(reasons) >= _MAX_FAILURE_REASONS:
+            break
+    return reasons
+
+
+def _load_course(db, request_body):
+    """The request's course row, or None. Never raises.
+
+    Used for two independent things — the REDUCE prompts' cluster scope and the style
+    context's cluster-prompt layer — so a failure narrows scope to project/global
+    rather than failing the generation.
+    """
+    if db is None or not getattr(request_body, "course_id", None):
+        return None
+    try:
+        from promptops_app.repositories.course_repository import get_course_by_id
+        return get_course_by_id(db, request_body.course_id)
+    except Exception:
+        return None
+
+
 def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
                       current_user, dis_client_id: str, map_guidance: str = "",
                       *, db=None, request_body=None):
-    """Returns (ReduceResult, build_report) or (None, None) on any failure.
+    """Returns (ReduceResult, build_report, UserDirectives); the first two are None
+    on any failure.
+
+    The directives are returned even on the failure paths, deliberately: they are
+    what the requester asked for, and a failed generation is exactly when someone
+    needs to know whether their style and instructions were resolved at all.
 
     ``map_guidance`` (optional) is judgment/emphasis guidance distilled from
     the course's selected CDD/Blueprint prompt (see
@@ -534,6 +629,18 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     project). Without them ``load_template`` cannot consult the DB at all, so an
     admin's edit in the Prompts UI would never reach generation. Both optional:
     omitted ⇒ file/built-in tiers, exactly as before."""
+    # Resolved before the build, not just before REDUCE: the style the requester
+    # selected has to reach MAP as well, and rendering it needs the course's cluster
+    # for the cluster-prompt layer.
+    course = _load_course(db, request_body)
+    directives = resolve_user_directives(
+        db, request_body, cluster_id=getattr(course, "cluster_id", None),
+    )
+    # One wire field, composed here: see user_directives.compose_guidance for why a
+    # separate DIS request field would silently drop these during a mixed-version
+    # deploy while continuing to serve digests built without them.
+    map_guidance_wire = compose_guidance(map_guidance, directives.map_text)
+
     # MAP runs inside DIS on its own Bedrock client, so it never passes through CAS's
     # usage/budget choke point in core/llm_client.py. Left alone it is the largest
     # untracked spend in the product — a measured 20-day build is ~176k input tokens
@@ -543,9 +650,12 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     map_ctx = _map_usage_ctx(deliverable, request_body, current_user)
     reservation = _reserve_map_budget(db, map_ctx)
     report = None
+    # Cleared per attempt so a retry in the same context cannot inherit and report
+    # the previous attempt's cause.
+    _failure_reason.set("")
     try:
         report = dis_client.build_digests_sync(block, current_user=current_user, client_id=dis_client_id,
-                                                map_guidance=map_guidance)
+                                                map_guidance=map_guidance_wire)
         bundle = dis_client.get_digests_bundle_sync(block, current_user=current_user, client_id=dis_client_id)
     except BudgetExceededError:
         # A quota breach must reach the HTTP layer as a real 402, not be folded into
@@ -553,8 +663,13 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
         raise
     except Exception as exc:
         _log.warning("block_wide_dis_unavailable deliverable=%s block=%s error=%s — falling back",
-                     deliverable, block, exc)
-        return None, None
+                     deliverable, block, exc, exc_info=True)
+        # type(exc).__name__ as well as the message: a bare str() on a connection
+        # error is often empty, which would report a blank reason.
+        _failure_reason.set(
+            f"DIS digest build failed for block {block}: {type(exc).__name__}: {exc}".strip()
+        )
+        return None, None, directives
     finally:
         # In a finally so a failed or partial build still records what it burned and
         # releases the rest of the reservation — otherwise a failure permanently
@@ -565,16 +680,17 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     digests = bundle.get("digests") or []
     if not enumerate_summary.get("days"):
         _log.warning("block_wide_empty_enumerate deliverable=%s block=%s — falling back", deliverable, block)
-        return None, None
+        # DIS answered, so this is a content/scope problem (wrong block id, nothing
+        # ingested for it, or a tenant mismatch) — not an outage. Naming the block and
+        # the DIS client keeps that distinct from the exception branch above, which is.
+        _failure_reason.set(
+            f"DIS returned no days for block {block} (dis_client={dis_client_id!r}). "
+            "Nothing is ingested for this block, or the block id does not match what "
+            "was ingested."
+        )
+        return None, None, directives
     try:
         from promptops_app.services.block_wide_generator import BlockWideGenerator
-        course = None
-        if db is not None and getattr(request_body, "course_id", None):
-            try:
-                from promptops_app.repositories.course_repository import get_course_by_id
-                course = get_course_by_id(db, request_body.course_id)
-            except Exception:
-                course = None   # scope narrows to project/global; never fatal
         generator = BlockWideGenerator(
             db=db,
             project_id=getattr(request_body, "project_id", None) or (course.project_id if course else None),
@@ -589,12 +705,32 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
             source_file_inventory=bundle.get("source_file_inventory"),
             acs_registry=bundle.get("acs_registry"),
             map_guidance=map_guidance,
+            # The full style context, the requester's instructions and the declared
+            # duration. Passed separately from map_guidance (rather than reusing the
+            # composed wire string) because REDUCE gets the FULL style while MAP got
+            # the compact form, and because the two authorities stay distinguishable
+            # in the prompt and in the provenance row.
+            user_directives=directives.reduce_text,
         )
     except Exception as exc:
         _log.warning("block_wide_reduce_failed deliverable=%s block=%s error=%s — falling back",
-                     deliverable, block, exc)
-        return None, None
-    return result, report
+                     deliverable, block, exc, exc_info=True)
+        # Distinct from the DIS branch: the digests were built and paid for, so the
+        # fault is CAS-side (REDUCE model call, prompt, or parsing).
+        _failure_reason.set(
+            f"REDUCE failed for block {block} after digests were built: "
+            f"{type(exc).__name__}: {exc}".strip()
+        )
+        return None, None, directives
+    # Carried on coverage, not left on the report: coverage is what reaches the job
+    # layer's warning and the persisted version row, whereas the report is summarised
+    # into six counters by _provenance and then dropped. A run where MAP failed is
+    # still a "successful" generation by every other measure, so this is the only
+    # place the cause can surface to whoever has to act on it.
+    reasons = _digest_failure_reasons(report)
+    if reasons and isinstance(getattr(result, "coverage", None), dict):
+        result.coverage["failure_reasons"] = reasons
+    return result, report, directives
 
 
 def _audit_provenance(prompt_provenance: Optional[Dict[str, Any]],
@@ -623,6 +759,12 @@ def _audit_provenance(prompt_provenance: Optional[Dict[str, Any]],
         "generation_path": prompt_provenance.get("prompt_source") or "digest_pipeline",
         "quality_tier": prompt_provenance.get("quality_tier"),
         "reduce_model": prompt_provenance.get("reduce_model"),
+        # What the tier asked for is not what answered: the reliability layer falls
+        # back to another model on a provider error, logs it at WARNING, and returns
+        # text that looks the same. Without this an auditor comparing two runs of the
+        # same tier sees one model name and cannot tell they were written by
+        # different models — see ReduceResult.reduce_models_used. {model: call_count}.
+        "reduce_models_used": prompt_provenance.get("reduce_models_used") or {},
         "reduce_prompts": prompt_provenance.get("reduce_prompts") or {},
         "digest_build": prompt_provenance.get("digest_build") or {},
         # Recorded in full, not as a boolean: this is the admin's own DB-maintained
@@ -631,6 +773,20 @@ def _audit_provenance(prompt_provenance: Optional[Dict[str, Any]],
         # actual text, not a flag saying some text existed.
         "map_guidance_applied": bool(prompt_provenance.get("map_guidance_applied")),
         "map_guidance": prompt_provenance.get("map_guidance") or "",
+        # Identifies the composed string MAP actually received (prompt layer + the
+        # requester's directives). Carried through rather than left on the version row
+        # for the same no-join reason as everything else here; see _map_guidance_sent.
+        "map_guidance_sent_chars": prompt_provenance.get("map_guidance_sent_chars") or 0,
+        "map_guidance_sent_fingerprint": prompt_provenance.get("map_guidance_sent_fingerprint") or "",
+        # The requester's own inputs, by the same standard as map_guidance above and
+        # for the same reason: since 2026-08-13 the style, additional instructions and
+        # declared duration reach MAP/REDUCE, so a row that omits them cannot answer
+        # "why did it say that?" — and an auditor would have to join the version row
+        # to find out, which is exactly what this helper exists to avoid. Includes
+        # which stage each input reached, so a style requested but never applied (a
+        # deleted style id) is distinguishable from one that shaped the output.
+        # ``{}`` on the legacy path, where the concept does not apply.
+        "user_directives": prompt_provenance.get("user_directives") or {},
     }
     if coverage:
         # The honest source-accounting for this path. `dis_source_units_count` is 0
@@ -651,11 +807,44 @@ def _audit_provenance(prompt_provenance: Optional[Dict[str, Any]],
     return out
 
 
-def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dict[str, Any]:
+def _map_guidance_sent(map_guidance: str, directives) -> Dict[str, Any]:
+    """Size + fingerprint of the exact string MAP received.
+
+    Recomposed here rather than threaded down from ``_build_and_reduce``:
+    ``compose_guidance`` is pure, so recomputing cannot drift from what was sent,
+    whereas an extra parameter through two call layers is one more thing a future
+    caller can forget to pass — the failure mode this whole change is about.
+    """
+    sent = compose_guidance(map_guidance, getattr(directives, "map_text", "") or "")
+    return {"map_guidance_sent_chars": len(sent),
+            "map_guidance_sent_fingerprint": fingerprint(sent)}
+
+
+def _model_call_counts(models_used) -> Dict[str, int]:
+    """``["a", "a", "b"]`` -> ``{"a": 2, "b": 1}``; ``{}`` for nothing recorded.
+
+    Insertion-ordered by first use, so the JSON reads in the order the run actually
+    went. Tolerates None for the legacy path and the injected-``llm`` test seam,
+    neither of which has a model to report.
+    """
+    counts: Dict[str, int] = {}
+    for model in models_used or []:
+        counts[model] = counts.get(model, 0) + 1
+    return counts
+
+
+def _provenance(deliverable: str, result, report, map_guidance: str = "",
+                directives=None) -> Dict[str, Any]:
     return {
         "prompt_source": "digest_pipeline",
         "deliverable": deliverable,
         "reduce_model": result.reduce_model,
+        # {model_id: call_count} for the models that actually produced the text (see
+        # ReduceResult). Distinct from reduce_model above, which records only what the
+        # tier requested. Counts, not a set: "1 of 12 sections came from the fallback"
+        # and "12 of 12 did" are the difference between a blip and a dead primary, and
+        # a set collapses them into the same answer.
+        "reduce_models_used": _model_call_counts(getattr(result, "reduce_models_used", None)),
         "quality_tier": result.tier,
         # Includes the MAP token counts: they are the ONLY record of what the per-day
         # extraction cost. MAP runs on the DIS side through its own boto3 client, so it
@@ -666,13 +855,43 @@ def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dic
                          ("built", "cached", "failed", "map_calls",
                           "map_tokens_in", "map_tokens_out")}
         if isinstance(report, dict) else {},
+        # The counters above say how many days failed; these say why. Kept on the
+        # version row because that is the durable record — the job row is transient
+        # and the DIS logs holding the original are unreachable from here.
+        "digest_failures": _digest_failure_reasons(report),
         # Traceability (PL↔CAS sync review discipline): whether/what prompt-
         # derived guidance actually reached MAP/REDUCE for this generation, so
         # a reviewer can see it rather than trust it blindly (see prompt_
         # guidance.resolve_prompt_guidance's own docstring on why the digest
         # step itself is a fidelity risk that must stay inspectable).
+        #
+        # PRECISELY the prompt-derived layer, which since 2026-08-13 is no longer the
+        # whole of what MAP received — the requester's directives are composed onto it
+        # on the wire (compose_guidance). The two are kept apart here because they are
+        # separately actionable (an admin edits one, a requester types the other) and
+        # because embedding a 12k style context in every audit row is a cost the
+        # user_directives block below deliberately avoids. What the composed string
+        # was is still verifiable, via the two keys after it.
         "map_guidance_applied": bool((map_guidance or "").strip()),
         "map_guidance": map_guidance or "",
+        # What MAP was ACTUALLY sent, identified rather than duplicated. Also the exact
+        # discriminator for the per-day digest cache key, which is computed from this
+        # composed string — so when someone asks why a block rebuilt from cold, equal
+        # fingerprints across two runs rule this out and unequal ones confirm it.
+        **_map_guidance_sent(map_guidance, directives),
+        # The same traceability for the requester's OWN inputs, and for the same
+        # reason: until 2026-08-13 the style, additional instructions and declared
+        # duration were written into generation_params on this row while reaching no
+        # model at all, so the record showed them as honoured. These keys say which
+        # ones actually reached which stage — including the case that looks identical
+        # from the outside, a style_id that pointed at a deleted style
+        # (style_applied_to_* False beside a non-null style_id).
+        #
+        # Ids, counts and per-stage flags rather than the rendered text: the style
+        # context alone can run to 12k chars, and everything needed to reconstruct it
+        # is already on this row (style_id, extra_instructions,
+        # estimated_duration_hours).
+        "user_directives": getattr(directives, "applied", {}) or {},
         # Which REDUCE template/version actually drove this run, and whether each
         # layer came from the DB (admin edit), the shipped file, or the built-in
         # fallback — so a reviewer can distinguish "the admin's prompt produced
@@ -687,10 +906,10 @@ def _provenance(deliverable: str, result, report, map_guidance: str = "") -> Dic
 def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_guidance: str = ""):
     """Run the block-wide digest pipeline for one CDD. Returns kwargs for
     persist_cdd_and_respond, or None to fall back to legacy."""
-    result, report = _build_and_reduce("cdd", request_body.block,
-                                       getattr(request_body, "quality_tier", None),
-                                       current_user, dis_client_id, map_guidance,
-                                       db=db, request_body=request_body)
+    result, report, directives = _build_and_reduce("cdd", request_body.block,
+                                                   getattr(request_body, "quality_tier", None),
+                                                   current_user, dis_client_id, map_guidance,
+                                                   db=db, request_body=request_body)
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_cdd_flat, parse_sections_from_text
@@ -703,7 +922,7 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
         "raw_output": raw_output,
         "sections": sections,
         "dis_source_units": [],
-        "prompt_provenance": _provenance("cdd", result, report, map_guidance),
+        "prompt_provenance": _provenance("cdd", result, report, map_guidance, directives),
         # NOT a verbatim prompt — REDUCE is N batched calls plus a separate
         # per-day MAP stage, so there is no single pair to record. Says so
         # explicitly and points at the keys that ARE reconstructible, rather
@@ -831,10 +1050,10 @@ def persist_cdd_and_respond(db, request_body, current_user, *, raw_output, secti
 def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id, map_guidance: str = ""):
     """Run the block-wide digest pipeline for a Block Blueprint. Returns kwargs for
     persist_blueprint_and_respond, or None to fall back to legacy."""
-    result, report = _build_and_reduce("blueprint", request_body.block,
-                                        getattr(request_body, "quality_tier", None),
-                                        current_user, dis_client_id, map_guidance,
-                                        db=db, request_body=request_body)
+    result, report, directives = _build_and_reduce("blueprint", request_body.block,
+                                                   getattr(request_body, "quality_tier", None),
+                                                   current_user, dis_client_id, map_guidance,
+                                                   db=db, request_body=request_body)
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_sections_from_text
@@ -844,7 +1063,7 @@ def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id
         "raw_output": raw_output,
         "sections": sections,
         "dis_source_units": [],
-        "prompt_provenance": _provenance("blueprint", result, report, map_guidance),
+        "prompt_provenance": _provenance("blueprint", result, report, map_guidance, directives),
         # NOT a verbatim prompt — REDUCE is N batched calls plus a separate
         # per-day MAP stage, so there is no single pair to record. Says so
         # explicitly and points at the keys that ARE reconstructible, rather

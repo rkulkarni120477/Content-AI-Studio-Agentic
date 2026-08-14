@@ -8,6 +8,7 @@ import {
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
   activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
   generateCddBlockThunk,
+  resumeCddJobThunk,
 } from '@features/cdd/cddThunks';
 import { cddService } from '@features/cdd/services/cddService';
 import {
@@ -75,9 +76,18 @@ export default function CddPage() {
   const error = useAppSelector(selectCddError);
   const blockJob = useAppSelector(selectCddBlockJob);
   const { user } = useAuth();
-  // Block-wide (digest-pipeline) generation is opt-in per DIS client; the server
-  // reports the capability on /auth/me so we can hide the control otherwise.
-  const digestPipelineEnabled = Boolean(user?.digest_pipeline_enabled);
+  // Block-wide (digest-pipeline) generation is opt-in per DIS client — and the
+  // client that matters is the COURSE'S, not the viewer's, because the pipeline
+  // reads the course's own Source Library. Gating this on the user's own flag was
+  // wrong: on 2026-08-13, 71 of 106 courses showed the panel and then failed the
+  // POST with a 400. Courses now carry the same answer the endpoint gates on.
+  //
+  // `??`, not `||`: falling back only when the course has not loaded yet. Treating
+  // a loaded `false` as "unknown" would put the wrong panel back on screen, and
+  // treating an unloaded course as `false` would hide the panel from users who can
+  // legitimately use it — the same false-negative that hid it after every login.
+  const digestPipelineEnabled =
+    selCourse?.digest_pipeline_enabled ?? Boolean(user?.digest_pipeline_enabled);
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
   const [refDocIds, setRefDocIds] = useState([]);
@@ -179,6 +189,22 @@ export default function CddPage() {
       setSelectedStyleId(activeStyle.id);
     }
   }, [activeStyle, selectedStyleId]);
+
+  // Reattach to a block-wide build already running server-side. The poll chain lives
+  // only in browser memory, so a refresh (or a closed laptop, or the transient network
+  // error that a 20-minute build reliably provokes) used to orphan the UI while the
+  // job kept going — leaving a dead spinner, or tempting a re-submit that pays for a
+  // second concurrent build. Runs on every mount and resolves to null when nothing is
+  // in flight, so the common case costs one cheap request and changes no state.
+  useEffect(() => {
+    if (courseId) dispatch(resumeCddJobThunk({ courseId: Number(courseId) }));
+    // projectId is in the deps because the resetBlockJob effect above lists it too:
+    // projectId arrives asynchronously and commonly flips undefined→number just after
+    // mount, which re-runs that effect and nulls blockJob while leaving isGenerating
+    // true — a disabled button with no status line. Re-running here re-adopts the job.
+    // The thunk bails out when a job is already being polled, so this cannot stack up
+    // duplicate poll chains.
+  }, [dispatch, courseId, projectId]);
 
   // Reference-document selector options. Same source as the Style tab: every
   // ingested Source Library document for this course's client (DIS `status` is a
@@ -322,6 +348,12 @@ export default function CddPage() {
       model_choice: modelChoice,
       target_audience: targetAudience,
       expert_domain: expertDomain,
+      // The style shown in the picker above, and announced by the "<style> will be
+      // applied" banner. Omitting it made that banner false: block-wide generation
+      // ran with no style at all while the page said otherwise. Sent as the id the
+      // form displays rather than resolved server-side, so what is applied is always
+      // what the user was shown.
+      style_id: selectedStyleId || null,
       // The prompt shown in the "Prompt Template" dropdown above. Without this the
       // server can't reach its DB tier and falls through to the generic shipped
       // cdd_generation.md file — so the panel would silently distill its guidance
@@ -873,7 +905,7 @@ export default function CddPage() {
               {digestPipelineEnabled && (
                 <BlockWidePanel
                   label={L.cdd}
-                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
+                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Applies the ${L.styleLower}, additional instructions and duration set above; the document selection does not apply, since every ingested source in the block is used. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
                   block={blockLabel}
                   onBlockChange={onBlockLabelChange}
                   qualityTier={qualityTier}

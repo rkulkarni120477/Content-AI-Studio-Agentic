@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 
 from config.settings import TenantConfig
 from services import indexing
-from services.digests import mapper
+from services.digests import mapper, progress
 from services.digests.enumerate import enumerate_block
 
 log = logging.getLogger(__name__)
@@ -123,11 +123,17 @@ _PREFLIGHT_OK: set[str] = set()
 def preflight_extractor(model: str) -> None:
     """Confirm the extractor model is invokable before spending a whole block on it.
 
-    ``call_llm`` swallows every exception and returns a valid-JSON stub, so an
-    unavailable model does not raise — it quietly yields N digests whose fields are
+    ``call_llm`` used to swallow every exception and return a valid-JSON stub, so an
+    unavailable model did not raise — it quietly yielded N digests whose fields were
     all defaults. On 2026-08-12 that produced a Blueprint with 8 of 20 days at
     concept_type "Unknown", every AM.I.B ACS code orphaned, and a job that reported
     success; the only visible trace was the exported spreadsheet.
+
+    ``call_llm`` raises ``LLMCallFailed`` now, so a per-day failure is honest on its
+    own. This probe is still worth its couple of tokens: it turns "every one of N days
+    failed for the same reason" into ONE error raised before the block is attempted,
+    and it is the only thing that catches the dev MOCK, which returns canned text
+    without contacting a provider at all and so raises nothing.
 
     Model availability is per-region AND per-role, so it cannot be settled in config
     review — it has to be probed from the environment that will do the work. One
@@ -145,7 +151,11 @@ def preflight_extractor(model: str) -> None:
 
     try:
         reply, tokens_in, _ = call_llm(model, 'Reply with only: {"ok":true}', max_tokens=8)
-    except Exception as exc:                      # defensive: call_llm swallows today
+    except Exception as exc:
+        # call_llm now RAISES LLMCallFailed on a provider error, so this is the primary
+        # path for a genuinely unavailable model rather than a defensive branch. The
+        # zero-token check below still catches the dev mock, which returns canned text
+        # without calling anything.
         raise ExtractorUnavailable(_unavailable_msg(model, repr(exc))) from exc
 
     # Keyed on the token count, not the reply text: call_llm's failure path is the
@@ -153,6 +163,24 @@ def preflight_extractor(model: str) -> None:
     # dev/mock path) reports a positive count. Matching on reply content instead
     # would either miss a changed stub or reject a legitimately terse answer.
     if not tokens_in:
+        # Distinguish "no credentials at all, so canned replies are being served" from
+        # "credentials exist but this model is not invokable". They look identical at
+        # this point — both surface as a zero-token probe — but the first is a
+        # deployment that never contacted a provider, and telling an operator to check
+        # region and model access sends them hunting the wrong thing entirely (it did,
+        # for most of 2026-08-13).
+        from services.pipeline.common import llm_is_mocked
+        if llm_is_mocked():
+            raise ExtractorUnavailable(
+                "DIS is serving MOCK LLM replies, so no model was contacted and every "
+                "digest would be canned filler. This happens when environment is "
+                "'development' (its default) AND no model credentials are visible to "
+                "this process. Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or "
+                "DIS_BEDROCK_ACCESS_KEY_ID/DIS_BEDROCK_SECRET_ACCESS_KEY), and set "
+                "ENVIRONMENT=production, in the env file this container actually reads "
+                "— for the dis_backend service that is dis_backend/.env, NOT the root "
+                ".env."
+            )
         raise ExtractorUnavailable(_unavailable_msg(model, reply[:160]))
     _PREFLIGHT_OK.add(model)
     log.info("digest preflight ok: model=%s", model)
@@ -167,6 +195,32 @@ def _unavailable_msg(model: str, detail: str) -> str:
         f"DIS_MODEL_DIGEST_EXTRACTION or DIS_MODEL_TEXT_ALL. The preceding "
         f"'[LLM] failed' log line carries the underlying AWS error."
     )
+
+
+def run_tracked_build(tenant_cfg: TenantConfig, block: str, client_id: str = "",
+                      **kwargs: Any) -> Dict[str, Any]:
+    """``build_digests`` with its outcome published to the progress registry.
+
+    This is what makes the request that starts a build disposable. ``build_digests``
+    reports per-day progress but returns its report only to its caller, so when that
+    caller was a minutes-long HTTP request, losing the connection lost the report of a
+    build that had completed and been billed — exactly the production failure on
+    2026-08-13 (all 20 days ``ok``, then ``503 ... timed out`` at 8m07s, report gone).
+    Publishing the outcome means a caller can collect it on any later poll.
+
+    Re-raises after recording, so the synchronous path can still map ``LookupError``
+    and ``RuntimeError`` onto 404/400 as before.
+    """
+    try:
+        report = build_digests(tenant_cfg, block, client_id=client_id, **kwargs)
+    except BaseException as exc:
+        # BaseException, not Exception: a build cancelled by shutdown must still leave
+        # a terminal state behind, or its poller waits out the full deadline on a
+        # build that is definitively not coming back.
+        progress.fail(client_id, block, f"{type(exc).__name__}: {exc}".strip())
+        raise
+    progress.complete(client_id, block, report)
+    return report
 
 
 def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
@@ -216,16 +270,27 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
 
     budget: Dict[str, int] = {"calls": 0, "tok_in": 0, "tok_out": 0}
     per_day: List[Dict[str, Any]] = []
-    for day in en.days:
-        dn = day["day_number"]
-        units = en.units_by_day.get(dn, [])
-        if day_is_cached(day, units, model, existing, force, map_guidance=map_guidance):
-            per_day.append({"day_number": dn, "status": "cached"})
-            continue
-        res = build_one_day(tenant_cfg, day, units, model, en.client_id, block, map_guidance=map_guidance)
-        for k in budget:
-            budget[k] += res["budget"].get(k, 0)
-        per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
+    # Report progress per day so a caller can show "day 7 of 20" while this runs. The
+    # build holds one HTTP request open for minutes, so this registry is the only way
+    # anything outside can see inside it.
+    progress.start(en.client_id, block, total=len(en.days))
+    try:
+        for day in en.days:
+            dn = day["day_number"]
+            units = en.units_by_day.get(dn, [])
+            if day_is_cached(day, units, model, existing, force, map_guidance=map_guidance):
+                per_day.append({"day_number": dn, "status": "cached"})
+                progress.record(en.client_id, block, "cached")
+                continue
+            res = build_one_day(tenant_cfg, day, units, model, en.client_id, block, map_guidance=map_guidance)
+            for k in budget:
+                budget[k] += res["budget"].get(k, 0)
+            per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
+            progress.record(en.client_id, block, res["status"])
+    finally:
+        # In a finally so a build that raises still stops reporting itself as in
+        # flight — otherwise the UI would sit on a bar that never completes.
+        progress.finish(en.client_id, block)
 
     return _finalize_report(block, en, per_day, budget, strategy="sequential", model=model)
 

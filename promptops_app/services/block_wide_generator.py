@@ -168,6 +168,15 @@ class ReduceResult:
     sections: List[Dict[str, Any]]
     coverage: Dict[str, Any]
     llm_calls: int = 0
+    #: The models that actually returned the text, in call order — NOT necessarily
+    #: ``reduce_model``, which is only what the tier ASKED for. The reliability layer
+    #: silently falls back to another model on a provider error, so recording the
+    #: request as though it were the answer misattributes the output. Measured
+    #: 2026-08-14: a whole CDD recorded reduce_model="Claude Sonnet 5 (Bedrock)"
+    #: while Sonnet 4.5 wrote every word of it. Empty on the injected-``llm`` test
+    #: seam, which returns bare text with no model to report. Summarised to
+    #: ``{model: call_count}`` on the provenance/audit rows (_model_call_counts).
+    reduce_models_used: List[str] = field(default_factory=list)
     #: Which template/version/tier supplied each REDUCE prompt for this run
     #: (see reduce_prompts.ReducePrompt.to_provenance). Persisted with the
     #: artifact so a reviewer can tell an admin-edited prompt from the built-in
@@ -178,23 +187,47 @@ class ReduceResult:
         return asdict(self)
 
 
-def _guidance_block(map_guidance: str) -> str:
-    """Render optional prompt-derived guidance as a clearly-delimited,
-    contract-safe addendum to the REDUCE narrative-fill prompt — "" when there
-    is none, so a call with no guidance produces byte-identical prompt text to
-    before this feature existed. Mirrors dis_backend/services/digests/mapper.
-    py's own ``_guidance_block`` (duplicated, not imported — dis_backend and
+def _guidance_block(map_guidance: str, user_directives: str = "") -> str:
+    """Render the optional guidance layers as clearly-delimited, contract-safe
+    addenda to the REDUCE narrative-fill prompt — "" when there are none, so a
+    call with no guidance produces byte-identical prompt text to before this
+    feature existed. Mirrors dis_backend/services/digests/mapper.py's own
+    ``_guidance_block`` (duplicated, not imported — dis_backend and
     promptops_app are separate deployables with no shared import path, same
-    reason _acs_sort_key above is a local copy)."""
+    reason _acs_sort_key above is a local copy).
+
+    Two layers, kept separately labelled and ordered deliberately:
+
+    * ``map_guidance`` — distilled from the course's selected prompt template.
+      Standing policy for this course, maintained by an admin.
+    * ``user_directives`` — the style, instructions and duration the requester
+      supplied for THIS run (see promptops_app.services.user_directives).
+
+    The requester's directives come last because when a per-run instruction and a
+    standing template conflict, the person clicking Generate should win. They are
+    a separate section rather than one merged blob so that the model can tell the
+    two apart, and so a reviewer reading a provenance row can too.
+
+    Both are appended into the template's single ``{guidance_block}`` slot instead
+    of adding a second template variable: reduce templates are DB-editable and a
+    newly-declared variable an admin's stored template does not mention would be
+    rejected as a variable violation, silently demoting them to the built-in
+    prompt — which is the failure mode this whole change is about."""
+    parts = []
     text = (map_guidance or "").strip()
-    if not text:
+    if text:
+        parts.append(
+            "ADDITIONAL GENERATION GUIDANCE (derived from the course's selected "
+            "prompt template — apply while filling the fields requested above; this "
+            "refines judgment/emphasis ONLY, it must never add a field not requested "
+            "above or contradict any instruction above):\n" + text
+        )
+    directives = (user_directives or "").strip()
+    if directives:
+        parts.append(directives)
+    if not parts:
         return ""
-    return (
-        "\n\nADDITIONAL GENERATION GUIDANCE (derived from the course's selected "
-        "prompt template — apply while filling the fields requested above; this "
-        "refines judgment/emphasis ONLY, it must never add a field not requested "
-        "above or contradict any instruction above):\n" + text
-    )
+    return "\n\n" + "\n\n".join(parts)
 
 
 def _safe_json(text: str) -> Any:
@@ -243,6 +276,9 @@ class BlockWideGenerator:
         #: Provenance for the prompts actually used, surfaced on ReduceResult so a
         #: reviewer can see which template/version/tier produced a deliverable.
         self.prompt_provenance: Dict[str, Any] = {}
+        #: Models that actually answered, appended per call by _call — see
+        #: ReduceResult.reduce_models_used for why the requested model is not enough.
+        self.reduce_models_used: List[str] = []
 
     # -- LLM seam -------------------------------------------------------------
     def _call(self, model_choice: str, system: str, user: str) -> str:
@@ -262,6 +298,12 @@ class BlockWideGenerator:
         # generation / marks the job failed instead.
         if getattr(result, "status", None) == "error":
             raise RuntimeError(getattr(result, "text", None) or "LLM reduce call failed")
+        # Record who actually answered, before returning only the text. A fallback is
+        # logged at WARNING and then forgotten; this is the part that survives into
+        # the artifact and the audit row.
+        used = getattr(result, "model", None)
+        if used:
+            self.reduce_models_used.append(used)
         return getattr(result, "text", "") or ""
 
     def _build_usage_ctx(self, deliverable: str, prompt) -> Any:
@@ -311,13 +353,23 @@ class BlockWideGenerator:
                block_overview: Optional[Dict[str, Any]] = None,
                source_file_inventory: Optional[List[Dict[str, Any]]] = None,
                acs_registry: Optional[List[Dict[str, Any]]] = None,
-               map_guidance: str = "") -> ReduceResult:
+               map_guidance: str = "", user_directives: str = "") -> ReduceResult:
         """``map_guidance`` (optional) is judgment/emphasis instructions distilled
         from the course's selected CDD/Blueprint prompt (see
         promptops_app.services.prompt_guidance.resolve_prompt_guidance) — folded
         into the narrative-fill call below. "" (the default) reproduces this
-        method's exact pre-existing behavior."""
+        method's exact pre-existing behavior.
+
+        ``user_directives`` (optional) is the same idea one layer closer to the
+        user: the style, additional instructions and declared duration supplied on
+        the generation form for this specific run (see
+        promptops_app.services.user_directives.resolve_user_directives). Kept a
+        separate argument rather than pre-concatenated into ``map_guidance`` so the
+        two authorities stay distinguishable in the prompt and in provenance."""
         deliverable = deliverable if deliverable in _DEFAULT_SYSTEM else "cdd"
+        # Reset per run: the instance is reusable, and carrying a previous run's
+        # models forward would attribute this deliverable to a model it never called.
+        self.reduce_models_used = []
         tm = resolve_tier(tier)
         by_day = {d.get("day_number"): d for d in digests}
         days = enumerate_summary.get("days", [])
@@ -338,7 +390,7 @@ class BlockWideGenerator:
         self.prompt_provenance = {"narrative": narrative_prompt.to_provenance()}
         self._usage_ctx = self._build_usage_ctx(deliverable, narrative_prompt)
         llm_calls = self._fill_narratives(rows, deliverable, narrative_prompt, tm.reduce_model,
-                                          block_overview, map_guidance)
+                                          block_overview, map_guidance, user_directives)
 
         coverage = self.verify(rows, enumerate_summary, deliverable, tm.tier)
         sections = [
@@ -351,7 +403,8 @@ class BlockWideGenerator:
         ]
         notes_calls = 0
         try:
-            notes_fields, notes_calls = self._patterns_notes(rows, coverage, tm.reduce_model, map_guidance)
+            notes_fields, notes_calls = self._patterns_notes(rows, coverage, tm.reduce_model,
+                                                             map_guidance, user_directives)
             sections.append({"key": "patterns_notes", "title": "PATTERNS & DESIGN NOTES", "fields": notes_fields})
         except Exception as exc:
             # Best-effort synthesis — a failure here must never sink the day
@@ -363,11 +416,13 @@ class BlockWideGenerator:
             deliverable=deliverable, tier=tm.tier, reduce_model=tm.reduce_model,
             max_output_tokens=tm.max_output_tokens, sections=sections,
             coverage=coverage.to_dict(), llm_calls=llm_calls + notes_calls,
+            reduce_models_used=list(self.reduce_models_used),
             prompt_provenance=dict(self.prompt_provenance),
         )
 
     def _patterns_notes(self, rows: List[Dict[str, Any]], coverage: "CoverageReport",
-                        model_choice: str, map_guidance: str = "") -> tuple[Dict[str, str], int]:
+                        model_choice: str, map_guidance: str = "",
+                        user_directives: str = "") -> tuple[Dict[str, str], int]:
         """Worksheet 5 synthesis. Every field with a single correct answer (learn-
         while-doing days, handbook edition conflicts, high-risk days) is a CODE
         conclusion, not an LLM judgment call — a model asked to "phrase" a fact can
@@ -430,7 +485,8 @@ class BlockWideGenerator:
         self.prompt_provenance["patterns_notes"] = resolved.to_provenance()
         prompt = render_user_prompt(
             resolved,
-            {"facts": json.dumps(facts, indent=2), "guidance_block": _guidance_block(map_guidance)},
+            {"facts": json.dumps(facts, indent=2),
+             "guidance_block": _guidance_block(map_guidance, user_directives)},
             PATTERNS_CONTRACT,
             _DEFAULT_PATTERNS_USER,
         )
@@ -575,7 +631,7 @@ class BlockWideGenerator:
     def _fill_narratives(self, rows: List[Dict[str, Any]], deliverable: str,
                          prompt: Any, model_choice: str,
                          block_overview: Optional[Dict[str, Any]] = None,
-                         map_guidance: str = "") -> int:
+                         map_guidance: str = "", user_directives: str = "") -> int:
         """Batch rows and ask the LLM for a narrative + how-it's-applied cell per
         day. Any row the LLM omits (or a failed/parse error) degrades to
         'REVIEW NEEDED'/a neutral default, never blank — the row still exists
@@ -652,7 +708,7 @@ class BlockWideGenerator:
                 {
                     "block_facts": json.dumps(block_facts, indent=2),
                     "block_context": json.dumps(block_context, indent=2),
-                    "guidance_block": _guidance_block(map_guidance),
+                    "guidance_block": _guidance_block(map_guidance, user_directives),
                     "day_records": json.dumps(payload, indent=2),
                 },
                 NARRATIVE_CONTRACT,

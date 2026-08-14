@@ -6,6 +6,8 @@ bearer token and forwards the resolved CAS user/tenant/client context in headers
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import Any, Dict
 
 import httpx
@@ -13,6 +15,8 @@ from fastapi import HTTPException, UploadFile
 
 from app.core.config import settings
 from app.core.dis_access import DISAccessContext, get_dis_access_for_user
+
+_log = logging.getLogger(__name__)
 
 
 def _get_setting(name: str, default: Any = None) -> Any:
@@ -140,25 +144,206 @@ class DISClient:
         """Build (or refresh, lazily + cached) the per-day digest tier for a block.
         Returns the build report (built/cached/failed, flags, attribution).
 
-        ``map_guidance`` (optional) is judgment/emphasis guidance distilled from
-        the course's selected CDD/Blueprint prompt (see
-        promptops_app.services.prompt_guidance.resolve_prompt_guidance) —
-        forwarded to every day's MAP call and folded into the cache key on the
-        DIS side. "" (the default) reproduces this call's exact pre-existing
-        behavior.
+        Starts the build and polls for it, rather than holding one HTTP request open
+        for its whole duration.
 
-        Sequential MAP is O(days) — a real 20-day cold build measured ~5 minutes,
-        already within ~5% of the client-wide self.timeout (300s default). A
-        block with more days, slower Bedrock latency, or per-day retries would
-        exceed that and fail the WHOLE build with no partial credit (the digest
-        cache is per-day, so a retry would be fast, but the first cold run is at
-        real risk). Overrides just this call's timeout rather than raising the
-        global default, which every other (genuinely fast) DIS call also uses —
-        those should keep failing fast on a real outage, not wait minutes."""
-        return self.request_sync("POST", "/context/digests/build",
-                                 json={"block": block, "force": force, "map_guidance": map_guidance},
+        The old shape put a 5-20 minute build inside a single request, which made that
+        connection a single point of failure for work that costs real money. It failed
+        in production twice on 2026-08-13: once at 21m52s and once at 8m07s — and the
+        second time **all 20 days had already been built successfully**. The report was
+        discarded and the user saw "generation failed" for a build that had completed.
+        No timeout value fixes that; the request simply must not be load-bearing.
+
+        So: POST returns as soon as the build is running, and progress/result are read
+        from the registry (see dis_backend/services/digests/progress.py). A dropped
+        connection now costs one poll interval instead of the entire build. The
+        registry is in-process on a single-process DIS, so a restart mid-build is
+        handled explicitly below rather than silently reported as success.
+
+        ``map_guidance`` (optional) is judgment/emphasis guidance distilled from the
+        course's selected CDD/Blueprint prompt (see
+        promptops_app.services.prompt_guidance.resolve_prompt_guidance) — forwarded to
+        every day's MAP call and folded into the cache key on the DIS side. "" (the
+        default) reproduces this call's exact pre-existing behavior.
+        """
+        deadline_s = float(_get_setting("dis_digest_build_deadline_seconds", 2400))
+        interval_s = float(_get_setting("dis_digest_build_poll_seconds", 5))
+        # Retried because starting is now idempotent and cheap. DIS holds a
+        # single-flight reservation per block, so a start whose response was lost
+        # answers "already_running" the second time rather than launching a duplicate.
+        # Without this, one dropped packet on a millisecond-long call fails a
+        # generation before any work begins.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                reply = self._start_digest_build(block, force, current_user, client_id,
+                                                 map_guidance)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                _log.warning("starting the digest build for %s failed (attempt %s/3): %s",
+                             block, attempt + 1, exc)
+                if attempt < 2:
+                    time.sleep(min(interval_s, 5.0))
+        else:
+            raise HTTPException(
+                503, f"Could not start the digest build for {block}: {last_exc}")
+        # A DIS that predates the async build ran it inline and returned the report.
+        # Recognised so a mixed-version window during a rolling rebuild degrades to the
+        # old behavior instead of failing outright.
+        if "started" not in reply and "already_running" not in reply:
+            return reply
+        return self._await_digest_build(block, current_user, client_id,
+                                        deadline_s=deadline_s, interval_s=interval_s,
+                                        force=force, map_guidance=map_guidance)
+
+    def _start_digest_build(self, block: str, force: bool, current_user: Any,
+                            client_id: str, map_guidance: str) -> Dict[str, Any]:
+        """Ask DIS to begin a build. Returns as soon as it is running, not when done.
+
+        Idempotent per block: DIS reserves a single-flight slot, so calling this while a
+        build is live answers ``already_running`` instead of starting a second one. That
+        is what makes the retry above safe.
+
+        Caveat worth knowing: because the reservation is keyed on the block alone, a
+        caller that joins an in-flight build inherits *that* build's ``force`` and
+        ``map_guidance``, not its own. Two users generating the same block from
+        different prompts at the same moment is the only way to reach it, and waiting
+        for the running build beats refusing to build at all — but the second user's
+        guidance is not what produced the digests they get.
+        """
+        reply = self.request_sync(
+            "POST", "/context/digests/build",
+            json={"block": block, "force": force, "map_guidance": map_guidance,
+                  "wait": False},
+            current_user=current_user, client_id=client_id,
+            # Generous only by the standards of a call that no longer waits for the
+            # build: DIS reserves its slot and spawns a thread, so this returns in
+            # milliseconds. The headroom is for a loaded event loop, not for work.
+            timeout=min(self.timeout, 60.0),
+        )
+        return reply if isinstance(reply, dict) else {}
+
+    def _await_digest_build(self, block: str, current_user: Any, client_id: str, *,
+                            deadline_s: float, interval_s: float,
+                            force: bool, map_guidance: str) -> Dict[str, Any]:
+        """Poll until the build reaches a terminal state, then return its report.
+
+        Three conditions have to be distinguished, and conflating any two of them is
+        how a build silently turns into a wrong answer:
+
+        * **terminal** — ``state`` is ``done`` (return the report) or ``failed``
+          (raise, carrying DIS's own reason).
+        * **transient** — the poll itself errored. DIS is momentarily busy or the
+          network blipped; the build is unaffected. Keep polling.
+        * **vanished** — DIS answers, but has no entry for a block we watched it start.
+          Only a restart does that. Re-issue the build: per-day digests are cached, so
+          it resumes rather than starting over. Bounded, because a build that cannot
+          survive being started twice will not survive a third time either.
+        """
+        deadline = time.monotonic() + max(deadline_s, interval_s)
+        seen_entry = False
+        restarts = 0
+        consecutive_errors = 0
+        missing_streak = 0
+        last_error = ""
+        first = True
+        while time.monotonic() < deadline:
+            # Poll before sleeping. DIS reserves its registry slot synchronously, before
+            # the POST returns, so an entry is already there — and the common case by
+            # far is a retry whose days are all cached, which finishes in well under a
+            # second. Sleeping first would add a fixed poll interval to every one of
+            # those for no reason.
+            if not first:
+                time.sleep(interval_s)
+            first = False
+            try:
+                snap = (self.get_digest_progress_sync(
+                    block, current_user=current_user, client_id=client_id,
+                    include_result=True, timeout=30.0,
+                ) or {}).get("progress")
+                consecutive_errors = 0
+            except Exception as exc:  # noqa: BLE001 - any poll failure is transient here
+                consecutive_errors += 1
+                last_error = f"{type(exc).__name__}: {exc}"
+                # ~2 minutes of continuous unreachability is an outage, not a blip, and
+                # waiting out a 40-minute deadline against a dead DIS helps nobody.
+                if consecutive_errors * interval_s >= 120:
+                    raise HTTPException(
+                        503, f"DIS unreachable while building digests for {block}: {last_error}")
+                continue
+
+            if snap is None:
+                missing_streak += 1
+                # A short grace period only: DIS reserves its slot before returning, so
+                # a missing entry should be impossible. Bounded anyway, because the
+                # alternative is waiting out the whole deadline on a build that no
+                # process is running.
+                if not seen_entry and missing_streak * interval_s < 30:
+                    continue
+                if restarts >= 2:
+                    raise HTTPException(
+                        503, f"DIS lost the digest build for {block} repeatedly "
+                             f"(restarted mid-build). Completed days are cached; retry.")
+                restarts += 1
+                missing_streak = 0
+                _log.warning("digest build for %s is not tracked by DIS (restart?) — "
+                             "re-issuing, attempt %s", block, restarts + 1)
+                try:
+                    self._start_digest_build(block, force, current_user, client_id,
+                                             map_guidance)
+                except Exception as exc:  # noqa: BLE001
+                    # A DIS that just restarted may not be accepting requests yet. That
+                    # is the same transient condition as a failed poll, and letting it
+                    # escape here would abandon a build over a blip during recovery —
+                    # the precise class of bug this rewrite exists to remove. The next
+                    # pass retries, and `restarts` still bounds the attempts.
+                    consecutive_errors += 1
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    _log.warning("re-issuing the digest build for %s failed: %s",
+                                 block, last_error)
+                continue
+
+            seen_entry = True
+            missing_streak = 0
+            state = snap.get("state")
+            if state == "failed":
+                raise HTTPException(
+                    502, f"DIS digest build for {block} failed: "
+                         f"{snap.get('error') or 'no reason reported'}")
+            if state == "done":
+                report = snap.get("report")
+                if report is None:
+                    # Terminal with no report should be impossible (complete() sets both
+                    # together). Treat it as a failure rather than returning None and
+                    # letting the caller build a deliverable out of nothing.
+                    raise HTTPException(
+                        502, f"DIS reported the digest build for {block} complete but "
+                             f"returned no report")
+                return report
+
+        raise HTTPException(
+            504, f"Digest build for {block} did not finish within "
+                 f"{int(deadline_s / 60)} minutes. Completed days are cached, so a "
+                 f"retry resumes where this left off.")
+
+    def get_digest_progress_sync(self, block: str, current_user: Any = None,
+                                 client_id: str = "", include_result: bool = False,
+                                 timeout: float = 10.0) -> Dict[str, Any]:
+        """State and per-day progress of a digest build for *block*.
+
+        Two callers, deliberately different: the UI polls this every 2 seconds for the
+        counter and must fail fast (10s default) rather than hang a progress request
+        behind a slow DIS; the build poller passes ``include_result=True`` and a longer
+        timeout, because for it this is the delivery channel for the report.
+        """
+        params: Dict[str, Any] = {"block": block}
+        if include_result:
+            params["include_result"] = "true"
+        return self.request_sync("GET", "/context/digests/progress",
+                                 params=params,
                                  current_user=current_user, client_id=client_id,
-                                 timeout=max(self.timeout, 1200.0))
+                                 timeout=timeout)
 
     def get_digests_bundle_sync(self, block: str, current_user: Any = None,
                                 client_id: str = "") -> Dict[str, Any]:

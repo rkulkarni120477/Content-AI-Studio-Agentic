@@ -3,7 +3,7 @@ import { attachBlockJobReducers } from '@features/shared/blockJob';
 import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, activateCddVersionThunk,
-  generateCddBlockThunk, pollCddJobThunk,
+  generateCddBlockThunk, pollCddJobThunk, resumeCddJobThunk,
 } from './cddThunks';
 
 const initialState = {
@@ -34,7 +34,7 @@ const cddSlice = createSlice({
       .addCase(fetchCddsThunk.fulfilled, (s, { payload }) => {
         s.isLoading = false;
         s.cdds = payload?.items ?? payload ?? [];
-        if (payload?.activeCdd) s.activeCdd = payload.activeCdd;
+        s.activeCdd = payload?.activeCdd ?? null;
       })
       .addCase(fetchCddsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
@@ -64,7 +64,8 @@ const cddSlice = createSlice({
       });
 
     // Shared block-wide async-job cases (pending/fulfilled/rejected + poll).
-    attachBlockJobReducers(b, { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk });
+    attachBlockJobReducers(b, { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk,
+                                 resumeThunk: resumeCddJobThunk });
   },
 });
 

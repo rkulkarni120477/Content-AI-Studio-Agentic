@@ -17,7 +17,7 @@ Login paths
 from __future__ import annotations
 
 import logging
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse
@@ -46,29 +46,55 @@ router = APIRouter()
 # Token / profile builders
 # ---------------------------------------------------------------------------
 
-def _build_token_response(user) -> TokenResponse:
-    project_id = getattr(user, "_project_id", None)
-    is_platform_admin = getattr(user, "_is_platform_admin", False)
-    role = getattr(user, "_role", None) or user.role
+def build_user_profile(user) -> UserProfileResponse:
+    """The single place a ``UserProfileResponse`` is built.
 
+    THE ONLY ONE — do not construct ``UserProfileResponse`` anywhere else. Login,
+    refresh and ``/me`` all hand the frontend this object, and the React auth store
+    writes whichever arrives last into the same ``auth.user`` slot. So a field wired
+    into one construction site and not another does not read as missing data: it reads
+    as a definitive value (its schema default), and UI gated on it appears or
+    disappears depending on how the session started.
+
+    That is not hypothetical. ``digest_pipeline_enabled`` gates the block-wide
+    generation panel and was set only by ``/me``, so an AIM user who logged in
+    normally got the schema default ``False`` and saw no block-wide option — which
+    then appeared after a hard refresh, because a page reload boots through ``/me``.
+    Fixed 2026-08-13; tests/integration/test_auth_profile_consistency.py asserts the
+    endpoints agree field-for-field and that this function stays the only builder.
+
+    Reads the request-scoped ``_role``/``_project_id``/``_is_platform_admin``
+    attributes the auth paths attach to the user, falling back to the stored column,
+    so it works for both a freshly authenticated user and one loaded from a token.
+    """
     from app.core.dis_access import build_dis_profile
 
-    token = create_access_token(
-        user.username,
-        role,
-        project_id=project_id,
-        is_platform_admin=is_platform_admin,
-    )
-    profile = UserProfileResponse(
+    role = getattr(user, "_role", None) or user.role
+    dis_profile = build_dis_profile(user)
+    return UserProfileResponse(
         id=user.id,
         username=user.username,
         role=role,
         role_display=role_label(role),
         is_active=bool(user.is_active),
         permissions=effective_permissions(user),
-        project_id=project_id,
-        is_platform_admin=is_platform_admin,
-        **build_dis_profile(user),
+        project_id=getattr(user, "_project_id", None),
+        is_platform_admin=getattr(user, "_is_platform_admin", False),
+        # Capability flags belong here, not at a call site: they are computed from
+        # settings plus the resolved DIS client, and a client-specific answer that
+        # only some endpoints bother to compute is worse than no flag at all.
+        digest_pipeline_enabled=settings.digest_pipeline_on_for(dis_profile.get("client_id")),
+        **dis_profile,
+    )
+
+
+def _build_token_response(user) -> TokenResponse:
+    profile = build_user_profile(user)
+    token = create_access_token(
+        user.username,
+        profile.role,
+        project_id=profile.project_id,
+        is_platform_admin=profile.is_platform_admin,
     )
     return TokenResponse(
         access_token=token,
@@ -301,20 +327,9 @@ def get_me(
     The ``permissions`` list in the response lets the React frontend gate
     UI elements without making additional API calls.  This matches the
     ``rbac_check()`` calls that were distributed across every Streamlit page.
-    """
-    from app.core.dis_access import build_dis_profile
 
-    role = getattr(current_user, "_role", None) or current_user.role
-    dis_profile = build_dis_profile(current_user)
-    return UserProfileResponse(
-        id=current_user.id,
-        username=current_user.username,
-        role=role,
-        role_display=role_label(role),
-        is_active=bool(current_user.is_active),
-        permissions=effective_permissions(current_user),
-        project_id=getattr(current_user, "_project_id", None),
-        is_platform_admin=getattr(current_user, "_is_platform_admin", False),
-        digest_pipeline_enabled=settings.digest_pipeline_on_for(dis_profile.get("client_id")),
-        **dis_profile,
-    )
+    Shares ``build_user_profile`` with login and refresh so all three endpoints
+    report the same fields — see that function on why a divergence here is invisible
+    rather than loud.
+    """
+    return build_user_profile(current_user)

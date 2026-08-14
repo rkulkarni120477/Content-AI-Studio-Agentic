@@ -8,6 +8,7 @@ import {
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   generateBlueprintBlockThunk,
+  resumeBlueprintJobThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
@@ -81,8 +82,18 @@ export default function BlueprintPage() {
   const error = useAppSelector(selectBlueprintError);
   const blockJob = useAppSelector(selectBlueprintBlockJob);
   const { user } = useAuth();
-  // Block-wide (digest-pipeline) generation is opt-in per DIS client.
-  const digestPipelineEnabled = Boolean(user?.digest_pipeline_enabled);
+  // Block-wide (digest-pipeline) generation is opt-in per DIS client — and the
+  // client that matters is the COURSE'S, not the viewer's, because the pipeline
+  // reads the course's own Source Library. Gating this on the user's own flag was
+  // wrong: on 2026-08-13, 71 of 106 courses showed the panel and then failed the
+  // POST with a 400. Courses now carry the same answer the endpoint gates on.
+  //
+  // `??`, not `||`: falling back only when the course has not loaded yet. Treating
+  // a loaded `false` as "unknown" would put the wrong panel back on screen, and
+  // treating an unloaded course as `false` would hide the panel from users who can
+  // legitimately use it — the same false-negative that hid it after every login.
+  const digestPipelineEnabled =
+    selCourse?.digest_pipeline_enabled ?? Boolean(user?.digest_pipeline_enabled);
 
   const [linkedCddId, setLinkedCddId] = useState(null);
   const [cddContent, setCddContent] = useState('');
@@ -194,6 +205,19 @@ export default function BlueprintPage() {
       setLinkedCddId(activeCdd.id);
     }
   }, [activeCdd, linkedCddId]);
+
+  // Reattach to a block-wide build already running server-side — see the identical
+  // effect in CddPage. Declared after the resetBlockJob effect above so a course
+  // switch clears the previous course's banner before this adopts the new one's job.
+  useEffect(() => {
+    if (courseId) dispatch(resumeBlueprintJobThunk({ courseId: Number(courseId) }));
+    // projectId is in the deps because the resetBlockJob effect above lists it too:
+    // projectId arrives asynchronously and commonly flips undefined→number just after
+    // mount, which re-runs that effect and nulls blockJob while leaving isGenerating
+    // true — a disabled button with no status line. Re-running here re-adopts the job.
+    // The thunk bails out when a job is already being polled, so this cannot stack up
+    // duplicate poll chains.
+  }, [dispatch, courseId, projectId]);
 
   useEffect(() => {
     if (activeBlueprint?.id) {
@@ -389,6 +413,10 @@ export default function BlueprintPage() {
       cdd_id: linkedCddId || undefined,
       extra_instructions: extraInstructions,
       model_choice: modelChoice,
+      // Same active style the per-module path applies (line ~366). Without it a
+      // block-wide Blueprint was the only generation in the app that ignored the
+      // workspace's style entirely.
+      style_id: activeStyle?.id || null,
       // See the matching comment in CddPage.onGenerateBlock: without this the server
       // cannot reach its DB prompt tier and distills guidance from the generic
       // shipped template instead of the one selected in the dropdown.
@@ -1026,7 +1054,7 @@ export default function BlueprintPage() {
               {digestPipelineEnabled && (
                 <BlockWidePanel
                   label={L.blueprint}
-                  hint={`Generate a whole-block ${L.blueprint} — a day-by-day plan built from every source in the block via enumerate → digest → reduce, with coverage checks. Runs in the background and is pinned as active when it finishes.`}
+                  hint={`Generate a whole-block ${L.blueprint} — a day-by-day plan built from every source in the block via enumerate → digest → reduce, with coverage checks. Applies the active ${L.styleLower} and the additional instructions set above. Runs in the background and is pinned as active when it finishes.`}
                   block={blockLabel}
                   onBlockChange={onBlockLabelChange}
                   qualityTier={qualityTier}

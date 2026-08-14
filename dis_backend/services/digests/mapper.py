@@ -75,7 +75,23 @@ class MapExtractionError(RuntimeError):
     ``coverage.failed_days`` entry. A silently-defaulted day is indistinguishable
     downstream from a genuinely extracted one, which is how an entire block once
     rendered with every LLM field at its default while reporting success.
+
+    Carries the token counts and the model of the call that produced the bad reply.
+    A rejected reply was still generated and still billed, and ``build_digest``'s
+    ``except`` branch is the only place that spend can be recorded — the success
+    path's counter is never reached. Without this, prod's 2026-08-13 Block 2 build
+    reported ``map_calls=0`` and $0 spent for 20 days that had each made a real
+    Bedrock call. ``model`` matters just as much: ``_llm_extract`` may ESCALATE a
+    content-rich day to a larger-context model, so the model that failed is often
+    not the one configured, and the failed digest is the only record of which.
     """
+
+    def __init__(self, message: str, *, tokens_in: int = 0, tokens_out: int = 0,
+                 model: str = "") -> None:
+        super().__init__(message)
+        self.tokens_in = int(tokens_in or 0)
+        self.tokens_out = int(tokens_out or 0)
+        self.model = model or ""
 
 #: Last-resort fallback if ``templates/digest_map.md`` is missing, empty, unreadable, or
 #: fails the reply-key contract check. Deliberately a COMPACT prompt rather than a
@@ -280,10 +296,24 @@ def _acs_codes(unit: Dict[str, Any]) -> List[str]:
 
 
 def _guidance_block(map_guidance: str) -> str:
-    """Render the optional prompt-derived guidance as a clearly-delimited,
-    contract-safe addendum — "" (no extra lines) when there is none, so a day
-    with no guidance produces byte-identical prompt text to before this
-    feature existed."""
+    """Render the optional guidance as a clearly-delimited, contract-safe addendum —
+    "" (no extra lines) when there is none, so a day with no guidance produces
+    byte-identical prompt text to before this feature existed.
+
+    CAREFUL — the heading below says "derived from the course's selected prompt
+    template", and since 2026-08-13 that is only half true: CAS composes TWO layers
+    into this one string (the distilled template, then the requester's own style and
+    instructions — see promptops_app/services/user_directives.py), each carrying its
+    own inner heading. The wrapper's CONSTRAINTS still apply correctly to both, which
+    is what matters for the extraction contract; only its attribution clause is loose.
+
+    It is left loose on purpose. Every character of this function's output is part of
+    the MAP prompt, and the prompt version is ``PROMPT_VERSION_BASE`` + the template
+    hash — which does NOT cover this module — so rewording the heading changes what
+    every client's digests were built from WITHOUT invalidating them. Fixing the
+    wording therefore means bumping PROMPT_VERSION_BASE, which rebuilds every day of
+    every block for every tenant. Worth doing alongside a schema bump; not worth doing
+    on its own for an attribution nicety."""
     text = (map_guidance or "").strip()
     if not text:
         return ""
@@ -485,9 +515,9 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     if not data or "derived_objective" not in data or "concept_type" not in data:
         # safe_json's json.loads is strict — either the raw response didn't
         # parse at all (likely truncated mid-JSON for content-rich days) or it
-        # parsed into an unrelated shape (e.g. call_llm's exception-path
-        # fallback '{"doc_type":"other",...}', which IS valid JSON but has none
-        # of our keys).
+        # parsed into an unrelated shape. A provider error no longer arrives here
+        # at all: call_llm raises LLMCallFailed, which build_digest catches. So this
+        # branch now means what it says — the model answered, in the wrong shape.
         #
         # This USED to only log and let every field default, leaving
         # digest_status="ok". That is the failure mode that shipped a complete-
@@ -503,9 +533,34 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
             "digest MAP day %s: response missing expected keys (parsed=%r), "
             "raw_text=%r", day.get("day_number"), bool(data), text[:2000],
         )
+        # These messages are the only artefact that leaves the DIS process, so they
+        # carry the reply snippet and the model: a body cut off mid-JSON means the
+        # token budget was too small, and the model matters because escalation may
+        # have swapped in one this account cannot invoke. The raw_text logged above is
+        # not reachable by whoever reads the failed generation.
+        #
+        # The stub branch below is now DEFENSIVE, not the main path: call_llm raises
+        # LLMCallFailed on a provider error rather than returning
+        # '{"doc_type":"other",...}', so a timeout or throttle never reaches here. It
+        # is kept because a stored digest from before that change carries this shape,
+        # and because a model could in principle reply with it — in which case
+        # reporting "lacks the required keys" would repeat 2026-08-13's mistake of
+        # sending diagnosis to the prompt instead of to a 60-second read timeout.
+        from services.pipeline.common import is_llm_failure_stub
+        if is_llm_failure_stub(text):
+            raise MapExtractionError(
+                f"MAP call for day {day.get('day_number')} FAILED at the provider "
+                f"(model={model}) — the reply is call_llm's failure stub, so no "
+                f"extraction happened. This is a credentials/timeout/throttling/quota "
+                f"problem, not a prompt or schema one. The preceding '[LLM] failed' log "
+                f"line names the underlying AWS exception.",
+                tokens_in=ti, tokens_out=to, model=model,
+            )
         raise MapExtractionError(
             f"MAP reply for day {day.get('day_number')} lacks the required keys "
-            f"(derived_objective/concept_type); got keys={sorted(data)[:8]}"
+            f"(derived_objective/concept_type); model={model} "
+            f"keys={sorted(data)[:8]} reply[:160]={text[:160]!r}",
+            tokens_in=ti, tokens_out=to, model=model,
         )
     fields = {
         "derived_objective": data.get("derived_objective", ""),
@@ -608,7 +663,39 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     except Exception as exc:  # per-day failure isolation (§8.3)
         log.warning("digest MAP failed for day %s: %s", dn, exc)
         digest["digest_status"] = "failed"
+        # A provider failure now arrives as LLMCallFailed carrying the real AWS
+        # exception, so the stored error names the actual cause (e.g.
+        # "ReadTimeoutError") instead of describing the fallback stub's shape.
         digest["error"] = str(exc)
+        from services.pipeline.common import LLMCallFailed
+        if isinstance(exc, LLMCallFailed):
+            # An attempt was made and, for a read timeout, the model generated and AWS
+            # billed it — so count the call even though no token counts came back.
+            # Reporting zero calls here is what made prod's build look like it never
+            # contacted a model.
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+            if exc.model:
+                digest["extractor_model"] = exc.model
+        # The success path's counter above is only reached when _llm_extract
+        # RETURNS, so before this every failed day contributed zero calls and zero
+        # tokens to the build report — prod's 2026-08-13 Block 2 build reported
+        # map_calls=0 while all 20 days had made a real, billed Bedrock call, and
+        # the cost dashboard recorded $0 for it. Only MapExtractionError knows a
+        # call actually happened; anything else raised before or around the call
+        # with no usable counts, and inventing numbers for it would be worse than
+        # reporting none.
+        if isinstance(exc, MapExtractionError):
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+                budget["tok_in"] = budget.get("tok_in", 0) + exc.tokens_in
+                budget["tok_out"] = budget.get("tok_out", 0) + exc.tokens_out
+            # The model that actually ran, which escalation may have changed from
+            # the configured one. On the success path this is recorded from
+            # model_used; a failed day needs it for the same reason and is exactly
+            # the case where "which model was this?" is the question being asked.
+            if exc.model:
+                digest["extractor_model"] = exc.model
 
     # Structural review flags.
     if not substantive:

@@ -7,7 +7,7 @@ job_status.py helpers; this module covers creation and reads.
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from promptops_app.database import GenerationJob
 from promptops_app.jobs.job_status import JobStatus
@@ -127,8 +127,34 @@ def count_jobs(
     return q.count()
 
 
-def get_active_job_for_user(db, user_name: str, project_id: int = None):
-    """Return the most recent queued-or-running job for this user, or None."""
+def get_active_job_for_user(db, user_name: str, project_id: int = None,
+                            course_id: int = None, job_types: list[str] = None,
+                            max_age_minutes: int = None):
+    """Return the most recent queued-or-running job for this user, or None.
+
+    Scoped to ``created_by`` deliberately. This backs the frontend's reattach-after-
+    refresh flow (GET /api/v1/jobs/active), and a job row carries a user's own cost
+    and error detail — so "resume MY in-flight job" is the safe semantic. Widening it
+    to everyone working on a course would need a real course-access check, which this
+    codebase does not yet have anywhere.
+
+    ``course_id`` and ``job_types`` narrow it further so a CDD page reattaches to a CDD
+    build rather than to whatever unrelated job the user happens to be running
+    elsewhere in the app.
+
+    ``max_age_minutes`` bounds how stale a row may be and defaults to the reaper's own
+    threshold, so the two agree by construction: a row the reaper would call stranded
+    must never be adopted as live. This matters because a process death leaves a row at
+    ``running`` forever (the reaper runs only at startup), and adopting such a row
+    re-disables the Generate button on every page load — the panel has no cancel
+    control, so before this bound a single zombie row could lock a user out of a course
+    permanently, where previously a page reload cleared the phantom. ``updated_at``
+    does not advance during a build (job rows are written only at stage transitions),
+    so this must stay generous enough to cover a real cold build; the reaper's 60
+    minutes is both, since a build running longer than that is one the reaper will end.
+    """
+    from promptops_app.jobs.reaper import DEFAULT_STALE_AFTER_MINUTES
+
     q = (
         db.query(GenerationJob)
         .filter(
@@ -138,6 +164,14 @@ def get_active_job_for_user(db, user_name: str, project_id: int = None):
     )
     if project_id:
         q = q.filter(GenerationJob.project_id == project_id)
+    if course_id:
+        q = q.filter(GenerationJob.course_id == course_id)
+    if job_types:
+        q = q.filter(GenerationJob.job_type.in_(list(job_types)))
+    window = DEFAULT_STALE_AFTER_MINUTES if max_age_minutes is None else max_age_minutes
+    if window:
+        cutoff = datetime.utcnow() - timedelta(minutes=int(window))
+        q = q.filter(GenerationJob.updated_at >= cutoff)
     return q.order_by(GenerationJob.created_at.desc()).first()
 
 
