@@ -1,28 +1,42 @@
 # DIS build context exclusions.
 #
-# THIS FILE IS LOAD-BEARING FOR SECRETS. docker-compose builds DIS with
-# `context: ./dis_backend`, so the repo-root .dockerignore does NOT apply here —
-# a root-level rule protects the CAS images and silently misses this one.
+# docker-compose builds DIS with `context: ./dis_backend`, so the repo-root
+# .dockerignore does NOT apply here — a root-level rule protects the CAS images
+# and silently misses this one.
 #
-# Without it, `COPY . .` in the Dockerfile baked dis_backend/.env straight into an
-# image layer. Verified 2026-08-14 against the built image: /app/.env was present
-# and readable, carrying JWT_SECRET, ANTHROPIC_API_KEY, AWS_ACCESS_KEY_ID,
-# AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, DIS_SERVICE_TOKEN and
-# DIS_BEDROCK_*. Anyone able to pull or `docker save` that image had the
-# credentials, and deleting the file in a later layer would NOT remove it — the
-# layer keeps it. The file is gitignored, so this was purely a packaging leak.
+# ---------------------------------------------------------------------------
+# KNOWN, UNFIXED: dis_backend/.env IS BAKED INTO THE IMAGE.
+# ---------------------------------------------------------------------------
+# `COPY . .` in the Dockerfile copies it into a layer. Verified 2026-08-14
+# against the built image: /app/.env was present and readable, carrying
+# JWT_SECRET, ANTHROPIC_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_SESSION_TOKEN, DIS_SERVICE_TOKEN and DIS_BEDROCK_*. Anyone who can pull or
+# `docker save` the image has the credentials, and deleting the file in a later
+# layer would not remove it — the layer keeps it. The file is gitignored, so
+# nothing leaked into git; this is purely a packaging problem.
 #
-# DIS receives its configuration at runtime through compose's
-# `env_file: ./dis_backend/.env`, so excluding it from the build changes nothing
-# about how the service runs.
-.env
-.env.*
-!.env.example
-
-# Secrets and credential material of any other shape.
-*.pem
-*.key
-credentials
+# An `.env` rule here fixes it, and was deliberately NOT added yet, because it
+# cannot be verified from outside prod. DIS reads config from TWO places:
+#   1. compose `env_file: ./dis_backend/.env`  -> injected as environment vars
+#   2. pydantic `env_file = ".env"` (config/settings.py) -> reads /app/.env
+# Injected vars win, so (2) only supplies keys absent from (1). Those should be
+# the same file — the deploy builds on the prod host — but docker-compose's
+# env-file parser and pydantic-dotenv's do NOT agree on every edge case (quoting,
+# multi-line values), so a key could in principle resolve from the baked copy and
+# not from the injected set. Excluding it blind would take DIS down.
+#
+# TO FIX, from a shell on the prod host, BEFORE adding the rule:
+#
+#   docker exec contentai_dis sh -c '
+#   miss=0
+#   for k in $(grep -oE "^[A-Z_][A-Z0-9_]*=" /app/.env 2>/dev/null | tr -d "="); do
+#     if ! env | grep -q "^${k}="; then echo "ONLY IN BAKED FILE: $k"; miss=$((miss+1)); fi
+#   done
+#   [ "$miss" = 0 ] && echo OK-safe-to-exclude || echo STOP'
+#
+# If it prints OK, add `.env` / `.env.*` below and redeploy. If it names keys,
+# add those to dis_backend/.env on the host first. Either way ROTATE the
+# credentials: every image built so far already contains them.
 
 # Tests are source (they live in git) but nothing in the image runs them: the
 # Dockerfile never invokes pytest and the production stage does not install it.
