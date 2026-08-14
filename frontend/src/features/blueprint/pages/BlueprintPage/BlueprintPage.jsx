@@ -891,13 +891,14 @@ export default function BlueprintPage() {
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
-              ) : blueprints.length === 0 ? (
+              ) : (blueprints.length === 0 && archivedBlueprints.length === 0) ? (
                 <EmptyState
                   title={`No ${L.blueprints} yet`}
                   message={`Create your first ${L.blueprint} using the form above.`}
                 />
               ) : (
                 <>
+                  {blueprints.length > 0 && (
                   <Select
                     label={`Select ${L.blueprint} to View/Edit`}
                     // Title and module alone do not identify a row — a course
@@ -919,7 +920,12 @@ export default function BlueprintPage() {
                       if (id) dispatch(fetchBlueprintVersionsThunk(id));
                     }}
                   />
+                  )}
 
+                  {/* Outside the `displayBp` guard below and not conditioned on
+                      the live list: archiving the last live blueprint would
+                      otherwise take the archived list off screen with it,
+                      leaving no way to restore what was just archived. */}
                   <DocumentArchivePanel
                     label={L.blueprint}
                     docs={blueprints}

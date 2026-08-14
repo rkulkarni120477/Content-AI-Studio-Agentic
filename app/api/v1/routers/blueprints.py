@@ -214,6 +214,13 @@ def generate_blueprint(
     cdd_context = ""
     if cdd_id:
         cdd_row = cdd_repository.get_cdd_by_id(db, cdd_id)
+        # An archived CDD must not feed a prompt. It cannot arrive here as the
+        # course's pin (archiving clears that), but a stale tab can still post
+        # an explicit cdd_id, and this is the one path that reads the document's
+        # content into the generation rather than just stamping its id.
+        if cdd_row is not None:
+            from app.services import design_doc_archive as archive_svc
+            archive_svc.assert_live(cdd_row, archive_svc.CDD)
         cdd_title = cdd_row.title if cdd_row else ""
         cdd_version = get_active_cdd_version(db, cdd_id)
         if cdd_version:
@@ -629,11 +636,13 @@ def bulk_archive_blueprints(
     )
     response = BulkArchiveResponse.from_outcomes(outcomes)
 
+    # Ids go in metadata, not entity_id — see the CDD bulk endpoint: entity_id is
+    # VARCHAR(64) and an overflow would silently drop the whole audit row.
     archived_ids = [o.doc_id for o in outcomes if o.status == "archived"]
     if archived_ids:
         log_audit_event(
             db, current_user.username, "blueprint.archived",
-            entity_type="blueprint", entity_id=",".join(str(i) for i in archived_ids[:50]),
+            entity_type="blueprint",
             course_id=request_body.course_id, project_id=request_body.project_id,
             metadata={
                 "bulk": True,

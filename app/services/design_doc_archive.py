@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ResourceInUseError, ValidationError
@@ -403,7 +403,17 @@ def bulk_archive(
     if scope_course_id is not None:
         q = q.filter(kind.model.course_id == scope_course_id)
     if scope_project_id is not None:
-        q = q.filter(kind.model.project_id == scope_project_id)
+        # NULL project_id is accepted, matching how the list endpoints select
+        # (``list_cdds_for_scope`` treats legacy rows with no project as
+        # belonging to their course). Without this a legacy row would appear in
+        # the list, be offered for archiving, and then come back "not in this
+        # workspace" — a skip the user has no way to act on.
+        q = q.filter(
+            or_(
+                kind.model.project_id == scope_project_id,
+                kind.model.project_id.is_(None),
+            )
+        )
     found = {int(d.id): d for d in q.all()}
 
     # Resolved once for the whole batch. Letting each archive() look up its own

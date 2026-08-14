@@ -421,6 +421,27 @@ def test_bulk_archive_does_not_query_per_document(db, course):
     )
 
 
+def test_bulk_archive_project_scope_keeps_legacy_rows_with_no_project(db, course):
+    """A row the list offered must not come back "not in this workspace".
+
+    ``list_cdds_for_scope`` treats a NULL project_id as belonging to its course,
+    so such a row appears in the list and gets offered for bulk archiving. A
+    strict equality scope here would skip it with a reason the user cannot act on.
+    """
+    legacy = CourseDesignDocument(
+        title="legacy", course_title="C", course_id=course.id, project_id=None,
+    )
+    db.add(legacy)
+    db.commit()
+
+    outcomes = arch.bulk_archive(
+        db, arch.CDD, [legacy.id], actor="u",
+        scope_course_id=course.id, scope_project_id=course.project_id,
+    )
+
+    assert outcomes[0].status == "archived"
+
+
 def test_bulk_archive_rejects_an_oversized_batch(db):
     with pytest.raises(ValidationError):
         arch.bulk_archive(db, arch.CDD, list(range(arch.MAX_BULK_IDS + 1)), actor="u")

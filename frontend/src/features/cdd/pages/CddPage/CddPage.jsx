@@ -757,13 +757,40 @@ export default function CddPage() {
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
-              ) : cdds.length === 0 ? (
+              ) : (cdds.length === 0 && archivedCdds.length === 0) ? (
                 <EmptyState
                   title="No CDDs yet"
                   message={`Create your first ${L.cdd} using the form above.`}
                 />
               ) : (
                 <>
+                  {/* Rendered whenever there is anything to show, live OR archived,
+                      and outside the `displayCdd` guard below. Archiving the last
+                      live CDD would otherwise take the archived list off screen
+                      with it, leaving no way to restore what was just archived. */}
+                  <DocumentArchivePanel
+                    label={L.cdd}
+                    docs={cdds}
+                    archivedDocs={archivedCdds}
+                    activeId={activeCdd?.id ?? null}
+                    selectedId={viewCddId}
+                    busy={isArchiving}
+                    canPurge={user?.role === 'admin'}
+                    onSelect={(id) => {
+                      setViewCddId(id);
+                      setSelectedCddId(id);
+                      dispatch(fetchCddVersionsThunk(id));
+                    }}
+                    onSetActive={onSetActive}
+                    onArchive={onArchiveCdd}
+                    onRestore={onRestoreCdd}
+                    onPurge={onPurgeCdd}
+                    onBulkArchive={onBulkArchiveCdds}
+                    refusal={archiveRefusal}
+                    onDismissRefusal={() => dispatch(clearArchiveRefusal())}
+                  />
+
+                  {cdds.length > 0 && (
                   <Select
                     label={`Select ${L.cdd} to View/Edit`}
                     // Title alone does not identify a row — a course can hold
@@ -785,6 +812,7 @@ export default function CddPage() {
                       if (id) dispatch(fetchCddVersionsThunk(id));
                     }}
                   />
+                  )}
 
                   {displayCdd && (
                     <>
@@ -804,28 +832,6 @@ export default function CddPage() {
                           <span className={styles.metric__value}>{versions.length}</span>
                         </div>
                       </div>
-
-                      <DocumentArchivePanel
-                        label={L.cdd}
-                        docs={cdds}
-                        archivedDocs={archivedCdds}
-                        activeId={activeCdd?.id ?? null}
-                        selectedId={viewCddId}
-                        busy={isArchiving}
-                        canPurge={user?.role === 'admin'}
-                        onSelect={(id) => {
-                          setViewCddId(id);
-                          setSelectedCddId(id);
-                          dispatch(fetchCddVersionsThunk(id));
-                        }}
-                        onSetActive={onSetActive}
-                        onArchive={onArchiveCdd}
-                        onRestore={onRestoreCdd}
-                        onPurge={onPurgeCdd}
-                        onBulkArchive={onBulkArchiveCdds}
-                        refusal={archiveRefusal}
-                        onDismissRefusal={() => dispatch(clearArchiveRefusal())}
-                      />
 
                       <div className={styles.activeContent}>
                         <div className={styles.activeContent__header}>

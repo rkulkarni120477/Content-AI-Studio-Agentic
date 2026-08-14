@@ -788,11 +788,17 @@ def bulk_archive_cdds(
     # One audit row for the batch, naming exactly which ids moved. A row per id
     # would bury the operation; a row saying "12 archived" would not survive the
     # question "which twelve?".
+    #
+    # The ids go in metadata, NOT entity_id: that column is VARCHAR(64) and would
+    # overflow after about a dozen of them. log_audit_event swallows write
+    # failures by design, so the overflow would not surface as an error — it
+    # would silently drop the audit row for the very operation that most needs
+    # one. entity_id is left unset because a batch is not one entity.
     archived_ids = [o.doc_id for o in outcomes if o.status == "archived"]
     if archived_ids:
         log_audit_event(
             db, current_user.username, "cdd.archived",
-            entity_type="cdd", entity_id=",".join(str(i) for i in archived_ids[:50]),
+            entity_type="cdd",
             course_id=request_body.course_id, project_id=request_body.project_id,
             metadata={
                 "bulk": True,
