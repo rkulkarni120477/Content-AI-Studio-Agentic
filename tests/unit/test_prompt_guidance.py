@@ -5,11 +5,15 @@ Offline + deterministic — no DB/LLM calls (build_prompt/generate_text are
 monkeypatched). Covers: override-text takes priority over registry resolution,
 any resolution failure degrades to "" (never raises), the digestion call's
 "NONE"/error/empty outputs all collapse to "", and the top-level function is
-unconditionally exception-safe.
+exception-safe for every failure EXCEPT a quota breach, which must reach the 402
+handler rather than silently produce guidance-free output (see the two tests at
+the end of this file).
 """
 from __future__ import annotations
 
 import types
+
+import pytest
 
 from promptops_app.services import prompt_guidance as pg
 
@@ -341,3 +345,52 @@ def test_distiller_treats_none_as_a_narrow_escape_hatch():
 def test_distiller_honours_the_configured_item_cap():
     assert "at most 24 items" in _digest_system()
     assert "at most 7 items" in pg._DIGEST_SYSTEM_TEMPLATE.format(max_items=7)
+
+
+# --------------------------------------------------------------------------- #
+# Budget enforcement reached this call the moment it was attributed (2026-08-14)
+# --------------------------------------------------------------------------- #
+
+def test_a_quota_breach_is_not_swallowed_into_silently_worse_output(monkeypatch):
+    """Attributing the distillation call also brought it under budget enforcement:
+    check_budget keys off the project/course/user ids the usage context supplies,
+    and before there was no context, so _levels_for returned no levels and the call
+    was never checked.
+
+    That made the module's catch-all newly dangerous. A quota breach would collapse
+    to "" and the block would generate WITHOUT its guidance — quietly worse output,
+    reported to the user as success. generate_with_metadata deliberately re-raises
+    this one exception ("a quota breach is not 'try again later'") so it lands on
+    app/main.py's 402 handler; swallowing it here would undo that.
+    """
+    from promptops_app.services.budget_service import BudgetExceededError
+
+    def over_budget(*a, **k):
+        raise BudgetExceededError("project", "23", limit_usd=10.0, current_spend=12.5)
+
+    monkeypatch.setattr("promptops_app.prompts.prompt_builder.build_prompt",
+                        lambda *a, **k: ("sys", "real instructions", "n", "v"))
+    monkeypatch.setattr("promptops_app.services.llm_service.generate_text", over_budget)
+    pg.reset_cache()
+
+    req = types.SimpleNamespace(course_id=48, project_id=23, prompt_id=None,
+                                model_choice="m", block="Block 2")
+    with pytest.raises(BudgetExceededError):
+        pg.resolve_prompt_guidance(db=None, request_body=req, deliverable="cdd",
+                                   current_user=types.SimpleNamespace(username="platformadmin"))
+
+
+def test_every_other_failure_still_degrades_to_empty(monkeypatch):
+    """The re-raise must be surgical. This feature is additive, and any ordinary
+    failure must still leave the pipeline running exactly as it did before it
+    existed — otherwise the fix above turns a nicety into a new outage path."""
+    monkeypatch.setattr("promptops_app.prompts.prompt_builder.build_prompt",
+                        lambda *a, **k: ("sys", "real instructions", "n", "v"))
+    monkeypatch.setattr("promptops_app.services.llm_service.generate_text",
+                        lambda *a, **k: (_ for _ in ()).throw(ConnectionError("Bedrock unreachable")))
+    pg.reset_cache()
+
+    req = types.SimpleNamespace(course_id=48, project_id=23, prompt_id=None,
+                                model_choice="m", block="Block 2")
+    assert pg.resolve_prompt_guidance(db=None, request_body=req, deliverable="cdd",
+                                      current_user=None) == ""

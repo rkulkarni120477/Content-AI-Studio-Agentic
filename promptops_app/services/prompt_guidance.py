@@ -341,10 +341,22 @@ def resolve_prompt_guidance(db: Any, request_body: Any, deliverable: str, curren
     generation-guidance checklist for the block-wide digest pipeline's
     MAP/REDUCE calls.
 
-    Best-effort and additive only: any failure (no prompt configured,
-    resolution error, LLM error) returns "" and the caller's pipeline runs
-    exactly as it did before this feature existed. Never raises.
+    Best-effort and additive only: any failure (no prompt configured, resolution
+    error, LLM error) returns "" and the caller's pipeline runs exactly as it did
+    before this feature existed.
+
+    ONE exception propagates: ``BudgetExceededError``. Attributing this call (so its
+    cost stops landing in the unattributed bucket) also brought it under budget
+    enforcement, because ``check_budget`` keys off the very project/course/user ids
+    the usage context supplies — before, ``_levels_for(None)`` returned no levels and
+    the call was never checked. Left to the catch-all below, a quota breach would be
+    swallowed into "" and the block would generate WITHOUT its guidance, quietly
+    worse, while the user saw success. ``generate_with_metadata`` re-raises this one
+    exception for exactly that reason: "a quota breach is not 'try again later'" — it
+    is a real 402 with a dedicated handler in app/main.py, and it must reach it.
     """
+    from promptops_app.services.budget_service import BudgetExceededError
+
     try:
         from app.core.config import settings
 
@@ -377,6 +389,8 @@ def resolve_prompt_guidance(db: Any, request_body: Any, deliverable: str, curren
         log.info("prompt_guidance_built deliverable=%s prompt_chars=%d guidance_chars=%d",
                  deliverable, len(prompt_text), len(guidance))
         return guidance
+    except BudgetExceededError:
+        raise
     except Exception as exc:
         log.warning("prompt_guidance_resolution_failed deliverable=%s error=%s", deliverable, exc)
         return ""
