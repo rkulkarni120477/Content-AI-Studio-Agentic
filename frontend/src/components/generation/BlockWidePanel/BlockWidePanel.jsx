@@ -48,7 +48,16 @@ function liveDetail(blockJob, block) {
 
 function statusLine(blockJob, label, block) {
   if (!blockJob) return null;
-  const { status, currentStep, progress, warning } = blockJob;
+  const { status, currentStep, progress, warning, lostContact } = blockJob;
+  // Checked BEFORE status: whatever status we last saw is stale by definition here,
+  // and the one thing we must not do is present a stopped poll as a stopped build.
+  // The build is still running server-side and a reload reattaches to it (resumeThunk
+  // runs on mount). Reporting "failed" instead sent someone into four rebuilds of a
+  // block that had already generated correctly (2026-08-14).
+  if (lostContact) {
+    return `⚠️ Lost contact with the ${label} build — it is still running on the server. `
+         + 'Reload the page to reattach and see the result.';
+  }
   if (status === JOB_STATUSES.FAILED) return `❌ ${label} generation failed — see the error above.`;
   if (status === JOB_STATUSES.CANCELLED) return `⚠️ ${label} generation was cancelled.`;
   if (status === JOB_STATUSES.COMPLETED) {
