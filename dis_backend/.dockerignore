@@ -1,0 +1,50 @@
+# DIS build context exclusions.
+#
+# THIS FILE IS LOAD-BEARING FOR SECRETS. docker-compose builds DIS with
+# `context: ./dis_backend`, so the repo-root .dockerignore does NOT apply here —
+# a root-level rule protects the CAS images and silently misses this one.
+#
+# Without it, `COPY . .` in the Dockerfile baked dis_backend/.env straight into an
+# image layer. Verified 2026-08-14 against the built image: /app/.env was present
+# and readable, carrying JWT_SECRET, ANTHROPIC_API_KEY, AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, DIS_SERVICE_TOKEN and
+# DIS_BEDROCK_*. Anyone able to pull or `docker save` that image had the
+# credentials, and deleting the file in a later layer would NOT remove it — the
+# layer keeps it. The file is gitignored, so this was purely a packaging leak.
+#
+# DIS receives its configuration at runtime through compose's
+# `env_file: ./dis_backend/.env`, so excluding it from the build changes nothing
+# about how the service runs.
+.env
+.env.*
+!.env.example
+
+# Secrets and credential material of any other shape.
+*.pem
+*.key
+credentials
+
+# Tests are source (they live in git) but nothing in the image runs them: the
+# Dockerfile never invokes pytest and the production stage does not install it.
+# ~800KB of dead weight and needless read surface in a running container.
+tests/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+venv/
+.venv/
+env/
+logs/
+*.log
+data/
+uploads/
+.pytest_cache/
+.ruff_cache/
+
+# WSL/NTFS alternate-data-stream artifacts — 37 of these sit beside real files in
+# this tree. Untracked, meaningless to Linux, and pure build-context weight.
+*:Zone.Identifier
