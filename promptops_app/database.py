@@ -6,6 +6,7 @@
 import os
 from dotenv import load_dotenv
 import json
+import logging
 import re
 import hashlib
 import binascii
@@ -88,6 +89,8 @@ if not settings.db_url.startswith("sqlite"):
 engine = create_engine(settings.db_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+_log = logging.getLogger(__name__)
 
 # =============================================================================
 # Database Models
@@ -1425,7 +1428,79 @@ def init_db():
     # Skipped on SQLite (the test suite) which has no legacy data and does
     # not support the PostgreSQL syntax used.
     if engine.dialect.name == "postgresql":
+        _ensure_required_columns()
         _run_data_backfills()
+
+
+# Columns the ORM declares that the application cannot read a table without.
+#
+# Everything else the ORM adds is optional in practice — a missing column only
+# breaks the feature that uses it. These are different: SQLAlchemy names every
+# mapped column in its SELECT, so a missing one makes EVERY query against that
+# table raise UndefinedColumn, including queries that never touch the new field.
+#
+# table -> (DDL statement, ...)
+_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    # Design-document archive (v22). Without these, listing or opening any CDD
+    # or Blueprint fails outright — the whole CDD and Blueprint UI goes down.
+    "course_design_documents": (
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+    ),
+    "module_blueprints": (
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+    ),
+}
+
+
+def _ensure_required_columns() -> None:
+    """Add ORM-required columns that the live schema is missing.
+
+    Deliberately NOT behind the DB_AUTO_DDL gate, unlike ``_run_legacy_ddl``.
+    That gate exists to stop optional legacy DDL from desyncing alembic_version,
+    and the trade it makes — schema drift is better than a confused migration
+    state — is the right one for columns whose absence merely disables a feature.
+
+    It is the wrong trade here. The deploy pipeline runs no ``alembic upgrade``
+    (backend-deploy.yml goes straight from ``git reset --hard`` to
+    ``docker compose up --build``), so new code reliably reaches a database that
+    the matching migration has not touched yet. For a column the ORM declares,
+    that window is not degraded service — it is every read of the table raising
+    UndefinedColumn. Verified 2026-08-14: with alembic_version at 000100000020
+    and the archive columns absent, listing the CDDs of any course failed with
+    "column course_design_documents.deleted_at does not exist".
+
+    Every statement is additive, nullable and IF NOT EXISTS, so this is a no-op
+    once the migration has run and safe to run before it. It never drops or
+    rewrites anything, and it does not touch alembic_version — the migration
+    stays the source of truth and is itself guarded to be a no-op here.
+
+    Failures are logged, not raised: a database that refuses DDL (a read-only
+    replica, a least-privilege role) should still serve every request that does
+    not need the new column.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+
+    inspector = _sa_inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table, statements in _REQUIRED_COLUMNS.items():
+        if table not in existing_tables:
+            continue  # fresh database — create_all/migrations will build it complete
+        present = {c["name"] for c in inspector.get_columns(table)}
+        # The column name is the token right after "IF NOT EXISTS".
+        missing = [
+            s for s in statements
+            if s.split("IF NOT EXISTS", 1)[1].strip().split()[0] not in present
+        ]
+        for statement in missing:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(statement))
+                _log.warning("schema_self_heal  added missing column via: %s", statement)
+            except Exception:  # noqa: BLE001 — a boot must not die on schema repair
+                _log.exception("schema_self_heal_failed  statement=%s", statement)
 
 
 def _run_legacy_ddl():
