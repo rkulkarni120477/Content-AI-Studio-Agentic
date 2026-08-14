@@ -14,7 +14,7 @@ from typing import Optional, List, Any
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
-    Boolean, Float, ForeignKey, JSON, text,
+    Boolean, Float, ForeignKey, JSON, text, or_,
     BigInteger, SmallInteger, UniqueConstraint,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
@@ -146,6 +146,12 @@ class Style(Base):
     generated_summary   = Column(Text)                                          # LLM understanding output (mirror of active StyleVersion)
     understanding_status = Column(String(20), default="fresh")                  # "fresh" | "stale"
     is_active           = Column(Boolean, default=False)
+    # Workspace ownership (v21) — which project/course generated this style.
+    # Nullable: legacy rows and unscoped/global styles keep NULL. Used by
+    # get_styles() to show a course ALL the styles it created, not only its
+    # active one, while still hiding sibling courses' styles.
+    project_id          = Column(Integer, nullable=True)
+    course_id           = Column(Integer, nullable=True)
     created_by          = Column(String(100))
     created_at          = Column(DateTime, default=datetime.utcnow)
     updated_at          = Column(DateTime, default=datetime.utcnow)
@@ -1468,6 +1474,9 @@ def _run_legacy_ddl():
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
         # styles — understanding status (v20)
         "ALTER TABLE styles ADD COLUMN IF NOT EXISTS understanding_status VARCHAR(20) DEFAULT 'fresh'",
+        # styles — workspace ownership scoping (v21)
+        "ALTER TABLE styles ADD COLUMN IF NOT EXISTS project_id INTEGER",
+        "ALTER TABLE styles ADD COLUMN IF NOT EXISTS course_id INTEGER",
         # blocks — enterprise approval & versioning (Phase 2)
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS version_num INTEGER DEFAULT 1",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS assigned_reviewer VARCHAR(100)",
@@ -1610,6 +1619,9 @@ def _run_legacy_ddl():
             "CREATE INDEX IF NOT EXISTS idx_generation_jobs_created_by ON generation_jobs(created_by, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_style_versions_style_id ON style_versions(style_id, version_number DESC)",
             "CREATE INDEX IF NOT EXISTS idx_style_versions_active ON style_versions(style_id, is_active)",
+            # styles — workspace ownership scoping (v21)
+            "CREATE INDEX IF NOT EXISTS idx_styles_course_id ON styles(course_id)",
+            "CREATE INDEX IF NOT EXISTS idx_styles_project_id ON styles(project_id)",
             "CREATE INDEX IF NOT EXISTS idx_cdd_versions_version_number ON cdd_versions(cdd_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_blueprint_versions_version_number ON blueprint_versions(blueprint_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC)",
@@ -1682,6 +1694,36 @@ def _run_data_backfills():
             )
             WHERE cluster_id IS NULL
         """))
+
+    # ── Style workspace ownership backfill (v21, idempotent) ──────────────────
+    # Older styles have no owning project/course. Recover ownership from the
+    # activation pointers: a style a course has activated is owned by that course
+    # (and its project); a style a project has set as default is owned by that
+    # project. Only fills NULLs, so re-runs and correctly-owned rows are no-ops.
+    #
+    # Guarded on the columns existing: this repair runs unconditionally on every
+    # Postgres boot, but the columns are created by the v21 Alembic migration (or
+    # the DB_AUTO_DDL path). If code is deployed before the migration runs, skip
+    # rather than crash startup — the migration carries the same backfill.
+    from sqlalchemy import inspect as _sa_inspect
+    _style_cols = {c["name"] for c in _sa_inspect(engine).get_columns("styles")}
+    if {"project_id", "course_id"} <= _style_cols:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE styles
+                SET course_id  = c.id,
+                    project_id = COALESCE(styles.project_id, c.project_id)
+                FROM courses c
+                WHERE c.active_style_id = styles.id
+                  AND styles.course_id IS NULL
+            """))
+            conn.execute(text("""
+                UPDATE styles
+                SET project_id = p.id
+                FROM projects p
+                WHERE p.active_style_id = styles.id
+                  AND styles.project_id IS NULL
+            """))
 
     # ── Tenant (organization) backfill (idempotent) ───────────────────────────
     # Give every project a slug + tenant defaults so it can act as a tenant.
@@ -1828,8 +1870,14 @@ def _slugify(name: str) -> str:
 
 
 def create_style(db, name: str, description: str, custom_instructions: str,
-                 document_ids: list, created_by: str) -> "Style":
-    """Create and persist a new Style."""
+                 document_ids: list, created_by: str,
+                 project_id: int | None = None, course_id: int | None = None) -> "Style":
+    """Create and persist a new Style.
+
+    ``project_id``/``course_id`` stamp the workspace that generated this style so
+    it later shows up in that course's Generated Styles list (see get_styles).
+    Both are optional — a style created outside any workspace stays unscoped.
+    """
     slug = _slugify(name)
     # Ensure uniqueness
     existing = db.query(Style).filter(Style.style_id == slug).first()
@@ -1839,6 +1887,7 @@ def create_style(db, name: str, description: str, custom_instructions: str,
         style_id=slug, name=name, description=description,
         custom_instructions=custom_instructions,
         created_by=created_by, is_active=False,
+        project_id=project_id, course_id=course_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -1867,57 +1916,70 @@ def add_files_to_style(db, style: "Style", new_doc_ids: list):
 def get_styles(db, project_id: int | None = None, course_id: int | None = None) -> list:
     """Return styles ordered by most recently updated.
 
-    When ``course_id`` is given, restrict strictly to that course's own workspace:
-      * the course's ``active_style_id``
-      * the project's ``active_style_id`` (fallback default only)
+    Scoping is ownership-based (``styles.project_id`` / ``styles.course_id``,
+    stamped at creation time — see create_style), so a workspace sees every
+    style it generated, not only the one it currently has activated.
 
-    Sibling courses' active styles are never included here — a course must only
-    ever see its own style plus the project-wide default, not what other courses
-    in the same project have activated.
+    When ``course_id`` is given, return that course's own workspace:
+      * every style owned by the course (``styles.course_id == course_id``)
+      * the course's ``active_style_id`` (safety net for legacy/unowned rows)
+      * the project's ``active_style_id`` (the project-wide default fallback)
 
-    When only ``project_id`` is given (no course_id — a project-wide view, not a
-    course-scoped one), the legacy behaviour of surfacing every course's active
-    style in that project is preserved.
+    Sibling courses' styles are never included — a course only ever sees its own
+    styles plus the project-wide default, not what other courses in the same
+    project generated or activated.
 
-    Styles are activation-scoped (no ownership columns on ``styles``), so this is
-    the only reliable tenant filter without a schema change. Unscoped calls keep
-    the legacy global catalogue behaviour.
+    When only ``project_id`` is given (a project-wide view, not course-scoped),
+    return every style owned by the project plus every course's active style in
+    that project — the legacy project-wide behaviour, now widened to owned rows.
+
+    Unscoped calls (no project_id, no course_id) keep the global catalogue.
     """
     q = db.query(Style).order_by(Style.updated_at.desc())
     if project_id is None and course_id is None:
         return q.all()
 
-    style_ids: set[int] = set()
+    # Ids to include on top of the ownership match (active pointers). Kept even
+    # when the owning columns are still NULL (e.g. an unowned legacy row that is
+    # currently active) so behaviour never regresses below the activation view.
+    extra_ids: set[int] = set()
 
     if course_id:
         course = db.query(Course).filter(Course.id == course_id).first()
         if course and course.active_style_id:
-            style_ids.add(course.active_style_id)
-        # Fall back to the project default even if the course row is missing/stale
-        # (e.g. a deleted course_id) as long as a project_id was actually given.
+            extra_ids.add(course.active_style_id)
+        # Project default fallback — resolve project even if the course row is
+        # missing/stale (e.g. a deleted course_id) as long as we can find one.
         resolved_project_id = project_id or (course.project_id if course else None)
         if resolved_project_id:
             proj = db.query(Project).filter(Project.id == resolved_project_id).first()
             if proj and proj.active_style_id:
-                style_ids.add(proj.active_style_id)
-    elif project_id:
-        proj = db.query(Project).filter(Project.id == project_id).first()
-        if proj and proj.active_style_id:
-            style_ids.add(proj.active_style_id)
-        for sid in (
-            db.query(Course.active_style_id)
-            .filter(
-                Course.project_id == project_id,
-                Course.active_style_id.isnot(None),
-            )
-            .all()
-        ):
-            if sid[0]:
-                style_ids.add(sid[0])
+                extra_ids.add(proj.active_style_id)
 
-    if not style_ids:
-        return []
-    return q.filter(Style.id.in_(style_ids)).all()
+        conditions = [Style.course_id == course_id]
+        if extra_ids:
+            conditions.append(Style.id.in_(extra_ids))
+        return q.filter(or_(*conditions)).all()
+
+    # project_id only — project-wide view.
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if proj and proj.active_style_id:
+        extra_ids.add(proj.active_style_id)
+    for sid in (
+        db.query(Course.active_style_id)
+        .filter(
+            Course.project_id == project_id,
+            Course.active_style_id.isnot(None),
+        )
+        .all()
+    ):
+        if sid[0]:
+            extra_ids.add(sid[0])
+
+    conditions = [Style.project_id == project_id]
+    if extra_ids:
+        conditions.append(Style.id.in_(extra_ids))
+    return q.filter(or_(*conditions)).all()
 
 
 def get_active_style(db, project_id=None, course_id=None) -> "Style | None":

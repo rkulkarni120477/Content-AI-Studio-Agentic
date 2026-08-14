@@ -279,6 +279,8 @@ def create_style(
         stored_instructions,
         legacy_doc_ids,
         current_user.username,
+        project_id=request_body.project_id,
+        course_id=request_body.course_id,
     )
 
     if request_body.activate:
