@@ -155,6 +155,13 @@ class Style(Base):
     created_by          = Column(String(100))
     created_at          = Column(DateTime, default=datetime.utcnow)
     updated_at          = Column(DateTime, default=datetime.utcnow)
+    # Tenant/course scoping — NULL means a shared/global style, not owned by
+    # any one tenant. Columns + their real indexes (idx_styles_project_id /
+    # idx_styles_course_id) come from migration 000100000020
+    # (style_workspace_ownership) — not redeclared here via index=True to
+    # avoid autogenerate drift against that migration's own index names.
+    project_id          = Column(Integer, nullable=True)
+    course_id           = Column(Integer, nullable=True)
     # Many-to-many with Document via StyleDocument join table
     style_documents     = relationship("StyleDocument", back_populates="style",
                                        cascade="all, delete-orphan")
@@ -896,7 +903,7 @@ class LLMUsageLog(Base):
     duration_ms     = Column(Integer,     nullable=True)
     status          = Column(String(30),  nullable=False)  # success|retry_success|fallback_success|error
     error_message   = Column(Text,        nullable=True)
-    langfuse_trace_id = Column(String(64), nullable=True, index=True)  # P1: looked up by the trace-detail endpoint
+    trace_id        = Column(String(64), nullable=True, index=True)  # looked up by the trace-detail endpoint
     created_at      = Column(DateTime,    default=datetime.utcnow, index=True)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -1396,6 +1403,47 @@ class FeedbackItem(Base):
 # =============================================================================
 # Database Initialization & Migrations
 # =============================================================================
+
+def ensure_phoenix_database() -> None:
+    """Create the "phoenix" database on this same Postgres server if it
+    doesn't exist yet — local, RDS, wherever DATABASE_URL points.
+
+    Phoenix's own container can't do this itself: CREATE DATABASE requires an
+    existing connection to a *different* database on the same server, and
+    can't run inside a transaction. This reuses our own DB's connection
+    details (same host/user/password engine already resolved from
+    DATABASE_URL) purely to issue that one statement — no new config, no
+    manual `psql` step, on any environment.
+
+    Best-effort and idempotent: a missing psycopg2 driver (e.g. under
+    SQLite in tests), no permission to list/create databases, or a
+    concurrent duplicate-create from another worker are all swallowed. If
+    this silently fails, the phoenix container simply keeps restarting
+    (its own `restart: unless-stopped` policy) until it's created — never a
+    reason to fail our own app's startup.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        import psycopg2
+
+        url = engine.url
+        conn = psycopg2.connect(
+            host=url.host, port=url.port or 5432, dbname=url.database,
+            user=url.username, password=url.password, connect_timeout=10,
+        )
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("phoenix",))
+                if cur.fetchone() is None:
+                    cur.execute('CREATE DATABASE "phoenix"')
+        finally:
+            conn.close()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("ensure_phoenix_database skipped: %s", exc)
+
 
 def init_db():
     # ── Schema DDL is Alembic-owned ────────────────────────────────────────

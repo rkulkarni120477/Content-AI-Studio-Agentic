@@ -248,13 +248,16 @@ class AppSettings(BaseSettings):
     dis_available_clients: str = Field(default="aim,cengage", alias="DIS_AVAILABLE_CLIENTS")
     dis_super_admin_usernames: str = Field(default="", alias="DIS_SUPER_ADMIN_USERNAMES")
 
-    # ── Langfuse observability (P1 of claude_plan_platform_hardening) ────────
-    # Read directly by the langfuse SDK too (LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY
-    # env vars) — these fields exist so app/core/langfuse_client.py's server-side
-    # fetch (P1.4) doesn't need its own separate env-parsing.
-    langfuse_host: str = Field(default="http://localhost:3001", alias="LANGFUSE_HOST")
-    langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
+    # ── Phoenix observability (self-hosted LLM tracing) ───────────────────────
+    # phoenix.otel.register() reads PHOENIX_COLLECTOR_ENDPOINT/PHOENIX_PROJECT_NAME
+    # directly too — these fields exist so app/core/phoenix_client.py's server-side
+    # fetch (the trace-detail endpoint) doesn't need its own separate env-parsing.
+    phoenix_collector_endpoint: str = Field(
+        default="http://localhost:6006/v1/traces", alias="PHOENIX_COLLECTOR_ENDPOINT",
+    )
+    phoenix_base_url: str = Field(default="http://localhost:6006", alias="PHOENIX_BASE_URL")
+    phoenix_project_name: str = Field(default="content-ai-studio", alias="PHOENIX_PROJECT_NAME")
+    phoenix_api_key: str = Field(default="", alias="PHOENIX_API_KEY")
     dis_super_admin_roles: str = Field(default="", alias="DIS_SUPER_ADMIN_ROLES")
     dis_user_client_map: str = Field(default="", alias="DIS_USER_CLIENT_MAP")
     dis_access_config_path: str = Field(default="", alias="DIS_ACCESS_CONFIG_PATH")

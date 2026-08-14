@@ -1,10 +1,18 @@
 """Add langfuse_trace_id to llm_usage_logs (P1.2 of claude_plan_platform_hardening).
 
-Persists the mapping between a logged LLM call and the Langfuse trace created
-for it — this is what P1.4's trace-detail endpoint looks up by CAS resource id
-(entity_type/entity_id), never a client-supplied trace id. NULL means either
-tracing was skipped (Langfuse unreachable/unconfigured) or the row predates P1 —
-both are valid, non-error states, so the column is additive and nullable.
+Persists the mapping between a logged LLM call and the external tracer's trace
+created for it — this is what the trace-detail endpoint looks up by CAS
+resource id (entity_type/entity_id), never a client-supplied trace id. NULL
+means either tracing was skipped (tracer unreachable/unconfigured) or the row
+predates this migration — both are valid, non-error states, so the column is
+additive and nullable.
+
+The column is literally named langfuse_trace_id here because that is what
+this migration actually added to the real database at the time — see
+000100000020, which renames it to the generic trace_id now that the tracer
+behind it is Phoenix, not Langfuse. Left as-is rather than rewritten: this
+revision has already run against real databases, and its DDL must match what
+actually happened there.
 
 Renumbered from 000100000015 (was 000100000015..down 000100000014) — that
 number collided with dev's own 000100000015 (drop_stale_tables), created

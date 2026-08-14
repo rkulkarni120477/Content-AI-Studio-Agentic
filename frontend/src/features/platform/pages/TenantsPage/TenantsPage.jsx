@@ -721,7 +721,7 @@ export default function TenantsPage() {
               variant="danger"
               onClick={handleDeleteTenant}
               loading={deleting}
-              disabled={deleteConfirmText.trim() !== deleteTarget?.slug}
+              disabled={deleteConfirmText.trim().toLowerCase() !== deleteTarget?.slug}
             >
               Delete permanently
             </Button>

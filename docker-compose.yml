@@ -6,6 +6,8 @@
 #   celery-worker Background job processor (no exposed port)
 #   redis         Celery broker + result backend (port 6379)
 #   postgres      Local dev database (port 5432) — prod uses AWS RDS
+#   phoenix       Self-hosted LLM tracing UI (port 6006) — traces live in a
+#                 dedicated database on the same RDS instance, see below
 #
 # Usage:
 #   Start all:         docker-compose up -d --build
@@ -36,8 +38,8 @@ services:
 
     # host.docker.internal resolves automatically on Docker Desktop (local dev)
     # but not on plain Docker Engine on Linux (prod EC2) — needed for
-    # DIS_API_BASE_URL and LANGFUSE_HOST, both of which point at
-    # host.docker.internal to reach sibling compose projects on this same host.
+    # DIS_API_BASE_URL, which points at host.docker.internal to reach that
+    # sibling service via its host-mapped port.
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -147,6 +149,30 @@ services:
 
     # Hard memory ceiling (P6.3, F13) — parsing / indexing service.
     mem_limit: 2g
+
+    restart: unless-stopped
+
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+
+    container_name: ${PHOENIX_CONTAINER_NAME}
+
+    env_file:
+      - .env
+
+    # Bound to localhost only — reach the UI via an SSH tunnel:
+    # ssh -L 6006:localhost:6006 <user>@<host>
+    # The api/celery containers reach it over the compose network by service
+    # name (http://phoenix:6006), no host.docker.internal needed.
+    ports:
+      - "127.0.0.1:6006:6006"
+
+    # Hard memory ceiling — one lightweight container. No ClickHouse/Redis/
+    # MinIO/separate worker here; traces are stored in a dedicated "phoenix"
+    # database on the same RDS instance CAS's own app already uses — see
+    # PHOENIX_SETUP.md for the one-time setup.
+    mem_limit: 768m
 
     restart: unless-stopped
 

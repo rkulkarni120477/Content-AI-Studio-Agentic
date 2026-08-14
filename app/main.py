@@ -58,9 +58,14 @@ async def lifespan(app: FastAPI):
     # Run all DB migrations — creates missing tables AND adds any missing columns.
     # init_db() is idempotent: CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN
     # IF NOT EXISTS are both safe to run on every startup.
-    from promptops_app.database import init_db
+    from promptops_app.database import ensure_phoenix_database, init_db
     init_db()
     _log.info("startup_db_migrations_complete")
+
+    # Phoenix's own container can't create its own database — do it here,
+    # once, idempotently, on every environment (local/dev/prod) without a
+    # manual `CREATE DATABASE` step. Never blocks startup on failure.
+    ensure_phoenix_database()
 
     # Initialise the OpenAI HTTP session and AWS Bedrock client once per
     # process.  This replaces the @st.cache_resource pattern from Streamlit.
@@ -77,15 +82,15 @@ async def lifespan(app: FastAPI):
 
     yield  # Application runs here
 
-    # Langfuse's SDK batches trace exports asynchronously (OTel BatchSpanProcessor);
+    # Phoenix's OTel BatchSpanProcessor batches trace exports asynchronously;
     # flush on the way out so a restart doesn't silently drop the last few seconds
-    # of in-flight traces. Best-effort — Langfuse being unreachable at shutdown
+    # of in-flight traces. Best-effort — Phoenix being unreachable at shutdown
     # must not block or fail the shutdown itself.
     try:
-        from langfuse import get_client
-        get_client().flush()
+        from promptops_app.core.llm_client import flush_phoenix_traces
+        flush_phoenix_traces()
     except Exception as exc:
-        _log.debug("Langfuse flush on shutdown skipped: %s", exc)
+        _log.debug("Phoenix flush on shutdown skipped: %s", exc)
 
     # Release reused DIS connection pools (P4.3/F7).
     try:
