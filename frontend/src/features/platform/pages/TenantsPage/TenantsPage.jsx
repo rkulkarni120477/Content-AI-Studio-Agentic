@@ -82,6 +82,9 @@ export default function TenantsPage() {
   const roleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
   // Read from the loaded list so a save + reload refreshes the editor in place.
   const configTenant = tenants.find((t) => t.id === configTenantId) || null;
+  // slug can be null/empty (TenantRead.slug is Optional) — falsy either way,
+  // so the confirm button stays disabled rather than accepting an empty match.
+  const targetSlug = (deleteTarget?.slug || '').trim().toLowerCase();
 
   useEffect(() => { load(); }, []);
 
@@ -721,7 +724,7 @@ export default function TenantsPage() {
               variant="danger"
               onClick={handleDeleteTenant}
               loading={deleting}
-              disabled={deleteConfirmText.trim().toLowerCase() !== deleteTarget?.slug}
+              disabled={!targetSlug || deleteConfirmText.trim().toLowerCase() !== targetSlug}
             >
               Delete permanently
             </Button>
@@ -734,12 +737,19 @@ export default function TenantsPage() {
               This permanently deletes <strong>{deleteTarget.name}</strong> and every course, block,
               generation, and document under it. This cannot be undone.
             </p>
-            <Input
-              label={`Type "${deleteTarget.slug}" to confirm`}
-              value={deleteConfirmText}
-              onChange={(e) => setDeleteConfirmText(e.target.value)}
-              autoFocus
-            />
+            {targetSlug ? (
+              <Input
+                label={`Type "${targetSlug}" to confirm`}
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                autoFocus
+              />
+            ) : (
+              <p className={styles.modalSub}>
+                This tenant has no organization code on record, so it can't be safely
+                confirmed — delete it from the database directly if this is intentional.
+              </p>
+            )}
           </div>
         )}
       </Modal>

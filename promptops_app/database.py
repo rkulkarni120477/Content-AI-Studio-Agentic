@@ -155,13 +155,6 @@ class Style(Base):
     created_by          = Column(String(100))
     created_at          = Column(DateTime, default=datetime.utcnow)
     updated_at          = Column(DateTime, default=datetime.utcnow)
-    # Tenant/course scoping — NULL means a shared/global style, not owned by
-    # any one tenant. Columns + their real indexes (idx_styles_project_id /
-    # idx_styles_course_id) come from migration 000100000020
-    # (style_workspace_ownership) — not redeclared here via index=True to
-    # avoid autogenerate drift against that migration's own index names.
-    project_id          = Column(Integer, nullable=True)
-    course_id           = Column(Integer, nullable=True)
     # Many-to-many with Document via StyleDocument join table
     style_documents     = relationship("StyleDocument", back_populates="style",
                                        cascade="all, delete-orphan")
@@ -1405,7 +1398,7 @@ class FeedbackItem(Base):
 # =============================================================================
 
 def ensure_phoenix_database() -> None:
-    """Create the "phoenix" database on this same Postgres server if it
+    """Create Phoenix's own database on this same Postgres server if it
     doesn't exist yet — local, RDS, wherever DATABASE_URL points.
 
     Phoenix's own container can't do this itself: CREATE DATABASE requires an
@@ -1414,6 +1407,11 @@ def ensure_phoenix_database() -> None:
     details (same host/user/password engine already resolved from
     DATABASE_URL) purely to issue that one statement — no new config, no
     manual `psql` step, on any environment.
+
+    The target database name is read from PHOENIX_SQL_DATABASE_URL itself
+    (falling back to "phoenix" if that's unset/unparseable) — hardcoding the
+    name here independently of that URL would let the two silently drift:
+    this ensures a database Phoenix was never actually configured to use.
 
     Best-effort and idempotent: a missing psycopg2 driver (e.g. under
     SQLite in tests), no permission to list/create databases, or a
@@ -1426,6 +1424,21 @@ def ensure_phoenix_database() -> None:
         return
     try:
         import psycopg2
+        from sqlalchemy.engine import make_url
+
+        target_db = "phoenix"
+        phoenix_url = os.getenv("PHOENIX_SQL_DATABASE_URL", "").strip()
+        if phoenix_url:
+            try:
+                target_db = make_url(phoenix_url).database or target_db
+            except Exception:
+                pass
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "PHOENIX_SQL_DATABASE_URL is not set — Phoenix will silently fall back to a "
+                "local SQLite file inside its own container, which is wiped on every redeploy."
+            )
 
         url = engine.url
         conn = psycopg2.connect(
@@ -1435,9 +1448,9 @@ def ensure_phoenix_database() -> None:
         conn.autocommit = True
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("phoenix",))
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
                 if cur.fetchone() is None:
-                    cur.execute('CREATE DATABASE "phoenix"')
+                    cur.execute(f'CREATE DATABASE "{target_db}"')
         finally:
             conn.close()
     except Exception as exc:

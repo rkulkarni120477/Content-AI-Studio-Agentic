@@ -156,10 +156,19 @@ services:
   phoenix:
     image: arizephoenix/phoenix:latest
 
-    container_name: ${PHOENIX_CONTAINER_NAME}
+    # Defaulted — unlike the api/celery/dis_backend names, which are already
+    # required everywhere this compose file runs, this var is new. Left
+    # unset it fails `docker compose config` outright ('' doesn't match the
+    # container-name pattern), which takes down the ENTIRE deploy — api and
+    # celery_worker included — not just this one service.
+    container_name: ${PHOENIX_CONTAINER_NAME:-contentai_phoenix}
 
-    env_file:
-      - .env
+    # Scoped to only what Phoenix's own process needs — env_file: .env would
+    # hand a third-party image OPENAI_API_KEY/JWT_SECRET_KEY/AWS credentials/
+    # our own DATABASE_URL. Phoenix's UI (reachable via the SSH tunnel below)
+    # includes a prompt playground that would pick up and bill OPENAI_API_KEY.
+    environment:
+      PHOENIX_SQL_DATABASE_URL: ${PHOENIX_SQL_DATABASE_URL}
 
     # Bound to localhost only — reach the UI via an SSH tunnel:
     # ssh -L 6006:localhost:6006 <user>@<host>

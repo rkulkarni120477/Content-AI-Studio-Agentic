@@ -151,7 +151,7 @@ def test_hard_delete_removes_project_and_owned_content(db, tenant_graph):
     assert policy is not None
 
     # The deletion itself is audited.
-    audit_row = db.query(AuditLog).filter_by(action="tenant_deleted", project_id=project_id).first()
+    audit_row = db.query(AuditLog).filter_by(action="project.deleted", project_id=project_id).first()
     assert audit_row is not None
     assert audit_row.user_id == "platform_admin_user"
 

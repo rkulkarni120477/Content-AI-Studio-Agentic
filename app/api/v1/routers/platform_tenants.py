@@ -379,7 +379,7 @@ def delete_tenant(
     try:
         tenant_service.hard_delete_tenant(db, project, deleted_by=current_user.username)
         db.commit()
-    except Exception as exc:
+    except Exception:
         db.rollback()
         _log.exception("tenant_delete_failed  project_id=%d", project_id)
         raise HTTPException(
@@ -387,7 +387,7 @@ def delete_tenant(
             detail=(
                 "Tenant deletion failed partway through — some of its courses may "
                 "already be permanently gone. Safe to retry: already-deleted content "
-                f"is simply skipped. Error: {exc}"
+                "is simply skipped. See server logs for the underlying error."
             ),
         )
     _log.info("tenant_deleted  project_id=%d  name=%r  by=%s", project_id, name, current_user.username)

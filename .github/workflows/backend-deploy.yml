@@ -47,6 +47,15 @@ jobs:
             echo "Building and starting all backend services..."
             docker compose up -d --build --remove-orphans
 
+            echo "Applying database migrations..."
+            # Nothing else in this deploy path runs Alembic — Dockerfile CMD is
+            # just uvicorn, and init_db() only handles the legacy DB_AUTO_DDL
+            # escape hatch, not real migrations. Earlier migrations were all
+            # additive/nullable so a missed one was harmless; a rename (like
+            # llm_usage_logs.langfuse_trace_id -> trace_id) is not — every LLM
+            # call's usage/cost row silently stops being written until this runs.
+            docker compose exec -T api alembic upgrade head
+
             echo "Cleaning unused Docker images..."
             docker image prune -f
 

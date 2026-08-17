@@ -5,20 +5,23 @@ part of the main CAS compose project — it comes up automatically with
 `docker compose up -d`, no separate deploy step needed. It reads its
 variables from the same root `.env` CAS itself uses.
 
-## 1. Create its database
+## 1. Its database is created automatically — nothing to do here
 
 Traces live in a dedicated database on the same Postgres instance CAS's own
-app already uses (its RDS instance), not a new container. SSH into the host
-and create it once:
-
-```bash
-psql "$DATABASE_URL" -c 'CREATE DATABASE phoenix;'
-```
-
-(Any user with `CREATEDB` works — no separate DB admin step needed if your
-app's own `DATABASE_URL` user already has that privilege, which is typical.)
+app already uses (its RDS instance), not a new container. `contentai_api`
+creates it itself on every startup if missing
+(`promptops_app.database.ensure_phoenix_database`) — no manual `psql` step,
+on any environment. It just needs the app's own `DATABASE_URL` user to have
+`CREATEDB`, which is typical.
 
 ## 2. Add these keys to the root `.env` on the EC2 host
+
+**`PHOENIX_SQL_DATABASE_URL` is mandatory, not optional** — leave it unset
+and Phoenix silently falls back to a local SQLite file inside its own
+container, which is wiped on every redeploy (a warning is logged on
+`contentai_api` startup if this happens, but nothing fails loudly). The
+others below have safe defaults in `docker-compose.yml` if omitted, but are
+worth setting explicitly anyway.
 
 ```
 PHOENIX_CONTAINER_NAME=contentai_phoenix

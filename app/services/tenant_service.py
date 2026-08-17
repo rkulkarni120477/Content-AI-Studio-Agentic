@@ -315,7 +315,11 @@ def hard_delete_tenant(db: Session, project, deleted_by: str) -> None:
     clusters rather than to a specific course: clusters, memberships, custom
     roles, the legacy project_user_assignments grant table, project-level
     fixings/preferences/history/jobs/feedback, tenant-authored styles, and
-    any legacy generation never attached to a course.
+    any generation/CDD/blueprint/import that carries project_id directly but
+    was never attached to a course (each with its own full dependency-order
+    cleanup, same shape as purge_course's — these aren't just extra rows,
+    real Postgres FK constraints will reject deleting a Generation/CDD/
+    blueprint that still has children).
 
     Every uploaded editor image referenced by this tenant's courses is
     snapshotted before purging and deleted from S3 afterward if it ends up
@@ -335,10 +339,12 @@ def hard_delete_tenant(db: Session, project, deleted_by: str) -> None:
     """
     from app.services.asset_cleanup import collect_course_assets, delete_unreferenced
     from promptops_app.database import (
-        CentralRepository, Cluster, Course, FeedbackDocument, FeedbackItem,
-        Generation, GenerationJob, ProjectUserAssignment, PromptFixing, Style,
-        StyleDocument, StyleVersion, TenantMembership, TenantRole, User,
-        UserPromptHistory, UserPromptPreference,
+        BlockComment, BlockVersion, BlueprintVersion, Block, CDDVersion,
+        CentralRepository, Cluster, Course, CourseDesignDocument, CourseImport,
+        FeedbackDocument, FeedbackItem, FeedbackSignal, Generation, GenerationJob,
+        ImportProvenance, ModuleBlueprint, ProjectUserAssignment, PromptFixing,
+        Review, Style, StyleDocument, StyleVersion, TenantMembership, TenantRole,
+        User, UserPromptHistory, UserPromptPreference, WorkflowEvent,
     )
     from promptops_app.repositories.course_repository import purge_course
     from promptops_app.services.audit_service import log_audit_event
@@ -348,7 +354,7 @@ def hard_delete_tenant(db: Session, project, deleted_by: str) -> None:
     course_ids = [c.id for c in db.query(Course.id).filter(Course.project_id == project_id).all()]
 
     log_audit_event(
-        db, deleted_by, "tenant_deleted",
+        db, deleted_by, "project.deleted",
         entity_type="project", entity_id=project_id, project_id=project_id,
         metadata={"slug": project.slug, "name": project.name, "course_count": len(course_ids)},
     )
@@ -387,10 +393,110 @@ def hard_delete_tenant(db: Session, project, deleted_by: str) -> None:
     # Legacy/orphan generations never attached to a course — purge_course
     # above only ever touches Generation.course_id == <a real course>, so a
     # row with project_id set but course_id NULL is otherwise never reached
-    # and would keep its real output_text content indefinitely.
-    db.query(Generation).filter(
-        Generation.project_id == project_id, Generation.course_id.is_(None),
-    ).delete(synchronize_session=False)
+    # and would keep its real output_text content indefinitely. Mirrors
+    # purge_course's own block/review/feedback-signal dependency order: those
+    # three FKs have no ON DELETE clause, so deleting a Generation with
+    # existing blocks raises ForeignKeyViolation on Postgres — and by this
+    # point every real course has already been purge_course'd and committed,
+    # so a mid-way failure here would leave the tenant irrecoverably
+    # half-deleted (SQLite, used by the test suite, doesn't enforce FKs, so
+    # this only ever shows up against real Postgres).
+    orphan_gen_ids = [
+        g.id for g in db.query(Generation.id)
+        .filter(Generation.project_id == project_id, Generation.course_id.is_(None))
+        .all()
+    ]
+    if orphan_gen_ids:
+        orphan_block_ids = [
+            b.id for b in db.query(Block.id).filter(Block.generation_id.in_(orphan_gen_ids)).all()
+        ]
+        if orphan_block_ids:
+            db.query(WorkflowEvent).filter(WorkflowEvent.block_id.in_(orphan_block_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(FeedbackSignal).filter(FeedbackSignal.block_id.in_(orphan_block_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(Review).filter(Review.block_id.in_(orphan_block_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(BlockComment).filter(BlockComment.block_id.in_(orphan_block_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(BlockVersion).filter(BlockVersion.block_id.in_(orphan_block_ids)).delete(
+                synchronize_session=False
+            )
+            # PlagiarismReport.block_id has ON DELETE CASCADE — no explicit delete needed.
+            db.query(Block).filter(Block.id.in_(orphan_block_ids)).delete(synchronize_session=False)
+
+        db.query(Review).filter(Review.generation_id.in_(orphan_gen_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(FeedbackSignal).filter(FeedbackSignal.generation_id.in_(orphan_gen_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(Generation).filter(Generation.id.in_(orphan_gen_ids)).update(
+            {Generation.cdd_id: None, Generation.blueprint_id: None}, synchronize_session=False,
+        )
+        db.query(Generation).filter(Generation.id.in_(orphan_gen_ids)).delete(
+            synchronize_session=False
+        )
+
+    # Same gap, same fix, for CDDs/blueprints/imports that carry project_id
+    # directly but were never attached to a course — purge_course only ever
+    # filters these four tables by course_id, so an orphan row would
+    # otherwise survive (and for CDD/blueprint, keep real generated text)
+    # indefinitely.
+    orphan_cdd_ids = [
+        d.id for d in db.query(CourseDesignDocument.id)
+        .filter(CourseDesignDocument.project_id == project_id, CourseDesignDocument.course_id.is_(None))
+        .all()
+    ]
+    if orphan_cdd_ids:
+        orphan_bp_ids_via_cdd = [
+            b.id for b in db.query(ModuleBlueprint.id).filter(ModuleBlueprint.cdd_id.in_(orphan_cdd_ids)).all()
+        ]
+        if orphan_bp_ids_via_cdd:
+            db.query(BlueprintVersion).filter(
+                BlueprintVersion.blueprint_id.in_(orphan_bp_ids_via_cdd)
+            ).delete(synchronize_session=False)
+            db.query(ModuleBlueprint).filter(ModuleBlueprint.id.in_(orphan_bp_ids_via_cdd)).delete(
+                synchronize_session=False
+            )
+        db.query(CDDVersion).filter(CDDVersion.cdd_id.in_(orphan_cdd_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(CourseDesignDocument).filter(CourseDesignDocument.id.in_(orphan_cdd_ids)).delete(
+            synchronize_session=False
+        )
+
+    # Remaining orphan blueprints not already caught above (no cdd_id, or a
+    # cdd_id pointing at a CDD that wasn't itself an orphan needing cleanup).
+    orphan_bp_ids = [
+        b.id for b in db.query(ModuleBlueprint.id)
+        .filter(ModuleBlueprint.project_id == project_id, ModuleBlueprint.course_id.is_(None))
+        .all()
+    ]
+    if orphan_bp_ids:
+        db.query(BlueprintVersion).filter(BlueprintVersion.blueprint_id.in_(orphan_bp_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(ModuleBlueprint).filter(ModuleBlueprint.id.in_(orphan_bp_ids)).delete(
+            synchronize_session=False
+        )
+
+    orphan_import_ids = [
+        i.id for i in db.query(CourseImport.id)
+        .filter(CourseImport.project_id == project_id, CourseImport.course_id.is_(None))
+        .all()
+    ]
+    if orphan_import_ids:
+        db.query(ImportProvenance).filter(ImportProvenance.import_id.in_(orphan_import_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(CourseImport).filter(CourseImport.id.in_(orphan_import_ids)).delete(
+            synchronize_session=False
+        )
 
     fb_doc_ids = [
         d.id for d in db.query(FeedbackDocument.id).filter(FeedbackDocument.project_id == project_id).all()
