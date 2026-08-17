@@ -462,16 +462,43 @@ def reconcile_budget_autocommit(reservations: list, actual_cost_usd: float, actu
 
 
 def build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Optional[dict]:
-    """Assemble a post-call summary for the frontend: what this one call cost
-    (re-read from the LLMUsageLog row that logging just wrote), plus remaining
-    headroom for every scope (project/course/user) that has a BudgetPolicy —
-    reuses the exact same levels check_budget() enforces against, so what the
-    user sees here always matches what would actually block them.
+    """Assemble a post-call summary for the frontend, or None if unavailable.
 
-    Returns None if no usage row is found (e.g. logging itself failed — see
-    usage_service.log_llm_usage's own fail-safe note) so callers can simply
-    omit the summary rather than show zeros.
+    Never raises. This is a REPORTING call that runs after the model has already
+    answered and the money has already been spent, so a failure here must not be
+    allowed to sink the result it is describing — the caller loses its summary,
+    not its generation.
+
+    That is not hypothetical. ``llm_usage_logs`` drifted from its ORM (the table
+    has ``trace_id``; the model declares ``langfuse_trace_id``), and because
+    SQLAlchemy names every mapped column in its SELECT, this query raised
+    UndefinedColumn on a table it only wanted to read one row from. A successful,
+    paid-for CDD regeneration returned 500 and the corrected content was
+    discarded — the user saw "no change" with no indication anything had gone
+    wrong. Enforcement is unaffected: check_budget() is what blocks a call, and
+    it runs before the spend, not here.
+
+    Returns None when there is no usage row (e.g. logging itself failed — see
+    usage_service.log_llm_usage's own fail-safe note) so callers can omit the
+    summary rather than show zeros.
     """
+    try:
+        return _build_usage_summary(db, usage_ctx, entity_type, entity_id)
+    except Exception:  # noqa: BLE001 — a report must never sink what it reports on
+        _log.warning("usage_summary_unavailable entity=%s:%s — returning None",
+                     entity_type, entity_id, exc_info=True)
+        try:
+            # The session may be in a failed transaction after a database error;
+            # leaving it that way would break the caller's next statement and
+            # turn a cosmetic failure back into a fatal one.
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def _build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Optional[dict]:
+    """The real work. See build_usage_summary for why it is wrapped."""
     from promptops_app.database import LLMUsageLog
 
     query = db.query(LLMUsageLog).filter(

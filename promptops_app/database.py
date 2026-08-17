@@ -1451,6 +1451,18 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
     ),
+    # Observability drift. The live table carries `trace_id`; the ORM declares
+    # `langfuse_trace_id`, and because SQLAlchemy names every mapped column in
+    # its SELECT, the mismatch breaks EVERY read of this table — including the
+    # post-generation budget summary, which turned successful, paid-for CDD
+    # regenerations into 500s and silently discarded their output.
+    #
+    # Added rather than renamed: `trace_id` is populated in existing rows and
+    # something may still read it, so dropping or renaming it would trade one
+    # outage for another. The two coexist until the ORM is reconciled.
+    "llm_usage_logs": (
+        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS langfuse_trace_id VARCHAR(64)",
+    ),
 }
 
 

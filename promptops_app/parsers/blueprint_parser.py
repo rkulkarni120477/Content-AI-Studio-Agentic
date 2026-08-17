@@ -197,6 +197,30 @@ _ITEM_REGEN_SYSTEM = (
 )
 
 
+#: Strips a list bullet the model re-added, WITHOUT eating markdown emphasis.
+#:
+#: The previous pattern was ``^[-*•]\\s*``, and because ``\\s*`` matches zero
+#: characters it read the first ``*`` of ``**Bold:** value`` as a bullet and
+#: removed it. patch_item_in_section then prepended the real bullet, so a
+#: single-item regeneration turned
+#:     - **Supplemental References:** Essential Texts: …
+#: into
+#:     - *Supplemental References:** Essential Texts: …
+#: deterministically, on every run. Worksheet 1 of an AIM CDD is nothing but
+#: ``- **Field:** value`` lines, so every per-item regeneration there corrupted
+#: the field label, and the same applied to italics (``*emphasis*`` → ``emphasis*``).
+#: Observed live on CDD 169 item 12.
+#:
+#: ``-`` and ``•`` keep the old zero-width behaviour, since neither carries any
+#: meaning in markdown beyond "bullet". ``*`` requires real whitespace after it,
+#: which is what distinguishes a bullet from an emphasis delimiter.
+_LEADING_BULLET_RE = _re_engine.compile(r"^(?:[-•]\s*|\*\s+)")
+
+
+def _strip_leading_bullet(text: str) -> str:
+    return _LEADING_BULLET_RE.sub("", text, count=1)
+
+
 def regen_single_item(
     section_title: str,
     section_content: str,
@@ -206,6 +230,7 @@ def regen_single_item(
     model_choice: str = "GPT-5.4",
     learning_signals: str = "",
     usage_ctx: Optional["UsageLogContext"] = None,
+    context: str = "",
 ) -> str:
     """Regenerate a single item inside a section using the LLM.
 
@@ -213,17 +238,30 @@ def regen_single_item(
     llm_usage_logs — this is a real, live LLM-calling path (cdd.py/blueprints.py/
     blocks.py all route their per-item regenerate endpoint through here), not a
     dead one; without it the call still logs, just as unattributed.
+
+    ``context`` (optional) is grounding assembled by the caller — for CDDs, the
+    block overview and the day/ACS rows the instruction refers to (see
+    app.services.cdd_regen_context). "" reproduces this function's exact
+    previous behaviour, which is what the blueprint and block callers still get.
     """
+    # When the "item" IS the whole section — which is what a markdown table
+    # parses to, since parse_items_from_section recognises lists and headings
+    # but not table rows — appending it again as "Section context" doubles the
+    # prompt for no added information. The check is cheap and the saving is
+    # ~19k tokens on a CDD day table.
+    section_context = "" if section_content.strip() == item_text.strip() else section_content
+
     user_p = (
         f"Section: {section_title}\n\n"
         f"Current item (index {item_index}): {item_text}\n\n"
         f"Instruction: {custom_instruction or 'Improve this item.'}"
+        + (f"\n\n{context}" if context else "")
         + (f"\n\nLEARNED PREFERENCES:\n{learning_signals}" if learning_signals else "")
-        + f"\n\nSection context:\n{section_content}"
+        + (f"\n\nSection context:\n{section_context}" if section_context else "")
     )
     sys_p = _ITEM_REGEN_SYSTEM
     result = call_llm(model_choice, sys_p, user_p, usage_ctx)
-    result = _re_engine.sub(r"^[-*•]\s*", "", result.strip())
+    result = _strip_leading_bullet(result.strip())
     return result.strip()
 
 

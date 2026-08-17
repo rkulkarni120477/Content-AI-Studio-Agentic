@@ -135,18 +135,41 @@ export const commitCddVersionThunk = createAsyncThunk(
   },
 );
 
+/**
+ * Report a regeneration's outcome exactly once.
+ *
+ * The thunk owns the toast, because it is the only layer that sees both the cost
+ * and the outcome. Previously it announced "Section regenerated. Used $0.05"
+ * whenever a usage summary came back, and the page then separately reported that
+ * nothing had changed — so a no-op produced a green success and a red failure
+ * side by side, contradicting each other, and the honest half looked like the
+ * mistake.
+ *
+ * A no-op is not a success: nothing was saved and the instruction was not
+ * carried out. The cost is still reported, because it was still incurred.
+ */
+function notifyRegenOutcome(result, label) {
+  const usageMsg = formatUsageSummaryMessage(result?.usage_summary);
+  if (result?.changed === false) {
+    const why = result.note
+      || `No change — the ${label.toLowerCase()} was returned unchanged. Nothing was saved.`;
+    toast.error([why, usageMsg].filter(Boolean).join(' '));
+    return;
+  }
+  if (!usageMsg) return;
+  if (hasOverBudget(result.usage_summary)) toast.error(`${label} regenerated. ${usageMsg}`);
+  else toast.success(`${label} regenerated. ${usageMsg}`);
+}
+
 export const regenerateCddItemThunk = createAsyncThunk(
   'cdd/regenerateItem',
-  async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
+  async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, useSources, modelChoice },
+          { rejectWithValue }) => {
     try {
       const result = await cddService.regenerateItem(cddId, {
-        sectionKey, sectionContent, itemIndex, feedback, modelChoice,
+        sectionKey, sectionContent, itemIndex, feedback, useSources, modelChoice,
       });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      if (usageMsg) {
-        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
-        else toast.success(`Item regenerated. ${usageMsg}`);
-      }
+      notifyRegenOutcome(result, 'Item');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -157,11 +180,7 @@ export const regenerateCddSectionThunk = createAsyncThunk(
   async ({ cddId, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
     try {
       const result = await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      if (usageMsg) {
-        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
-        else toast.success(`Section regenerated. ${usageMsg}`);
-      }
+      notifyRegenOutcome(result, 'Section');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },

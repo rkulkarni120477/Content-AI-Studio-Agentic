@@ -133,6 +133,9 @@ export const cddService = {
     section_content: data.sectionContent,
     item_index: data.itemIndex,
     feedback: data.feedback || '',
+    // Omitted when the caller has no opinion, so the backend keeps inferring
+    // from the instruction rather than being told "do not search".
+    ...(data.useSources === undefined ? {} : { use_sources: data.useSources }),
     model_choice: data.modelChoice,
   }),
   regenerateSection: (id, data)   => api.post(CDD.REGENERATE_SECTION(id), {

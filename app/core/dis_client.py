@@ -127,8 +127,19 @@ class DISClient:
             detail = str(exc) or f"Cannot reach DIS backend at {self.base_url}. Start DIS with: uvicorn main:app --port 8010 --reload"
             raise HTTPException(503, f"DIS unavailable: {detail}") from exc
 
-    def retrieve_context_sync(self, purpose: str, payload: Dict[str, Any], current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
-        return self.request_sync("POST", f"/context/retrieve/{purpose}", json=payload, current_user=current_user, client_id=client_id)
+    def retrieve_context_sync(self, purpose: str, payload: Dict[str, Any], current_user: Any = None,
+                              client_id: str = "", timeout: float | None = None) -> Dict[str, Any]:
+        """``timeout`` overrides the client default (dis_api_timeout_seconds, 300s).
+
+        300s is right for a generation, which legitimately runs for minutes. It is
+        wrong for a caller enriching an interactive request, where the lookup is
+        supplementary and a slow DIS should cost a degraded answer rather than a
+        five-minute hang — measured: a CDD regeneration sat in flight for over
+        four minutes with the user seeing nothing at all.
+        """
+        extra: Dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
+        return self.request_sync("POST", f"/context/retrieve/{purpose}", json=payload,
+                                 current_user=current_user, client_id=client_id, **extra)
 
     # ── Digest pipeline (block-wide CDD/Blueprint) ───────────────────────────
     def enumerate_block_sync(self, block: str, current_user: Any = None, client_id: str = "",
@@ -355,18 +366,48 @@ class DISClient:
 
     def get_day_context_sync(self, block: str, day: int, audience: str = "instructor",
                              supplement_k: int | None = None, current_user: Any = None,
-                             client_id: str = "") -> Dict[str, Any]:
+                             client_id: str = "", timeout: float | None = None) -> Dict[str, Any]:
         """Structured-first day-scoped context (§7) for DLU / Learn It / Today's
         Mission: every unit on ``block+day`` + the day's digest + a bounded kNN
         supplement. Pass ``audience='student'`` to withhold instructor-only text."""
         payload: Dict[str, Any] = {"block": block, "day": int(day), "audience": audience}
         if supplement_k is not None:
             payload["supplement_k"] = supplement_k
+        # See retrieve_context_sync for why an interactive caller passes its own.
+        extra: Dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
         return self.request_sync("POST", "/context/retrieve/day", json=payload,
-                                 current_user=current_user, client_id=client_id)
+                                 current_user=current_user, client_id=client_id, **extra)
 
     def documents_library_sync(self, params: Dict[str, Any], current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
         return self.request_sync("GET", "/context/documents/library", params=params, current_user=current_user, client_id=client_id)
+
+    def resolved_tenant_id(self, current_user: Any = None, client_id: str = "") -> str:
+        """The tenant a request with these arguments will actually reach.
+
+        DIS derives the tenant from the caller's identity (the X-CAS-Tenant-Id
+        header built in :meth:`_headers`), NOT from ``client_id`` — so a caller
+        that caches anything tenant-scoped must key it on this, and a caller
+        reading tenant config must check the answer came from the tenant it meant.
+        Returns "" when it cannot be resolved, which callers should treat as
+        "unknown", never as a default.
+        """
+        try:
+            return str(self._resolve_access(current_user, client_id).tenant_id or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def ui_config_sync(self, current_user: Any = None, client_id: str = "",
+                       timeout: float | None = None) -> Dict[str, Any]:
+        """Raw DIS source-library config, for sync server-side callers.
+
+        Deliberately does NOT add the CAS-side `access` block that :meth:`ui_config`
+        attaches for the frontend — this exists so a generation path can read the
+        tenant's own retrieval config (which document types a purpose admits)
+        instead of restating it in CAS, where the two would drift.
+        """
+        extra: Dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
+        return self.request_sync("GET", "/context/ui-config",
+                                 current_user=current_user, client_id=client_id, **extra)
 
     async def ui_config(self, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
         data = await self.request("GET", "/context/ui-config", current_user=current_user, client_id=client_id)

@@ -491,6 +491,14 @@ export default function CddPage() {
       feedback: instruction,
       modelChoice,
     })).unwrap();
+    // The model returned the section untouched — a legitimate outcome when the
+    // instruction cannot be satisfied from the context it was given. Committing
+    // it would save a version identical to the current one and show a success
+    // toast, which is why "I regenerated and nothing happened" was impossible to
+    // tell apart from a broken feature. Say so instead, and save nothing.
+    // The thunk has already reported this (see notifyRegenOutcome) — toasting
+    // again here is what put a success and a failure on screen together.
+    if (res?.changed === false) return;
     if (res?.updated_content != null) {
       const reason = instruction
         ? `AI regenerated ${blockKey}: ${instruction}`
@@ -506,7 +514,8 @@ export default function CddPage() {
   }
 
   async function onRegenerateCddItem({
-    blockKey, sectionContent, itemIndex, instruction, dluWorksheetKey, dluCourseStructure,
+    blockKey, sectionContent, itemIndex, instruction, useSources,
+    dluWorksheetKey, dluCourseStructure,
   }) {
     if (!displayCdd?.id) return;
     const res = await dispatch(regenerateCddItemThunk({
@@ -515,8 +524,12 @@ export default function CddPage() {
       sectionContent,
       itemIndex,
       feedback: instruction,
+      useSources,
       modelChoice,
     })).unwrap();
+    // Same contract as the section path above: an item returned untouched must
+    // not be committed as a new version. The thunk has already said so.
+    if (res?.changed === false) return;
     if (res?.updated_content != null) {
       const reason = instruction
         ? `AI regenerated ${blockKey} item ${itemIndex + 1}: ${instruction}`

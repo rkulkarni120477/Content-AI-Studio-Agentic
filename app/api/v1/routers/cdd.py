@@ -51,6 +51,8 @@ from app.core.exceptions import (
     LLMGenerationError,
     NotFoundError,
     PromptConfigurationError,
+    RetrievalUnavailableError,
+    SourceUnavailableError,
     WorkflowError,
 )
 from app.schemas.archive import (
@@ -71,6 +73,7 @@ from app.schemas.cdd import (
     CDDRegenerateItemRequest,
     CDDRegenerateItemResponse,
     CDDRegenerateSectionRequest,
+    CDDDigestRepairResponse,
     CDDRegenerateSectionResponse,
     CDDVersionCreateRequest,
     CDDVersionListItem,
@@ -1231,6 +1234,8 @@ def regenerate_cdd_item(
     Stateless: returns the patched section content. The frontend commits a new
     CDD version, matching the existing "Save Edit" flow.
     """
+    from app.services import cdd_deep_context as deep_svc
+    from app.services import cdd_regen_context as regen_ctx_svc
     from promptops_app.parsers.blueprint_parser import (
         parse_items_from_section,
         patch_item_in_section,
@@ -1239,6 +1244,7 @@ def regenerate_cdd_item(
     from promptops_app.services.usage_service import UsageLogContext
 
     cdd = _get_cdd_or_404(db, cdd_id)
+    course_title = getattr(cdd, "course_title", None) or request_body.section_key
 
     original = request_body.section_content or ""
     item_index = request_body.item_index
@@ -1247,6 +1253,65 @@ def regenerate_cdd_item(
         raise NotFoundError("CDD item", item_index)
 
     target = items[item_index]
+
+    # Refuse before spending anything if the model could not return this item
+    # whole. parse_items_from_section treats a markdown table as ONE item, so a
+    # 20-day CDD day table arrives here as a single ~18k-token item against a
+    # 16,384-token ceiling — the response came back truncated, was spliced in
+    # below, and committed as a new version with rows missing and no error.
+    target_label = f"Item {item_index + 1} of '{request_body.section_key}'"
+    regen_ctx_svc.assert_can_emit(
+        target["text"], model_choice=request_body.model_choice, label=target_label,
+    )
+
+    # Grounding from the CDD's own worksheets — no DIS call, no network.
+    context = regen_ctx_svc.build_context(
+        db, cdd,
+        section_key=request_body.section_key,
+        instruction=request_body.feedback or "",
+        section_content=original,
+    )
+
+    # Source escalation, on the same terms as the section and row paths.
+    #
+    # This is the control a user actually reaches for to correct one field —
+    # "the primary handbooks are incomplete, refer to the syllabus" is aimed at a
+    # single line, not a whole worksheet. Without this the item button had
+    # worksheet grounding only, so the one instruction most likely to be typed
+    # into it was the one instruction it could not satisfy: the answer is in the
+    # library, and this path never looked.
+    instruction = request_body.feedback or ""
+    # The user's explicit choice wins over the inference. wants_source reads the
+    # instruction's wording, which is a good guess and only a guess — it cannot
+    # know that "make this match what we teach" means the syllabus. When the
+    # client offers a checkbox it sends the answer, and only an absent field
+    # falls back to inferring.
+    use_sources = (deep_svc.wants_source(instruction)
+                   if request_body.use_sources is None else request_body.use_sources)
+    deep = deep_svc.DeepContext()
+    if use_sources:
+        deep = deep_svc.deepen(
+            db, cdd, scope=context.scope, instruction=instruction,
+            current_user=current_user, course_title=course_title,
+            section_key=request_body.section_key,
+            # The item, not the whole section: anchors should describe the line
+            # being corrected, not every other field around it.
+            section_content=target["text"],
+        )
+        if deep.unavailable and not deep.found:
+            raise RetrievalUnavailableError(
+                "This instruction needs the source library, and it could not be "
+                "reached — so the item was left untouched rather than rewritten "
+                "without it. Nothing was changed or charged for. Try again once "
+                "the source service is back.",
+                levels_tried=list(deep.levels_tried),
+                detail={"flags": list(deep.flags), "item_index": item_index},
+            )
+
+    context_block = context.text
+    if deep.found:
+        context_block = f"{context_block}\n\n{deep.text}" if context_block else deep.text
+
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=cdd.project_id, course_id=cdd.course_id,
         entity_type="cdd_item_regen", entity_id=str(cdd_id),
@@ -1256,21 +1321,337 @@ def regenerate_cdd_item(
         section_content=original,
         item_index=item_index,
         item_text=target["text"],
-        custom_instruction=request_body.feedback or "",
+        custom_instruction=instruction,
         model_choice=request_body.model_choice,
         usage_ctx=usage_ctx,
+        context=context_block,
     )
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
-    _log.info("cdd_item_regenerated  user=%s  cdd_id=%d  section=%s  item=%d",
-              current_user.username, cdd_id, request_body.section_key, item_index)
+    _log.info("cdd_item_regenerated  user=%s  cdd_id=%d  section=%s  item=%d  %s  %s",
+              current_user.username, cdd_id, request_body.section_key, item_index,
+              context.provenance(), deep.provenance())
 
     from promptops_app.services.budget_service import build_usage_summary
+
+    # Same no-op visibility the section path has. Compared on the ITEM, because
+    # patch_item_in_section rewrites one line — an unchanged item still yields a
+    # section string that differs from nothing, and committing it would write a
+    # new CDD version that reads identically to the last one.
+    changed = (new_item_text or "").strip() != (target["text"] or "").strip()
+    if not changed:
+        _log.info("cdd_item_regen_noop  user=%s  cdd_id=%d  section=%s  item=%d  %s",
+                  current_user.username, cdd_id, request_body.section_key, item_index,
+                  deep.provenance())
 
     return CDDRegenerateItemResponse(
         updated_content=updated_content,
         patched_item=new_item_text or "",
         usage_summary=build_usage_summary(db, usage_ctx, "cdd_item_regen", str(cdd_id)),
+        changed=changed,
+        note=None if changed else _noop_note(deep, target_text=target["text"]),
+    )
+
+
+#: Documents named in a no-op note before it summarises the rest. Enough to
+#: recognise what was consulted; not so many that the toast becomes a file list.
+_NOTE_SOURCE_LIMIT = 4
+
+#: Document types shown when explaining what a search was allowed to cover.
+_NOTE_TYPE_LIMIT = 6
+
+
+def _scope_hint(deep) -> str:
+    """What the search was allowed to see — the one cause that IS knowable here.
+
+    A CDD search covers the document types the tenant's `cdd` purpose admits,
+    plus any the instruction named (see cdd_deep_context.document_type_hints).
+    Everything else in the library is out of scope for the request, which is a
+    different problem from a missing document and has a different fix: name the
+    material in the instruction, or widen the purpose.
+    """
+    types = list(getattr(deep, "document_types", ()) or ())
+    if types:
+        shown = ", ".join(types[:_NOTE_TYPE_LIMIT])
+        more = ", and others" if len(types) > _NOTE_TYPE_LIMIT else ""
+        return (f"The search covered these document types: {shown}{more}. "
+                "Material of any other type was out of scope for this request — "
+                "naming it in the instruction brings it in.")
+    if "doc_types_unopened" in (getattr(deep, "flags", ()) or ()):
+        return ("The instruction named material outside the CDD source set, but the "
+                "tenant's retrieval config could not be read, so the search stayed "
+                "narrow. Retrying may widen it.")
+    return ("The search covered the document types configured as this course's CDD "
+            "sources. Other material in the Source Library is out of scope unless "
+            "the instruction names it.")
+
+
+def _noop_note(deep, *, target_text: str = "") -> str:
+    """Explain an unchanged section in terms the user can act on.
+
+    ``target_text`` is what was already in the cell, when the caller knows it.
+    It changes which explanation is the honest one, and the difference is not
+    cosmetic: on CDD 169 the Primary Handbooks line was already complete
+    ("FAA-H-8083-30B — cited on Days 1-13, 17-19; …"), retrieval returned 25
+    units of the correct block's calendars and syllabi, and the instruction
+    reduced to the words "part check once". Leading with "the material does not
+    answer the instruction" pointed at the source library, where the actual
+    problem was that the instruction did not say what to change. A message that
+    sends the user to look at the wrong thing costs them more than no message.
+
+    Three outcomes look identical from the outside and need different answers,
+    so they must not share one message. The previous wording claimed the lookup
+    "found nothing" whenever any rung had run — which was wrong in the case that
+    actually happens: on CDD 169 the search returned eight source units and the
+    toast still reported that nothing had been found, pointing the user at a
+    retrieval failure that had not occurred.
+
+    Naming the documents matters more than the verdict. "These were read and
+    none of them covers it" tells the user which document to upload; "nothing
+    happened" tells them the feature is broken.
+
+    What it must NOT do is guess at a cause. The earlier wording ended "it may
+    not be ingested for this block — check the Source Library", and on the run
+    that produced it the material WAS ingested: 992 of Block 2's 1,002 indexed
+    units were simply outside the document types the CDD purpose admits. The
+    advice was confident, actionable and pointed at the wrong place. Retrieval
+    scope is knowable here; ingestion status is not, so only the first is stated.
+    """
+    from app.services.cdd_deep_context import is_placeholder
+
+    already_filled = bool((target_text or "").strip()) and not is_placeholder(target_text)
+    if already_filled:
+        head = ("The model returned this unchanged. It already has content, and neither "
+                "the instruction nor the material retrieved gave it a reason to change "
+                "— it is told to leave content alone rather than guess. ")
+        tail = (" If you meant something specific, say what should change and what it "
+                "should become; an instruction that does not name a change reads as "
+                "\"leave this alone\".")
+    else:
+        head = ("The model returned this section unchanged, because the material it was "
+                "given does not answer the instruction — it is told to leave content "
+                "alone rather than guess. ")
+        tail = ""
+    if deep.found:
+        # `units` comes from the retrieval response and `sources` is parsed out of
+        # the text, so either can be absent while the other is populated. Report
+        # whichever is actually known rather than a confident "0 units".
+        shown = deep.sources[:_NOTE_SOURCE_LIMIT]
+        count = deep.units or len(deep.sources)
+        return (
+            head
+            + "The source library was searched and "
+            + (f"{count} unit(s) came back" if count else "material came back")
+            + (f" ({', '.join(shown)}"
+               + (", and others" if len(deep.sources) > _NOTE_SOURCE_LIMIT else "")
+               + ")" if shown else "")
+            + (", and nothing in it changed this. " if already_filled
+               else ", but none of it covers what was asked. ")
+            + _scope_hint(deep)
+            + " Nothing was saved."
+            + tail
+        )
+    if deep.levels_tried:
+        # Scope belongs here too, and arguably more than above: a lookup that
+        # returned nothing at all is the case where the user is most likely to
+        # conclude the library is empty, when the truthful reading is that this
+        # request could only see part of it. A rung that could not be consulted
+        # never reaches this note — the caller raises RetrievalUnavailableError
+        # for that — so "came back empty" is a statement about the source.
+        return (
+            head
+            + f"A {deep.level or 'source'} lookup ran and came back empty, so there "
+              "is nothing to fill this from. "
+            + _scope_hint(deep)
+            + " Nothing was saved."
+            + tail
+        )
+    return (head + "No source lookup was needed for this instruction. Nothing was saved."
+            + tail)
+
+
+def _regenerate_rows(db, cdd, *, plan, context, request_body, course_title, current_user):
+    """Regenerate only the day rows a plan targets, then merge them back.
+
+    Split out of the endpoint rather than inlined because the two paths differ
+    in everything that matters — what is sent, what is asked for, and what is
+    allowed to change — and interleaving them behind conditionals is how the
+    stricter one ends up quietly sharing the looser one's rules.
+    """
+    from app.services import cdd_deep_context as deep_svc
+    from app.services import cdd_regen_context as regen_ctx_svc
+    from app.services import cdd_scoped_regen as scoped_regen
+    from promptops_app.prompt_templates import CDD_ROW_REGENERATE_PROMPT, CDD_SYSTEM_PROMPT
+    from promptops_app.services.budget_service import build_usage_summary
+    from promptops_app.services.llm_service import generate_with_metadata
+    from promptops_app.services.usage_service import UsageLogContext
+
+    # Still checked, though a handful of rows will not come close: the guard is
+    # about the request that was actually made, not about the shape we expect.
+    regen_ctx_svc.assert_can_emit(
+        plan.target_markdown,
+        model_choice=request_body.model_choice,
+        label=f"Days {', '.join(str(d) for d in plan.day_numbers)}",
+    )
+
+    # ── Source escalation ──────────────────────────────────────────────────
+    # The worksheet can only support REVISING a cell. Filling an empty one needs
+    # what is behind it, so when the targeted cells are blank — or the
+    # instruction asks for content rather than improvement — climb to the day's
+    # digest and units, then to a library search for material attributed to no
+    # day at all.
+    instruction = request_body.feedback or ""
+    gaps = scoped_regen.unfilled_cells(plan)
+    deep = deep_svc.DeepContext()
+    if gaps or deep_svc.wants_source(instruction):
+        deep = deep_svc.deepen(db, cdd, scope=context.scope, instruction=instruction,
+                               current_user=current_user, course_title=course_title,
+                               section_key=request_body.section_key,
+                               section_content=plan.section_content)
+        # See the section path: "could not look" must not be reported as "not
+        # there", and must not become a silent no-op either.
+        if deep.unavailable and not deep.found and (gaps or deep_svc.wants_source(instruction)):
+            raise RetrievalUnavailableError(
+                "These rows need the source library, and it could not be reached "
+                "— so they were left untouched rather than rewritten without it. "
+                "Nothing was changed or charged for. Try again once the source "
+                "service is back.",
+                levels_tried=list(deep.levels_tried),
+                detail={"flags": list(deep.flags),
+                        "days": [d for d in plan.day_numbers]},
+            )
+
+    # Nothing anywhere, for a request that was explicitly to fill a blank cell.
+    # The empty cell is a true statement about the source library; a model given
+    # this prompt would replace it with a fluent invention nobody downstream
+    # could distinguish from a real value.
+    if gaps and deep_svc.wants_source(instruction) and not deep.found:
+        raise SourceUnavailableError(
+            "There is no source for "
+            + ", ".join(f"{col} on Day {day}" for day, col in gaps[:4])
+            + (" and others" if len(gaps) > 4 else "")
+            + ". The day's digest, its ingested units and a search of the source "
+              "library all came back empty, so filling these cells would mean "
+              "inventing them. Ingest the material and rebuild the digests, or "
+              "leave the gap recorded.",
+            levels_tried=list(deep.levels_tried),
+            detail={"gaps": [{"day": d, "column": c} for d, c in gaps[:20]]},
+        )
+
+    context_block = context.text
+    if deep.found:
+        context_block = f"{context_block}\n\n{deep.text}" if context_block else deep.text
+
+    prompt = CDD_ROW_REGENERATE_PROMPT.format(
+        section_title=request_body.section_key,
+        course_title=course_title,
+        custom_instruction=instruction or "Improve these rows.",
+        context_block=context_block,
+        writable_columns=", ".join(plan.writable),
+        protected_columns=", ".join(plan.protected) or "(none)",
+        current_rows=plan.target_markdown,
+    )
+
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=cdd.project_id, course_id=cdd.course_id,
+        entity_type="cdd_section_regen", entity_id=str(cdd.id),
+    )
+    result = generate_with_metadata(
+        request_body.model_choice, CDD_SYSTEM_PROMPT, prompt, usage_ctx,
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
+    )
+    if result.is_error or not result.text:
+        raise LLMGenerationError("Row regeneration failed. Please try again.")
+
+    merged = scoped_regen.merge_rows(plan, result.text)
+
+    _log.info("cdd_rows_regenerated  user=%s  cdd_id=%d  section=%s  %s  %s  gaps=%d  %s  %s",
+              current_user.username, cdd.id, request_body.section_key,
+              plan.describe(), merged.describe(), len(gaps),
+              context.provenance(), deep.provenance())
+
+    # Same no-op visibility the section path has. A merge that carried every
+    # original cell across — because the model returned the rows unchanged, or
+    # returned only empty replacements — is a legitimate outcome, but committing
+    # it writes a new version identical to the current one and tells the user
+    # nothing about why.
+    changed = merged.section_content.strip() != (plan.section_content or "").strip()
+    return CDDRegenerateSectionResponse(
+        updated_content=merged.section_content,
+        usage_summary=build_usage_summary(db, usage_ctx, "cdd_section_regen", str(cdd.id)),
+        changed=changed,
+        note=None if changed else _noop_note(deep, target_text=plan.section_content or ""),
+    )
+
+
+@router.post(
+    "/{cdd_id}/repair-digests",
+    response_model=CDDDigestRepairResponse,
+    summary="Rebuild the day digests behind a block-wide CDD",
+    responses={
+        404: {"description": "CDD not found."},
+        409: {"description": "Block could not be resolved for this CDD."},
+        502: {"description": "DIS was unreachable."},
+    },
+)
+def repair_cdd_digests(
+    cdd_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.version")),
+) -> CDDDigestRepairResponse:
+    """
+    Retry the day digests for this CDD's block.
+
+    The gap regeneration cannot close on its own. A day whose MAP call failed
+    has no digest and no worksheet row derived from one, so every rung of the
+    context ladder finds nothing — there is no source to escalate to until the
+    day is rebuilt. CDD 169 lost two days this way to ``TransportError(504)``.
+
+    Only failures re-run: ``day_is_cached`` requires ``digest_status == "ok"``,
+    so days that already succeeded come from cache and cost no MAP tokens.
+    Regenerate the affected rows afterwards to pull the recovered material into
+    the document.
+    """
+    from app.core.dis_access import resolve_course_dis_client
+    from app.services import cdd_deep_context as deep_svc
+
+    cdd = _get_cdd_or_404(db, cdd_id)
+    block = deep_svc.resolve_block(db, cdd)
+    if not block:
+        raise WorkflowError(
+            "This CDD does not record which block it was built from, so its "
+            "digests cannot be rebuilt. Block-wide CDDs state it in Worksheet 1; "
+            "a CDD generated outside the digest pipeline has none to rebuild."
+        )
+
+    dis_client_id = resolve_course_dis_client(
+        db, course_id=cdd.course_id, project_id=cdd.project_id,
+    )
+    try:
+        report = dis_client.build_digests_sync(
+            block, current_user=current_user, client_id=dis_client_id,
+        ) or {}
+    except Exception as exc:  # noqa: BLE001 — surfaced as a clean 502 below
+        _log.warning("cdd_digest_repair_failed cdd_id=%s block=%s error=%s",
+                     cdd_id, block, exc, exc_info=True)
+        raise LLMGenerationError(
+            f"Could not rebuild digests for {block}: {type(exc).__name__}. "
+            "The document is unchanged."
+        ) from exc
+
+    built = int(report.get("built") or 0)
+    _log.info("cdd_digests_repaired  user=%s  cdd_id=%d  block=%s  built=%d  cached=%d  failed=%d",
+              current_user.username, cdd_id, block, built,
+              int(report.get("cached") or 0), int(report.get("failed") or 0))
+
+    return CDDDigestRepairResponse(
+        block=block,
+        built=built,
+        cached=int(report.get("cached") or 0),
+        failed=int(report.get("failed") or 0),
+        map_calls=int(report.get("map_calls") or 0),
+        reasons=[str(r) for r in (report.get("failure_reasons") or [])],
+        repaired=built > 0,
     )
 
 
@@ -1295,37 +1676,161 @@ def regenerate_cdd_section(
 
     Stateless: returns the new section content; the frontend commits a version.
     """
+    from app.services import cdd_deep_context as deep_svc
+    from app.services import cdd_regen_context as regen_ctx_svc
+    from app.services import cdd_scoped_regen as scoped_regen
     from promptops_app.prompt_templates import (
+        CDD_SECTION_REGENERATE_GROUNDED_PROMPT,
         CDD_SECTION_REGENERATE_PROMPT,
         CDD_SYSTEM_PROMPT,
     )
-    from promptops_app.services.llm_service import generate_text as call_llm
+    from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
 
     cdd = _get_cdd_or_404(db, cdd_id)
     course_title = getattr(cdd, "course_title", None) or request_body.section_key
 
-    regen_prompt = CDD_SECTION_REGENERATE_PROMPT.format(
-        section_title=request_body.section_key,
-        course_title=course_title,
-        custom_instruction=request_body.feedback or "Improve and expand this section.",
+    # The request body carries no section content — the current text never left
+    # the browser — so read it from the stored active version. Without it
+    # "regenerate" meant "write a new section from its title", which is how a
+    # 457-character prompt came to replace a 77,099-character worksheet.
+    sections = regen_ctx_svc.load_sections(db, cdd)
+    current_content = regen_ctx_svc.find_section(sections, request_body.section_key)
+
+    context = regen_ctx_svc.build_context(
+        db, cdd,
+        section_key=request_body.section_key,
+        instruction=request_body.feedback or "",
+        section_content=current_content,
     )
+
+    # ── Row-scoped path ────────────────────────────────────────────────────
+    # When the instruction names days and the section is a day table, rewrite
+    # only those rows. Everything else is carried across untouched by the merge
+    # rather than re-emitted, which is what keeps a 20-day worksheet inside a
+    # 16k output ceiling and what stops a model dropping rows it was never
+    # asked about.
+    plan = scoped_regen.plan_rows(current_content, context.scope) if current_content else None
+    if plan is not None:
+        return _regenerate_rows(
+            db, cdd, plan=plan, context=context, request_body=request_body,
+            course_title=course_title, current_user=current_user,
+        )
+
+    deep = deep_svc.DeepContext()
+    if current_content.strip():
+        # Revision, grounded in the section's own text plus the document's
+        # other worksheets. Refuse rather than truncate (see assert_can_emit).
+        regen_ctx_svc.assert_can_emit(
+            current_content,
+            model_choice=request_body.model_choice,
+            label=f"Section '{request_body.section_key}'",
+        )
+
+        # A prose worksheet has no rows to scope, but it can still be asked for
+        # something the worksheet does not contain — "the primary handbooks are
+        # incomplete, refer to the syllabus" needs the syllabus, not a reread of
+        # the list that is already wrong. Escalation is the same ladder the row
+        # path uses; only the trigger differs, since there are no cells here to
+        # inspect for emptiness.
+        if deep_svc.wants_source(request_body.feedback or ""):
+            deep = deep_svc.deepen(
+                db, cdd, scope=context.scope, instruction=request_body.feedback or "",
+                current_user=current_user, sections=sections,
+                course_title=course_title, section_key=request_body.section_key,
+                section_content=current_content,
+            )
+            # Could not look, as opposed to looked and found nothing. Proceeding
+            # would send the model a prompt that cannot satisfy the instruction,
+            # it would correctly return the section unchanged, and the UI would
+            # commit a no-op — leaving the user to conclude the feature is broken
+            # rather than that a dependency is down.
+            if deep.unavailable and not deep.found:
+                raise RetrievalUnavailableError(
+                    "This instruction needs the source library, and it could not "
+                    "be reached — so the section was left untouched rather than "
+                    "rewritten without it. Nothing was changed or charged for. "
+                    "Try again once the source service is back.",
+                    levels_tried=list(deep.levels_tried),
+                    detail={"flags": list(deep.flags)},
+                )
+
+        context_block = context.text
+        if deep.found:
+            context_block = f"{context_block}\n\n{deep.text}" if context_block else deep.text
+
+        regen_prompt = CDD_SECTION_REGENERATE_GROUNDED_PROMPT.format(
+            section_title=request_body.section_key,
+            course_title=course_title,
+            custom_instruction=request_body.feedback or "Improve and expand this section.",
+            context_block=context_block,
+            current_content=current_content,
+        )
+    elif sections:
+        # The document has sections but not this one. Writing it from scratch
+        # here is how a Worksheet 1 regeneration came back as a generic
+        # "Module 1: Introduction to Aircraft Drawings" outline — 451 input
+        # tokens, no grounding — which the UI would then have committed over the
+        # real worksheet. Refuse: a section that exists somewhere and cannot be
+        # located is a lookup failure, not an invitation to invent one.
+        raise SourceUnavailableError(
+            f"'{request_body.section_key}' could not be found in this CDD's "
+            f"current version, so there is nothing to revise. Regenerating it "
+            f"from the title alone would replace the section with invented "
+            f"content. Reload the document and try again.",
+            levels_tried=["stored_sections", "document_body"],
+            detail={"section_key": request_body.section_key,
+                    "available_sections": sorted(sections)[:20]},
+        )
+    else:
+        # A genuinely empty document — nothing stored at all, e.g. a CDD being
+        # authored before its first generation. The original from-scratch prompt
+        # is the correct behaviour here and is unchanged.
+        regen_prompt = CDD_SECTION_REGENERATE_PROMPT.format(
+            section_title=request_body.section_key,
+            course_title=course_title,
+            custom_instruction=request_body.feedback or "Improve and expand this section.",
+        )
+
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=cdd.project_id, course_id=cdd.course_id,
         entity_type="cdd_section_regen", entity_id=str(cdd_id),
     )
-    new_content = call_llm(request_body.model_choice, CDD_SYSTEM_PROMPT, regen_prompt, usage_ctx)
+    # Ask for the model's real ceiling instead of inheriting the flat 16384
+    # default, which capped a 64k-output model at a quarter of its range.
+    result = generate_with_metadata(
+        request_body.model_choice, CDD_SYSTEM_PROMPT, regen_prompt, usage_ctx,
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
+    )
+    new_content = f"ERROR: {result.text}" if result.is_error else result.text
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
 
-    _log.info("cdd_section_regenerated  user=%s  cdd_id=%d  section=%s",
-              current_user.username, cdd_id, request_body.section_key)
+    _log.info("cdd_section_regenerated  user=%s  cdd_id=%d  section=%s  grounded=%s  %s  %s",
+              current_user.username, cdd_id, request_body.section_key,
+              bool(current_content.strip()), context.provenance(), deep.provenance())
 
     from promptops_app.services.budget_service import build_usage_summary
 
+    # An unchanged answer is legitimate — the grounded prompt tells the model to
+    # leave content alone when the instruction cannot be satisfied from what it
+    # was given — but it must be said out loud. Returned silently, it is
+    # indistinguishable from a broken feature, and the caller commits a version
+    # identical to the one before it.
+    final = new_content.strip()
+    changed = final != (current_content or "").strip()
+    note = None
+    if not changed:
+        note = _noop_note(deep, target_text=current_content or "")
+        _log.info("cdd_section_regen_noop  user=%s  cdd_id=%d  section=%s  %s",
+                  current_user.username, cdd_id, request_body.section_key,
+                  deep.provenance())
+
     return CDDRegenerateSectionResponse(
-        updated_content=new_content.strip(),
+        updated_content=final,
         usage_summary=build_usage_summary(db, usage_ctx, "cdd_section_regen", str(cdd_id)),
+        changed=changed,
+        note=note,
     )
 
 

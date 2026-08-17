@@ -382,6 +382,16 @@ class CDDRegenerateItemRequest(BaseModel):
     item_index: int = Field(..., ge=0, description="Index of the item to regenerate.")
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
     model_choice: str = Field(default="GPT-5.4")
+    use_sources: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether to search the DIS source library for this item. None (the "
+            "default) infers it from the instruction, which is what a client "
+            "that does not send the field gets. True forces the lookup, False "
+            "skips it — a caller offering the user a checkbox sends the box's "
+            "state so the user's explicit choice beats the inference."
+        ),
+    )
 
 
 class CDDRegenerateItemResponse(BaseModel):
@@ -390,6 +400,13 @@ class CDDRegenerateItemResponse(BaseModel):
     updated_content: str
     patched_item: str
     usage_summary: Optional[UsageSummary] = None
+    #: False when the model returned the item unchanged. Defaults to True so an
+    #: older client keeps its current behaviour; a caller that understands the
+    #: field should decline to commit a version identical to the one before it.
+    changed: bool = True
+    #: Why nothing changed, in terms the user can act on. Set only when
+    #: ``changed`` is False.
+    note: Optional[str] = None
 
 
 class CDDRegenerateSectionRequest(BaseModel):
@@ -400,8 +417,48 @@ class CDDRegenerateSectionRequest(BaseModel):
     model_choice: str = Field(default="GPT-5.4")
 
 
+class CDDDigestRepairResponse(BaseModel):
+    """Outcome of retrying the day digests behind a block-wide CDD.
+
+    The one gap regeneration cannot close by itself. When a day's MAP call
+    failed — CDD 169 lost two to ``TransportError(504)`` — there is no digest to
+    read and no worksheet row derived from one, so every level of context
+    escalation finds nothing. The day has to be rebuilt before it can be
+    regenerated.
+
+    Cheap to run: ``day_is_cached`` requires ``digest_status == "ok"``, so days
+    that already succeeded are reused and only the failures re-run through MAP.
+    """
+
+    block: str = Field(description="Block whose digests were rebuilt.")
+    built: int = Field(default=0, description="Days rebuilt on this run.")
+    cached: int = Field(default=0, description="Days reused from cache, not re-run.")
+    failed: int = Field(default=0, description="Days that failed again.")
+    map_calls: int = Field(default=0, description="MAP calls made.")
+    reasons: list[str] = Field(default_factory=list,
+                               description="Failure reasons, when any day failed.")
+    repaired: bool = Field(default=False,
+                           description="True when this run rebuilt at least one day.")
+
+
 class CDDRegenerateSectionResponse(BaseModel):
     """Freshly generated content for the section."""
 
     updated_content: str
     usage_summary: Optional[UsageSummary] = None
+    changed: bool = Field(
+        default=True,
+        description=(
+            "False when the model returned the section byte-identical. The "
+            "grounded prompt instructs it to leave content alone when the "
+            "instruction cannot be satisfied from the context it was given, so "
+            "an unchanged answer is a legitimate outcome — but it is "
+            "indistinguishable from a broken feature unless it is said out loud. "
+            "Callers should skip committing a version and tell the user why "
+            "rather than saving a no-op."
+        ),
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description="Human-readable explanation when `changed` is False.",
+    )
