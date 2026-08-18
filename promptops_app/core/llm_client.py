@@ -42,6 +42,11 @@ PROMPTOPS_API_TIMEOUT_SECONDS = _cfg.llm_timeout_seconds
 # Preserves the historical flat value so every existing call is unchanged.
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
+#: Provider values that mean "the output cap ran out", not "the model finished".
+#: OpenAI reports ``finish_reason="length"``; Bedrock/Anthropic report
+#: ``stop_reason="max_tokens"``. Both are collected into LLMResponse.stop_reason.
+_TRUNCATED_STOP_REASONS = frozenset({"length", "max_tokens"})
+
 _log = logging.getLogger(__name__)
 
 
@@ -56,6 +61,24 @@ class LLMResponse:
     model: str
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
+    #: Why the provider stopped generating, verbatim ("stop", "length",
+    #: "max_tokens", ...). Recorded rather than interpreted, so a value neither
+    #: provider documents today still reaches a log.
+    stop_reason: Optional[str] = None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the reply was cut off by the output cap rather than finished.
+
+        The model's own limit is the one bound content is allowed to hit — but a
+        reply that hit it is a FRAGMENT, and nothing about a fragment says so.
+        Before this was read, a cut-off reply was returned as if complete: the
+        tail was lost, and the last markdown construct on the line was left
+        unclosed, which is how a regenerated item ends up rendering as
+        ``*Label:**``. Callers that overwrite stored content with a reply must
+        check this before committing it.
+        """
+        return (self.stop_reason or "") in _TRUNCATED_STOP_REASONS
 
 
 @dataclass
@@ -74,10 +97,16 @@ class LLMResult:
     status: str = "success"           # success | retry_success | fallback_success | error
     error_type: Optional[str] = None  # timeout | rate_limit | auth | provider | unknown
     langfuse_trace_id: Optional[str] = None  # set by _emit_langfuse_trace before logging (P1)
+    stop_reason: Optional[str] = None  # provider's own value; see LLMResponse.stop_reason
 
     @property
     def is_error(self) -> bool:
         return self.status == "error"
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the output cap cut this reply short. See LLMResponse.truncated."""
+        return (self.stop_reason or "") in _TRUNCATED_STOP_REASONS
 
 
 def _log_usage(result: "LLMResult", usage_ctx: Optional["UsageLogContext"]) -> None:
@@ -296,12 +325,26 @@ def _call_openai_raw(
 
         body = resp.json()
         usage = body.get("usage", {})
+        choice = body["choices"][0]
         result = LLMResponse(
-            text=body["choices"][0]["message"]["content"],
+            text=choice["message"]["content"],
             model=target_model,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
+            stop_reason=choice.get("finish_reason"),
         )
+        if result.truncated:
+            # Loud, because the reply itself gives no sign of it: the text reads
+            # as finished, so a caller that stores it stores a fragment and the
+            # missing tail is indistinguishable from content the model chose not
+            # to write.
+            _log.warning(
+                "llm_output_truncated", extra={
+                    "event": "llm_output_truncated", "provider": "openai",
+                    "model": target_model, "finish_reason": result.stop_reason,
+                    "max_tokens": data["max_tokens"],
+                    "completion_tokens": result.completion_tokens,
+                })
         duration_s = time.monotonic() - start
         _log.info("llm_call_completed", extra={
             "event": "llm_call_completed", "provider": "openai", "model": target_model,
@@ -520,7 +563,20 @@ def _call_bedrock_raw(
             model=target_model_id,
             prompt_tokens=usage.get("input_tokens"),
             completion_tokens=usage.get("output_tokens"),
+            stop_reason=response_body.get("stop_reason"),
         )
+        if result.truncated:
+            # stop_reason was already inspected above, but only to explain an
+            # EMPTY reply. A non-empty reply that hit the same cap was returned
+            # as if it were complete — the more damaging of the two cases,
+            # because it looks like a success.
+            _log.warning(
+                "llm_output_truncated", extra={
+                    "event": "llm_output_truncated", "provider": "bedrock",
+                    "model": target_model_id, "stop_reason": result.stop_reason,
+                    "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+                    "completion_tokens": result.completion_tokens,
+                })
         duration_s = time.monotonic() - start
         _log.info("llm_call_completed", extra={
             "event": "llm_call_completed", "provider": "bedrock", "model": target_model_id,
