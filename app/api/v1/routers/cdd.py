@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -742,6 +742,117 @@ def generate_cdd_block(
     return BlockWideJobResponse(
         job_id=job_id, status="queued", deliverable="cdd",
         block=request_body.block, poll_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Import an existing Blueprint / DLU CDD file
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/import",
+    response_model=CDDGenerateResponse,
+    status_code=201,
+    summary="Import an existing Blueprint / CDD file (Excel, DOCX, PDF)",
+    description=(
+        "Upload a Blueprint the user already has (Excel, Word or PDF). The file is "
+        "extracted and normalized into the canonical worksheet shape, then saved as "
+        "a normal CDD (same tables as a generated one), pinned as active, and shown "
+        "in 'Your Title Design Documents' exactly like a generated blueprint. "
+        "Excel is mapped deterministically (lossless); unstructured DOCX/PDF is "
+        "reorganized by the LLM under a strict preserve-everything contract."
+    ),
+    responses={
+        201: {"description": "Blueprint imported, pinned, and rendered as a CDD."},
+        400: {"description": "Unsupported file type or unreadable content."},
+        403: {"description": "User does not have the cdd.generate permission."},
+    },
+)
+def import_cdd(
+    file: UploadFile = File(..., description="Blueprint file (.xlsx, .xls, .docx, .pdf)."),
+    course_id: int = Form(..., description="Course this imported CDD belongs to."),
+    project_id: int = Form(..., description="Parent project id."),
+    course_title: str = Form("", description="Block / course title. Blank → derived from the file."),
+    document_title: str = Form("", description="Document label. Blank → '<block> — CDD'."),
+    model_choice: str = Form("GPT-5.4", description="Model used only for the LLM restructure path."),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("cdd.generate")),
+) -> CDDGenerateResponse:
+    """Extract → normalize → persist an uploaded Blueprint as an active CDD.
+
+    Reuses the exact persistence/pin/audit tail the generate paths use
+    (``_persist_and_respond``), so an imported CDD is indistinguishable from a
+    generated one everywhere downstream — only ``generation_params.prompt_source``
+    records that it was imported.
+    """
+    from types import SimpleNamespace
+
+    from promptops_app.services.cdd_import_service import normalize_import
+    from promptops_app.services.usage_service import UsageLogContext
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty.")
+
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=project_id,
+        course_id=course_id,
+        entity_type="cdd_import",
+    )
+
+    try:
+        result = normalize_import(
+            file.filename or "blueprint",
+            raw,
+            course_title=course_title,
+            document_title=document_title,
+            model_choice=model_choice,
+            usage_ctx=usage_ctx,
+        )
+    except ValueError as exc:
+        # Content/format problem the user can fix (wrong type, empty workbook) —
+        # a clean 400, not a 500.
+        raise HTTPException(400, str(exc)) from exc
+
+    _log.info(
+        "cdd_import  user=%s  course=%d  file=%r  method=%s  dlu=%s  sections=%d",
+        current_user.username, course_id, file.filename,
+        result.method, result.is_dlu, len(result.sections),
+    )
+
+    # A minimal request-body stand-in carrying exactly the fields
+    # _persist_and_respond reads. Import has no style/duration/audience inputs, so
+    # those are blank/None — the persist path already treats them as optional.
+    request_body = SimpleNamespace(
+        course_id=course_id,
+        project_id=project_id,
+        course_title=result.derived_block,
+        document_title=result.derived_title,
+        target_audience="",
+        expert_domain="",
+        estimated_duration_hours=None,
+        extra_instructions="",
+        model_choice=model_choice,
+    )
+
+    return _persist_and_respond(
+        db, request_body, current_user,
+        raw_output=result.raw_output,
+        sections=result.sections,
+        dis_source_units=[],
+        prompt_provenance={
+            "prompt_source": "imported",
+            "import_method": result.method,
+            "source_filename": file.filename,
+            "is_dlu": result.is_dlu,
+            "import_warnings": result.warnings,
+        },
+        system_prompt=f"[imported blueprint · method={result.method} · file={file.filename}]",
+        user_prompt="[imported from an uploaded file — not a generated prompt]",
+        model_used=(model_choice if "llm" in result.method else "import"),
+        tokens_used=None,
+        coverage=None,
     )
 
 

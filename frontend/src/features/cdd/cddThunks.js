@@ -92,6 +92,27 @@ export const {
     },
   });
 
+/**
+ * Import an existing Blueprint/CDD file. Mirrors generateCddThunk's outcome — the
+ * server persists AND pins the imported CDD, and this returns the full CDD object
+ * so the slice can drop it into the list and set it active, showing it in
+ * "Your Title Design Documents" exactly like a freshly generated one.
+ */
+export const importCddThunk = createAsyncThunk(
+  'cdd/import',
+  async (payload, { rejectWithValue }) => {
+    try {
+      if (!payload?.projectId) {
+        return rejectWithValue('Select a project before importing a blueprint.');
+      }
+      const result = await cddService.importCdd(payload, payload.onProgress);
+      toast.success('Blueprint imported and set as active.');
+      queueDeferredToast('Blueprint imported and pinned as active.');
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
 export const setActiveCddThunk = createAsyncThunk(
   'cdd/setActive',
   async ({ cddId, courseId }, { rejectWithValue }) => {
