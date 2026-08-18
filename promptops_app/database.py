@@ -899,7 +899,7 @@ class LLMUsageLog(Base):
     duration_ms     = Column(Integer,     nullable=True)
     status          = Column(String(30),  nullable=False)  # success|retry_success|fallback_success|error
     error_message   = Column(Text,        nullable=True)
-    langfuse_trace_id = Column(String(64), nullable=True, index=True)  # P1: looked up by the trace-detail endpoint
+    trace_id        = Column(String(64), nullable=True, index=True)  # looked up by the trace-detail endpoint
     created_at      = Column(DateTime,    default=datetime.utcnow, index=True)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -1409,6 +1409,67 @@ class FeedbackItem(Base):
 # =============================================================================
 # Database Initialization & Migrations
 # =============================================================================
+
+def ensure_phoenix_database() -> None:
+    """Create Phoenix's own database on this same Postgres server if it
+    doesn't exist yet — local, RDS, wherever DATABASE_URL points.
+
+    Phoenix's own container can't do this itself: CREATE DATABASE requires an
+    existing connection to a *different* database on the same server, and
+    can't run inside a transaction. This reuses our own DB's connection
+    details (same host/user/password engine already resolved from
+    DATABASE_URL) purely to issue that one statement — no new config, no
+    manual `psql` step, on any environment.
+
+    The target database name is read from PHOENIX_SQL_DATABASE_URL itself
+    (falling back to "phoenix" if that's unset/unparseable) — hardcoding the
+    name here independently of that URL would let the two silently drift:
+    this ensures a database Phoenix was never actually configured to use.
+
+    Best-effort and idempotent: a missing psycopg2 driver (e.g. under
+    SQLite in tests), no permission to list/create databases, or a
+    concurrent duplicate-create from another worker are all swallowed. If
+    this silently fails, the phoenix container simply keeps restarting
+    (its own `restart: unless-stopped` policy) until it's created — never a
+    reason to fail our own app's startup.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        import psycopg2
+        from sqlalchemy.engine import make_url
+
+        target_db = "phoenix"
+        phoenix_url = os.getenv("PHOENIX_SQL_DATABASE_URL", "").strip()
+        if phoenix_url:
+            try:
+                target_db = make_url(phoenix_url).database or target_db
+            except Exception:
+                pass
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "PHOENIX_SQL_DATABASE_URL is not set — Phoenix will silently fall back to a "
+                "local SQLite file inside its own container, which is wiped on every redeploy."
+            )
+
+        url = engine.url
+        conn = psycopg2.connect(
+            host=url.host, port=url.port or 5432, dbname=url.database,
+            user=url.username, password=url.password, connect_timeout=10,
+        )
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
+                if cur.fetchone() is None:
+                    cur.execute(f'CREATE DATABASE "{target_db}"')
+        finally:
+            conn.close()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("ensure_phoenix_database skipped: %s", exc)
+
 
 def init_db():
     # ── Schema DDL is Alembic-owned ────────────────────────────────────────

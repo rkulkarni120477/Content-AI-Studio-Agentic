@@ -357,6 +357,42 @@ def update_tenant(
     return _tenant_read(db, project)
 
 
+@router.delete("/{project_id}", status_code=204, summary="Permanently delete a tenant")
+def delete_tenant(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(_require_platform_admin),
+) -> None:
+    """Hard delete — the tenant and every course/block/generation/etc. under
+    it are gone, irreversibly. See tenant_service.hard_delete_tenant for
+    exactly what is and isn't touched (LLM usage/audit/budget history is
+    deliberately retained).
+
+    Not fully atomic — purge_course commits per course — so a failure
+    partway through can leave the tenant partially deleted. Re-running this
+    delete is safe: purge_course no-ops on an already-gone course, and every
+    other step here is a plain filtered delete that no-ops once its rows are
+    already gone.
+    """
+    project = _get_tenant_or_404(db, project_id)
+    name = project.name
+    try:
+        tenant_service.hard_delete_tenant(db, project, deleted_by=current_user.username)
+        db.commit()
+    except Exception:
+        db.rollback()
+        _log.exception("tenant_delete_failed  project_id=%d", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Tenant deletion failed partway through — some of its courses may "
+                "already be permanently gone. Safe to retry: already-deleted content "
+                "is simply skipped. See server logs for the underlying error."
+            ),
+        )
+    _log.info("tenant_deleted  project_id=%d  name=%r  by=%s", project_id, name, current_user.username)
+
+
 @router.get("/{project_id}/usage", response_model=TenantUsageResponse, summary="Tenant license usage")
 def tenant_usage(
     project_id: int,

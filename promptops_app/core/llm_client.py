@@ -73,7 +73,7 @@ class LLMResult:
     total_duration_s: float = 0.0
     status: str = "success"           # success | retry_success | fallback_success | error
     error_type: Optional[str] = None  # timeout | rate_limit | auth | provider | unknown
-    langfuse_trace_id: Optional[str] = None  # set by _emit_langfuse_trace before logging (P1)
+    trace_id: Optional[str] = None    # set by _emit_phoenix_trace before logging
 
     @property
     def is_error(self) -> bool:
@@ -90,55 +90,77 @@ def _log_usage(result: "LLMResult", usage_ctx: Optional["UsageLogContext"]) -> N
     log_llm_usage_autocommit(result, ctx)
 
 
-def _emit_langfuse_trace(
+_phoenix_provider = None
+_phoenix_tracer = None
+_phoenix_tracer_lock = threading.Lock()
+
+
+def _get_phoenix_tracer():
+    """Return the shared Phoenix OTel tracer, registering it on first use."""
+    global _phoenix_provider, _phoenix_tracer
+    if _phoenix_tracer is None:
+        with _phoenix_tracer_lock:
+            if _phoenix_tracer is None:
+                from phoenix.otel import register
+
+                _phoenix_provider = register(
+                    endpoint=_cfg.phoenix_collector_endpoint,
+                    project_name=_cfg.phoenix_project_name,
+                    batch=True,
+                    set_global_tracer_provider=False,
+                    verbose=False,
+                    api_key=_cfg.phoenix_api_key or None,
+                )
+                _phoenix_tracer = _phoenix_provider.get_tracer(__name__)
+    return _phoenix_tracer
+
+
+def flush_phoenix_traces() -> None:
+    """Flush the batched span exporter on shutdown. No-op if never registered."""
+    if _phoenix_provider is not None:
+        _phoenix_provider.force_flush()
+
+
+def _emit_phoenix_trace(
     system_prompt: str,
     user_prompt: str,
     result: "LLMResult",
     usage_ctx: Optional["UsageLogContext"],
 ) -> Optional[str]:
-    """Create one Langfuse generation for this call. Returns its trace_id, or None.
+    """Create one Phoenix span for this call. Returns its trace_id (hex), or None.
 
-    Same choke point as _log_usage, same scope tags as P0's LLMUsageLog row — this
-    is what P1.2's persisted langfuse_trace_id then links back to. Never raises:
-    Langfuse being unreachable/unconfigured must never break a real LLM call, only
-    silently skip tracing for it (P0's DB logging is unaffected either way).
+    Same choke point as _log_usage, same scope tags as the LLMUsageLog row — this
+    is what the persisted trace_id then links back to. Never raises: Phoenix being
+    unreachable/unconfigured must never break a real LLM call, only silently skip
+    tracing for it (DB logging is unaffected either way).
     """
     try:
-        from langfuse import get_client, propagate_attributes
+        from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+        from opentelemetry.trace import Status, StatusCode
 
-        client = get_client()
+        tracer = _get_phoenix_tracer()
         ctx = usage_ctx or UsageLogContext(entity_type="unattributed", entity_id="direct_call")
-        usage_details = None
-        if result.prompt_tokens is not None or result.completion_tokens is not None:
-            usage_details = {
-                "input": result.prompt_tokens or 0,
-                "output": result.completion_tokens or 0,
-            }
-        with propagate_attributes(
-            user_id=ctx.user_name or None,
-            metadata={
-                "project_id": ctx.project_id,
-                "course_id": ctx.course_id,
-                "entity_type": ctx.entity_type,
-                "entity_id": ctx.entity_id,
-            },
-            tags=[ctx.entity_type] if ctx.entity_type else None,
-        ):
-            generation = client.start_observation(
-                name=f"llm_call:{ctx.entity_type or 'unknown'}",
-                as_type="generation",
-                input={"system_prompt": system_prompt, "user_prompt": user_prompt},
-                output=result.text if not result.is_error else None,
-                model=result.model,
-                usage_details=usage_details,
-                level="ERROR" if result.is_error else "DEFAULT",
-                status_message=result.text if result.is_error else None,
-            )
-            trace_id = generation.trace_id
-            generation.end()
+        with tracer.start_as_current_span(f"llm_call:{ctx.entity_type or 'unknown'}") as span:
+            span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
+            span.set_attribute(SpanAttributes.LLM_MODEL_NAME, result.model)
+            span.set_attribute(SpanAttributes.INPUT_VALUE, f"{system_prompt}\n\n{user_prompt}")
+            if not result.is_error:
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.text)
+            if result.prompt_tokens is not None:
+                span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, result.prompt_tokens)
+            if result.completion_tokens is not None:
+                span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, result.completion_tokens)
+            span.set_attribute("user.id", ctx.user_name or "")
+            span.set_attribute("tenant.project_id", ctx.project_id or 0)
+            span.set_attribute("tenant.course_id", ctx.course_id or 0)
+            span.set_attribute("entity.type", ctx.entity_type or "")
+            span.set_attribute("entity.id", ctx.entity_id or "")
+            if result.is_error:
+                span.set_status(Status(StatusCode.ERROR, result.text))
+            trace_id = format(span.get_span_context().trace_id, "032x")
         return trace_id
     except Exception as exc:
-        _log.debug("Langfuse trace emission skipped: %s", exc)
+        _log.debug("Phoenix trace emission skipped: %s", exc)
         return None
 
 
@@ -148,12 +170,12 @@ def _log_and_trace(
     result: "LLMResult",
     usage_ctx: Optional["UsageLogContext"],
 ) -> None:
-    """Universal choke point for both P0's usage logging and P1's Langfuse tracing.
+    """Universal choke point for both usage logging and Phoenix tracing.
 
     Trace first so its id is on `result` before the DB row is written — persists
-    the mapping P1.4's trace-detail endpoint looks up by.
+    the mapping the trace-detail endpoint looks up by.
     """
-    result.langfuse_trace_id = _emit_langfuse_trace(system_prompt, user_prompt, result, usage_ctx)
+    result.trace_id = _emit_phoenix_trace(system_prompt, user_prompt, result, usage_ctx)
     _log_usage(result, usage_ctx)
 
 
