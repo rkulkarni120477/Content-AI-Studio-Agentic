@@ -370,6 +370,21 @@ def generate_blueprint(
                 "prompt_version": _tpl_version,
             }
 
+    # Same guard the CDD router applies, for the same reason: this path stores the
+    # reply AS the document, so a prompt that withholds it saves an empty one.
+    from promptops_app.services.prompt_capability import (
+        context_was_dropped, reject_if_unsatisfiable,
+    )
+    reject_if_unsatisfiable(system_prompt, user_prompt, what="generating this Blueprint")
+    if context_was_dropped(dis_context_block, system_prompt, user_prompt):
+        _log.warning(
+            "blueprint_source_context_dropped  user=%s  course=%s  context_chars=%d  "
+            "prompt_source=%s — the selected prompt has no slot for it",
+            current_user.username, request_body.course_id, len(dis_context_block),
+            prompt_provenance.get("prompt_source"),
+        )
+        prompt_provenance["source_context_dropped"] = True
+
     # Call LLM.
     llm_result = generate_with_metadata(
         request_body.model_choice, system_prompt, user_prompt,

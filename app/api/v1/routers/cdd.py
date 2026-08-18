@@ -619,6 +619,26 @@ def generate_cdd(
             )
             prompt_provenance = {"prompt_source": "builtin_fallback"}
 
+    # ── Step 1b: Refuse a prompt this path structurally cannot honour ─────────
+    # Reached both by a direct single-call request and by the block-wide branch above
+    # falling through after a DIS/reduce failure — the fallback is where an
+    # xlsx-and-download-link prompt would otherwise persist a one-line CDD.
+    from promptops_app.services.prompt_capability import (
+        context_was_dropped, reject_if_unsatisfiable,
+    )
+    reject_if_unsatisfiable(system_prompt, user_prompt, what="generating this CDD")
+    # Not fatal (see context_was_dropped), but it decides whether the flags in the
+    # finished document mean "the source really lacks this" or "the prompt never
+    # received the source", so it must be on the row rather than inferred later.
+    if context_was_dropped(dis_context_block, system_prompt, user_prompt):
+        _log.warning(
+            "cdd_source_context_dropped  user=%s  course=%d  context_chars=%d  "
+            "prompt_source=%s — the selected prompt has no slot for it",
+            current_user.username, request_body.course_id, len(dis_context_block),
+            prompt_provenance.get("prompt_source"),
+        )
+        prompt_provenance["source_context_dropped"] = True
+
     # ── Step 2: Call the LLM ───────────────────────────────────────────────────
     usage_context = UsageLogContext(
         user_name=current_user.username,

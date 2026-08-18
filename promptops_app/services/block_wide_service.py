@@ -84,9 +84,15 @@ def run_block_wide_sync(db, deliverable: str, request_body, current_user):
 
     from promptops_app.services.prompt_guidance import resolve_prompt_guidance
     map_guidance = resolve_prompt_guidance(db, request_body, deliverable, current_user)
+    # Reconcile the SELECTED prompt against what this pipeline can emit. Reporting
+    # only — never gates the run (see prompt_capability's module docstring on why the
+    # silent-ignore case needs a voice, and why it must not become a blocker).
+    from promptops_app.services.prompt_capability import assess_selected_prompt
+    capability = assess_selected_prompt(db, request_body, deliverable)
 
     if deliverable == "blueprint":
-        gen = generate_blueprint_via_digests(db, request_body, current_user, dcid, map_guidance)
+        gen = generate_blueprint_via_digests(db, request_body, current_user, dcid, map_guidance,
+                                             capability=capability)
         if gen is None:
             return None
         _log.info("blueprint_generate_via_digests user=%s course=%s block=%s tier=%s",
@@ -94,7 +100,8 @@ def run_block_wide_sync(db, deliverable: str, request_body, current_user):
                   gen["prompt_provenance"].get("quality_tier"))
         return persist_blueprint_and_respond(db, request_body, current_user, **gen)
 
-    gen = generate_cdd_via_digests(db, request_body, current_user, dcid, map_guidance)
+    gen = generate_cdd_via_digests(db, request_body, current_user, dcid, map_guidance,
+                                   capability=capability)
     if gen is None:
         return None
     _log.info("cdd_generate_via_digests user=%s course=%s block=%s tier=%s",
@@ -152,11 +159,25 @@ def _fields_section(fields: Dict[str, Any]) -> list[str]:
     return out
 
 
+#: Worksheet 2's emitted columns. A module constant rather than a literal inside the
+#: renderer so prompt_capability can reconcile a selected prompt against the REAL
+#: emitted surface instead of a second, drift-prone copy of these names.
+_SOURCE_INVENTORY_HEADER = [
+    "Document Type", "File Count", "Days Applicable", "Status",
+    "Production Action", "Status Notes",
+]
+
+
+def _header_lines(header: list[str]) -> list[str]:
+    """Markdown header + separator row for *header* — the same two lines the day
+    table builds inline, factored out so the three tables cannot drift apart."""
+    return ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+
+
 def _source_inventory_table(rows: list[dict]) -> list[str]:
     if not rows:
         return ["_No source file inventory available._"]
-    out = ["| Document Type | File Count | Days Applicable | Status | Production Action | Status Notes |",
-           "|---|---|---|---|---|---|"]
+    out = _header_lines(_SOURCE_INVENTORY_HEADER)
     for r in rows:
         doc_type = _cell(r.get("document_type") or "", default="")
         days = _cell(", ".join(str(d) for d in (r.get("days_applicable") or [])), default="")
@@ -174,11 +195,18 @@ def _source_inventory_table(rows: list[dict]) -> list[str]:
     return out
 
 
+#: Worksheet 3's emitted columns — see _SOURCE_INVENTORY_HEADER on why this is a
+#: constant.
+_ACS_REGISTRY_HEADER = [
+    "ACS Code", "Type", "Task Description", "Days Active", "High-Miss",
+    "Quick Check Priority",
+]
+
+
 def _acs_registry_table(rows: list[dict]) -> list[str]:
     if not rows:
         return ["_No ACS registry available._"]
-    out = ["| ACS Code | Type | Task Description | Days Active | High-Miss | Quick Check Priority |",
-           "|---|---|---|---|---|---|"]
+    out = _header_lines(_ACS_REGISTRY_HEADER)
     for r in rows:
         days = _cell(", ".join(str(d) for d in (r.get("days_active") or [])), default="")
         # task_description is real extracted text from an ingested ACS-1-shaped
@@ -265,8 +293,25 @@ _DAY_TABLE_HEADER = [
 ]
 
 
+def emitted_columns() -> dict:
+    """The column labels this pipeline actually emits, per tabular worksheet.
+
+    Public because ``prompt_capability`` reconciles the user-selected prompt against
+    it: the reconciliation is only worth trusting if it reads the same list the
+    renderer writes from, so this returns copies of the real constants rather than a
+    restated set. Worksheets 1 and 5 are absent on purpose — their fields are
+    key-value dicts assembled upstream (DIS ``worksheets.py`` / REDUCE), so no
+    static label list for them exists here to reconcile against.
+    """
+    return {
+        "day_table": list(_DAY_TABLE_HEADER),
+        "source_file_inventory": list(_SOURCE_INVENTORY_HEADER),
+        "acs_registry": list(_ACS_REGISTRY_HEADER),
+    }
+
+
 def _day_table_from_rows(rows: list[dict]) -> list[str]:
-    out = ["| " + " | ".join(_DAY_TABLE_HEADER) + " |", "|" + "---|" * len(_DAY_TABLE_HEADER)]
+    out = _header_lines(_DAY_TABLE_HEADER)
     for r in rows:
         acs = _cell(", ".join(r.get("acs_codes") or []))
         note = _cell(r.get("narrative") or "", default="")
@@ -834,7 +879,7 @@ def _model_call_counts(models_used) -> Dict[str, int]:
 
 
 def _provenance(deliverable: str, result, report, map_guidance: str = "",
-                directives=None) -> Dict[str, Any]:
+                directives=None, capability=None) -> Dict[str, Any]:
     return {
         "prompt_source": "digest_pipeline",
         "deliverable": deliverable,
@@ -897,13 +942,21 @@ def _provenance(deliverable: str, result, report, map_guidance: str = "",
         # fallback — so a reviewer can distinguish "the admin's prompt produced
         # this" from "their edit was rejected and the built-in ran".
         "reduce_prompts": getattr(result, "prompt_provenance", {}) or {},
+        # Whether the prompt the requester SELECTED is one this pipeline can satisfy
+        # at all. Guidance is judgment-only by contract, so a prompt asking for a
+        # different worksheet schema — or for a downloadable workbook built by a code
+        # interpreter — runs to completion and is silently ignored. Recorded here so
+        # "did my prompt do anything?" is answerable from the row rather than by
+        # reading the pipeline (see promptops_app.services.prompt_capability).
+        "prompt_capability": capability.to_provenance() if capability is not None else {},
     }
 
 
 # --------------------------------------------------------------------------- #
 # CDD
 # --------------------------------------------------------------------------- #
-def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_guidance: str = ""):
+def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_guidance: str = "",
+                             *, capability=None):
     """Run the block-wide digest pipeline for one CDD. Returns kwargs for
     persist_cdd_and_respond, or None to fall back to legacy."""
     result, report, directives = _build_and_reduce("cdd", request_body.block,
@@ -913,7 +966,12 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_cdd_flat, parse_sections_from_text
-    raw_output = render_cdd_markdown(request_body.course_title, request_body.block, result)
+    from promptops_app.services.prompt_capability import append_section
+    # Appended BEFORE parsing so the reconciliation is captured as a section too, the
+    # same way COVERAGE & REVIEW is. A report with no findings appends nothing, so an
+    # aligned prompt still produces byte-identical output.
+    raw_output = append_section(
+        render_cdd_markdown(request_body.course_title, request_body.block, result), capability)
     sections = parse_sections_from_text(raw_output)
     for key, value in parse_cdd_flat(raw_output).items():
         if not key.startswith("_") and value.strip():
@@ -922,7 +980,8 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
         "raw_output": raw_output,
         "sections": sections,
         "dis_source_units": [],
-        "prompt_provenance": _provenance("cdd", result, report, map_guidance, directives),
+        "prompt_provenance": _provenance("cdd", result, report, map_guidance, directives,
+                                         capability),
         # NOT a verbatim prompt — REDUCE is N batched calls plus a separate
         # per-day MAP stage, so there is no single pair to record. Says so
         # explicitly and points at the keys that ARE reconstructible, rather
@@ -1047,7 +1106,8 @@ def persist_cdd_and_respond(db, request_body, current_user, *, raw_output, secti
 # --------------------------------------------------------------------------- #
 # Blueprint (block-wide)
 # --------------------------------------------------------------------------- #
-def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id, map_guidance: str = ""):
+def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id, map_guidance: str = "",
+                                   *, capability=None):
     """Run the block-wide digest pipeline for a Block Blueprint. Returns kwargs for
     persist_blueprint_and_respond, or None to fall back to legacy."""
     result, report, directives = _build_and_reduce("blueprint", request_body.block,
@@ -1057,13 +1117,15 @@ def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_sections_from_text
-    raw_output = render_blueprint_markdown(request_body.block, result)
+    from promptops_app.services.prompt_capability import append_section
+    raw_output = append_section(render_blueprint_markdown(request_body.block, result), capability)
     sections = parse_sections_from_text(raw_output)
     return {
         "raw_output": raw_output,
         "sections": sections,
         "dis_source_units": [],
-        "prompt_provenance": _provenance("blueprint", result, report, map_guidance, directives),
+        "prompt_provenance": _provenance("blueprint", result, report, map_guidance, directives,
+                                         capability),
         # NOT a verbatim prompt — REDUCE is N batched calls plus a separate
         # per-day MAP stage, so there is no single pair to record. Says so
         # explicitly and points at the keys that ARE reconstructible, rather

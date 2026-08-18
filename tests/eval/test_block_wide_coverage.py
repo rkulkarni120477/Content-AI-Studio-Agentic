@@ -543,8 +543,13 @@ def test_run_block_wide_sync_never_resolves_prompt_guidance_when_pipeline_disabl
 
 def test_run_block_wide_sync_resolves_and_threads_prompt_guidance(monkeypatch):
     """The guidance resolved once per request must reach the deliverable-
-    specific generator — proving the wiring, not just that resolution ran."""
+    specific generator — proving the wiring, not just that resolution ran.
+
+    Also covers the capability report (prompt_capability), resolved beside the
+    guidance and threaded the same way: it is reporting-only, so a wiring break
+    would surface as a silently missing section rather than as a failure."""
     import promptops_app.services.prompt_guidance as prompt_guidance
+    import promptops_app.services.prompt_capability as prompt_capability
     from app.core.config import settings
     from app.core import dis_access
     from promptops_app.services import block_wide_service as w
@@ -552,11 +557,15 @@ def test_run_block_wide_sync_resolves_and_threads_prompt_guidance(monkeypatch):
     monkeypatch.setattr(dis_access, "resolve_course_dis_client", lambda *a, **k: "aim")
     monkeypatch.setattr(prompt_guidance, "resolve_prompt_guidance",
                         lambda db, req, deliverable, user: f"guidance-for-{deliverable}")
+    sentinel = prompt_capability.CapabilityReport(assessed=True, prompt_chars=7)
+    monkeypatch.setattr(prompt_capability, "assess_selected_prompt",
+                        lambda db, req, deliverable: sentinel)
 
     received = {}
 
-    def fake_generate_cdd_via_digests(db, req, user, dcid, guidance=""):
+    def fake_generate_cdd_via_digests(db, req, user, dcid, guidance="", *, capability=None):
         received["cdd"] = guidance
+        received["capability"] = capability
         return {"coverage": {}, "model_used": "m", "prompt_provenance": {"quality_tier": "standard"}}
 
     monkeypatch.setattr(w, "generate_cdd_via_digests", fake_generate_cdd_via_digests)
@@ -571,6 +580,7 @@ def test_run_block_wide_sync_resolves_and_threads_prompt_guidance(monkeypatch):
     finally:
         settings.digest_pipeline_enabled, settings.digest_pipeline_clients = orig_enabled, orig_clients
     assert received["cdd"] == "guidance-for-cdd"
+    assert received["capability"] is sentinel
 
 
 def test_cdd_digest_path_render_and_fallback(monkeypatch):
@@ -754,11 +764,13 @@ def test_block_wide_worker_orchestration(monkeypatch):
     monkeypatch.setattr("promptops_app.services.prompt_guidance.resolve_prompt_guidance",
                         lambda *a, **k: "")
     monkeypatch.setattr(w.block_wide_service, "generate_cdd_via_digests",
-                        lambda db, req, user, dcid, guidance="": {"coverage": {}, "model_used": "m"})
+                        lambda db, req, user, dcid, guidance="", *, capability=None:
+                            {"coverage": {}, "model_used": "m"})
     monkeypatch.setattr(w.block_wide_service, "persist_cdd_and_respond",
                         lambda db, req, user, **kw: types.SimpleNamespace(cdd_id=42))
     monkeypatch.setattr(w.block_wide_service, "generate_blueprint_via_digests",
-                        lambda db, req, user, dcid, guidance="": {"coverage": {}, "model_used": "m"})
+                        lambda db, req, user, dcid, guidance="", *, capability=None:
+                            {"coverage": {}, "model_used": "m"})
     monkeypatch.setattr(w.block_wide_service, "persist_blueprint_and_respond",
                         lambda db, req, user, **kw: types.SimpleNamespace(blueprint_id=99))
 
@@ -776,7 +788,7 @@ def test_block_wide_worker_orchestration(monkeypatch):
 
     # Pipeline returns None → job failed, not crashed.
     monkeypatch.setattr(w.block_wide_service, "generate_cdd_via_digests",
-                        lambda db, req, user, dcid, guidance="": None)
+                        lambda db, req, user, dcid, guidance="", *, capability=None: None)
     monkeypatch.setattr(w, "SessionLocal", lambda: FakeDB(make_job("cdd")))
     calls.clear()
     w.run_block_wide_job("j1")
