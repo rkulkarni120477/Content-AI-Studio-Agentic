@@ -13,6 +13,16 @@ on:
       - "docker-compose.yml"
       - "requirements.txt"
       - ".github/workflows/backend-deploy.yml"
+      # This job now runs `alembic upgrade head`, so a migration-only change
+      # is a deployable change — without these two, adding a migration
+      # silently never reaches the host and the schema drifts behind the code
+      # that expects it.
+      - "migrations/**"
+      - "alembic.ini"
+
+  # Lets a deploy be re-run by hand after a failure that needed an out-of-band
+  # fix on the host (e.g. stamping alembic_version), without an empty commit.
+  workflow_dispatch:
 
 jobs:
   deploy:
