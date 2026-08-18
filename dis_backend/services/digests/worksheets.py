@@ -15,7 +15,7 @@ import bisect
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from services.aim_calendar import parse_handbook
 from services.digests import attribution
@@ -329,7 +329,19 @@ def build_acs_registry(en, cur=None, schema: str = "dis") -> List[Dict[str, Any]
     return out
 
 
-_DEFAULT_RESTRICTED_DOC_TYPES = {"quiz_answer_key", "project_key"}
+#: Fallback used only when no tenant config is supplied. This drives the
+#: ``production_action`` a delivered worksheet prints next to a document type, so an
+#: under-inclusive list does not merely lose a label — it tells a production team
+#: "Include in input bundle" for instructor guides and answer keys. It previously
+#: held two of the seven types the retrieval gate treats as restricted by
+#: construction, so five families could be advised INTO a student-facing bundle
+#: whenever tenant_cfg was absent. Mirrors the built-in floor in
+#: ContextRetrievalService._restricted_doc_types (see also the conformance test in
+#: tests/unit/test_restricted_policy_conformance.py, which fails if the two drift).
+_DEFAULT_RESTRICTED_DOC_TYPES = {
+    "answer_key", "quiz_answer_key", "final_exam_answer_key", "exam_answer_key",
+    "instructor_guide", "project_instructor_guide", "project_key",
+}
 
 
 # Block-wide reference document types (§ enabled_document_types) that describe
@@ -431,8 +443,21 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
         by_type[doc_type] = {"files": files, "days": set()}
         block_wide_types.add(doc_type)
 
-    restricted_types = (set(getattr(tenant_cfg.document_processing, "restricted_document_types", []) or [])
-                        if tenant_cfg is not None else _DEFAULT_RESTRICTED_DOC_TYPES)
+    # Config UNION the built-in floor, never config alone. A tenant's
+    # restricted_document_types list is an ADDITION to the families that are
+    # restricted by construction, not a replacement for them — the retrieval gate
+    # composes them exactly this way (ContextRetrievalService._restricted_doc_types),
+    # and taking the config verbatim here made this worksheet disagree with it.
+    # Measured on aim.yaml, whose list is [quiz_answer_key, project_key]: five
+    # families including instructor_guide and project_instructor_guide were printed
+    # as "Include in input bundle" while retrieval was blocking them outright.
+    restricted_types = set(_DEFAULT_RESTRICTED_DOC_TYPES)
+    if tenant_cfg is not None:
+        restricted_types |= {
+            str(t).strip().lower()
+            for t in (getattr(tenant_cfg.document_processing, "restricted_document_types", None) or [])
+            if str(t).strip()
+        }
 
     out = []
     for doc_type, entry in sorted(by_type.items()):
@@ -459,8 +484,12 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
             "days_applicable": (["All"] if doc_type in block_wide_types
                                else days if days else ["Unattributed"]),
             "status": "EXISTS",
+            # Case-folded on both sides, like the retrieval gate: doc_type is whatever
+            # the classifier wrote onto the unit's metadata, and a stray "Instructor_Guide"
+            # matching nothing would print the permissive label for restricted material.
             "production_action": ("Instructor-only — exclude from student-facing use"
-                                  if doc_type in restricted_types else "Include in input bundle"),
+                                  if str(doc_type).strip().lower() in restricted_types
+                                  else "Include in input bundle"),
             "status_notes": status_notes,
         })
     return out
@@ -503,12 +532,19 @@ def _primary_handbooks(days: List[Dict[str, Any]]) -> List[str]:
     return sorted(out)
 
 
-def _syllabus_text(en, cur, schema: str) -> str:
+def _syllabus_text(en, cur, schema: str) -> Optional[str]:
     """Best-effort verbatim syllabus lookup. dis_syllabus (the structured table) is
     dead schema — nothing writes to it — so this reads the raw syllabus_section
     content unit directly, matched by filename rather than metadata_json.block
     (that field is inconsistently normalized, e.g. 'Block 02' vs 'Block 2' —
-    a known gap, see stale-code-schema-audit). Returns '' if none found.
+    a known gap, see stale-code-schema-audit).
+
+    Returns ``''`` when the query RAN and matched nothing, and ``None`` when no
+    query could be built at all — the filename match is anchored on a block NUMBER,
+    so a block label carrying no digits ("Block T", "Foundations") is unsearchable
+    by this method. The two used to be the same empty string, which rendered as
+    "syllabus not ingested" for a course whose syllabus was sitting in the library
+    under a name this function simply cannot address. Caller distinguishes them.
 
     ``schema`` MUST come from the tenant's own structure_store config (e.g.
     ``tenant_cfg.structure_store.schema_name``) — every other query in this
@@ -525,7 +561,7 @@ def _syllabus_text(en, cur, schema: str) -> str:
     m = re.search(r"\d+", en.block or "")
     block_num = m.group(0).lstrip("0") or "0" if m else None
     if block_num is None:
-        return ""
+        return None
     cur.execute(
         f"""SELECT cu.text_content
              FROM {schema}.dis_content_units cu
@@ -545,6 +581,35 @@ _SYLLABUS_KEY_BY_MARKER = {"Course Description": "course_description",
                            "Course Objectives": "course_objectives",
                            "Grading and Evaluation": "grading_policy"}
 
+#: Every field the syllabus lookup is responsible for. `supplemental_references` is
+#: derived rather than marker-anchored, so it is not a value in the map above — which
+#: is exactly why it needs naming here: two call sites previously restated the field
+#: list by hand and had to remember to append it separately, and one placeholder set
+#: that forgets it renders as an empty worksheet cell rather than an honest gap.
+_SYLLABUS_FIELD_KEYS = (*_SYLLABUS_KEY_BY_MARKER.values(), "supplemental_references")
+
+
+def _syllabus_unavailable(reason: str) -> Dict[str, str]:
+    """Placeholders for every syllabus field, stating WHY it is absent.
+
+    "Not ingested" is a claim about the source library, and it must only be made
+    when the lookup actually ran and found nothing. A lookup that could not run —
+    no cursor, or a query that raised — knows nothing about whether the syllabus
+    exists, and saying "not ingested" there sends a reader to re-upload a document
+    that is already there. Same discipline as the regeneration no-op note: name the
+    thing that actually happened, not the most likely-sounding cause.
+    """
+    return {k: f"NOT AVAILABLE — {reason}" for k in _SYLLABUS_FIELD_KEYS}
+
+
+#: Four distinct reasons a syllabus field can be absent, deliberately distinguishable
+#: in the rendered worksheet. Only the first is a claim about the source library.
+SYLLABUS_NOT_INGESTED = "syllabus not ingested"
+SYLLABUS_NOT_READ = "syllabus not read (structure store unavailable for this build)"
+SYLLABUS_LOOKUP_FAILED = "syllabus lookup failed (not a statement that it is missing)"
+SYLLABUS_NOT_SEARCHABLE = ("syllabus not searchable for this block — the lookup matches on a "
+                           "block number and this block's label has none")
+
 
 def _extract_syllabus_fields(text: str) -> Dict[str, str]:
     """Verbatim marker-anchored slicing (mirrors cdd_parser.parse_cdd_flat's
@@ -555,9 +620,9 @@ def _extract_syllabus_fields(text: str) -> Dict[str, str]:
     directions."""
     keys = tuple(_SYLLABUS_KEY_BY_MARKER.values())
     if not text:
-        out = {k: "NOT AVAILABLE — syllabus not ingested" for k in keys}
-        out["supplemental_references"] = "NOT AVAILABLE — syllabus not ingested"
-        return out
+        # The lookup ran and returned nothing — the one case where blaming ingestion
+        # is the honest answer.
+        return _syllabus_unavailable(SYLLABUS_NOT_INGESTED)
     out: Dict[str, str] = {}
     for marker, key in _SYLLABUS_KEY_BY_MARKER.items():
         m = re.search(re.escape(marker) + r"\s*:\s*", text)
@@ -631,26 +696,59 @@ def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[s
     }
 
 
-def build_block_overview(en, cur=None, schema: str = "dis") -> Dict[str, Any]:
+def build_block_overview(en, cur=None, schema: str = "dis",
+                         flags: Optional[List[str]] = None) -> Dict[str, Any]:
     """Block-level summary: totals, ACS subjects, handbook/supplemental-reference
     citations, web resources, and verbatim syllabus fields where the source is
     available. ``schema`` must be the tenant's own structure_store.schema_name —
     passing the default only ever gives the right answer by coincidence for
-    tenants that happen to also use "dis"."""
+    tenants that happen to also use "dis".
+
+    ``flags`` (optional) is appended to in place when a syllabus field is absent for
+    a reason the *reader of a rendered worksheet* cannot be expected to diagnose. The
+    cell text already says what happened, but a cell is not a channel a reviewer
+    watches; the flag is, and it is what reaches CoverageReport.enumerate_flags.
+    Best-effort stays best-effort — this function still never raises — but it no
+    longer degrades silently, which is the half of "best-effort" that was missing.
+    """
     total_projects, total_quizzes = _project_quiz_counts(en.days)
     subjects = sorted({_subject_letter(c) for c in en.declared_acs if _subject_letter(c) != "?"})
     primary_handbooks = _primary_handbooks(en.days)
     web_resources = build_web_resources(en.days, en.units_by_day)
 
-    syllabus_fields = {k: "NOT AVAILABLE — syllabus not ingested" for k in
-                       ("course_description", "course_objectives", "grading_policy",
-                        "supplemental_references")}
-    if cur is not None:
+    if cur is None:
+        # No cursor means the caller could not open the structure store (see
+        # build.context_bundle's fallback). That is a statement about THIS build,
+        # not about the source library, and it used to render as "not ingested".
+        syllabus_fields = _syllabus_unavailable(SYLLABUS_NOT_READ)
+        if flags is not None:
+            flags.append("SYLLABUS_NOT_READ — no structure-store cursor for this build; "
+                         "the syllabus fields are unknown, not known-absent")
+    else:
         try:
             text = _syllabus_text(en, cur, schema)
-            syllabus_fields = _extract_syllabus_fields(text)
-        except Exception:
-            pass  # best-effort; overview must never fail the whole build over this
+            if text is None:
+                # No query could be built (block label carries no number). Nothing
+                # was asked, so nothing is known — not "not ingested".
+                syllabus_fields = _syllabus_unavailable(SYLLABUS_NOT_SEARCHABLE)
+                if flags is not None:
+                    flags.append(f"SYLLABUS_NOT_SEARCHABLE — block label {en.block!r} has no "
+                                 "number for the filename match; the syllabus fields are "
+                                 "unknown, not known-absent")
+            else:
+                syllabus_fields = _extract_syllabus_fields(text)
+        except Exception as exc:  # noqa: BLE001 — overview must never fail the build
+            # Was `except Exception: pass`, which left the pre-set "not ingested"
+            # placeholders in place: a query failure rendered, in the delivered
+            # worksheet, as a confident claim that the document had never been
+            # uploaded. Nothing was logged either, so the only trace of a broken
+            # syllabus read was a plausible-looking sentence in the output.
+            log.warning("block_overview: syllabus lookup failed for block=%s client=%s: %s",
+                        en.block, en.client_id, exc, exc_info=True)
+            syllabus_fields = _syllabus_unavailable(SYLLABUS_LOOKUP_FAILED)
+            if flags is not None:
+                flags.append(f"SYLLABUS_LOOKUP_FAILED — {type(exc).__name__}; the syllabus "
+                             "fields are unknown, not known-absent")
 
     return {
         "block": en.block,

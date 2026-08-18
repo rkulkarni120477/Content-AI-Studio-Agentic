@@ -899,7 +899,7 @@ class LLMUsageLog(Base):
     duration_ms     = Column(Integer,     nullable=True)
     status          = Column(String(30),  nullable=False)  # success|retry_success|fallback_success|error
     error_message   = Column(Text,        nullable=True)
-    langfuse_trace_id = Column(String(64), nullable=True, index=True)  # P1: looked up by the trace-detail endpoint
+    trace_id        = Column(String(64), nullable=True, index=True)  # looked up by the trace-detail endpoint
     created_at      = Column(DateTime,    default=datetime.utcnow, index=True)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -1410,6 +1410,67 @@ class FeedbackItem(Base):
 # Database Initialization & Migrations
 # =============================================================================
 
+def ensure_phoenix_database() -> None:
+    """Create Phoenix's own database on this same Postgres server if it
+    doesn't exist yet — local, RDS, wherever DATABASE_URL points.
+
+    Phoenix's own container can't do this itself: CREATE DATABASE requires an
+    existing connection to a *different* database on the same server, and
+    can't run inside a transaction. This reuses our own DB's connection
+    details (same host/user/password engine already resolved from
+    DATABASE_URL) purely to issue that one statement — no new config, no
+    manual `psql` step, on any environment.
+
+    The target database name is read from PHOENIX_SQL_DATABASE_URL itself
+    (falling back to "phoenix" if that's unset/unparseable) — hardcoding the
+    name here independently of that URL would let the two silently drift:
+    this ensures a database Phoenix was never actually configured to use.
+
+    Best-effort and idempotent: a missing psycopg2 driver (e.g. under
+    SQLite in tests), no permission to list/create databases, or a
+    concurrent duplicate-create from another worker are all swallowed. If
+    this silently fails, the phoenix container simply keeps restarting
+    (its own `restart: unless-stopped` policy) until it's created — never a
+    reason to fail our own app's startup.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        import psycopg2
+        from sqlalchemy.engine import make_url
+
+        target_db = "phoenix"
+        phoenix_url = os.getenv("PHOENIX_SQL_DATABASE_URL", "").strip()
+        if phoenix_url:
+            try:
+                target_db = make_url(phoenix_url).database or target_db
+            except Exception:
+                pass
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "PHOENIX_SQL_DATABASE_URL is not set — Phoenix will silently fall back to a "
+                "local SQLite file inside its own container, which is wiped on every redeploy."
+            )
+
+        url = engine.url
+        conn = psycopg2.connect(
+            host=url.host, port=url.port or 5432, dbname=url.database,
+            user=url.username, password=url.password, connect_timeout=10,
+        )
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
+                if cur.fetchone() is None:
+                    cur.execute(f'CREATE DATABASE "{target_db}"')
+        finally:
+            conn.close()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("ensure_phoenix_database skipped: %s", exc)
+
+
 def init_db():
     # ── Schema DDL is Alembic-owned ────────────────────────────────────────
     # As of the 000100000001 baseline revision, the schema is managed by
@@ -1451,17 +1512,25 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
     ),
-    # Observability drift. The live table carries `trace_id`; the ORM declares
-    # `langfuse_trace_id`, and because SQLAlchemy names every mapped column in
-    # its SELECT, the mismatch breaks EVERY read of this table — including the
-    # post-generation budget summary, which turned successful, paid-for CDD
-    # regenerations into 500s and silently discarded their output.
+    # Observability drift. SQLAlchemy names every mapped column in its SELECT, so
+    # a table missing one breaks EVERY read — including the post-generation budget
+    # summary, which turned successful, paid-for CDD regenerations into 500s and
+    # silently discarded their output.
     #
-    # Added rather than renamed: `trace_id` is populated in existing rows and
-    # something may still read it, so dropping or renaming it would trade one
-    # outage for another. The two coexist until the ORM is reconciled.
+    # This entry has now been on both sides of the same rename. It was added when
+    # the live table carried `trace_id` and the ORM declared `langfuse_trace_id`;
+    # the Phoenix migration reconciled the ORM to `trace_id`, which inverts the
+    # exposure rather than ending it, because revision 000100000017 creates the
+    # column AS `langfuse_trace_id`. A database that ran 17 but not the
+    # 000100000022 rename has only the name the ORM stopped asking for.
+    #
+    # So the statement follows the ORM, and only the ORM: a column no model
+    # declares cannot break a read, and repairing one is dead DDL that still takes
+    # a lock on every boot. tests/unit/test_usage_summary_failsafe.py reads the
+    # mapped column name off LLMUsageLog so the next rename cannot quietly leave
+    # this pointing at the old one.
     "llm_usage_logs": (
-        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS langfuse_trace_id VARCHAR(64)",
+        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)",
     ),
 }
 

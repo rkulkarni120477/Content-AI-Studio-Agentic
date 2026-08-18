@@ -6,6 +6,7 @@ export const platformService = {
   listTenants:  ()            => api.get(PLATFORM.TENANTS),
   createTenant: (body)        => api.post(PLATFORM.TENANTS, body),
   updateTenant: (id, body)    => api.put(PLATFORM.TENANT(id), body),
+  deleteTenant: (id)          => api.delete(PLATFORM.TENANT(id)),
   tenantUsage:  (id)          => api.get(PLATFORM.TENANT_USAGE(id)),
 
   // Per-tenant members

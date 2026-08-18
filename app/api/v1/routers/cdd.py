@@ -189,6 +189,38 @@ from promptops_app.services.block_wide_service import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# Helper — refuse a reply the output cap cut short
+# ---------------------------------------------------------------------------
+
+def _reject_if_truncated(result, what: str) -> None:
+    """Raise rather than let a fragment overwrite stored content.
+
+    The model's own output cap is the one bound content is allowed to hit, but a
+    reply that hit it is a fragment with nothing to say so: the prose reads as
+    finished, the last markdown construct on the line is left unclosed (this is
+    one of the ways a label ends up rendering as ``*Label:**``), and every
+    version saved afterwards carries the damage forward untouched.
+
+    Committing it loses the tail silently, which is strictly worse than failing:
+    a failure the user can see, they can act on by narrowing the request or
+    switching to a model with more output range.
+    """
+    if not getattr(result, "truncated", False):
+        return
+    _log.error(
+        "cdd_llm_output_truncated  what=%s  model=%s  stop_reason=%s  completion_tokens=%s",
+        what, getattr(result, "model", "?"), getattr(result, "stop_reason", None),
+        getattr(result, "completion_tokens", None),
+    )
+    raise LLMGenerationError(
+        f"The model ran out of output room part-way through {what}, so the reply "
+        f"is incomplete and was not applied — nothing was changed. Narrow the "
+        f"request (name fewer days or one column), or pick a model with a larger "
+        f"output range."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helper — load CDD or raise 404
 # ---------------------------------------------------------------------------
 
@@ -601,6 +633,8 @@ def generate_cdd(
         user_prompt,
         usage_ctx=usage_context,
     )
+
+    _reject_if_truncated(llm_result, "generating this CDD")
 
     if llm_result.status == "error":
         _log.error(
@@ -1497,6 +1531,42 @@ def _scope_hint(deep) -> str:
             "the instruction names it.")
 
 
+def _completeness_hint(deep) -> str:
+    """Name any document the model did not see in full.
+
+    Nothing is ever truncated to fit a budget, but two kinds of loss survive that
+    rule, and they need opposite responses — so they are reported separately rather
+    than merged into one "incomplete" sentence:
+
+    * ``omitted_documents`` — retrieved, never opened. None of it was read, so a
+      "not covered" conclusion says nothing about it. Fix: name it in the
+      instruction so it ranks ahead of what crowded it out.
+    * ``incomplete_documents`` — opened, but DIS packed only part of it before
+      answering. It DID inform the answer, partially, which is the more dangerous
+      of the two: a conclusion drawn from it looks as well-sourced as any other.
+      Fix: narrow the request so fewer documents compete.
+
+    Returns "" when everything retrieved was read in full, which is the normal case
+    — the note should not carry a caveat that does not apply.
+    """
+    parts: list[str] = []
+    omitted = list(getattr(deep, "omitted_documents", ()) or ())
+    incomplete = list(getattr(deep, "incomplete_documents", ()) or ())
+    if omitted:
+        shown = ", ".join(omitted[:_NOTE_SOURCE_LIMIT])
+        more = ", and others" if len(omitted) > _NOTE_SOURCE_LIMIT else ""
+        parts.append(f" These were found but not read, because higher-ranked documents "
+                     f"filled the request first: {shown}{more}. Naming one in the "
+                     "instruction moves it to the front.")
+    if incomplete:
+        shown = ", ".join(incomplete[:_NOTE_SOURCE_LIMIT])
+        more = ", and others" if len(incomplete) > _NOTE_SOURCE_LIMIT else ""
+        parts.append(f" These were read only in part: {shown}{more} — so nothing here "
+                     "rules out that they cover it. Asking about one of them "
+                     "specifically will retrieve more of it.")
+    return "".join(parts)
+
+
 def _noop_note(deep, *, target_text: str = "") -> str:
     """Explain an unchanged section in terms the user can act on.
 
@@ -1559,6 +1629,10 @@ def _noop_note(deep, *, target_text: str = "") -> str:
             + (", and nothing in it changed this. " if already_filled
                else ", but none of it covers what was asked. ")
             + _scope_hint(deep)
+            # Only on this branch. The empty-lookup branch below retrieved nothing,
+            # so it can have nothing omitted — and _pack_units always keeps at least
+            # one unit, so "found nothing" and "dropped something" cannot co-occur.
+            + _completeness_hint(deep)
             + " Nothing was saved."
             + tail
         )
@@ -1673,6 +1747,10 @@ def _regenerate_rows(db, cdd, *, plan, context, request_body, course_title, curr
     )
     if result.is_error or not result.text:
         raise LLMGenerationError("Row regeneration failed. Please try again.")
+    # Before merge_rows, not after: a truncated table loses its trailing rows and
+    # its last cell mid-word, and the merge would splice that in as if the model
+    # had meant it.
+    _reject_if_truncated(result, "regenerating these rows")
 
     merged = scoped_regen.merge_rows(plan, result.text)
 
@@ -1916,6 +1994,7 @@ def regenerate_cdd_section(
     new_content = f"ERROR: {result.text}" if result.is_error else result.text
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
+    _reject_if_truncated(result, "regenerating this section")
 
     _log.info("cdd_section_regenerated  user=%s  cdd_id=%d  section=%s  grounded=%s  %s  %s",
               current_user.username, cdd_id, request_body.section_key,

@@ -6,6 +6,7 @@ where needed). Safe for FastAPI or CLI use.
 Extracted from core/shared.py (Phase 3 refactoring).
 """
 
+import logging
 import re
 import re as _re_engine  # alias used by the item-parsing engine
 from typing import Optional
@@ -19,8 +20,11 @@ from promptops_app.prompt_templates import (
     TEACHER_BLUEPRINT_SECTION_REGENERATE_PROMPT,
 )
 from promptops_app.core.llm_client import safe_json_loads
+from promptops_app.parsers.markdown_emphasis import repair_emphasis
 from promptops_app.services.llm_service import generate_text as call_llm
 from promptops_app.services.usage_service import UsageLogContext
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Blueprint section visibility
@@ -262,6 +266,21 @@ def regen_single_item(
     sys_p = _ITEM_REGEN_SYSTEM
     result = call_llm(model_choice, sys_p, user_p, usage_ctx)
     result = _strip_leading_bullet(result.strip())
+
+    # A second line of defence, on a different failure than the strip above.
+    # _strip_leading_bullet no longer eats emphasis, but the model can still
+    # return a label whose delimiters do not pair up, and a malformed line
+    # committed here is sticky: every later save of the document preserves
+    # untouched lines byte for byte, so it survives until somebody edits that
+    # exact line by hand. Repair the one unambiguous shape, and say so when the
+    # damage is a guess rather than a fix.
+    result, emphasis = repair_emphasis(result.strip())
+    if emphasis:
+        _log.warning(
+            "regen_single_item: unbalanced markdown emphasis in the model reply "
+            "for section=%r item=%s — %s",
+            section_title, item_index, "; ".join(f.describe() for f in emphasis),
+        )
     return result.strip()
 
 

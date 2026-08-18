@@ -545,15 +545,39 @@ def test_the_preamble_warns_that_an_extract_is_not_the_document():
     assert "not retrieved rather than as absent" in text
 
 
-def test_an_oversized_document_is_trimmed_rather_than_dropped():
-    """A truncated syllabus still answers what its opening covers. Backstop only —
-    the purpose mapping already keeps 646-unit reference PDFs off this path."""
+def test_an_oversized_document_arrives_whole_and_is_never_trimmed():
+    """Inverted deliberately. This used to assert the document was clipped to
+    MAX_DOCUMENT_TOKENS on the reasoning that "a truncated syllabus still answers
+    what its opening covers" — but the model cannot tell a clipped document from a
+    complete one, so it answers "not covered" about text sitting just past the cut,
+    with the same confidence it would have had reading the whole thing. A partial
+    document presented as whole is worse than a slower prompt."""
     huge = [_unit("Big.pdf", i, f"chunk {i} " + "word " * 400) for i in range(1, 40)]
     text, sources = D.assemble_documents(huge)
     assert sources == ("Big.pdf",)
     assert "chunk 1" in text
+    assert "chunk 39" in text, "the tail of the document must survive"
     from promptops_app.core.config import count_tokens
-    assert count_tokens(text) <= D.MAX_DOCUMENT_TOKENS + 100
+    # Comfortably past the 5,000-token cap that used to apply here.
+    assert count_tokens(text) > 5000
+
+
+def test_a_document_the_budget_excludes_is_named_not_silently_dropped():
+    """Omission is still a loss of context — but a NAMED one, which the caller can
+    put in front of the user. The failure being prevented is the silent kind."""
+    units = ([_unit("First.docx", 1, "alpha " * 600)]
+             + [_unit("Second.docx", 1, "beta " * 600)])
+    left_out: list = []
+    text, sources = D.assemble_documents(units, token_budget=700, omitted=left_out)
+    assert sources == ("First.docx",)
+    assert left_out == ["Second.docx"]
+    assert "beta" not in text, "excluded whole, not partially included"
+
+
+def test_the_omitted_list_is_optional_and_absent_callers_still_work():
+    units = [_unit("Only.docx", 1, "alpha " * 10)]
+    text, sources = D.assemble_documents(units)
+    assert sources == ("Only.docx",)
 
 
 def test_the_budget_drops_whole_documents_not_halves_of_each():

@@ -185,10 +185,14 @@ def _env_int(name: str, default: int) -> int:
     return default if value is None else value
 
 
-#: MAP output ceiling. Every artificial cap below the model's real limit risks a
-#: digest truncated mid-JSON, which surfaces as missing fields rather than an error.
-#: 4096 matched Claude 3 Sonnet's actual maximum; Sonnet 4.5 is far higher, so the
-#: old value became an arbitrary quality cap. Set DIS_MAP_MAX_TOKENS to override.
+#: Fallback MAP output ceiling for a model this module has no entry for. Any cap
+#: below the model's real limit risks a digest truncated mid-JSON (which MAP does
+#: now catch — the day fails rather than storing defaults — but a failed day is
+#: still a day nobody got an answer for). 4096 matched Claude 3 Sonnet's actual
+#: maximum; the modern family is far higher, so a single flat number is wrong in
+#: BOTH directions: it throttles capable models and it exceeds what legacy models
+#: will accept. Per-model values live in ``_MAX_OUTPUT_TOKENS``; this is only what
+#: an unrecognised id gets. Set DIS_MAP_MAX_TOKENS to override everything.
 MAP_MAX_TOKENS = _env_int("DIS_MAP_MAX_TOKENS", 32_000)
 
 # One canonical "teachable substance" set, shared with ENUMERATE's THIN_DAY logic
@@ -363,6 +367,51 @@ _CONTEXT_TOKENS = {
     "anthropic.claude-3-sonnet-20240229-v1:0": 200_000,
     "anthropic.claude-3-haiku-20240307-v1:0": 200_000,
 }
+#: Each model's maximum OUTPUT tokens — the one kind of cap that is a real model
+#: limit rather than a policy choice, so it is the only one MAP applies. Keys mirror
+#: _CONTEXT_TOKENS exactly; an id absent from both falls back to MAP_MAX_TOKENS,
+#: which is deliberately the previous flat value so an unrecognised model can never
+#: end up MORE throttled than before this table existed.
+#:
+#: The first four values are NOT independent guesses — they are copied from CAS's
+#: promptops_app.core.models registry, which carries these numbers from live probes
+#: on the same account. The two deployables cannot share a module, so
+#: tests/unit/test_no_silent_truncation.py asserts they still agree for every id
+#: present in both; that test is what makes this a mirror rather than a second
+#: opinion. Note in particular that Haiku 4.5 is 16,384, not 64,000 — grouping it
+#: with the rest of the modern family is the obvious wrong guess.
+_MAX_OUTPUT_TOKENS = {
+    # Mirrored from CAS's registry (probe-verified there).
+    "global.anthropic.claude-opus-5": 64_000,
+    "global.anthropic.claude-sonnet-5": 64_000,
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": 64_000,
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": 16_384,
+    # Not in CAS's registry, so these are the published maxima rather than measured
+    # ones. Safe to be wrong high: Bedrock does not reject an oversized max_tokens
+    # (128,000 was accepted in the probe recorded in that registry), so the cost of
+    # an over-guess is nothing while an under-guess silently shortens a digest.
+    "global.anthropic.claude-sonnet-4-6": 64_000,
+    "global.anthropic.claude-fable-5": 64_000,
+    "global.anthropic.claude-opus-4-8": 64_000,
+    # Legacy Claude 3: 4,096 is the provider's hard maximum, so the flat 32,000 was
+    # asking these ids for eight times what they can produce.
+    "anthropic.claude-3-sonnet-20240229-v1:0": 4_096,
+    "anthropic.claude-3-haiku-20240307-v1:0": 4_096,
+}
+
+
+def max_output_tokens(model: str) -> int:
+    """The output ceiling to request for *model*.
+
+    An explicit DIS_MAP_MAX_TOKENS override wins, because an operator setting it is
+    making a deliberate choice; otherwise the model's own documented maximum, and
+    the previous flat default for anything unrecognised.
+    """
+    if _env_int_or_none("DIS_MAP_MAX_TOKENS") is not None:
+        return MAP_MAX_TOKENS
+    return _MAX_OUTPUT_TOKENS.get(model) or MAP_MAX_TOKENS
+
+
 #: Reserved for the prompt scaffold (schema, rubric, guidance, day metadata) that
 #: shares the window with the sources.
 _PROMPT_OVERHEAD_CHARS = 40_000
@@ -510,7 +559,7 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         "lesson_title": day.get("lesson_title") or "",
         "sources": body if body.strip() else "(no text-allowed source units for this day)",
     })
-    text, ti, to = call_llm(model, prompt, MAP_MAX_TOKENS)
+    text, ti, to = call_llm(model, prompt, max_output_tokens(model))
     data = safe_json(text) or {}
     if not data or "derived_objective" not in data or "concept_type" not in data:
         # safe_json's json.loads is strict — either the raw response didn't

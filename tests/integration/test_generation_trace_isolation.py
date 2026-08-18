@@ -6,11 +6,10 @@ GET /api/v1/generations/{id}/trace, under any circumstance — not even a
 partial/truncated response, and not via ID enumeration. These tests are what
 prove that holds, not just assume it from the get_scoped_or_404 reuse in P1.4.
 
-Langfuse itself is mocked (app.core.langfuse_client.get_trace_observations) —
+Phoenix itself is mocked (app.core.phoenix_client.get_trace_observations) —
 these tests verify CAS's own authorization boundary, which must reject a
-cross-tenant request BEFORE Langfuse is ever called, not the Langfuse
-integration itself (that's covered by the live smoke test run during P1.2/P1.4
-implementation).
+cross-tenant request BEFORE Phoenix is ever called, not the Phoenix
+integration itself (that's covered by a live smoke test run during rollout).
 """
 
 from __future__ import annotations
@@ -68,7 +67,7 @@ def _make_traced_generation(db, *, project_id: int, trace_id: str):
 
     usage_row = LLMUsageLog(
         user_id="tester", project_id=project_id, entity_type="generation", entity_id=job_id,
-        model_name="gpt-4o", status="success", langfuse_trace_id=trace_id,
+        model_name="gpt-4o", status="success", trace_id=trace_id,
     )
     db.add(usage_row)
     db.commit()
@@ -99,13 +98,20 @@ def two_tenant_setup(db):
 
 
 @pytest.fixture(autouse=True)
-def _mock_langfuse(monkeypatch):
-    """Never make a real network call to Langfuse in these tests."""
-    from app.core import langfuse_client
+def _mock_phoenix(monkeypatch):
+    """Never make a real network call to Phoenix in these tests."""
+    from app.core import phoenix_client
 
     monkeypatch.setattr(
-        langfuse_client, "get_trace_observations",
-        lambda trace_id: [{"id": "obs1", "traceId": trace_id, "input": "secret prompt", "output": "secret response"}],
+        phoenix_client, "get_trace_observations",
+        lambda trace_id: [{
+            "id": "span1",
+            "context": {"trace_id": trace_id, "span_id": "span1"},
+            "name": "llm_call:generation",
+            "span_kind": "LLM",
+            "status_code": "OK",
+            "attributes": {"input": {"value": "secret prompt"}, "output": {"value": "secret response"}},
+        }],
     )
 
 
@@ -116,7 +122,7 @@ class TestCrossTenantIsolation:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["trace_id"] == "trace-belongs-to-a"
-        assert data["observations"][0]["output"] == "secret response"
+        assert data["observations"][0]["attributes"]["output"]["value"] == "secret response"
 
     def test_cross_tenant_user_gets_404_not_data(self, client, two_tenant_setup):
         """The core zero-tolerance case: Project B's user requests Project A's trace."""

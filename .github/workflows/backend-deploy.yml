@@ -9,11 +9,20 @@ on:
       - "api_server.py"
       - "promptops_app/**"
       - "dis_backend/**"
-      - "langfuse/**"
       - "Dockerfile"
       - "docker-compose.yml"
       - "requirements.txt"
       - ".github/workflows/backend-deploy.yml"
+      # This job now runs `alembic upgrade head`, so a migration-only change
+      # is a deployable change — without these two, adding a migration
+      # silently never reaches the host and the schema drifts behind the code
+      # that expects it.
+      - "migrations/**"
+      - "alembic.ini"
+
+  # Lets a deploy be re-run by hand after a failure that needed an out-of-band
+  # fix on the host (e.g. stamping alembic_version), without an empty commit.
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -48,19 +57,14 @@ jobs:
             echo "Building and starting all backend services..."
             docker compose up -d --build --remove-orphans
 
-            echo "Starting Langfuse observability stack (self-hosted, P1)..."
-            # A separate compose project (see langfuse/docker-compose.yml's own
-            # header) reading its variables from this same root .env — real
-            # secrets, gitignored, must already be in it (one-time manual
-            # setup, see LANGFUSE_SETUP.md). Skip rather than fail the whole
-            # deploy if a host hasn't been provisioned with them yet —
-            # Langfuse is best-effort observability, not a dependency the API
-            # needs to boot.
-            if grep -q "^LANGFUSE_INIT_ORG_ID=" .env 2>/dev/null; then
-              docker compose -f langfuse/docker-compose.yml --env-file .env up -d --build --remove-orphans
-            else
-              echo "Langfuse variables not found in .env — skipping Langfuse startup."
-            fi
+            echo "Applying database migrations..."
+            # Nothing else in this deploy path runs Alembic — Dockerfile CMD is
+            # just uvicorn, and init_db() only handles the legacy DB_AUTO_DDL
+            # escape hatch, not real migrations. Earlier migrations were all
+            # additive/nullable so a missed one was harmless; a rename (like
+            # llm_usage_logs.langfuse_trace_id -> trace_id) is not — every LLM
+            # call's usage/cost row silently stops being written until this runs.
+            docker compose exec -T api alembic upgrade head
 
             echo "Cleaning unused Docker images..."
             docker image prune -f

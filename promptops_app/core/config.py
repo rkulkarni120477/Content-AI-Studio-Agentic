@@ -233,6 +233,13 @@ class AppSettings(BaseSettings):
         alias="PROMPTOPS_MODEL_PRICING",
     )
 
+    # ── Phoenix observability (self-hosted LLM tracing) ───────────────────────
+    phoenix_collector_endpoint: str = Field(
+        default="http://localhost:6006/v1/traces", alias="PHOENIX_COLLECTOR_ENDPOINT",
+    )
+    phoenix_project_name: str = Field(default="content-ai-studio", alias="PHOENIX_PROJECT_NAME")
+    phoenix_api_key: str = Field(default="", alias="PHOENIX_API_KEY")
+
     # ── Validators ────────────────────────────────────────────────────────────
 
     @field_validator("log_level", mode="before")

@@ -538,7 +538,16 @@ def test_day_context_structured_fetch(monkeypatch):
     assert by_id["g1"]["text"] == "instructor-only guidance"                          # instructor OK
     # Supplement: own unit + digest excluded, only the new page kept, text capped.
     assert [s["content_unit_id"] for s in out["supplement"]] == ["p9"]
-    assert len(out["supplement"][0]["text"]) == day_scoped._SUPPLEMENT_TEXT_CAP
+    # Returned WHOLE. A supplemental hit used to be cut at 1200 chars, and an
+    # unmarked truncation reads to the model as a complete passage — so it concludes
+    # "not covered" for a fact that fell past the cap, with full confidence.
+    # Precision is bounded by supplement_k (how many units), never by cutting the
+    # units that were selected.
+    sup = out["supplement"][0]
+    assert sup["text_truncated"] is False
+    assert len(sup["text"]) > 1200, "the fixture text is longer than the old cap"
+    assert sup["text"] == "x" * 5000, "the whole unit, not the first 1200 chars"
+    assert not any(f.startswith("SUPPLEMENT_TRUNCATED") for f in out["flags"])
 
     # Student audience: instructor-only guide text now withheld too.
     stu = day_scoped.day_context(_tenant(), "Block 2", 1, client_id="aim", audience="student")
@@ -1418,3 +1427,165 @@ def test_preflight_is_per_model(monkeypatch):
     build_mod.preflight_extractor("model-b")
     build_mod.preflight_extractor("model-a")
     assert seen == ["model-a", "model-b"], f"memo is not keyed per model: {seen}"
+
+
+# --------------------------------------------------------------------------- #
+# context_bundle — a degraded worksheet build must be VISIBLE, not just logged.
+# --------------------------------------------------------------------------- #
+def test_context_bundle_flags_a_degraded_worksheet_build(monkeypatch):
+    """When the structure store cannot be opened, the bundle still returns — but the
+    Block Overview, Source File Inventory and ACS Registry are all built without a
+    cursor and are incomplete. Previously the only trace was one server-side log
+    line, so the deliverable looked finished: an ACS registry with no task
+    descriptions and syllabus cells asserting the document had never been uploaded.
+    The flag rides the list REDUCE already reads (CoverageReport.enumerate_flags).
+    """
+    en = types.SimpleNamespace(
+        block="Block 2", client_id="aim", total_days=1, days=[{"day_number": 1}],
+        units_by_day={}, unattributed=[], declared_acs=[], acs_by_day={},
+        flags=["THIN_DAY:1 — no substantive source units"],
+        to_summary=lambda include_units=False: {"block": "Block 2", "days": [{"day_number": 1}],
+                                                "flags": ["THIN_DAY:1 — no substantive source units"]},
+    )
+    monkeypatch.setattr(build, "enumerate_block", lambda *a, **k: en)
+    monkeypatch.setattr(indexing, "fetch_digests", lambda *a, **k: [])
+
+    tenant = types.SimpleNamespace(
+        structure_store=types.SimpleNamespace(schema_name="dis", url="postgresql://nope/nope"),
+        document_processing=types.SimpleNamespace(restricted_document_types=[]),
+    )
+    bundle = build.context_bundle(tenant, "Block 2")
+
+    flags = bundle["enumerate"]["flags"]
+    assert any(f.startswith("WORKSHEETS_DEGRADED") for f in flags), flags
+    # The enumerate result's own flags survive alongside it, in order.
+    assert flags[0].startswith("THIN_DAY:1")
+    # The degraded overview says the syllabus was not READ, never "not ingested".
+    assert "not ingested" not in bundle["block_overview"]["course_description"]
+    # Best-effort still holds: every section is present rather than the bundle failing.
+    assert bundle["block_overview"] and bundle["source_file_inventory"] is not None
+    assert bundle["acs_registry"] is not None
+
+
+def test_unattributed_flag_names_the_files_a_reviewer_must_fix():
+    """"UNATTRIBUTED:7" tells a reviewer that seven pieces of the block are missing
+    from every digest, and gives them nothing to act on. The fix is always
+    per-document, so the flag must name the documents."""
+    from services.digests.enumerate import _UNRESOLVED_NAMES_IN_FLAG, _assemble
+    from services.digests.profiles.aim import AIMCurriculumProfile
+    from services.digests.profiles.base import ScopeData
+
+    days = [{"day_number": 1, "topic": "Aircraft drawings", "assignments_json": "",
+             "assessments_json": "", "source_text": ""}]
+    # Two sections of ONE guide + one other file: three unplaceable units, two names.
+    units = [
+        {"content_unit_id": "g1", "unit_type": "guide_section", "title": "s1",
+         "metadata_json": {"source_file_name": "Orphan Guide.docx", "acs_codes": []}},
+        {"content_unit_id": "g2", "unit_type": "guide_section", "title": "s2",
+         "metadata_json": {"source_file_name": "Orphan Guide.docx", "acs_codes": []}},
+        {"content_unit_id": "p1", "unit_type": "project_task", "title": "t",
+         "metadata_json": {"source_file_name": "Loose Project.pdf", "acs_codes": []}},
+        # Non-substantive: legitimately dayless, must NOT be named — sending a reviewer
+        # to "fix" a syllabus that is already correct is worse than saying nothing.
+        {"content_unit_id": "syl", "unit_type": "syllabus_section", "title": "syl",
+         "metadata_json": {"source_file_name": "Block 2 Syllabus.docx"}},
+    ]
+    scope = ScopeData(calendar_id="c", total_days=1, days=days, units=units)
+    res = _assemble("Block 2", "aim", AIMCurriculumProfile(_tenant()), scope)
+
+    flag = next(f for f in res.flags if f.startswith("UNATTRIBUTED:"))
+    assert "Orphan Guide.docx" in flag and "Loose Project.pdf" in flag
+    assert flag.count("Orphan Guide.docx") == 1, "one document, not one entry per section"
+    assert "Block 2 Syllabus.docx" not in flag, "non-substantive material is not a gap"
+    assert ", and others" not in flag
+    assert _UNRESOLVED_NAMES_IN_FLAG >= 2
+
+
+def test_a_phantom_day_gets_its_own_flag_because_the_fix_is_different():
+    """A unit tagged with a day the calendar does not have needs the TAG fixed (or the
+    calendar completed) — a different action from attribution simply failing, and one
+    that had no flag at all: it was miscounted as non-substantive-unplaced."""
+    from services.digests.enumerate import _assemble
+    from services.digests.profiles.aim import AIMCurriculumProfile
+    from services.digests.profiles.base import ScopeData
+
+    days = [{"day_number": 1, "topic": "T1", "assignments_json": "", "assessments_json": "",
+             "source_text": ""}]
+    units = [{"content_unit_id": "phantom", "unit_type": "slide", "title": "p",
+              "metadata_json": {"day_number": 9, "source_file_name": "Block 2 Day 9 Slides.pptx"}}]
+    scope = ScopeData(calendar_id="c", total_days=1, days=days, units=units)
+    res = _assemble("Block 2", "aim", AIMCurriculumProfile(_tenant()), scope)
+
+    flag = next(f for f in res.flags if f.startswith("DAY_NOT_IN_CALENDAR:"))
+    assert "Block 2 Day 9 Slides.pptx" in flag
+    assert "calendar does not have" in flag
+    # It is not double-reported as an attribution failure.
+    assert not any(f.startswith("UNATTRIBUTED:") for f in res.flags)
+
+
+def test_flag_stays_legible_when_a_whole_block_is_unplaceable():
+    """The bound is a legibility bound — a coverage report must not become a wall of
+    filenames when a mis-ingested block leaves everything unattributed."""
+    from services.digests.enumerate import _UNRESOLVED_NAMES_IN_FLAG, _assemble
+    from services.digests.profiles.aim import AIMCurriculumProfile
+    from services.digests.profiles.base import ScopeData
+
+    days = [{"day_number": 1, "topic": "T1", "assignments_json": "", "assessments_json": "",
+             "source_text": ""}]
+    units = [{"content_unit_id": f"u{i}", "unit_type": "guide_section", "title": f"t{i}",
+              "metadata_json": {"source_file_name": f"Doc {i}.docx"}} for i in range(40)]
+    scope = ScopeData(calendar_id="c", total_days=1, days=days, units=units)
+    res = _assemble("Block 2", "aim", AIMCurriculumProfile(_tenant()), scope)
+
+    flag = next(f for f in res.flags if f.startswith("UNATTRIBUTED:"))
+    assert flag.startswith("UNATTRIBUTED:40"), "the COUNT is never truncated"
+    assert flag.count(".docx") == _UNRESOLVED_NAMES_IN_FLAG
+    assert flag.endswith(", and others")
+
+
+def test_unnameable_units_do_not_leave_a_dangling_in():
+    """No unit carries a filename or title — the flag drops the list rather than
+    rendering "— in: "."""
+    from services.digests.enumerate import _assemble
+    from services.digests.profiles.aim import AIMCurriculumProfile
+    from services.digests.profiles.base import ScopeData
+
+    days = [{"day_number": 1, "topic": "T1", "assignments_json": "", "assessments_json": "",
+             "source_text": ""}]
+    units = [{"content_unit_id": "u1", "unit_type": "guide_section", "title": "",
+              "metadata_json": {}}]
+    scope = ScopeData(calendar_id="c", total_days=1, days=days, units=units)
+    res = _assemble("Block 2", "aim", AIMCurriculumProfile(_tenant()), scope)
+
+    flag = next(f for f in res.flags if f.startswith("UNATTRIBUTED:"))
+    assert "in:" not in flag
+    assert flag == "UNATTRIBUTED:1 — substantive units that could not be placed on a day"
+
+
+def test_the_three_unplaced_populations_sum_to_the_unattributed_list():
+    """A phantom-day unit HAS a day — just not one the calendar contains — so counting
+    it as "non-substantive, legitimately dayless" described a mis-tagged slide as
+    material that correctly has no day. The three counts must partition the list."""
+    from services.digests.enumerate import _assemble
+    from services.digests.profiles.aim import AIMCurriculumProfile
+    from services.digests.profiles.base import ScopeData
+
+    days = [{"day_number": 1, "topic": "T1", "assignments_json": "", "assessments_json": "",
+             "source_text": ""}]
+    units = [
+        {"content_unit_id": "phantom", "unit_type": "slide", "title": "p",
+         "metadata_json": {"day_number": 9}},                      # tagged a day that isn't there
+        {"content_unit_id": "orphan", "unit_type": "guide_section", "title": "g",
+         "metadata_json": {"source_file_name": "Orphan.docx"}},    # attribution failed
+        {"content_unit_id": "syl", "unit_type": "syllabus_section", "title": "s",
+         "metadata_json": {}},                                     # legitimately dayless
+    ]
+    scope = ScopeData(calendar_id="c", total_days=1, days=days, units=units)
+    res = _assemble("Block 2", "aim", AIMCurriculumProfile(_tenant()), scope)
+
+    a = res.attribution
+    assert a["unresolved_substantive"] == 1
+    assert a["phantom_day_unplaced"] == 1
+    assert a["non_substantive_unplaced"] == 1
+    assert (a["unresolved_substantive"] + a["phantom_day_unplaced"]
+            + a["non_substantive_unplaced"]) == len(res.unattributed)
