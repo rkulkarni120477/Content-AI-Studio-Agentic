@@ -100,6 +100,26 @@ export const cddService = {
     return created;
   },
   /**
+   * Import an existing Blueprint/CDD file. Multipart upload → the server extracts,
+   * normalizes into the worksheet shape, persists as a normal CDD and pins it.
+   * Reloads the full CDD by id (like generateCdd) so the display accordion gets
+   * the same shape a generated CDD has.
+   */
+  importCdd:     async ({ file, courseId, projectId, courseTitle, documentTitle, modelChoice }, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('course_id', String(courseId));
+    form.append('project_id', String(projectId));
+    if (courseTitle) form.append('course_title', courseTitle);
+    if (documentTitle) form.append('document_title', documentTitle);
+    if (modelChoice) form.append('model_choice', modelChoice);
+    const created = await api.upload(CDD.IMPORT, form, onProgress);
+    if (created?.cdd_id) {
+      return api.get(CDD.GET(created.cdd_id));
+    }
+    return created;
+  },
+  /**
    * Enqueue a block-wide CDD build (long-running → async). Returns a job handle
    * {job_id, status, poll_url}; poll getJobStatus until terminal, then reload
    * the CDD by the job's result entity id.

@@ -2,7 +2,9 @@ import axios from 'axios';
 import { tokenStorage } from '@utils/storage';
 import { extractErrorMessage } from '@utils/helpers';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Empty default → relative URLs, so dev requests go through Vite's /api proxy
+// (see vite.config.js). Prod sets VITE_API_BASE_URL to the real backend origin.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const TIMEOUT_MS   = Number(import.meta.env.VITE_API_TIMEOUT_MS) || 120_000;
 
 // ─── Axios Instance ───────────────────────────────────────────────────────────

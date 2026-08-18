@@ -2,7 +2,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import { attachBlockJobReducers } from '@features/shared/blockJob';
 import { attachArchiveReducers } from '@features/shared/documentArchive';
 import {
-  fetchCddsThunk, generateCddThunk, setActiveCddThunk,
+  fetchCddsThunk, generateCddThunk, importCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, activateCddVersionThunk,
   generateCddBlockThunk, pollCddJobThunk, resumeCddJobThunk,
   fetchArchivedCddsThunk, cddArchiveThunks,
@@ -14,6 +14,7 @@ const initialState = {
   versions:   [],
   isLoading:  false,
   isGenerating: false,
+  isImporting: false,
   error:      null,
   // Block-wide async job tracking (digest pipeline).
   blockJob:   null,  // { jobId, status, progress, currentStep }
@@ -55,6 +56,16 @@ const cddSlice = createSlice({
         s.activeCdd = payload;
       })
       .addCase(generateCddThunk.rejected,  (s, { payload }) => { s.isGenerating = false; s.error = payload; })
+
+      // Import lands in the same place a generate does: prepended to the list and
+      // set active, so it shows in "Your Title Design Documents" immediately.
+      .addCase(importCddThunk.pending,   (s) => { s.isImporting = true; s.error = null; })
+      .addCase(importCddThunk.fulfilled, (s, { payload }) => {
+        s.isImporting = false;
+        if (payload?.id) s.cdds.unshift(payload);
+        s.activeCdd = payload;
+      })
+      .addCase(importCddThunk.rejected,  (s, { payload }) => { s.isImporting = false; s.error = payload; })
 
       .addCase(setActiveCddThunk.fulfilled, (s, { payload }) => { s.activeCdd = payload; })
 
@@ -98,6 +109,7 @@ export const selectActiveCdd      = (s) => s.cdd.activeCdd;
 export const selectCddVersions    = (s) => s.cdd.versions;
 export const selectCddLoading     = (s) => s.cdd.isLoading;
 export const selectCddGenerating  = (s) => s.cdd.isGenerating;
+export const selectCddImporting    = (s) => s.cdd.isImporting;
 export const selectCddError       = (s) => s.cdd.error;
 export const selectArchivedCdds   = (s) => s.cdd.archivedCdds;
 export const selectCddArchiving   = (s) => s.cdd.isArchiving;
