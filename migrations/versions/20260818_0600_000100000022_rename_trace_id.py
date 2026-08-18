@@ -5,15 +5,23 @@ tracer's — the values are just a generic external-tracer reference either
 way, so existing rows are preserved as-is under the new name rather than
 dropped and re-added.
 
-Revision ID: 000100000021
-Revises: 000100000020
+Originally authored as 000100000021 off 000100000020, at the same time as
+design_doc_archive did the same on another branch — two files with the same
+revision id merge cleanly in git (they're different files) but leave Alembic
+with a duplicate id and two heads, which fails `upgrade head` outright while
+it builds the revision map. Renumbered to sit *after* design_doc_archive
+rather than beside it; both are idempotent, so the relative order is
+immaterial.
+
+Revision ID: 000100000022
+Revises: 000100000021
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000021"
-down_revision = "000100000020"
+revision = "000100000022"
+down_revision = "000100000021"
 branch_labels = None
 depends_on = None
 
