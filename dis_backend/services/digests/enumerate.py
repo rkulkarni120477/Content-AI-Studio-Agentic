@@ -108,6 +108,47 @@ def _unit_descriptor(u: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+#: How many distinct source files the UNATTRIBUTED flag names before saying
+#: "and others". The flag is read by a human in a coverage report, so this is a
+#: legibility bound, not a memory one.
+_UNRESOLVED_NAMES_IN_FLAG = 6
+
+
+def _source_names(units: List[Dict[str, Any]], *, limit: int) -> List[str]:
+    """Distinct source files for these units, first-seen order, bounded.
+
+    De-duplicated by name so a 40-section instructor guide contributes one entry —
+    the actionable unit of work is the document, not the chunk.
+    """
+    out: List[str] = []
+    for u in units:
+        md = u.get("metadata_json") or {}
+        # Whitespace collapsed, not merely stripped: these flags are rendered as
+        # single markdown bullets (block_wide_service._coverage_section), and an
+        # embedded newline in a stored filename would end the bullet early and orphan
+        # the rest of the line. Same defence _json_list already applies to day cells.
+        name = " ".join(str(md.get("source_file_name") or u.get("title") or "").split())
+        if name and name not in out:
+            out.append(name)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _named_flag(prefix: str, count: int, reason: str, units: List[Dict[str, Any]]) -> str:
+    """``PREFIX:n — reason — in: a, b, c`` with a bounded, de-duplicated file list.
+
+    The file list is omitted entirely rather than rendered empty when no unit carries
+    a usable name, so the flag never trails a dangling "in:".
+    """
+    names = _source_names(units, limit=_UNRESOLVED_NAMES_IN_FLAG)
+    head = f"{prefix}:{count} — {reason}"
+    if not names:
+        return head
+    more = ", and others" if len(names) >= _UNRESOLVED_NAMES_IN_FLAG else ""
+    return f"{head} — in: {', '.join(names)}{more}"
+
+
 def _resolve_dsn(cfg) -> str:
     return cfg.url or get_settings().db_url.replace("postgresql+asyncpg://", "postgresql://")
 
@@ -221,9 +262,30 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
     # Non-substantive unplaced units (syllabus sections, answer keys, loose chunks)
     # legitimately have no single day and are surfaced, not counted as a gap.
     unresolved_substantive = sum(unresolved_by_type.values())
-    non_substantive_unplaced = len(unattributed) - unresolved_substantive
+    # Partition the unplaced list by WHY, so each flag names only the files a reviewer
+    # can act on for that reason, and so the counts stop conflating them. Attribution
+    # genuinely failed for the first group; the second was pointed at a day the
+    # calendar does not contain (bad B#D# token or metadata day_number, or a calendar
+    # with gaps) — a different fix entirely, and previously it had no flag of its own
+    # AND was subtracted into `non_substantive_unplaced`, which described a slide
+    # tagged "Day 9" on a 20-day calendar as material that legitimately has no day.
+    failed_attribution = [u for u in unattributed
+                          if not str(u.get("attribution_signal") or "").startswith(("n/a:", "unplaced:"))]
+    phantom_day = [u for u in unattributed
+                   if str(u.get("attribution_signal") or "").startswith("unplaced:")]
+    non_substantive_unplaced = len(unattributed) - unresolved_substantive - len(phantom_day)
     if unresolved_substantive:
-        flags.append(f"UNATTRIBUTED:{unresolved_substantive} — substantive units that could not be placed on a day")
+        # Name the FILES, not just the count. A reviewer reading "UNATTRIBUTED:7" is
+        # told that seven pieces of the block are missing from every digest and given
+        # nothing to act on; the fix is always per-document (tag a day, rename to
+        # carry a B#D# token), so the filename is the whole actionable content.
+        flags.append(_named_flag(
+            "UNATTRIBUTED", unresolved_substantive,
+            "substantive units that could not be placed on a day", failed_attribution))
+    if phantom_day:
+        flags.append(_named_flag(
+            "DAY_NOT_IN_CALENDAR", len(phantom_day),
+            "unit(s) tagged with a day this block's calendar does not have", phantom_day))
 
     attribution_stats = {
         "unmapped_substantive": unmapped_substantive,
@@ -233,6 +295,11 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
         "unresolved_by_type": dict(unresolved_by_type),
         "unresolved_substantive": unresolved_substantive,
         "non_substantive_unplaced": non_substantive_unplaced,
+        # Counted separately rather than folded into either neighbour: these units
+        # HAVE a day, it just is not one this block's calendar contains. Reported so
+        # the three unplaced populations sum to len(unattributed) and a reader can
+        # see which of the three they are looking at.
+        "phantom_day_unplaced": len(phantom_day),
         "total_units": len(units),
     }
 

@@ -45,15 +45,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from promptops_app.core.config import clip_tokens, clip_tokens_strict, count_tokens
+from promptops_app.core.config import count_tokens
 
 _log = logging.getLogger(__name__)
 
-#: Per-level token caps. The day bundle can be very large — a day's full unit
-#: text plus a kNN supplement — and it is going into a prompt that already
-#: carries the worksheet context and the rows being rewritten.
-DAY_DIGEST_TOKENS = 2500
-DAY_UNITS_TOKENS = 5000
+#: Former per-level token caps on the day bundle, retired. They clipped the day's
+#: digest JSON and its own source units to fit alongside the worksheet context —
+#: but a day's units ARE the evidence the regenerated cell is supposed to rest on,
+#: and a clipped prompt produces an equally confident answer from less of it. The
+#: bundle is now passed whole; SEARCH_TOKENS documents where the real ceiling is.
 
 #: Ceiling on what the search rung contributes to the prompt.
 #:
@@ -66,9 +66,9 @@ DAY_UNITS_TOKENS = 5000
 #: Block 2 — 30 units across 4 documents, ~7,900 tokens in total:
 #:
 #: (An instruction can widen the request beyond that set — see `search_filters` —
-#: so this is a budget over a variable corpus, not over a fixed one. Every
-#: document is still bounded by MAX_DOCUMENT_TOKENS and the whole assembly by
-#: this figure, so a wider request costs relevance, never size.)
+#: so this is a bound over a variable corpus, not over a fixed one. Nothing is
+#: trimmed to fit it: a document is passed whole or omitted whole and named, so a
+#: wider request costs relevance, never fidelity.)
 #:
 #:     Block 2 Teacher Calendar.xlsx              20 units   ~1,780
 #:     Block 02-Student Copy ACS Course Calendar    8 units     ~559
@@ -76,9 +76,17 @@ DAY_UNITS_TOKENS = 5000
 #:     Block 02 …ACS Syllabus (Rev. 01.14.26)       1 unit    ~3,158
 #:
 #: So a whole syllabus plus a whole calendar costs ~4,200 tokens, and the
-#: theoretical maximum for a block is under 8,000. This leaves headroom above
-#: that without ever approaching a model's input limit.
-SEARCH_TOKENS = 9000
+#: theoretical maximum for a block is under 8,000.
+#:
+#: Raised well above that measured ceiling because it is no longer a quality knob —
+#: nothing is trimmed to fit it any more, so the only thing it can now do is EXCLUDE
+#: a whole document. Every model this product targets has a 200,000-token input
+#: window at minimum, and the regeneration prompt around this context is a few
+#: thousand tokens, so 100,000 stays far inside the smallest real limit while making
+#: exclusion essentially unreachable for the corpus as measured — including when an
+#: instruction opens the gate to a large reference document, which is the case the
+#: old 9,000 could not absorb. It is a model-capacity backstop, not a budget.
+SEARCH_TOKENS = 100_000
 
 #: Units requested from DIS. Its default is 8, which is the reason a calendar
 #: arrived as three disconnected day rows: with one slot per document-chunk and
@@ -99,20 +107,22 @@ SEARCH_TOKENS = 9000
 #: 50 covers the measured maximum (49, Block 5) and equals result_size_cap.
 SEARCH_TOP_K = 50
 
-#: Token budget asked of DIS, whose own default is 6,000. Must exceed
-#: SEARCH_TOKENS or DIS would trim the documents before this module ever sees
-#: them, and the assembly below would be reordering an already-truncated set.
-SEARCH_TOKEN_BUDGET = 14000
+#: Token budget asked of DIS, whose own default is 6,000. Must be >= SEARCH_TOKENS
+#: or DIS would trim the documents before this module ever sees them, and the
+#: assembly below would be carefully regrouping an already-truncated set — the
+#: worst case, because the result LOOKS whole. Derived from SEARCH_TOKENS rather
+#: than restated, so raising one can never silently leave the other behind, and
+#: strictly larger so that DIS is never the component that decides what to drop:
+#: it would drop by its own ordering, before the block filter and the whole-document
+#: regrouping here have had any say, and without reporting what it removed.
+SEARCH_TOKEN_BUDGET = SEARCH_TOKENS * 2
 
-#: A document is only worth assembling whole if it is small enough to BE whole.
-#: A backstop against one document consuming the entire budget.
-#:
-#: It carries more weight than it used to. It was written when the purpose mapping
-#: was an absolute exclusion, so a 1,164-unit reference PDF could not reach this
-#: path at all; an instruction can now open the gate to types the purpose does not
-#: admit (see `search_filters`), and this is what keeps one of them from arriving
-#: whole and crowding out the calendar it was meant to supplement.
-MAX_DOCUMENT_TOKENS = 5000
+# MAX_DOCUMENT_TOKENS (5000) used to clip any document over that size, which made a
+# partial syllabus indistinguishable from a whole one — the model then answered
+# "not covered" about text sitting just past the cut. Documents are now passed
+# whole, or omitted whole and named (see `assemble_documents`). The constant is
+# gone rather than kept "in case": nothing reads it, and a number no caller uses
+# is a claim about the system that the system does not make.
 
 #: Days fetched per regeneration. Each is one DIS round-trip; an instruction
 #: naming more days than this gets the first few deeply and the rest from the
@@ -760,6 +770,18 @@ class DeepContext:
     #: `cdd` purpose alone; a non-empty tuple means an instruction named material
     #: outside it and the gate was opened to exactly that.
     document_types: tuple[str, ...] = field(default_factory=tuple)
+    #: Documents retrieved but NOT sent to the model, because the assembly budget
+    #: was already spent. Never partially sent — a name here means none of it was
+    #: read. The user's move is to name it in the instruction so it ranks higher.
+    omitted_documents: tuple[str, ...] = field(default_factory=tuple)
+    #: Documents DIS packed only PART of before answering (its own token budget).
+    #: These reached the model, but not in full, so a "not covered" conclusion about
+    #: one of them is unsafe. The user's move is to narrow the request.
+    #:
+    #: Kept separate from `omitted_documents` because the two demand opposite
+    #: actions, and collapsing them into one "incomplete" list would leave the
+    #: reader unable to tell which they are looking at.
+    incomplete_documents: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def found(self) -> bool:
@@ -786,7 +808,9 @@ class DeepContext:
                 "levels_tried": list(self.levels_tried), "flags": list(self.flags),
                 "sources": list(self.sources),
                 "retrieval_method": self.retrieval_method,
-                "document_types": list(self.document_types)}
+                "document_types": list(self.document_types),
+                "omitted_documents": list(self.omitted_documents),
+                "incomplete_documents": list(self.incomplete_documents)}
 
 
 # ---------------------------------------------------------------------------
@@ -809,9 +833,11 @@ def _render_day_bundle(bundle: dict) -> tuple[str, int]:
     digest = bundle.get("digest") or {}
     if digest:
         import json
+        # Whole. The digest is a compact extraction to begin with, and clipping
+        # JSON produces a fragment that no longer parses as the structure it is
+        # labelled as — the model then reads a broken object as the day's facts.
         parts.append("#### Day digest (what MAP extracted)\n"
-                     + clip_tokens(json.dumps(digest, indent=1, default=str),
-                                   DAY_DIGEST_TOKENS))
+                     + json.dumps(digest, indent=1, default=str))
 
     units = bundle.get("units") or []
     supplement = bundle.get("supplement") or []
@@ -826,8 +852,11 @@ def _render_day_bundle(bundle: dict) -> tuple[str, int]:
                     or unit.get("unit_id") or "unit")
         unit_text.append(f"[{label}] {body}")
     if unit_text:
+        # Whole. These are the day's OWN units — the material the answer is
+        # supposed to be based on — so cutting the tail removes evidence while
+        # leaving the answer looking equally well-sourced.
         parts.append("#### Ingested source units for this day\n"
-                     + clip_tokens("\n\n".join(unit_text), DAY_UNITS_TOKENS))
+                     + "\n\n".join(unit_text))
 
     if len(parts) == 1:
         return "", 0
@@ -928,7 +957,8 @@ def is_foreign_block(name: str, block: str) -> bool:
 
 
 def assemble_documents(units: list, *, token_budget: int = SEARCH_TOKENS,
-                       block: str = "") -> tuple[str, tuple[str, ...]]:
+                       block: str = "",
+                       omitted: list[str] | None = None) -> tuple[str, tuple[str, ...]]:
     """Rebuild retrieved units into whole documents, in document order.
 
     DIS returns units ranked by relevance across the whole corpus, which is the
@@ -949,9 +979,17 @@ def assemble_documents(units: list, *, token_budget: int = SEARCH_TOKENS,
     Returns (text, source_names). Documents are emitted in first-appearance
     order, which is DIS's relevance order, so the most relevant document is the
     one that survives if the budget runs out.
+
+    ``omitted`` (optional) is appended to in place with the name of any document the
+    budget excluded. Nothing is ever trimmed to fit — a document is included whole or
+    left out whole — so this list is the complete record of what the model did not
+    see, and the caller turns it into something the user reads. An omission the user
+    is told about is a boundary they can act on; a silent one is a wrong answer.
     """
     groups: dict[str, list[dict]] = {}
     order: list[str] = []
+    if omitted is None:
+        omitted = []
     for unit in units or []:
         if not isinstance(unit, dict):
             continue
@@ -988,11 +1026,15 @@ def assemble_documents(units: list, *, token_budget: int = SEARCH_TOKENS,
         numbers = [_unit_number(u) for u in members]
         body = "\n\n".join(str(u.get("text") or "").strip() for u in members)
 
-        # A document that cannot fit whole is passed as much of itself as fits,
-        # from the beginning, rather than dropped — a truncated syllabus still
-        # answers questions its first pages cover.
-        if count_tokens(body) > MAX_DOCUMENT_TOKENS:
-            body = clip_tokens_strict(body, MAX_DOCUMENT_TOKENS)
+        # Documents are passed WHOLE. This used to clip a large one to
+        # MAX_DOCUMENT_TOKENS "from the beginning, rather than dropped — a truncated
+        # syllabus still answers questions its first pages cover". That reasoning is
+        # wrong in the direction that matters: a clipped document is indistinguishable
+        # from a complete one to the model, so a fact living past the cut is not
+        # merely unavailable, it is actively contradicted — the model reports "not
+        # covered" about material that is sitting in the library. A document that is
+        # genuinely too large is omitted whole and NAMED below, which loses the same
+        # content while telling the truth about having lost it.
 
         # Label what is present, and never claim completeness.
         #
@@ -1014,7 +1056,12 @@ def assemble_documents(units: list, *, token_budget: int = SEARCH_TOKENS,
         rendered = f"{header}\n{body}".strip()
 
         cost = count_tokens(rendered)
+        # `chunks and` keeps the first document unconditionally: one oversized
+        # document is still the best answer available, and returning nothing would
+        # report an empty library. Past that, a document that does not fit is
+        # skipped WHOLE and recorded — never trimmed to fit.
         if chunks and spent + cost > token_budget:
+            omitted.append(name)
             continue
         chunks.append(rendered)
         used.append(name)
@@ -1113,13 +1160,21 @@ def fetch_search_context(query: str, *, current_user, client_id: str,
                            document_types=effective_types)
 
     units = (result or {}).get("source_units") or (result or {}).get("sources") or []
-    method = str(((result or {}).get("retrieval_summary") or {}).get("retrieval_method") or "")
+    summary = (result or {}).get("retrieval_summary") or {}
+    method = str(summary.get("retrieval_method") or "")
     flags: tuple[str, ...] = filter_flags
 
+    # What DIS itself removed before answering. Its packer skips whole units that
+    # do not fit the token budget, and until it reported them a caller could not
+    # tell a document it received in full from one whose tail was packed away —
+    # which is precisely the claim `assemble_documents` goes on to make.
+    incomplete = tuple(str(n) for n in (summary.get("budget_dropped_sources") or []) if n)
+
     # Preferred path: rebuild whole documents from the units.
+    left_out: list[str] = []
     assembled, names = assemble_documents(
         [u for u in units if isinstance(u, dict)], token_budget=SEARCH_TOKENS,
-        block=block,
+        block=block, omitted=left_out,
     )
     if assembled:
         text, sources = assembled, names
@@ -1132,7 +1187,11 @@ def fetch_search_context(query: str, *, current_user, client_id: str,
             return DeepContext(level="none", levels_tried=("search",),
                                flags=flags, retrieval_method=method,
                                document_types=effective_types)
-        text = clip_tokens_strict(raw, SEARCH_TOKENS)
+        # Passed whole. DIS already bounded this blob by the token_budget we asked
+        # for, so clipping it again here could only cut a second time — and this
+        # path has no per-unit structure, so a cut lands mid-document with nothing
+        # in the text to say so.
+        text = raw
         sources = source_names(text)
         # Deliberately NOT suffixed "unavailable": that suffix is the convention
         # `DeepContext.unavailable` reads to mean "the library could not be
@@ -1147,6 +1206,10 @@ def fetch_search_context(query: str, *, current_user, client_id: str,
         # document dropped by the budget did not inform the answer.
         sources=sources,
         retrieval_method=method, document_types=effective_types,
+        # Both kinds of loss, kept distinct because the user's next move differs:
+        # `omitted` documents were never opened (ask for them by name), while
+        # `incomplete` ones were opened partially (narrow the request).
+        omitted_documents=tuple(left_out), incomplete_documents=incomplete,
     )
 
 
@@ -1199,7 +1262,9 @@ def deepen(db, cdd, *, scope, instruction: str, current_user,
                                levels_tried=tuple(tried), flags=tuple(flags),
                                sources=found.sources,
                                retrieval_method=found.retrieval_method,
-                               document_types=found.document_types)
+                               document_types=found.document_types,
+                               omitted_documents=found.omitted_documents,
+                               incomplete_documents=found.incomplete_documents)
 
     # Level 4. See `build_search_query` for why the instruction is not simply
     # concatenated onto the block name: that is what it used to do, and it
@@ -1223,4 +1288,6 @@ def deepen(db, cdd, *, scope, instruction: str, current_user,
                        levels_tried=tuple(tried), flags=tuple(flags),
                        sources=found.sources,
                        retrieval_method=found.retrieval_method,
-                       document_types=found.document_types)
+                       document_types=found.document_types,
+                       omitted_documents=found.omitted_documents,
+                       incomplete_documents=found.incomplete_documents)

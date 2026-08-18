@@ -228,6 +228,18 @@ class StorageConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     max_results: int = 20
     result_size_cap: int = 50
+    # Ceiling on the per-request `retrieval.token_budget` a caller may ask for.
+    #
+    # This was a magic `20000` inlined in the packing call, which silently overrode
+    # any larger request. The caller is the side that knows which model the context
+    # is destined for, so a fixed ceiling here can only be wrong: it made a CAS
+    # request for 100k arrive as 20k, and the units past that point were dropped by
+    # DIS's own ranking BEFORE the caller's block filtering and whole-document
+    # regrouping ran — producing a set that looks whole and is not.
+    #
+    # Kept as a configurable backstop rather than removed so one runaway request
+    # cannot pack an unbounded response, but sized so it is not reached in practice.
+    token_budget_cap: int = 200_000
     # Restricted content is role-filtered using metadata/access_level.
     restricted_content_filter: bool = True
     # Config-driven UI and retrieval defaults used by Content AI Studio.

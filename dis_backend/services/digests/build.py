@@ -324,6 +324,13 @@ def context_bundle(tenant_cfg: TenantConfig, block: str, client_id: str = "") ->
     block_overview = None
     source_file_inventory = None
     acs_registry = None
+    # Degradations of the block-level worksheets, merged into the enumerate summary's
+    # flags below. Without this the fallback path produced a complete-LOOKING bundle:
+    # an ACS registry with no task descriptions and syllabus cells reading "not
+    # ingested", with the only trace a single server-side log line the reviewer of the
+    # deliverable never sees. Same failure shape as the all-defaults digests that
+    # preflight_extractor exists to prevent.
+    worksheet_flags: List[str] = []
     try:
         import psycopg
         from psycopg.rows import dict_row
@@ -331,19 +338,34 @@ def context_bundle(tenant_cfg: TenantConfig, block: str, client_id: str = "") ->
         with psycopg.connect(_resolve_dsn(tenant_cfg.structure_store), row_factory=dict_row) as conn:
             conn.read_only = True
             with conn.cursor() as cur:
-                block_overview = worksheets.build_block_overview(en, cur, schema)
+                block_overview = worksheets.build_block_overview(en, cur, schema,
+                                                                 flags=worksheet_flags)
                 source_file_inventory = worksheets.build_source_file_inventory(en, tenant_cfg, cur, schema)
                 acs_registry = worksheets.build_acs_registry(en, cur, schema)
     except Exception as exc:  # best-effort; the overview must never sink the bundle
-        log.warning("block_overview build failed for block=%s: %s", block, exc)
-        block_overview = worksheets.build_block_overview(en, cur=None, schema=schema)
+        log.warning("block_overview build failed for block=%s: %s", block, exc, exc_info=True)
+        worksheet_flags.append(
+            f"WORKSHEETS_DEGRADED — the structure store could not be read for this build "
+            f"({type(exc).__name__}); Block Overview, Source File Inventory and the ACS "
+            f"Registry are built from the enumerate result alone and are incomplete"
+        )
+        block_overview = worksheets.build_block_overview(en, cur=None, schema=schema,
+                                                         flags=worksheet_flags)
         source_file_inventory = worksheets.build_source_file_inventory(en, tenant_cfg)
         acs_registry = worksheets.build_acs_registry(en)
+
+    summary = en.to_summary(include_units=False)
+    if worksheet_flags:
+        # Appended to the SAME list REDUCE already reads (CoverageReport.enumerate_flags)
+        # rather than a new bundle key, so it reaches the coverage report and the
+        # reviewer questions through paths that already exist — and so a CAS that
+        # predates this change is unaffected rather than dropping an unknown field.
+        summary["flags"] = list(summary.get("flags") or []) + worksheet_flags
 
     return {
         "block": block,
         "client_id": en.client_id,
-        "enumerate": en.to_summary(include_units=False),
+        "enumerate": summary,
         "digests": digests,
         "block_overview": block_overview,
         "source_file_inventory": source_file_inventory,

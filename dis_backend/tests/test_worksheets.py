@@ -389,14 +389,75 @@ def test_build_block_overview_totals_and_subjects_no_syllabus():
         {"day_number": 2, "assignments_json": '["Project 2-1"]', "assessments_json": '["Quiz 1"]', "source_text": ""},
     ]
     en = _en(days=days, units_by_day={}, declared_acs=["AM.I.B.K1", "AM.I.E.K1"])
-    overview = worksheets.build_block_overview(en, cur=None)  # no DB cursor -> honest gap, not a crash
+    flags: list = []
+    # No DB cursor -> honest gap, not a crash. "No cursor" means the lookup never
+    # RAN, so the honest gap is "not read", not "not ingested" — the latter is a
+    # claim about the source library that this call has no basis for, and it sent
+    # readers off to re-upload a syllabus that was already there.
+    overview = worksheets.build_block_overview(en, cur=None, flags=flags)
     assert overview["total_projects"] == 1
     assert overview["total_quizzes"] == 1
     assert overview["acs_subjects_covered"] == ["B", "E"]
-    assert overview["course_description"] == "NOT AVAILABLE — syllabus not ingested"
-    assert overview["supplemental_references"] == "NOT AVAILABLE — syllabus not ingested"
+    assert overview["course_description"] == f"NOT AVAILABLE — {worksheets.SYLLABUS_NOT_READ}"
+    assert overview["supplemental_references"] == f"NOT AVAILABLE — {worksheets.SYLLABUS_NOT_READ}"
+    assert "not ingested" not in overview["course_description"]
     assert overview["primary_handbooks"] == ["NOT AVAILABLE — no handbook citations found"]
     assert overview["web_resources"] == ["NOT AVAILABLE — none found in ingested text"]
+    # And it is reported, not just rendered: a cell is not a channel anyone watches.
+    assert any(f.startswith("SYLLABUS_NOT_READ") for f in flags)
+
+
+def test_build_block_overview_empty_syllabus_still_blames_ingestion():
+    """The one case where "not ingested" IS the honest answer: the query ran and
+    returned nothing."""
+    class _Cur:
+        def execute(self, *_a, **_k): pass
+        def fetchone(self): return None
+
+    en = _en(days=[], units_by_day={}, declared_acs=[], block="Block 2")
+    flags: list = []
+    overview = worksheets.build_block_overview(en, cur=_Cur(), flags=flags)
+    assert overview["course_description"] == f"NOT AVAILABLE — {worksheets.SYLLABUS_NOT_INGESTED}"
+    assert flags == [], "a successful lookup that found nothing is not a degradation"
+
+
+def test_build_block_overview_unnumbered_block_says_unsearchable_not_uningested():
+    """The filename match is anchored on a block NUMBER. A label without one is
+    never queried, so claiming the syllabus is not ingested is unfounded — and it
+    is the claim a reader would act on by re-uploading a document already there."""
+    class _Cur:
+        def __init__(self): self.executed = False
+        def execute(self, *_a, **_k): self.executed = True
+        def fetchone(self): return None
+
+    cur = _Cur()
+    en = _en(days=[], units_by_day={}, declared_acs=[], block="Foundations")
+    flags: list = []
+    overview = worksheets.build_block_overview(en, cur=cur, flags=flags)
+    assert cur.executed is False, "nothing should be queried for an unnumbered block"
+    assert overview["course_description"] == f"NOT AVAILABLE — {worksheets.SYLLABUS_NOT_SEARCHABLE}"
+    assert any(f.startswith("SYLLABUS_NOT_SEARCHABLE") for f in flags)
+
+
+def test_build_block_overview_query_failure_is_logged_and_flagged_not_blamed_on_ingestion(caplog):
+    """A raising lookup used to leave the pre-set "not ingested" placeholders and log
+    nothing at all — a broken query rendered as a confident claim about the library."""
+    class _Cur:
+        def execute(self, *_a, **_k): raise RuntimeError("relation does not exist")
+        def fetchone(self): return None
+
+    en = _en(days=[], units_by_day={}, declared_acs=[], block="Block 2")
+    flags: list = []
+    with caplog.at_level("WARNING"):
+        overview = worksheets.build_block_overview(en, cur=_Cur(), flags=flags)
+
+    assert overview["course_description"] == f"NOT AVAILABLE — {worksheets.SYLLABUS_LOOKUP_FAILED}"
+    # Every field, including the derived one that is not a marker key.
+    assert overview["supplemental_references"].endswith(worksheets.SYLLABUS_LOOKUP_FAILED)
+    assert any(f.startswith("SYLLABUS_LOOKUP_FAILED") for f in flags)
+    assert any("syllabus lookup failed" in r.getMessage().lower() for r in caplog.records)
+    # Still best-effort: the rest of the overview is intact.
+    assert overview["block"] == en.block
 
 
 def test_syllabus_text_orders_by_created_at_desc_to_break_duplicate_ties():
