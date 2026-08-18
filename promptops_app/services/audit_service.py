@@ -60,6 +60,7 @@ AUDIT_EVENTS: dict[str, dict] = {
     "user.reactivated":        {"level": "info",    "entity": "user",       "icon": "✅", "label": "User account reactivated"},
     "project.user_assigned":   {"level": "info",    "entity": "project",    "icon": "➕", "label": "User added to project"},
     "project.user_removed":    {"level": "info",    "entity": "project",    "icon": "➖", "label": "User removed from project"},
+    "project.deleted":         {"level": "critical", "entity": "project",   "icon": "🗑️", "label": "Tenant permanently deleted"},
 
     # ── Style ────────────────────────────────────────────────────────────────
     "style.uploaded":          {"level": "info",    "entity": "style",      "icon": "🎨", "label": "Style uploaded"},

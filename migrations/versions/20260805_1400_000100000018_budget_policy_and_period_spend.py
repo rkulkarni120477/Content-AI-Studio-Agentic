@@ -13,7 +13,7 @@ table in the system.
 Renumbered from 000100000016 (was 000100000016..down 000100000015) — that
 number collided with dev's own 000100000016 (generations_job_id), created
 independently on a parallel branch. Re-chained onto 000100000017
-(llm_usage_langfuse_trace_id, itself renumbered for the same reason).
+(llm_usage_trace_id, itself renumbered for the same reason).
 
 Revision ID: 000100000018
 Revises: 000100000017
