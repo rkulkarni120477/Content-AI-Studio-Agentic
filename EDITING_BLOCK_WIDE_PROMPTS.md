@@ -3,10 +3,14 @@
 Who this is for: anyone who wants to change **how** the block-wide CDD / Block
 Blueprint pipeline writes, without a code change.
 
-The short version: the pipeline's *structure* is code-owned and not editable by
-prompt. Its *judgment* — how a cell is decided, what counts as sufficient evidence,
-tone, emphasis, controlled vocabulary — lives in four editable templates. Editing
-them is live, validated, and CI-guarded. Nothing here needs a deploy of new code.
+The short version: the pipeline's *judgment* — how a cell is decided, what counts as
+sufficient evidence, tone, emphasis, controlled vocabulary — lives in five editable
+templates. Editing them is live, validated, and CI-guarded. Nothing here needs a
+deploy of new code.
+
+The pipeline's *structure* is code-owned, with one deliberate exception: a prompt may
+**add** day-table columns (see "Declaring an additional column" below). It can never
+rename, reorder or blank one the renderer computes.
 
 ---
 
@@ -18,7 +22,8 @@ them is live, validated, and CI-guarded. Nothing here needs a deploy of new code
 | Which per-day fields are extracted | `MAP_SCHEMA` in `dis_backend/services/digests/mapper.py` | **No** — code |
 | Worksheets 1–3 contents | `dis_backend/services/digests/worksheets.py` (pure Python, no LLM) | **No** — code |
 | ACS registry, orphan check, quick-check targets, hangar file lists | same | **No** — code, deliberately |
-| **How each field is judged and worded** | the four templates below | **Yes** |
+| **How each field is judged and worded** | the five templates below | **Yes** |
+| **Extra day-table columns, appended after `Notes`** | declared in the selected prompt | **Yes** — additive only |
 
 That split is not an oversight. `tests/eval/test_guidance_effect.py` pins it: two
 runs differing only in prompt guidance must render Worksheets 2 and 3, the coverage
@@ -27,7 +32,7 @@ never be able to move a traceable fact.
 
 ---
 
-## The four files
+## The five files
 
 All under `promptops_app/prompts/templates/` except the first.
 
@@ -37,6 +42,7 @@ All under `promptops_app/prompts/templates/` except the first.
 | `cdd_reduce.md` | CDD day-narrative wording | free — REDUCE runs fresh every generation |
 | `blueprint_reduce_worksheet.md` | Blueprint day-narrative wording | free |
 | `patterns_notes_reduce.md` | Worksheet 5 (Content Arc, Production Readiness, …) | free |
+| `extension_columns_reduce.md` | how prompt-declared extra day columns are filled | free — and never called at all unless a prompt declares one |
 
 Edits take effect on the **next generation**: `prompt_loader` reads the file on
 every resolve (no cache), and `docker-compose.yml` bind-mounts the repo into the app
@@ -79,14 +85,40 @@ tone/emphasis edits there are the safest kind.
 
 ---
 
+## Declaring an additional column
+
+A prompt can add day-table columns by naming them explicitly:
+
+```
+ADDITIONAL DAY COLUMNS
+- Instructional Model Stage: which stage of the Block's model this day belongs to
+- Pilot Candidate: whether the SME recommends this day for pilot testing
+```
+
+They are appended after `Notes` and filled by a REDUCE-tier call from the day facts
+the pipeline already established — so they cost nothing but one batched call per
+generation, and **no digest is invalidated**. Limits, each reported rather than
+silently applied: at most 8 columns, and a declaration is refused if it collides with
+a column already emitted, repeats an earlier one, or carries no definition after the
+colon.
+
+Two things this deliberately cannot do. It cannot rename, reorder or blank an
+existing column — declarations are additive by construction, which is what keeps the
+`test_guidance_effect.py` property true. And because the fill stage reads the
+established day facts rather than the raw source text, a column that needs
+source-level extraction returns `REVIEW NEEDED — not derivable from the day facts`
+rather than a guess. Sourcing these cells from MAP instead *would* ground them, at the
+cost of a `PROMPT_VERSION_BASE` bump that re-extracts every day of every block for
+every tenant.
+
 ## Two things that are *not* prompt-editable, and what to do instead
 
-**A different column set.** Add or rename a Worksheet 4 column and the prompt will
-be ignored: the renderer emits its own header row. You will see this reported —
-generation records a `PROMPT RECONCILIATION` section and the prompt picker shows the
-divergence when you select the template (see `promptops_app/services/prompt_capability.py`).
-Changing the column set means changing `MAP_SCHEMA`, `_DAY_TABLE_HEADER` and the
-renderer — a code change, and a `PROMPT_VERSION_BASE` bump.
+**Renaming or dropping a column.** The renderer emits its own header row for the
+fixed set. A prompt naming one of them differently is reported — generation records a
+`PROMPT RECONCILIATION` section and the prompt picker shows the divergence on
+selection (see `promptops_app/services/prompt_capability.py`) — but not honoured.
+Changing that set means changing `MAP_SCHEMA`, `_DAY_TABLE_HEADER` and the renderer:
+a code change, and a `PROMPT_VERSION_BASE` bump.
 
 **AKTR high-miss data.** `Targets for Quick Check` reads `NO AKTR DATA` because the
 miss-rate table is not ingested anywhere in the system. No prompt edit can supply
