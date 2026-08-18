@@ -205,6 +205,13 @@ _ROUTER_SUPPLIED_VARIABLES = frozenset({
 _ASSESSED_TEMPLATES = ("cdd_generation", "blueprint_generation")
 
 
+#: The variable names through which retrieved source material and the active style
+#: reach a prompt on the single-call path. A prompt naming neither runs source-blind
+#: there — reported, never refused, because 7 of this project's 17 live CDD/Blueprint
+#: prompts have no slot (see ``legacy_blockers``).
+_SOURCE_CONTEXT_SLOTS = ("extra_instructions_block", "extra_instructions")
+
+
 def known_variables() -> frozenset:
     """``{{name}}`` placeholders this platform can actually supply.
 
@@ -387,7 +394,7 @@ def _pick_day_table(tables: List[Dict[str, Any]], emitted_day: List[str]) -> Tup
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class CapabilityReport:
-    """What the selected prompt asks for, versus what this pipeline emits."""
+    """What the selected prompt asks for, versus what this platform emits."""
 
     assessed: bool = False
     prompt_chars: int = 0
@@ -397,13 +404,87 @@ class CapabilityReport:
     other_requested_tables: int = 0
     unknown_variables: List[str] = field(default_factory=list)
     artifact_demands: List[str] = field(default_factory=list)
+    #: The subset of ``artifact_demands`` conclusive enough to refuse on — what
+    #: ``reject_if_unsatisfiable`` would raise for if this prompt ran on the
+    #: single-call path. See ``_ARTIFACT_CHECKS`` on why the subset is narrower.
+    blocking_demands: List[str] = field(default_factory=list)
+    #: Whether the prompt has a slot ({{extra_instructions_block}} /
+    #: {{extra_instructions}}) for retrieved source material and the active style.
+    #: Defaults True so an unassessed report never implies a problem. Deliberately
+    #: NOT part of ``has_findings``: on the digest path source never flows through
+    #: the prompt, so it would be misleading noise in a generated document. It is a
+    #: selection-time notice only — see ``selection_notices``.
+    has_source_context_slot: bool = True
+
+    # -- findings ----------------------------------------------------------------
+    def _findings(self) -> List[Tuple[str, str]]:
+        """``(severity, plain sentence)`` for everything worth a reviewer's attention.
+
+        One source of truth with two renderers — ``review_lines`` (markdown, for the
+        generated document) and ``selection_notices`` (structured, for the UI). Two
+        copies of this wording would drift, and the two media would then disagree
+        about the same prompt.
+        """
+        if not self.assessed:
+            return []
+        out: List[Tuple[str, str]] = []
+        if self.artifact_demands:
+            out.append((
+                "error",
+                "The selected prompt asks for an output this platform cannot produce: "
+                + "; ".join(self.artifact_demands) + ".",
+            ))
+        if self.unmatched_columns:
+            out.append((
+                "warning",
+                f"Requests {len(self.unmatched_columns)} day-table column(s) not emitted "
+                f"under that name: {', '.join(self.unmatched_columns)}. A column may exist "
+                "under a different label — this is a naming and scope difference to "
+                "confirm, not an error.",
+            ))
+        if self.matched_columns:
+            shown = self.matched_columns[:12]
+            out.append((
+                "info",
+                f"Matched {len(self.matched_columns)} of {len(self.requested_day_columns)} "
+                f"requested column(s): " + ", ".join(shown)
+                + (" …" if len(self.matched_columns) > len(shown) else "") + ".",
+            ))
+        if self.unknown_variables:
+            out.append((
+                "warning",
+                f"{len(self.unknown_variables)} template variable(s) this platform never "
+                f"supplies: {', '.join(self.unknown_variables[:12])}"
+                + (" …" if len(self.unknown_variables) > 12 else "")
+                + ". These stay in the prompt text verbatim and reach no model.",
+            ))
+        if self.other_requested_tables:
+            out.append((
+                "info",
+                f"{self.other_requested_tables} further table(s) in the prompt were not "
+                "reconciled: only the day-by-day table can be identified from its own "
+                "content, and Worksheets 1 and 5 have no static column list to compare "
+                "against.",
+            ))
+        return out
 
     @property
     def has_findings(self) -> bool:
         """True when there is something a reviewer needs to see. Matched-only is not
-        a finding: it means the prompt and the pipeline agree."""
+        a finding: it means the prompt and the platform agree."""
         return bool(self.unmatched_columns or self.unknown_variables or self.artifact_demands)
 
+    @property
+    def would_refuse_single_call(self) -> bool:
+        """Whether the single-call path would refuse this prompt outright.
+
+        The one fact worth knowing BEFORE generating: the digest pipeline falls back
+        to that path on a DIS or reduce failure, so this predicts a refusal the
+        requester would otherwise meet only after the pipeline had already run.
+        """
+        return bool(self.blocking_demands)
+
+    # -- renderers ---------------------------------------------------------------
     def _capped(self, items: List[str]) -> Dict[str, Any]:
         return {"items": items[:_PROVENANCE_LIST_CAP], "total": len(items)}
 
@@ -431,51 +512,42 @@ class CapabilityReport:
     def review_lines(self) -> List[str]:
         """Markdown bullets for the generated document. Empty when there is nothing
         to say, so the caller appends no section at all."""
-        if not self.assessed or not self.has_findings:
+        if not self.has_findings:
             return []
-        out: List[str] = [
+        out = [
             "_How the prompt selected for this generation compares with what the "
             "block-wide pipeline emits. The pipeline's own schema governs the "
             "worksheets above; these lines record the difference so it is reviewed "
             "rather than assumed._",
             "",
         ]
-        if self.artifact_demands:
-            out.append(
-                "- **⚠ The selected prompt asks for an output this pipeline cannot produce:** "
-                + "; ".join(self.artifact_demands)
-                + "."
-            )
-        if self.unmatched_columns:
-            out.append(
-                f"- **Requests {len(self.unmatched_columns)} day-table column(s) not emitted "
-                f"under that name:** {', '.join(self.unmatched_columns)}. "
-                "A column may exist above under a different label — this is a naming and "
-                "scope difference to confirm, not an error."
-            )
-        if self.matched_columns:
-            shown = self.matched_columns[:12]
-            out.append(
-                f"- **Matched {len(self.matched_columns)} of "
-                f"{len(self.requested_day_columns)} requested column(s):** "
-                + ", ".join(shown)
-                + (" …" if len(self.matched_columns) > len(shown) else "")
-                + "."
-            )
-        if self.unknown_variables:
-            out.append(
-                f"- **⚠ {len(self.unknown_variables)} template variable(s) this platform "
-                f"never supplies:** {', '.join(self.unknown_variables[:12])}"
-                + (" …" if len(self.unknown_variables) > 12 else "")
-                + ". These stay in the prompt text verbatim and reach no model."
-            )
-        if self.other_requested_tables:
-            out.append(
-                f"- {self.other_requested_tables} further table(s) in the prompt were not "
-                "reconciled: only the day-by-day table can be identified from its own "
-                "content, and Worksheets 1 and 5 have no static column list to compare against."
-            )
+        for severity, text in self._findings():
+            prefix = "⚠ " if severity in ("error", "warning") else ""
+            out.append(f"- {prefix}{text}")
         return out
+
+    def selection_notices(self) -> List[Dict[str, str]]:
+        """``[{severity, message}]`` for the prompt picker, before anything is spent.
+
+        A superset of the document's findings: it adds the missing-source-slot notice,
+        which is meaningless in a block-wide document (source never flows through the
+        prompt there) but is exactly what a requester needs to know before choosing a
+        prompt for a single-call generation.
+        """
+        if not self.assessed:
+            return []
+        notices = [{"severity": s, "message": m} for s, m in self._findings()]
+        if not self.has_source_context_slot:
+            notices.append({
+                "severity": "warning",
+                "message": (
+                    "No {{extra_instructions_block}} slot: on the single-call path the "
+                    "retrieved source material and the active style would not reach the "
+                    "model, and the result would flag most cells as missing source. The "
+                    "block-wide pipeline is unaffected — it supplies sources directly."
+                ),
+            })
+        return notices
 
 
 _EMPTY = CapabilityReport()
@@ -504,8 +576,10 @@ def assess(prompt_text: str) -> CapabilityReport:
             (matched if _canonical(name) in emitted_canon else unmatched).append(name)
 
         allowed = known_variables()
-        unknown = [v for v in extract_variables(text) if v not in allowed]
-        demands = [msg for _k, pattern, msg, _b in _ARTIFACT_CHECKS if pattern.search(text)]
+        declared_vars = extract_variables(text)
+        unknown = [v for v in declared_vars if v not in allowed]
+        hits = [(msg, blocking) for _k, pattern, msg, blocking in _ARTIFACT_CHECKS
+                if pattern.search(text)]
 
         return CapabilityReport(
             assessed=True,
@@ -515,7 +589,11 @@ def assess(prompt_text: str) -> CapabilityReport:
             unmatched_columns=unmatched,
             other_requested_tables=others,
             unknown_variables=unknown,
-            artifact_demands=demands,
+            artifact_demands=[msg for msg, _b in hits],
+            blocking_demands=[msg for msg, blocking in hits if blocking],
+            # Either name works — the CDD router supplies the same context block under
+            # both (see its variables dict) — so a prompt using either has a slot.
+            has_source_context_slot=any(v in declared_vars for v in _SOURCE_CONTEXT_SLOTS),
         )
     except Exception as exc:  # noqa: BLE001 — a reporting layer must never break a build
         log.warning("prompt_capability_assess_failed error=%s", exc)

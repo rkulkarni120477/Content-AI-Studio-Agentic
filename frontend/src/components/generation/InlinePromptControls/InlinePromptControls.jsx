@@ -6,6 +6,7 @@ import { selectIsAdmin, selectIsReviewer } from '@features/auth/authSlice';
 import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
 import { commitPromptThunk } from '@features/prompts/promptsThunks';
 import { promptsService } from '@features/prompts/services/promptsService';
+import PromptCapabilityNotices from '@components/generation/PromptCapabilityNotices/PromptCapabilityNotices';
 import { adminService } from '@features/admin/services/adminService';
 import { selectPrompts, selectPromptsLoading } from '@features/prompts/promptsSlice';
 import {
@@ -93,6 +94,11 @@ export default function InlinePromptControls({
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [loadingDetail, setLoadingDetail] = useState(false);
+  // Reconciliation of the selected template against what the pipeline emits, served
+  // with the prompt detail (no extra round trip). Null means "not applicable" — the
+  // API omits it for components that never produce a day table — so it must never be
+  // rendered as "no problems found".
+  const [capability, setCapability] = useState(null);
 
   const compLabel = COMPONENT_LABELS[component] || component;
   const defaults = DEFAULTS[component] || { system: '', user: '' };
@@ -149,6 +155,7 @@ export default function InlinePromptControls({
     if (!promptId) {
       setSystemPrompt(defaults.system);
       setUserPrompt(defaults.user);
+      setCapability(null);
       return;
     }
     setLoadingDetail(true);
@@ -156,9 +163,13 @@ export default function InlinePromptControls({
       const detail = await promptsService.getPromptDetail(promptId);
       setSystemPrompt(detail.system_prompt || defaults.system);
       setUserPrompt(detail.user_prompt_template || defaults.user);
+      setCapability(detail.capability || null);
     } catch {
       setSystemPrompt(defaults.system);
       setUserPrompt(defaults.user);
+      // Cleared, not left stale: notices from the PREVIOUS template would be read as
+      // describing the one now selected.
+      setCapability(null);
     } finally {
       setLoadingDetail(false);
     }
@@ -372,6 +383,8 @@ export default function InlinePromptControls({
               👁 View
             </Button>
           </div>
+
+          <PromptCapabilityNotices capability={capability} />
 
           {hasOverride && (
             <div className={styles.overrideBanner}>

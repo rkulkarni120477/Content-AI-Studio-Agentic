@@ -181,6 +181,46 @@ class PromptRead(_NameFromTitleMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PromptCapabilityNotice(BaseModel):
+    """One thing a requester should know before choosing this prompt."""
+
+    severity: str = Field(description="error | warning | info")
+    message: str = Field(description="Plain sentence, ready to display as-is.")
+
+
+class PromptCapabilityRead(BaseModel):
+    """How this prompt compares with what the platform can actually produce.
+
+    Computed by ``promptops_app.services.prompt_capability`` from the active
+    version's text — deterministic, no model call, so it is safe to attach to a read
+    endpoint. Present only for the ``cdd``/``blueprint`` component types (the two
+    that drive CDD and Blueprint generation); ``null`` elsewhere, which the UI must
+    treat as "not applicable" rather than "no problems".
+    """
+
+    assessed: bool = Field(description="False when the prompt has no text to assess.")
+    has_findings: bool = Field(
+        description="Whether anything diverges from what the pipeline emits.")
+    would_refuse_single_call: bool = Field(
+        description="Whether the single-call path would refuse this prompt outright. The "
+                    "block-wide pipeline falls back to that path on a DIS or reduce "
+                    "failure, so a true here predicts a refusal after the pipeline ran.")
+    has_source_context_slot: bool = Field(
+        description="Whether the prompt has an {{extra_instructions_block}} slot. Without "
+                    "one, single-call generation runs source-blind.")
+    requested_day_columns: int = 0
+    matched_columns: int = 0
+    #: Names are capped for a response served on every prompt selection; the paired
+    #: ``*_total`` says how many there really were, so a capped list is visibly capped
+    #: rather than quietly short.
+    unmatched_columns: list[str] = Field(default_factory=list)
+    unmatched_columns_total: int = 0
+    unknown_variables: list[str] = Field(default_factory=list)
+    unknown_variables_total: int = 0
+    blocking_demands: list[str] = Field(default_factory=list)
+    notices: list[PromptCapabilityNotice] = Field(default_factory=list)
+
+
 class PromptDetailRead(PromptRead):
     """Prompt metadata plus the active version's prompt text."""
 
@@ -189,6 +229,9 @@ class PromptDetailRead(PromptRead):
     version_created_by: Optional[str] = None
     version_created_at: Optional[datetime] = None
     version_change_reason: Optional[str] = None
+    #: Additive and optional: every existing consumer ignores it, and a computation
+    #: failure yields null rather than failing the read.
+    capability: Optional[PromptCapabilityRead] = None
 
 
 class PromptListItem(_NameFromTitleMixin, BaseModel):

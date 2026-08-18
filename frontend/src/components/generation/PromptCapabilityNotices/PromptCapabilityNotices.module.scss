@@ -1,0 +1,33 @@
+.panel {
+  border-radius: $radius-lg;
+  padding: $space-3 $space-4;
+  margin-bottom: $space-4;
+  font-size: $font-size-sm;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+
+  &__title {
+    font-weight: 600;
+    margin: 0 0 $space-2;
+  }
+
+  &__list {
+    margin: 0;
+    padding-left: $space-4;
+    display: grid;
+    gap: $space-1;
+  }
+
+  &--error {
+    background: #fef2f2;
+    border-color: #fca5a5;
+    color: #b91c1c;
+  }
+
+  &--warning {
+    background: #fffbeb;
+    border-color: #fcd34d;
+    color: #92400e;
+  }
+}

@@ -71,6 +71,53 @@ def _get_prompt_or_404(db: Session, prompt_id: int):
     return prompt
 
 
+#: Component types whose prompts drive CDD/Blueprint generation, and so are the ones
+#: a capability report is meaningful for. Any other component (quiz, style, generate…)
+#: gets ``null``, which the UI reads as "not applicable" — a report scored against the
+#: day-table contract would be noise for a prompt that was never meant to produce one.
+_CAPABILITY_COMPONENTS = frozenset({"cdd", "blueprint"})
+
+#: Cap on the name lists in a capability response. This endpoint is hit on every
+#: prompt selection, and a pathological template could declare hundreds of variables;
+#: the paired ``*_total`` fields keep a capped list honest.
+_CAPABILITY_NAME_CAP = 40
+
+
+def _prompt_capability(prompt, active):
+    """Capability report for a prompt's active version, or None.
+
+    Deterministic and text-only (no model call, no DIS call), which is what makes it
+    safe on a read endpoint the prompt picker hits on every selection. Any failure
+    yields None: a read must not break because a reconciliation could not be computed.
+    """
+    if active is None or (prompt.component_type or "") not in _CAPABILITY_COMPONENTS:
+        return None
+    try:
+        from app.schemas.prompt import PromptCapabilityRead
+        from promptops_app.services.prompt_capability import assess
+
+        report = assess(f"{active.system_prompt or ''}\n\n{active.user_prompt_template or ''}")
+        if not report.assessed:
+            return None
+        return PromptCapabilityRead(
+            assessed=True,
+            has_findings=report.has_findings,
+            would_refuse_single_call=report.would_refuse_single_call,
+            has_source_context_slot=report.has_source_context_slot,
+            requested_day_columns=len(report.requested_day_columns),
+            matched_columns=len(report.matched_columns),
+            unmatched_columns=report.unmatched_columns[:_CAPABILITY_NAME_CAP],
+            unmatched_columns_total=len(report.unmatched_columns),
+            unknown_variables=report.unknown_variables[:_CAPABILITY_NAME_CAP],
+            unknown_variables_total=len(report.unknown_variables),
+            blocking_demands=list(report.blocking_demands),
+            notices=report.selection_notices(),
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory only, never load-bearing
+        _log.warning("prompt_capability_unavailable prompt_id=%s error=%s", prompt.id, exc)
+        return None
+
+
 def _prompt_detail(db: Session, prompt) -> PromptDetailRead:
     """Build prompt metadata plus active version text."""
     from promptops_app.repositories import prompt_repository
@@ -84,6 +131,7 @@ def _prompt_detail(db: Session, prompt) -> PromptDetailRead:
         detail.version_created_by = active.created_by
         detail.version_created_at = active.created_at
         detail.version_change_reason = active.change_reason
+    detail.capability = _prompt_capability(prompt, active)
     return detail
 
 

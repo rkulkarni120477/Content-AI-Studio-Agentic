@@ -442,3 +442,159 @@ def test_the_distiller_version_is_derived_not_hand_maintained():
     assert "_DIGEST_SYSTEM_TEMPLATE.encode" in src, (
         "must hash the template itself — a hand-bumped constant can be forgotten"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Selection-time surface — what the prompt picker is told before anything is spent
+# --------------------------------------------------------------------------- #
+def test_blocking_demands_are_the_refusable_subset():
+    r = assess("You have code execution. Build the `.xlsx` workbook.")
+    assert len(r.artifact_demands) == 2, "both are reported"
+    assert len(r.blocking_demands) == 1, "only the conclusive one is refusable"
+    assert r.would_refuse_single_call is True
+
+
+def test_would_refuse_is_false_when_only_the_weak_signal_hits():
+    r = assess("Assemble the deliverable as a .xlsx workbook.")
+    assert r.artifact_demands and r.blocking_demands == []
+    assert r.would_refuse_single_call is False
+
+
+def test_a_prompt_with_a_source_slot_raises_no_slot_notice():
+    r = assess("Generate the CDD.\n\n{{extra_instructions_block}}")
+    assert r.has_source_context_slot is True
+    assert r.selection_notices() == []
+
+
+def test_either_slot_name_counts_as_a_slot():
+    """The CDD router supplies the same block under both names."""
+    assert assess("Body.\n{{extra_instructions}}").has_source_context_slot is True
+    assert assess("Body.\n{{extra_instructions_block}}").has_source_context_slot is True
+
+
+def test_a_missing_slot_is_a_selection_notice_but_not_a_document_finding():
+    """On the block-wide path source never flows through the prompt, so this would be
+    misleading noise in a generated document — but it is exactly what a requester
+    needs before picking a prompt for a single-call generation."""
+    r = assess("Produce the Blueprint. No slot here.")
+    assert r.has_source_context_slot is False
+    assert r.has_findings is False
+    assert r.review_lines() == [], "must not appear in the document"
+    notices = r.selection_notices()
+    assert len(notices) == 1
+    assert notices[0]["severity"] == "warning"
+    assert "extra_instructions_block" in notices[0]["message"]
+    assert "block-wide pipeline is unaffected" in notices[0]["message"]
+
+
+def test_selection_notices_are_a_superset_of_the_document_findings():
+    r = assess("| Day | Topic | Flags |\nYou have code execution.")
+    doc = r.review_lines()
+    notices = r.selection_notices()
+    assert r.has_findings and doc
+    # Every finding rendered into the document has a matching notice.
+    assert len(notices) >= len([line for line in doc if line.startswith("-")])
+    assert {n["severity"] for n in notices} <= {"error", "warning", "info"}
+
+
+def test_findings_have_one_source_so_the_two_renderers_cannot_drift():
+    r = assess("| Day | Topic | Flags |")
+    bullets = [line for line in r.review_lines() if line.startswith("-")]
+    findings = [n for n in r.selection_notices() if n["severity"] != "warning"
+                or "extra_instructions_block" not in n["message"]]
+    assert len(bullets) == len(findings)
+    for bullet, finding in zip(bullets, findings):
+        assert finding["message"] in bullet
+
+
+def test_an_unassessed_report_offers_no_notices():
+    from promptops_app.services.prompt_capability import CapabilityReport
+
+    assert CapabilityReport().selection_notices() == []
+    assert CapabilityReport().would_refuse_single_call is False
+    assert CapabilityReport().has_source_context_slot is True, (
+        "a default must never imply a problem"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# API layer — the picker reads this off the prompt detail, so no extra round trip
+# --------------------------------------------------------------------------- #
+def _fake_version(system="", user=""):
+    import types
+    return types.SimpleNamespace(system_prompt=system, user_prompt_template=user)
+
+
+def _fake_prompt(component_type, pid=1):
+    import types
+    return types.SimpleNamespace(id=pid, component_type=component_type)
+
+
+def test_capability_is_computed_for_cdd_and_blueprint_components():
+    from app.api.v1.routers.prompts import _prompt_capability
+
+    for component in ("cdd", "blueprint"):
+        cap = _prompt_capability(_fake_prompt(component),
+                                _fake_version("| Day | Topic | Flags |"))
+        assert cap is not None, component
+        assert cap.unmatched_columns == ["Flags"]
+        assert cap.matched_columns == 2 and cap.requested_day_columns == 3
+
+
+def test_capability_is_omitted_for_components_that_never_produce_a_day_table():
+    from app.api.v1.routers.prompts import _prompt_capability
+
+    for component in ("quiz", "style", "generate", "", None):
+        assert _prompt_capability(_fake_prompt(component), _fake_version("| Day |")) is None
+
+
+def test_capability_is_omitted_when_there_is_no_active_version():
+    from app.api.v1.routers.prompts import _prompt_capability
+
+    assert _prompt_capability(_fake_prompt("cdd"), None) is None
+
+
+def test_capability_carries_the_refusal_prediction_and_notices():
+    from app.api.v1.routers.prompts import _prompt_capability
+
+    cap = _prompt_capability(
+        _fake_prompt("cdd"),
+        _fake_version("You have code execution.", "Respond only with a download link."),
+    )
+    assert cap.would_refuse_single_call is True
+    assert cap.blocking_demands
+    assert any(n.severity == "error" for n in cap.notices)
+
+
+def test_capability_never_breaks_the_read(monkeypatch):
+    """A read endpoint must not fail because a reconciliation could not be computed."""
+    import promptops_app.services.prompt_capability as pc
+    from app.api.v1.routers.prompts import _prompt_capability
+
+    def boom(_text):
+        raise RuntimeError("assess exploded")
+
+    monkeypatch.setattr(pc, "assess", boom)
+    assert _prompt_capability(_fake_prompt("cdd"), _fake_version("| Day | Topic |")) is None
+
+
+def test_capability_is_optional_on_the_detail_schema():
+    """Additive by construction: every existing consumer of PromptDetailRead keeps
+    working, and a null means "not applicable", never "no problems"."""
+    from app.schemas.prompt import PromptDetailRead
+
+    field = PromptDetailRead.model_fields["capability"]
+    assert field.default is None
+    assert not field.is_required()
+
+
+def test_capability_name_lists_are_capped_with_an_honest_total():
+    from app.api.v1.routers.prompts import _CAPABILITY_NAME_CAP, _prompt_capability
+
+    wide = "| Day | Topic | " + " | ".join(f"Made Up {i}" for i in range(60)) + " |"
+    variables = " ".join("{{FOREIGN_%d}}" % i for i in range(60))
+    cap = _prompt_capability(_fake_prompt("cdd"), _fake_version(wide, variables))
+    assert cap.unmatched_columns_total == 60
+    assert len(cap.unmatched_columns) == _CAPABILITY_NAME_CAP
+    assert cap.unknown_variables_total == 60
+    assert len(cap.unknown_variables) == _CAPABILITY_NAME_CAP
