@@ -1,7 +1,10 @@
 import { api } from '@services/apiClient';
 import { AUTH } from '@services/endpoints';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Empty default → relative, routed through Vite's /api proxy in dev. The
+// Microsoft redirect below then becomes a same-origin nav that the proxy
+// forwards. Prod sets VITE_API_BASE_URL to the real backend origin.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 export const authService = {
   // Password login: { username, password, organization_code?, platform_admin? }

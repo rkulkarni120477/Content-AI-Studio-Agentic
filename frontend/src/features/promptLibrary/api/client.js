@@ -6,7 +6,7 @@
 // dropped — the host owns authentication.
 import { tokenStorage } from '@utils/storage';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PL_PREFIX = '/api/v1/prompt-library';
 
 export function apiUrl(path) {

@@ -9,7 +9,7 @@
 // { error: { code, message, detail } }.
 import { tokenStorage } from '@utils/storage';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 async function pipelineFetch(path, init = {}) {
   const headers = new Headers(init.headers || {});
