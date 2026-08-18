@@ -604,7 +604,7 @@ def test_capability_name_lists_are_capped_with_an_honest_total():
 # Prompt-declared additional day columns
 # --------------------------------------------------------------------------- #
 from promptops_app.services.prompt_capability import (  # noqa: E402
-    parse_extension_columns, _MAX_EXTENSION_COLUMNS,
+    parse_extension_columns, known_variables, _MAX_EXTENSION_COLUMNS,
 )
 
 _DECL = """ADDITIONAL DAY COLUMNS
@@ -726,7 +726,8 @@ def test_the_shipped_aim_blueprint_prompt_reconciles_clean():
     fence = chr(96) * 3
     parts = doc.read_text(encoding="utf-8").split(fence + "text")
     assert len(parts) >= 3, "expected a fenced System Prompt and User Prompt block"
-    report = assess(parts[1].split(fence)[0] + parts[2].split(fence)[0])
+    text = parts[1].split(fence)[0] + parts[2].split(fence)[0]
+    report = assess(text, component="cdd")
     assert report.unmatched_columns == [], (
         "the prompt names day-table columns the renderer no longer emits: "
         f"{report.unmatched_columns}")
@@ -735,6 +736,72 @@ def test_the_shipped_aim_blueprint_prompt_reconciles_clean():
     assert report.blocking_demands == []
     assert not report.has_findings
     assert [c["label"] for c in report.extension_columns] == ["Instructional Model Stage"]
+
+
+def test_the_shipped_prompt_renders_on_both_generation_routes():
+    """The defect this test exists for: the prompt named {{selected_module}}, which only
+    the Blueprint router supplies — and every AIM Block Blueprint prompt in this project
+    is component_type="cdd". render() is strict, so on the route AIM actually uses it
+    raised rather than generating at all."""
+    import pathlib
+    from promptops_app.prompts.prompt_builder import render
+    root = pathlib.Path(__file__).resolve().parents[2]
+    fence = chr(96) * 3
+    parts = (root / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
+    system, user = parts[1].split(fence)[0], parts[2].split(fence)[0]
+
+    # verbatim from each router's variables dict
+    cdd_route = {"course_title": "c", "course_name": "c", "target_audience": "a",
+                 "expert_domain": "d", "audience_level": "l", "estimated_duration": "1",
+                 "extra_instructions_block": "x", "extra_instructions": "x",
+                 "style_guidelines": "s", "grade_level": "g", "block": "Block 2"}
+    blueprint_route = {"cdd_context": "c", "selected_module": "m", "extra_instructions": "x",
+                       "teacher_mode": "Yes", "student_mode": "No",
+                       "style_guidelines": "s", "block": "Block 2"}
+    for route in (cdd_route, blueprint_route):
+        rendered = render(system, route) + render(user, route)   # strict: raises if missing
+        assert "{{" not in rendered
+        assert "Block 2" in rendered
+
+
+def test_the_shipped_prompt_reconciles_on_both_components():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    fence = chr(96) * 3
+    parts = (root / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
+    text = parts[1].split(fence)[0] + parts[2].split(fence)[0]
+    for component in ("cdd", "blueprint"):
+        report = assess(text, component=component)
+        assert not report.has_findings, f"{component}: {report.unknown_variables}"
+
+
+# --------------------------------------------------------------------------- #
+# The variable check must know which route a prompt renders on
+# --------------------------------------------------------------------------- #
+def test_a_variable_only_the_other_route_supplies_is_reported():
+    """The union of both routes' variables cannot see this, and it is the check that
+    should have caught the prompt defect above: a name the prompt's own route does not
+    supply fails render()'s strict check and refuses the generation outright."""
+    text = "Generate for {{selected_module}} using {{cdd_context}}."
+    assert assess(text, component="cdd").unknown_variables == ["selected_module", "cdd_context"]
+    assert assess(text, component="blueprint").unknown_variables == []
+
+
+def test_no_component_still_answers_with_the_union():
+    """Backwards-compatible default for a prompt whose route is unknown."""
+    text = "Generate for {{selected_module}} using {{course_name}}."
+    assert assess(text).unknown_variables == []
+
+
+def test_block_is_a_known_variable_on_both_routes():
+    """Both routers now supply it under the same name, so a block-wide prompt is
+    portable between them instead of hardcoding its block."""
+    assert "block" in known_variables("cdd")
+    assert "block" in known_variables("blueprint")
+
+
+def test_an_unrecognised_component_falls_back_to_the_union():
+    assert known_variables("nonsense") == known_variables()
 
 
 def test_a_pathological_declaration_count_yields_a_bounded_finding():

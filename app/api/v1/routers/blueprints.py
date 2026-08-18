@@ -332,6 +332,9 @@ def generate_blueprint(
             "teacher_mode":       "Yes" if request_body.teacher_mode else "No",
             "student_mode":       "No" if request_body.teacher_mode else "Yes",
             "style_guidelines":   style_context,
+            # Same name the CDD route supplies, so a block-wide prompt is portable
+            # between the two rather than being written for one of them.
+            "block":              getattr(request_body, "block", None) or "",
         }
         try:
             system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(

@@ -580,6 +580,12 @@ def generate_cdd(
             "extra_instructions":  extra_block,
             "style_guidelines":    style_context,
             "grade_level":         request_body.target_audience,
+            # The block this request is scoped to. Absent until now, which made the
+            # block un-injectable on the very route AIM's Block Blueprint prompts run
+            # on (all four are component_type="cdd"), so such a prompt had to hardcode
+            # "Block 2" in its text or name a blueprint-route variable and fail
+            # render's strict check outright.
+            "block":               getattr(request_body, "block", None) or "",
         }
 
         try:

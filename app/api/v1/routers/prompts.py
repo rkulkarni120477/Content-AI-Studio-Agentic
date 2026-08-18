@@ -96,7 +96,11 @@ def _prompt_capability(prompt, active):
         from app.schemas.prompt import PromptCapabilityRead
         from promptops_app.services.prompt_capability import assess
 
-        report = assess(f"{active.system_prompt or ''}\n\n{active.user_prompt_template or ''}")
+        # component_type, not the union: the picker is the moment to be told that a
+        # prompt names a variable only the OTHER route supplies, because that prompt
+        # refuses generation outright rather than degrading.
+        report = assess(f"{active.system_prompt or ''}\n\n{active.user_prompt_template or ''}",
+                        component=prompt.component_type or None)
         if not report.assessed:
             return None
         return PromptCapabilityRead(

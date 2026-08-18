@@ -209,6 +209,10 @@ _ROUTER_SUPPLIED_VARIABLES = frozenset({
 #: whose declared variables therefore define "written for this platform".
 _ASSESSED_TEMPLATES = ("cdd_generation", "blueprint_generation")
 
+#: Which of those a given component actually renders through. Used to narrow
+#: ``known_variables`` to the one route a prompt will really run on.
+_TEMPLATE_FOR_COMPONENT = {"cdd": "cdd_generation", "blueprint": "blueprint_generation"}
+
 
 #: The variable names through which retrieved source material and the active style
 #: reach a prompt on the single-call path. A prompt naming neither runs source-blind
@@ -301,8 +305,17 @@ def parse_extension_columns(text: str, emitted: Optional[List[str]] = None
     return accepted, rejections
 
 
-def known_variables() -> frozenset:
+def known_variables(component: Optional[str] = None) -> frozenset:
     """``{{name}}`` placeholders this platform can actually supply.
+
+    ``component`` ("cdd" or "blueprint") narrows the answer to the ONE route the
+    prompt will actually render on. Passing nothing keeps the union of both, which is
+    the right default for a prompt whose route is unknown but is too generous when it
+    is known: the two routers supply different variable dicts, and a name supplied by
+    only the other one fails ``prompt_builder.render``'s strict check and refuses the
+    generation outright. That is not hypothetical — every AIM Block Blueprint prompt in
+    this project is ``component_type="cdd"``, so a Blueprint-route variable in one is a
+    prompt that cannot run, and the union could not tell anyone.
 
     Read from the prompt registry's own ``required_vars``/``optional_vars`` for the
     CDD and Blueprint templates rather than restated here, so adding a variable to a
@@ -318,9 +331,14 @@ def known_variables() -> frozenset:
     distillation entirely.
     """
     names = set(_ROUTER_SUPPLIED_VARIABLES)
+    templates = _ASSESSED_TEMPLATES
+    if component:
+        only = _TEMPLATE_FOR_COMPONENT.get(component.strip().lower())
+        if only:
+            templates = (only,)
     try:
         from promptops_app.prompts.prompt_loader import _REGISTRY
-        for template in _ASSESSED_TEMPLATES:
+        for template in templates:
             entry = _REGISTRY.get(template) or {}
             names.update(entry.get("required_vars") or ())
             names.update(entry.get("optional_vars") or ())
@@ -672,9 +690,13 @@ _EMPTY = CapabilityReport()
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
-def assess(prompt_text: str) -> CapabilityReport:
+def assess(prompt_text: str, component: Optional[str] = None) -> CapabilityReport:
     """Reconcile *prompt_text* against the pipeline's emitted surface. Pure; the
-    unit of behaviour worth testing. Never raises."""
+    unit of behaviour worth testing. Never raises.
+
+    ``component`` ("cdd"/"blueprint"), when known, narrows the variable check to the
+    route this prompt renders on — see ``known_variables``.
+    """
     try:
         text = prompt_text or ""
         if not text.strip():
@@ -698,7 +720,7 @@ def assess(prompt_text: str) -> CapabilityReport:
             (matched if canon in emitted_canon or canon in declared_canon
              else unmatched).append(name)
 
-        allowed = known_variables()
+        allowed = known_variables(component)
         declared_vars = extract_variables(text)
         unknown = [v for v in declared_vars if v not in allowed]
         hits = [(msg, blocking) for _k, pattern, msg, blocking in _ARTIFACT_CHECKS
@@ -737,7 +759,7 @@ def assess_selected_prompt(db: Any, request_body: Any, deliverable: str) -> Capa
     try:
         from promptops_app.services.prompt_guidance import _resolve_prompt_text
         text = _resolve_prompt_text(db, request_body, deliverable)
-        report = assess(text)
+        report = assess(text, component=deliverable)
         if report.assessed and report.has_findings:
             log.warning(
                 "prompt_capability_findings deliverable=%s prompt_chars=%d "

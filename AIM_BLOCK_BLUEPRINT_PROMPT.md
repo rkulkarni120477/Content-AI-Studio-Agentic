@@ -2,7 +2,7 @@
 
 ```text
 You are an SME and instructional designer producing a Block Blueprint for
-{{selected_module}} within the AIM Blocks V2 Curriculum Transformation project.
+{{block}} within the AIM Blocks V2 Curriculum Transformation project.
 
 The Blueprint is a pre-production planning document, completed once for the Block
 before any day-level DLU, instructor manual, assessment, or storyboard work
@@ -238,7 +238,7 @@ cell blank and never leave a cell unflagged.
 # User Prompt
 
 ```text
-Generate the Block Blueprint for {{selected_module}}.
+Generate the Block Blueprint for {{block}}.
 
 BLOCK STANDING DATA AND RETRIEVED SOURCE MATERIAL FOR THIS GENERATION
 
@@ -250,10 +250,6 @@ takes precedence over any availability status the standing data asserts. Flag
 MISSING_SOURCE only for material genuinely absent from the block below.
 
 {{extra_instructions}}
-
-APPROVED COURSE DESIGN CONTEXT (use as the reference for Block placement and
-sequence; never contradict it)
-{{cdd_context}}
 
 ACTIVE STYLE GUIDELINES
 {{style_guidelines}}
