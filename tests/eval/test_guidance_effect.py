@@ -106,6 +106,11 @@ def _day_rows(markdown: str) -> list[list[str]]:
             if line.startswith("| Day ") and not line.startswith("| Day |")]
 
 
+from promptops_app.services.block_wide_service import (  # noqa: E402
+    _DAY_TABLE_HEADER as _DAY_TABLE_HEADER_LEN_MARKER,
+)
+
+
 def _column(markdown: str, header_name: str) -> list[str]:
     from promptops_app.services.block_wide_service import _DAY_TABLE_HEADER
     idx = _DAY_TABLE_HEADER.index(header_name)
@@ -226,3 +231,113 @@ def test_the_guidance_actually_sent_is_recorded_distinguishably(run_block):
     b = run_block(GUIDANCE_B)["prompt_provenance"]
     assert a["map_guidance"] == GUIDANCE_A and b["map_guidance"] == GUIDANCE_B
     assert a["map_guidance_sent_fingerprint"] != b["map_guidance_sent_fingerprint"]
+
+
+# --------------------------------------------------------------------------- #
+# The CDD route end to end — AIM's Block Blueprint is generated here
+# --------------------------------------------------------------------------- #
+# Every AIM Block Blueprint prompt is component_type="cdd", so this is the route
+# that matters for them. The tests above prove guidance reaches the document; these
+# prove a prompt-DECLARED column does, through the same real render path.
+_DECLARING_PROMPT = """You are producing a Block Blueprint for {{block}}.
+
+ADDITIONAL DAY COLUMNS
+- Instructional Model Stage: which stage of the Block's model this day belongs to
+
+{{extra_instructions}}
+"""
+
+
+def _fake_llm_filling_declared_columns():
+    """Answers the declared-column call with a real value, and every other REDUCE call
+    with its own contract keys. The extension prompt is identified by its COLUMNS
+    block — it shares the "DAYS TO FILL IN:" marker with the narrative prompt, so that
+    alone cannot tell them apart."""
+    def generate_with_metadata(model_choice, system, user, usage_ctx=None, max_tokens=None):
+        marker = "DAYS TO FILL IN:\n"
+        if "COLUMNS — each label" in user:
+            payload = json.loads(user[user.index(marker) + len(marker):])
+            text = json.dumps({str(d["day_number"]): {"Instructional Model Stage": "Interpret"}
+                               for d in payload})
+        elif '"content_arc_summary"' in user:
+            text = json.dumps({"content_arc_summary": "arc", "production_readiness": "READY."})
+        else:
+            payload = json.loads(user[user.index(marker) + len(marker):])
+            text = json.dumps({str(d["day_number"]): {"narrative": "n", "how_it_is_applied": "a"}
+                               for d in payload})
+        return types.SimpleNamespace(text=text, model=model_choice, status="ok",
+                                     prompt_tokens=1, completion_tokens=1, error_type=None)
+    return generate_with_metadata
+
+
+@pytest.fixture
+def run_cdd_with_capability(monkeypatch):
+    """The CDD route, given a capability report resolved from a real prompt."""
+    import promptops_app.services.llm_service as llm_service
+    from app.core import dis_client as dc
+    from promptops_app.services import block_wide_service
+
+    monkeypatch.setattr(llm_service, "generate_with_metadata",
+                        _fake_llm_filling_declared_columns())
+    bundle = {"block": "Block 2", "client_id": "aim",
+              "enumerate": ENUMERATE_SUMMARY, "digests": DIGESTS}
+    monkeypatch.setattr(dc.dis_client, "build_digests_sync",
+                        lambda block, current_user=None, client_id="", map_guidance="":
+                            {"built": 4, "cached": 0, "failed": 1, "map_calls": 1})
+    monkeypatch.setattr(dc.dis_client, "get_digests_bundle_sync",
+                        lambda block, current_user=None, client_id="": bundle)
+
+    def _run(prompt_text):
+        from promptops_app.services.prompt_capability import assess
+        req = types.SimpleNamespace(block="Block 2", quality_tier="standard",
+                                    course_title="T", course_id=1, project_id=1,
+                                    document_title=None)
+        return block_wide_service.generate_cdd_via_digests(
+            db=None, request_body=req, current_user=types.SimpleNamespace(username="t"),
+            dis_client_id="aim", map_guidance="",
+            capability=assess(prompt_text, component="cdd"),
+        )
+    return _run
+
+
+def test_a_declared_column_reaches_the_stored_cdd_document(run_cdd_with_capability):
+    """The whole feature, through the route AIM uses: declared in the prompt, filled by
+    REDUCE, rendered into the document that gets stored."""
+    out = run_cdd_with_capability(_DECLARING_PROMPT)
+    body = _section(out["raw_output"], "DAY-BY-DAY MAP")
+    header = [c.strip() for c in body.splitlines()[0].strip("|").split("|")]
+    assert header[-1] == "Instructional Model Stage"
+    assert header[:len(_DAY_TABLE_HEADER_LEN_MARKER)] == _DAY_TABLE_HEADER_LEN_MARKER
+    values = [row[-1] for row in _day_rows(out["raw_output"])]
+    assert "Interpret" in values
+    # a failed day states the reason rather than carrying a fabricated stage
+    assert any("digest failed" in v for v in values)
+
+
+def test_the_declaration_is_recorded_in_provenance(run_cdd_with_capability):
+    out = run_cdd_with_capability(_DECLARING_PROMPT)
+    cap = out["prompt_provenance"]["prompt_capability"]
+    assert cap["extension_columns"] == ["Instructional Model Stage"]
+    assert cap["extension_rejections"]["total"] == 0
+
+
+def test_a_prompt_declaring_nothing_leaves_the_document_untouched(run_cdd_with_capability):
+    """The default for every prompt live today: the fixed column set, unchanged."""
+    plain = run_cdd_with_capability("You are producing a Block Blueprint for {{block}}.")
+    header = [c.strip() for c in
+              _section(plain["raw_output"], "DAY-BY-DAY MAP").splitlines()[0].strip("|").split("|")]
+    assert header == _DAY_TABLE_HEADER_LEN_MARKER
+
+
+def test_the_document_ends_with_the_five_pass_self_review(run_cdd_with_capability):
+    out = run_cdd_with_capability(_DECLARING_PROMPT)["raw_output"]
+    review = _section(out, "COVERAGE & REVIEW")
+    for pass_name in ("Worksheet completeness", "Row completeness", "ACS coverage",
+                      "Flag consistency", "Specificity"):
+        assert pass_name in review, pass_name
+    assert "NOT machine-checkable" in review
+
+
+def test_worksheet_five_carries_the_consolidated_missing_source_summary(run_cdd_with_capability):
+    out = run_cdd_with_capability(_DECLARING_PROMPT)["raw_output"]
+    assert "Missing Source Summary" in _section(out, "PATTERNS & DESIGN NOTES")
