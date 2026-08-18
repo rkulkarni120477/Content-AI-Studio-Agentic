@@ -58,9 +58,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 log = logging.getLogger(__name__)
+
+#: How many names one finding MESSAGE may list before it summarises the rest. These
+#: strings are rendered into a UI notice and into the generated document, so an
+#: unbounded join turns one finding into a wall nobody reads.
+_FINDING_LIST_CAP = 12
 
 #: Cap on any single list written into the provenance row. Paired with a ``*_total``
 #: count so a capped list is visibly capped rather than quietly short — the same
@@ -210,6 +215,90 @@ _ASSESSED_TEMPLATES = ("cdd_generation", "blueprint_generation")
 #: there — reported, never refused, because 7 of this project's 17 live CDD/Blueprint
 #: prompts have no slot (see ``legacy_blockers``).
 _SOURCE_CONTEXT_SLOTS = ("extra_instructions_block", "extra_instructions")
+
+
+#: How a prompt DECLARES an extra Worksheet 4 column it wants emitted. An explicit
+#: marker, not the unmatched-column list: 4 of this project's 17 live prompts name
+#: existing columns under different labels, and emitting those as extra columns would
+#: silently widen every one of their tables with near-duplicate, mostly-empty cells.
+#: Declaring is therefore opt-in and unambiguous — verified absent from all 17.
+_EXTENSION_HEADER = re.compile(r"^[ \t]*ADDITIONAL\s+(?:DAY|WORKSHEET\s*4)\s+COLUMNS\b", re.I)
+#: ``- Label: what the cell must contain``. The description is required, and is what
+#: reaches the fill prompt — a bare label would ask the model to guess the column's
+#: purpose from its name, which is how an empty column gets filled with plausible noise.
+_EXTENSION_ITEM = re.compile(r"^[ \t]*[-*][ \t]*(?P<label>[^:|]{2,60}?)[ \t]*:[ \t]*(?P<desc>\S.*?)[ \t]*$")
+#: A bullet shaped like a declaration, definition or not — used only to tell a
+#: malformed declaration apart from the ordinary prose that ends the list.
+_EXTENSION_BULLET = re.compile(r"^[ \t]*[-*][ \t]*(?P<label>[^:|]{2,60}?)[ \t]*:")
+#: Ceiling on declared columns. A markdown table is already 31 columns wide; past this
+#: the row is unreadable and the fill prompt's per-day budget stops being credible.
+#: Over-cap declarations are REPORTED, never silently dropped.
+_MAX_EXTENSION_COLUMNS = 8
+
+
+def parse_extension_columns(text: str, emitted: Optional[List[str]] = None
+                            ) -> Tuple[List[Dict[str, str]], List[str]]:
+    """``(accepted, rejections)`` for the extra day-table columns *text* declares.
+
+    A declaration is rejected — never silently emitted or silently dropped — when it
+    duplicates a label the renderer already emits (canonically, so "ACS Codes" is
+    caught against "ACS"), repeats an earlier declaration, or exceeds the cap. Each
+    rejection carries its reason, because the author needs to know which of the two
+    happened: a collision means the column already exists, the cap means it does not
+    exist yet and still will not.
+    """
+    if emitted is None:
+        from promptops_app.services.block_wide_service import emitted_columns
+        emitted = emitted_columns()["day_table"]
+    emitted_canon = {_canonical(c) for c in emitted}
+
+    accepted: List[Dict[str, str]] = []
+    rejections: List[str] = []
+    seen: set = set()
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        if not _EXTENSION_HEADER.search(lines[i]):
+            i += 1
+            continue
+        i += 1
+        # A blank line does NOT end the list: prompts are often written with the
+        # bullets spaced out. Any non-blank, non-bullet line does.
+        while i < len(lines):
+            line = lines[i]
+            if not line.strip():
+                i += 1
+                continue
+            m = _EXTENSION_ITEM.match(line)
+            if not m:
+                # A bullet that LOOKS like a declaration but carries no definition
+                # would otherwise end the list here and silently drop every
+                # declaration after it — the exact silent truncation this module
+                # exists to prevent. Report it and keep reading.
+                bullet = _EXTENSION_BULLET.match(line)
+                if bullet:
+                    rejections.append(
+                        f"{' '.join(bullet.group('label').split())!r} declares no "
+                        "definition after the colon; the fill stage would have to guess "
+                        "the column's purpose from its name")
+                    i += 1
+                    continue
+                break
+            label = " ".join(m.group("label").split())
+            desc = " ".join(m.group("desc").split())
+            canon = _canonical(label)
+            if canon in emitted_canon:
+                rejections.append(f"{label!r} is already emitted as a day-table column")
+            elif canon in seen:
+                rejections.append(f"{label!r} is declared more than once")
+            elif len(accepted) >= _MAX_EXTENSION_COLUMNS:
+                rejections.append(
+                    f"{label!r} exceeds the limit of {_MAX_EXTENSION_COLUMNS} additional columns")
+            else:
+                seen.add(canon)
+                accepted.append({"label": label, "description": desc})
+            i += 1
+    return accepted, rejections
 
 
 def known_variables() -> frozenset:
@@ -402,6 +491,10 @@ class CapabilityReport:
     matched_columns: List[str] = field(default_factory=list)
     unmatched_columns: List[str] = field(default_factory=list)
     other_requested_tables: int = 0
+    #: Extra day-table columns this prompt declared and the pipeline will emit.
+    extension_columns: List[Dict[str, str]] = field(default_factory=list)
+    #: Declarations refused, each with its reason (collision / duplicate / over cap).
+    extension_rejections: List[str] = field(default_factory=list)
     unknown_variables: List[str] = field(default_factory=list)
     artifact_demands: List[str] = field(default_factory=list)
     #: The subset of ``artifact_demands`` conclusive enough to refuse on — what
@@ -442,8 +535,28 @@ class CapabilityReport:
                 "under a different label — this is a naming and scope difference to "
                 "confirm, not an error.",
             ))
+        if self.extension_columns:
+            out.append((
+                "info",
+                f"Emitting {len(self.extension_columns)} additional day-table column(s) "
+                "this prompt declared: "
+                + ", ".join(c["label"] for c in self.extension_columns) + ".",
+            ))
+        if self.extension_rejections:
+            # Capped like the two lists above, and for the same reason: this string is
+            # rendered into a UI notice and into the generated document. A prompt that
+            # declares hundreds of columns (all but the first few refused by the cap)
+            # would otherwise turn one finding into an unreadable wall.
+            shown = self.extension_rejections[:_FINDING_LIST_CAP]
+            out.append((
+                "warning",
+                f"{len(self.extension_rejections)} additional-column declaration(s) refused: "
+                + "; ".join(shown)
+                + (f" … and {len(self.extension_rejections) - len(shown)} more"
+                   if len(self.extension_rejections) > len(shown) else "") + ".",
+            ))
         if self.matched_columns:
-            shown = self.matched_columns[:12]
+            shown = self.matched_columns[:_FINDING_LIST_CAP]
             out.append((
                 "info",
                 f"Matched {len(self.matched_columns)} of {len(self.requested_day_columns)} "
@@ -454,8 +567,8 @@ class CapabilityReport:
             out.append((
                 "warning",
                 f"{len(self.unknown_variables)} template variable(s) this platform never "
-                f"supplies: {', '.join(self.unknown_variables[:12])}"
-                + (" …" if len(self.unknown_variables) > 12 else "")
+                f"supplies: {', '.join(self.unknown_variables[:_FINDING_LIST_CAP])}"
+                + (" …" if len(self.unknown_variables) > _FINDING_LIST_CAP else "")
                 + ". These stay in the prompt text verbatim and reach no model.",
             ))
         if self.other_requested_tables:
@@ -472,7 +585,8 @@ class CapabilityReport:
     def has_findings(self) -> bool:
         """True when there is something a reviewer needs to see. Matched-only is not
         a finding: it means the prompt and the platform agree."""
-        return bool(self.unmatched_columns or self.unknown_variables or self.artifact_demands)
+        return bool(self.unmatched_columns or self.unknown_variables or self.artifact_demands
+                    or self.extension_rejections)
 
     @property
     def would_refuse_single_call(self) -> bool:
@@ -505,6 +619,8 @@ class CapabilityReport:
             "matched_columns": self._capped(self.matched_columns),
             "unmatched_columns": self._capped(self.unmatched_columns),
             "other_requested_tables": self.other_requested_tables,
+            "extension_columns": [c["label"] for c in self.extension_columns],
+            "extension_rejections": self._capped(self.extension_rejections),
             "unknown_variables": self._capped(self.unknown_variables),
             "artifact_demands": list(self.artifact_demands),
         }
@@ -570,10 +686,17 @@ def assess(prompt_text: str) -> CapabilityReport:
         emitted_day = emitted_columns()["day_table"]
         emitted_canon = {_canonical(c) for c in emitted_day}
 
+        extensions, ext_rejections = parse_extension_columns(text, emitted_day)
+        # A DECLARED column is emitted, so it is matched rather than divergent — this is
+        # what makes declaring one close the finding instead of adding a second one.
+        declared_canon = {_canonical(c["label"]) for c in extensions}
+
         requested, others = _pick_day_table(_tables(text), emitted_day)
         matched, unmatched = [], []
         for name in requested:
-            (matched if _canonical(name) in emitted_canon else unmatched).append(name)
+            canon = _canonical(name)
+            (matched if canon in emitted_canon or canon in declared_canon
+             else unmatched).append(name)
 
         allowed = known_variables()
         declared_vars = extract_variables(text)
@@ -588,6 +711,8 @@ def assess(prompt_text: str) -> CapabilityReport:
             matched_columns=matched,
             unmatched_columns=unmatched,
             other_requested_tables=others,
+            extension_columns=extensions,
+            extension_rejections=ext_rejections,
             unknown_variables=unknown,
             artifact_demands=[msg for msg, _b in hits],
             blocking_demands=[msg for msg, blocking in hits if blocking],

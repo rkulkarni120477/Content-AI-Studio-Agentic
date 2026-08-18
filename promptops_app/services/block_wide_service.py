@@ -135,6 +135,94 @@ def _coverage_lines(cov: Dict[str, Any]) -> list[str]:
     return out
 
 
+#: How many worksheets a complete document renders — the denominator of self-review
+#: pass 1. See ``_WORKSHEET_TITLES``, which names them.
+_EXPECTED_WORKSHEETS = 5
+
+
+def _days(nums: list) -> str:
+    """``day 13`` / ``days 7, 13`` — never a Python list repr, which is what f-string
+    interpolation of the coverage lists produces by default."""
+    if not nums:
+        return "no days"
+    return (f"day {nums[0]}" if len(nums) == 1
+            else "days " + ", ".join(str(n) for n in nums))
+
+
+def _blank_cells(day_table_lines: list[str]) -> Dict[str, int]:
+    """``{column label: how many rows left it empty}`` for a RENDERED day table.
+
+    Counted from the emitted text rather than inferred from the row dicts: six columns
+    default to "" on purpose (reviewer-fill and optional-note cells), so the honest
+    statement is which columns are empty and how often, leaving a reviewer to confirm
+    each is by design rather than a dropped value. An earlier version of pass 4 below
+    asserted "no cell is blank", which the renderer contradicts on every row.
+    """
+    if len(day_table_lines) < 3:
+        return {}
+    header = [c.strip() for c in day_table_lines[0].strip("|").split("|")]
+    counts: Dict[str, int] = {}
+    for line in day_table_lines[2:]:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != len(header):
+            continue
+        for label, cell in zip(header, cells):
+            if not cell:
+                counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _self_review_lines(cov: Dict[str, Any], worksheets_present: int,
+                       day_table_lines: list[str] | None = None) -> list[str]:
+    """The five verification passes AIM's Blueprint spec ends every document with.
+
+    Computed from the coverage report and the rendered document, never asked of a model:
+    a self-review is only worth reading if it cannot agree with itself about a document
+    it did not check, and a model asked to "confirm" a pass will confirm it — this
+    codebase has already shipped one run whose prose concluded "no conflicts detected"
+    from facts naming two conflicting handbook editions.
+
+    Pass 5 is the one that is NOT machine-checkable, and it says so rather than
+    reporting a pass it did not perform. A green line nobody earned is worse than an
+    honest "needs a reviewer", because it is the line a reviewer would have trusted.
+    """
+    total = cov.get("total_days") or 0
+    in_output = cov.get("days_in_output") or 0
+    missing_days = cov.get("missing_days") or []
+    declared = cov.get("declared_acs") or []
+    covered = cov.get("covered_acs") or []
+    orphans = cov.get("orphan_acs") or []
+    needs_review = sorted(set((cov.get("failed_days") or []) + (cov.get("thin_days") or [])))
+
+    ws = (f"{worksheets_present}/{_EXPECTED_WORKSHEETS} worksheets rendered"
+          + ("." if worksheets_present == _EXPECTED_WORKSHEETS
+             else " — ⚠ a worksheet is absent; see the warning above it."))
+    rows = (f"{in_output}/{total} day rows, one per day, sequentially numbered"
+            + ("." if not missing_days else f" — ⚠ no row for {_days(missing_days)}."))
+    acs = (f"{len(covered)}/{len(declared)} declared ACS codes appear in the day map"
+           + ("." if not orphans else f" — ⚠ orphaned: {', '.join(orphans)}."))
+    blanks = _blank_cells(day_table_lines or [])
+    flags = ("every flag comes from the recorded vocabulary"
+             + ("." if not needs_review else
+                f"; a review condition is recorded for {_days(needs_review)}.")
+             + ("" if not blanks else
+                " Empty cells, to confirm as by-design reviewer-fill or optional notes "
+                "rather than dropped values: "
+                + ", ".join(f"{label} ({n})" for label, n in sorted(blanks.items())) + "."))
+    spec = ("NOT machine-checkable — a reviewer must spot-check that cells name the "
+            "literal filename, project, ACS code, or citation from the source rather "
+            "than a generic paraphrase.")
+    return [
+        "",
+        "### Self-review",
+        f"1. **Worksheet completeness** — {ws}",
+        f"2. **Row completeness** — {rows}",
+        f"3. **ACS coverage** — {acs}",
+        f"4. **Flag consistency** — {flags}",
+        f"5. **Specificity** — {spec}",
+    ]
+
+
 def _fields_section(fields: Dict[str, Any]) -> list[str]:
     """Key-value worksheet (Block Overview / Patterns & Design Notes). Each entry
     is one markdown bullet, so — same discipline as the day-table cells — a raw
@@ -241,6 +329,7 @@ def _render_worksheets(result, intro: list[str]) -> str:
     shape (AIM's sample is a 6-sheet workbook; the 6th, "Intro to the Blueprint",
     is static reviewer-guidance text with no data to render and is skipped here)."""
     out = list(intro)
+    day_table_lines: list[str] = []
     for i, section in enumerate(result.sections or [], start=1):
         title = _WORKSHEET_TITLES.get(section.get("key"), section.get("title", "")).upper()
         out += ["", f"## WORKSHEET {i}: {title}", ""]
@@ -252,7 +341,9 @@ def _render_worksheets(result, intro: list[str]) -> str:
         elif key == "acs_registry":
             out += _acs_registry_table(section.get("rows") or [])
         elif key == "day_table":
-            out += _day_table_from_rows(section.get("rows") or [])
+            day_table_lines = _day_table_from_rows(section.get("rows") or [],
+                                                   section.get("extension_columns") or [])
+            out += day_table_lines
         else:
             # An unrecognized section shape would otherwise silently render
             # through the day-table columns (wrong headers, misaligned data,
@@ -261,6 +352,7 @@ def _render_worksheets(result, intro: list[str]) -> str:
             _log.warning("block_wide render: unrecognized section key=%r, skipped", key)
     cov = result.coverage or {}
     out += ["", "## COVERAGE & REVIEW"] + _coverage_lines(cov)
+    out += _self_review_lines(cov, len(result.sections or []), day_table_lines)
     return "\n".join(out)
 
 
@@ -302,6 +394,11 @@ def emitted_columns() -> dict:
     restated set. Worksheets 1 and 5 are absent on purpose — their fields are
     key-value dicts assembled upstream (DIS ``worksheets.py`` / REDUCE), so no
     static label list for them exists here to reconcile against.
+
+    These are the columns emitted for EVERY run. A prompt may declare additional day
+    columns on top of them (see ``prompt_capability.parse_extension_columns``); those
+    are per-request and deliberately absent here, because this is also the list a
+    declaration is checked against for collisions.
     """
     return {
         "day_table": list(_DAY_TABLE_HEADER),
@@ -310,8 +407,26 @@ def emitted_columns() -> dict:
     }
 
 
-def _day_table_from_rows(rows: list[dict]) -> list[str]:
-    out = _header_lines(_DAY_TABLE_HEADER)
+def _day_table_from_rows(rows: list[dict], extension_columns: list[str] | None = None) -> list[str]:
+    """The fixed column set, then any columns the selected prompt declared.
+
+    Additive by construction: ``extension_columns`` can only ever APPEND. A declared
+    column cannot rename, reorder, displace or blank one of the columns above it, so no
+    prompt wording can move a code-computed, traceable cell — the property
+    tests/eval/test_guidance_effect.py pins. ``prompt_capability`` refuses a declaration
+    that collides with an emitted label, so the two sets cannot overlap either.
+    """
+    # Sanitized through the same _cell every data cell goes through: a declared label
+    # reaches here from prompt text, and one stray "|" in the HEADER breaks the whole
+    # table, not just its own row. prompt_capability's own pattern already excludes
+    # "|", so this is the second lock rather than the first.
+    extras = [_cell(label, default="Additional Column") for label in (extension_columns or [])]
+    if extras:
+        # Imported here rather than at module scope: block_wide_service is what the
+        # generator's own caller imports first, and a top-level import back into the
+        # generator would make that order load-order-sensitive for no gain.
+        from promptops_app.services.block_wide_generator import EXTENSION_MISSING as missing_marker
+    out = _header_lines(_DAY_TABLE_HEADER + extras)
     for r in rows:
         acs = _cell(", ".join(r.get("acs_codes") or []))
         note = _cell(r.get("narrative") or "", default="")
@@ -382,6 +497,10 @@ def _day_table_from_rows(rows: list[dict]) -> list[str]:
             "",
             note,
         ]
+        if extras:
+            values = r.get("extensions") or {}
+            cells += [_cell(values.get(label, ""), default=missing_marker)
+                      for label in extras]
         out.append("| " + " | ".join(cells) + " |")
     return out
 
@@ -655,7 +774,7 @@ def _load_course(db, request_body):
 
 def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
                       current_user, dis_client_id: str, map_guidance: str = "",
-                      *, db=None, request_body=None):
+                      *, db=None, request_body=None, capability=None):
     """Returns (ReduceResult, build_report, UserDirectives); the first two are None
     on any failure.
 
@@ -756,6 +875,12 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
             # the compact form, and because the two authorities stay distinguishable
             # in the prompt and in the provenance row.
             user_directives=directives.reduce_text,
+            # Additional day columns the selected prompt declared. Read off the SAME
+            # capability report the reconciliation section and provenance are rendered
+            # from, so what is emitted, what is reported, and what is recorded cannot
+            # disagree. Empty for every prompt that declares none — which is all 17
+            # live ones — so those runs are byte-identical to before this existed.
+            extension_columns=list(getattr(capability, "extension_columns", None) or []),
         )
     except Exception as exc:
         _log.warning("block_wide_reduce_failed deliverable=%s block=%s error=%s — falling back",
@@ -962,7 +1087,8 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
     result, report, directives = _build_and_reduce("cdd", request_body.block,
                                                    getattr(request_body, "quality_tier", None),
                                                    current_user, dis_client_id, map_guidance,
-                                                   db=db, request_body=request_body)
+                                                   db=db, request_body=request_body,
+                                                   capability=capability)
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_cdd_flat, parse_sections_from_text
@@ -1113,7 +1239,8 @@ def generate_blueprint_via_digests(db, request_body, current_user, dis_client_id
     result, report, directives = _build_and_reduce("blueprint", request_body.block,
                                                    getattr(request_body, "quality_tier", None),
                                                    current_user, dis_client_id, map_guidance,
-                                                   db=db, request_body=request_body)
+                                                   db=db, request_body=request_body,
+                                                   capability=capability)
     if result is None:
         return None
     from promptops_app.parsers.cdd_parser import parse_sections_from_text

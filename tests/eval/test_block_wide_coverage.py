@@ -17,7 +17,9 @@ import types
 import pytest
 
 from promptops_app.core.models import resolve_tier
-from promptops_app.services.block_wide_generator import BlockWideGenerator, _guidance_block
+from promptops_app.services.block_wide_generator import (
+    BlockWideGenerator, EXTENSION_MISSING, _guidance_block,
+)
 from promptops_app.services.block_wide_service import (
     _acs_registry_table, _cell, _day_table_from_rows, _source_inventory_table,
 )
@@ -406,7 +408,8 @@ def test_patterns_notes_edition_detection_is_not_hardcoded_to_one_handbook_serie
         {"day_number": 2, "handbook_reference": "FAA-H-8091-1A Ch. 2 pgs 2-9 to 2-15", "projects_today": []},
     ]
     coverage = types.SimpleNamespace(thin_days=[], failed_days=[], total_days=2,
-                                     enumerated_days=2, missing_days=[], orphan_acs=[])
+                                     enumerated_days=2, missing_days=[], orphan_acs=[],
+                                     enumerate_flags=[])
     fields, _ = gen._patterns_notes(rows, coverage, "Claude Haiku 4.5 (Bedrock)")
     assert "No edition conflicts detected" in fields["handbook_edition_conflicts"]
     assert "FAA-H-8091-1A" in fields["handbook_edition_conflicts"]
@@ -426,7 +429,8 @@ def test_patterns_notes_carries_map_guidance_into_prompt_and_omits_when_absent()
 
     gen = BlockWideGenerator(llm=llm, batch_size=10)
     coverage = types.SimpleNamespace(thin_days=[], failed_days=[], total_days=1,
-                                     enumerated_days=1, missing_days=[], orphan_acs=[])
+                                     enumerated_days=1, missing_days=[], orphan_acs=[],
+                                     enumerate_flags=[])
 
     gen._patterns_notes([], coverage, "Claude Haiku 4.5 (Bedrock)",
                         map_guidance="Always cite the specific AC number.")
@@ -863,3 +867,226 @@ def test_dis_day_context_block_fallback(monkeypatch):
         raise RuntimeError("DIS down")
     monkeypatch.setattr(g.dis_client, "get_day_context_sync", boom)
     assert g._dis_day_context_block("Block 2", 3, None, "L", client_id="aim") == ("", [])
+
+
+# --------------------------------------------------------------------------- #
+# Worksheet 5's consolidated missing-source summary (a CODE conclusion)
+# --------------------------------------------------------------------------- #
+def _patterns_gen():
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {"content_arc_summary": "x", "production_readiness": "y"}), batch_size=10)
+    return gen
+
+
+def _cov(**kw):
+    base = dict(thin_days=[], failed_days=[], total_days=3, enumerated_days=3,
+                missing_days=[], orphan_acs=[], enumerate_flags=[])
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_missing_source_summary_groups_days_under_one_reason():
+    """The same absent artefact usually spans a run of days; one line per day is the
+    form in which a reviewer stops reading them."""
+    rows = [{"day_number": d, "projects_today": [], "handbook_reference": "",
+             "review_flags": ["MISSING_SOURCE — instructor guide"]} for d in (5, 6, 7)]
+    fields, _ = _patterns_gen()._patterns_notes(rows, _cov(), "Claude Haiku 4.5 (Bedrock)")
+    assert fields["missing_source_summary"] == "instructor guide (days 5, 6, 7)"
+
+
+def test_missing_source_summary_states_the_negative_rather_than_going_blank():
+    fields, _ = _patterns_gen()._patterns_notes(
+        [{"day_number": 1, "projects_today": [], "handbook_reference": "", "review_flags": []}],
+        _cov(), "Claude Haiku 4.5 (Bedrock)")
+    assert fields["missing_source_summary"] == "No MISSING_SOURCE flags raised."
+
+
+def test_missing_source_summary_includes_block_level_gaps_from_worksheet_1():
+    """AIM's spec says "anywhere in worksheets 1-4". Worksheet 1's own gaps reach
+    CoverageReport as enumerate flags, not as any day's review_flags."""
+    fields, _ = _patterns_gen()._patterns_notes(
+        [{"day_number": 1, "projects_today": [], "handbook_reference": "", "review_flags": []}],
+        _cov(enumerate_flags=["SYLLABUS_NOT_READ — no structure-store cursor"]),
+        "Claude Haiku 4.5 (Bedrock)")
+    assert "SYLLABUS_NOT_READ" in fields["missing_source_summary"]
+    assert "(block level)" in fields["missing_source_summary"]
+
+
+def test_missing_source_summary_ignores_flags_that_are_not_missing_source():
+    fields, _ = _patterns_gen()._patterns_notes(
+        [{"day_number": 1, "projects_today": [], "handbook_reference": "",
+          "review_flags": ["THIN_DAY — no substantive source", "CONFLICTING_SOURCES — x"]}],
+        _cov(), "Claude Haiku 4.5 (Bedrock)")
+    assert fields["missing_source_summary"] == "No MISSING_SOURCE flags raised."
+
+
+def test_missing_source_summary_survives_a_coverage_object_without_enumerate_flags():
+    """_patterns_notes is best-effort and its caller omits worksheet 5 when it raises —
+    a partial coverage object must not cost the whole worksheet."""
+    cov = types.SimpleNamespace(thin_days=[], failed_days=[], total_days=1,
+                                enumerated_days=1, missing_days=[], orphan_acs=[])
+    fields, _ = _patterns_gen()._patterns_notes(
+        [{"day_number": 1, "projects_today": [], "handbook_reference": "",
+          "review_flags": ["MISSING_SOURCE — quiz"]}], cov, "Claude Haiku 4.5 (Bedrock)")
+    assert fields["missing_source_summary"] == "quiz (day 1)"
+
+
+def test_missing_source_summary_reaches_the_reduce_prompt_facts():
+    """It is also an input to production_readiness, which AIM requires to name
+    block-level risk such as widespread MISSING_SOURCE."""
+    captured = {}
+
+    def llm(model, system, user, **kw):
+        captured["user"] = user
+        return json.dumps({"content_arc_summary": "x", "production_readiness": "y"})
+
+    gen = BlockWideGenerator(llm=llm, batch_size=10)
+    gen._patterns_notes([{"day_number": 2, "projects_today": [], "handbook_reference": "",
+                          "review_flags": ["MISSING_SOURCE — quiz"]}],
+                        _cov(), "Claude Haiku 4.5 (Bedrock)")
+    assert "missing_source_summary" in captured["user"]
+    assert "quiz (day 2)" in captured["user"]
+
+
+# --------------------------------------------------------------------------- #
+# Prompt-declared additional day columns — fill stage
+# --------------------------------------------------------------------------- #
+_EXT_COLS = [{"label": "Instructional Model Stage", "description": "which stage this day is"},
+             {"label": "Pilot Candidate", "description": "whether the SME recommends a pilot"}]
+
+
+def _ext_rows(n=2):
+    return [{"day_number": d, "topic": f"T{d}", "acs_codes": [], "concept_type": "Conceptual",
+             "concept_scope": "", "derived_objective": "o", "misconceptions": [],
+             "projects_today": [], "hangar_activity_today": [], "digest_status": "ok"}
+            for d in range(1, n + 1)]
+
+
+def test_declaring_nothing_costs_no_call_and_touches_no_row():
+    """Byte-identical behaviour for the 17 live prompts, none of which declares a
+    column — the same discipline _guidance_block follows."""
+    called = []
+    gen = BlockWideGenerator(llm=lambda *a, **k: called.append(1) or "{}", batch_size=10)
+    rows = _ext_rows()
+    assert gen._fill_extensions(rows, [], "Claude Haiku 4.5 (Bedrock)") == 0
+    assert called == []
+    assert all("extensions" not in r for r in rows)
+
+
+def test_declared_columns_are_filled_from_one_batched_call():
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {"1": {"Instructional Model Stage": "Interpret", "Pilot Candidate": "No"},
+         "2": {"Instructional Model Stage": "Perform", "Pilot Candidate": "Yes"}}), batch_size=10)
+    rows = _ext_rows()
+    assert gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)") == 1
+    assert rows[0]["extensions"]["Instructional Model Stage"] == "Interpret"
+    assert rows[1]["extensions"]["Pilot Candidate"] == "Yes"
+
+
+def test_a_key_the_model_omitted_renders_a_review_marker_not_a_blank():
+    """A reviewer cannot tell an empty cell that was answered "nothing" from one the
+    model never returned, and only the second is a defect worth chasing."""
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {"1": {"Instructional Model Stage": "Interpret"}}), batch_size=10)
+    rows = _ext_rows(1)
+    gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert rows[0]["extensions"]["Pilot Candidate"] == EXTENSION_MISSING
+
+
+def test_a_failed_extension_call_never_costs_the_run_its_other_columns():
+    """These columns are additive; the 31 already built and paid for must survive."""
+    def boom(*a, **k):
+        raise RuntimeError("provider down")
+    gen = BlockWideGenerator(llm=boom, batch_size=10)
+    rows = _ext_rows()
+    assert gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)") == 1
+    assert all(v == EXTENSION_MISSING
+               for r in rows for v in r["extensions"].values())
+
+
+def test_the_fill_prompt_shows_each_column_with_its_definition():
+    captured = {}
+
+    def llm(model, system, user, **kw):
+        captured["user"] = user
+        return "{}"
+
+    BlockWideGenerator(llm=llm, batch_size=10)._fill_extensions(
+        _ext_rows(1), _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert "Instructional Model Stage: which stage this day is" in captured["user"]
+    assert "DAYS TO FILL IN" in captured["user"]
+
+
+def test_extension_prompt_resolution_is_recorded_in_provenance():
+    gen = BlockWideGenerator(llm=lambda *a, **k: "{}", batch_size=10)
+    gen._fill_extensions(_ext_rows(1), _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert "extension_columns" in gen.prompt_provenance
+
+
+def test_reduce_carries_declared_columns_onto_the_day_table_section():
+    """End of the wiring: what reduce() built is what the renderer is told to emit,
+    so the emitted columns cannot disagree with the reported ones."""
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {str(d): {"narrative": "n", "how_it_is_applied": "h",
+                  "Instructional Model Stage": "Interpret"} for d in range(1, 25)}),
+        batch_size=10)
+    res = gen.reduce(ENUMERATE_SUMMARY, DIGESTS, deliverable="blueprint", tier="draft",
+                     extension_columns=_EXT_COLS)
+    day_section = next(s for s in res.sections if s["key"] == "day_table")
+    assert day_section["extension_columns"] == ["Instructional Model Stage", "Pilot Candidate"]
+    assert all("extensions" in r for r in day_section["rows"])
+
+
+def test_reduce_declares_nothing_by_default_and_adds_no_call():
+    """Default path for every live prompt: the section carries no extra columns and
+    the extension stage is never invoked."""
+    calls = []
+    gen = BlockWideGenerator(llm=lambda *a, **k: calls.append(1) or json.dumps(
+        {str(d): {"narrative": "n", "how_it_is_applied": "h"} for d in range(1, 25)}),
+        batch_size=10)
+    baseline = gen.reduce(ENUMERATE_SUMMARY, DIGESTS, deliverable="blueprint", tier="draft")
+    day_section = next(s for s in baseline.sections if s["key"] == "day_table")
+    assert day_section["extension_columns"] == []
+    assert "extension_columns" not in gen.prompt_provenance
+
+
+def test_a_failed_day_states_the_reason_rather_than_being_asked_to_guess():
+    """Same discipline as _fill_narratives: no verified facts means no fill."""
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {"1": {"Instructional Model Stage": "Interpret", "Pilot Candidate": "No"},
+         "2": {"Instructional Model Stage": "invented", "Pilot Candidate": "invented"}}),
+        batch_size=10)
+    rows = _ext_rows(2)
+    rows[1]["digest_status"] = "failed"
+    gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert rows[0]["extensions"]["Instructional Model Stage"] == "Interpret"
+    assert set(rows[1]["extensions"].values()) == {"REVIEW NEEDED — per-day digest failed."}
+
+
+def test_a_near_miss_reply_key_is_still_matched():
+    """Reply keys are model-generated. Reporting a value the model DID return as never
+    returned is the one thing that marker must not say falsely."""
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {"1": {"instructional model stage": "Interpret", "pilot_candidate": "No"}}),
+        batch_size=10)
+    rows = _ext_rows(1)
+    gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert rows[0]["extensions"]["Instructional Model Stage"] == "Interpret"
+    assert rows[0]["extensions"]["Pilot Candidate"] == "No"
+
+
+def test_an_exact_key_still_wins_over_a_loose_one():
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps(
+        {"1": {"Instructional Model Stage": "exact", "instructionalmodelstage": "loose",
+               "Pilot Candidate": "x"}}), batch_size=10)
+    rows = _ext_rows(1)
+    gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert rows[0]["extensions"]["Instructional Model Stage"] == "exact"
+
+
+def test_a_non_dict_day_payload_degrades_to_the_marker():
+    gen = BlockWideGenerator(llm=lambda *a, **k: json.dumps({"1": "just a string"}),
+                             batch_size=10)
+    rows = _ext_rows(1)
+    gen._fill_extensions(rows, _EXT_COLS, "Claude Haiku 4.5 (Bedrock)")
+    assert set(rows[0]["extensions"].values()) == {EXTENSION_MISSING}

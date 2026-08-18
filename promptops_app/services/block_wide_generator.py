@@ -67,6 +67,37 @@ _DEFAULT_SYSTEM = {
     ),
 }
 
+#: Cell text when a declared column came back without a value for a day. Named rather
+#: than blank for the same reason every other default here is: a reviewer cannot tell
+#: an empty cell that was answered "nothing" from one the model never returned, and
+#: only the second is a defect worth chasing. Module level so ``block_wide_service``'s
+#: renderer defaults to the SAME string this stage writes — two copies would drift and
+#: a reviewer would meet two different markers for one condition.
+EXTENSION_MISSING = "REVIEW NEEDED — not returned"
+
+#: Built-in fallback for the declared-column fill, used when the template file and any
+#: DB override are absent or fail their contract. Mirrors
+#: templates/extension_columns_reduce.md — the file is the maintained copy.
+_DEFAULT_EXTENSION_SYSTEM = (
+    "You are filling ADDITIONAL Worksheet 4 columns that this course's selected "
+    "Blueprint prompt declared, from the verified per-day facts supplied. Fill each "
+    "declared column from those facts and nothing else; you are not given the raw "
+    "source documents, so where a column cannot be answered from the facts present "
+    "return \"REVIEW NEEDED — not derivable from the day facts\" rather than "
+    "inferring. Never contradict or re-decide a fact you are given. One short phrase "
+    "or sentence per cell. Return ONLY the JSON object requested."
+)
+
+_DEFAULT_EXTENSION_USER = (
+    "Return ONLY a JSON object mapping each day_number (as a string) to an object "
+    "whose keys are exactly the column labels listed under COLUMNS below, with a "
+    "string value for each.\n\n"
+    "COLUMNS — each label, then what its cell must contain:\n{{columns}}\n\n"
+    "BLOCK_CONTEXT (all days, for cross-referencing only — never a source of new "
+    "facts):\n{{block_context}}{{guidance_block}}\n\n"
+    "DAYS TO FILL IN:\n{{day_records}}"
+)
+
 _TEMPLATE_NAME = {"cdd": "cdd_reduce", "blueprint": "blueprint_reduce_worksheet"}
 _PATTERNS_TEMPLATE_NAME = "patterns_notes_reduce"
 
@@ -137,6 +168,19 @@ _DEFAULT_PATTERNS_USER = (
     '{"content_arc_summary": str, "production_readiness": str}\n\n'
     'FACTS:\n{{facts}}\n{{guidance_block}}'
 )
+
+
+def _loose_key(text: str) -> str:
+    """Lower-cased, punctuation- and space-free form of a column label, for matching a
+    model's reply keys against the declared ones."""
+    return "".join(ch for ch in str(text).lower() if ch.isalnum())
+
+
+def _day_list(days: List[int]) -> str:
+    """``day 6`` / ``days 5, 6`` — a reviewer reads these lines in prose, and
+    "days 6" reads as a transcription error rather than as one day."""
+    uniq = sorted(set(days))
+    return f"day {uniq[0]}" if len(uniq) == 1 else f"days {', '.join(str(d) for d in uniq)}"
 
 
 @dataclass
@@ -353,7 +397,8 @@ class BlockWideGenerator:
                block_overview: Optional[Dict[str, Any]] = None,
                source_file_inventory: Optional[List[Dict[str, Any]]] = None,
                acs_registry: Optional[List[Dict[str, Any]]] = None,
-               map_guidance: str = "", user_directives: str = "") -> ReduceResult:
+               map_guidance: str = "", user_directives: str = "",
+               extension_columns: Optional[List[Dict[str, str]]] = None) -> ReduceResult:
         """``map_guidance`` (optional) is judgment/emphasis instructions distilled
         from the course's selected CDD/Blueprint prompt (see
         promptops_app.services.prompt_guidance.resolve_prompt_guidance) — folded
@@ -391,6 +436,10 @@ class BlockWideGenerator:
         self._usage_ctx = self._build_usage_ctx(deliverable, narrative_prompt)
         llm_calls = self._fill_narratives(rows, deliverable, narrative_prompt, tm.reduce_model,
                                           block_overview, map_guidance, user_directives)
+        # After the narratives: these columns are told not to contradict the row they
+        # sit in, so they are filled from a row that is already complete.
+        llm_calls += self._fill_extensions(rows, list(extension_columns or []),
+                                           tm.reduce_model, map_guidance, user_directives)
 
         coverage = self.verify(rows, enumerate_summary, deliverable, tm.tier)
         sections = [
@@ -399,7 +448,10 @@ class BlockWideGenerator:
             {"key": "acs_registry", "title": "ACS CODE REGISTRY", "rows": acs_registry or []},
             {"key": "day_table",
              "title": f"{deliverable.upper()} — day-by-day ({coverage.enumerated_days} days)",
-             "rows": rows},
+             "rows": rows,
+             # Carried on the section, not read off the generator, so the renderer
+             # emits exactly the columns THIS result was built with.
+             "extension_columns": [c["label"] for c in (extension_columns or [])]},
         ]
         notes_calls = 0
         try:
@@ -420,14 +472,120 @@ class BlockWideGenerator:
             prompt_provenance=dict(self.prompt_provenance),
         )
 
+    _EXTENSION_TEMPLATE_NAME = "extension_columns_reduce"
+
+    def _fill_extensions(self, rows: List[Dict[str, Any]], columns: List[Dict[str, str]],
+                         model_choice: str, map_guidance: str = "",
+                         user_directives: str = "") -> int:
+        """Fill the additional day columns the selected prompt declared. Returns the
+        number of LLM calls made — 0 when nothing is declared.
+
+        A SEPARATE call rather than extra keys on the narrative reply, deliberately.
+        The narrative template's contract pins six reply keys the parser reads by name;
+        making a seventh set conditional on the request would mean a contract that
+        cannot be checked without knowing the request, and an admin editing that
+        template could no longer be told what it must contain. Keeping this apart means
+        a run that declares nothing produces byte-identical prompts, byte-identical
+        output, and no extra call — the same discipline ``_guidance_block`` follows.
+
+        REDUCE tier, not MAP, and that is the whole reason this is affordable: the MAP
+        template's hash is part of every per-day digest's cache key, so sourcing these
+        cells there would invalidate every digest of every block for every tenant. The
+        cost is grounding — this stage sees the established day facts, never the raw
+        source text — which is why the prompt is told to return a review marker instead
+        of inferring, and why a declared column can never overwrite a pipeline cell.
+        """
+        if not columns or not rows:
+            return 0
+        from promptops_app.services.reduce_prompts import (
+            EXTENSION_CONTRACT, render_user_prompt,
+        )
+        prompt = self._resolve_prompt(
+            self._EXTENSION_TEMPLATE_NAME, _DEFAULT_EXTENSION_SYSTEM,
+            _DEFAULT_EXTENSION_USER, EXTENSION_CONTRACT,
+        )
+        self.prompt_provenance["extension_columns"] = prompt.to_provenance()
+
+        labels = [c["label"] for c in columns]
+        columns_text = "\n".join(f"- {c['label']}: {c['description']}" for c in columns)
+        block_context = [{"day_number": r["day_number"], "topic": r["topic"],
+                          "projects_today": r["projects_today"]} for r in rows]
+        calls = 0
+        for i in range(0, len(rows), self.batch_size):
+            batch = rows[i:i + self.batch_size]
+            payload = [{
+                "day_number": r["day_number"],
+                "topic": r["topic"],
+                "acs_codes": r["acs_codes"],
+                "concept_type": r["concept_type"],
+                "concept_scope": r.get("concept_scope", ""),
+                "derived_objective": r["derived_objective"],
+                "misconceptions": r["misconceptions"],
+                "projects_today": r["projects_today"],
+                "hangar_activity_today": r["hangar_activity_today"],
+                "digest_status": r["digest_status"],
+            } for r in batch]
+            user = render_user_prompt(
+                prompt,
+                {
+                    "columns": columns_text,
+                    "block_context": json.dumps(block_context, indent=2),
+                    "guidance_block": _guidance_block(map_guidance, user_directives),
+                    "day_records": json.dumps(payload, indent=2),
+                },
+                EXTENSION_CONTRACT,
+                _DEFAULT_EXTENSION_USER,
+            )
+            try:
+                text = self._call(model_choice, prompt.system, user)
+            except Exception as exc:  # noqa: BLE001
+                # These columns are additive: losing them must never cost the run the
+                # 31 columns that were already built and paid for.
+                log.warning("extension_columns fill failed for batch at %d (%s) — "
+                            "those days render %r", i, exc, EXTENSION_MISSING)
+                text = ""
+            calls += 1
+            parsed = _safe_json(text)
+            mapping = parsed if isinstance(parsed, dict) else {}
+            for r in batch:
+                # Same discipline as _fill_narratives: a failed digest has no verified
+                # facts for this stage to work from, so its cells state that rather
+                # than carrying whatever a model produced from an empty payload.
+                if r.get("digest_status") == "failed":
+                    r["extensions"] = {label: "REVIEW NEEDED — per-day digest failed."
+                                       for label in labels}
+                    continue
+                cell = mapping.get(str(r["day_number"])) or mapping.get(r["day_number"])
+                values = cell if isinstance(cell, dict) else {}
+                # Match the reply's keys case- and spacing-insensitively. They are
+                # model-generated, so "instructional model stage" for a column declared
+                # "Instructional Model Stage" is an ordinary near-miss — and an exact
+                # lookup would report a value the model DID return as never returned,
+                # which is the one thing this marker must not say falsely.
+                loose = {_loose_key(k): v for k, v in values.items() if isinstance(k, str)}
+                r["extensions"] = {}
+                for label in labels:
+                    raw = values.get(label)
+                    if raw is None:
+                        raw = loose.get(_loose_key(label))
+                    r["extensions"][label] = str(raw or "").strip() or EXTENSION_MISSING
+        fillable = [r for r in rows if r.get("digest_status") != "failed"]
+        filled = sum(1 for r in fillable
+                     if any(v != EXTENSION_MISSING for v in (r.get("extensions") or {}).values()))
+        if filled < len(fillable):
+            log.warning("extension_columns: %d/%d fillable days have at least one "
+                        "populated declared column", filled, len(fillable))
+        return calls
+
     def _patterns_notes(self, rows: List[Dict[str, Any]], coverage: "CoverageReport",
                         model_choice: str, map_guidance: str = "",
                         user_directives: str = "") -> tuple[Dict[str, str], int]:
         """Worksheet 5 synthesis. Every field with a single correct answer (learn-
-        while-doing days, handbook edition conflicts, high-risk days) is a CODE
-        conclusion, not an LLM judgment call — a model asked to "phrase" a fact can
-        still second-guess it (seen live: given two distinct handbook editions in
-        the facts, one run's prose concluded "no conflicts detected" anyway). The
+        while-doing days, handbook edition conflicts, high-risk days, the consolidated
+        missing-source summary) is a CODE conclusion, not an LLM judgment call — a
+        model asked to "phrase" a fact can still second-guess it (seen live: given two
+        distinct handbook editions in the facts, one run's prose concluded "no
+        conflicts detected" anyway). The
         LLM is only asked for the two fields that are genuinely open-ended prose
         synthesis with no single correct answer: content_arc_summary and
         production_readiness.
@@ -456,6 +614,38 @@ class BlockWideGenerator:
         edition_summary = "; ".join(f"{ed} on days {','.join(map(str, ds))}" for ed, ds in seen_editions.items())
 
         high_risk = coverage.thin_days + coverage.failed_days
+
+        # AIM's Blueprint worksheet 5 requires a consolidated list of every
+        # MISSING_SOURCE raised anywhere in worksheets 1-4. Grouped by reason with
+        # its day list rather than one line per day: the same missing artefact
+        # typically spans a run of days, and twenty near-identical lines is the
+        # form in which a reviewer stops reading them. A code conclusion for the
+        # same reason the three fields below are - the flags were already computed
+        # by ENUMERATE/mapper, and a model asked to "summarise" them can drop one.
+        missing_by_reason: Dict[str, List[int]] = {}
+        for r in rows:
+            for flag in (r.get("review_flags") or []):
+                text = str(flag)
+                if text.startswith("MISSING_SOURCE"):
+                    reason = text.split("—", 1)[-1].strip() if "—" in text else text
+                    missing_by_reason.setdefault(reason, []).append(r["day_number"])
+        # Worksheet 1's own gaps (e.g. an unread syllabus) reach CoverageReport as
+        # enumerate flags, not as a day's review_flags, so they would be missed by
+        # the loop above - which is exactly the "anywhere in worksheets 1-4" part.
+        # getattr, not attribute access: _patterns_notes is best-effort and its caller
+        # OMITS worksheet 5 entirely when it raises, so a caller holding a partial
+        # coverage object would trade the whole worksheet for one optional list. The
+        # per-day flags above still land; only the block-level entries drop.
+        block_level = [str(f) for f in (getattr(coverage, "enumerate_flags", None) or [])
+                       if "MISSING_SOURCE" in str(f) or str(f).startswith("SYLLABUS_")]
+        if missing_by_reason or block_level:
+            parts = [f"{reason} ({_day_list(days)})"
+                     for reason, days in sorted(missing_by_reason.items())]
+            parts += [f"{f} (block level)" for f in block_level]
+            missing_summary = "; ".join(parts)
+        else:
+            missing_summary = "No MISSING_SOURCE flags raised."
+
         code_fields = {
             "high_risk_days": (f"Days {', '.join(map(str, sorted(set(high_risk))))} — thin/failed digest coverage."
                                if high_risk else "No high-risk days detected."),
@@ -466,6 +656,7 @@ class BlockWideGenerator:
             "handbook_edition_conflicts": (f"CONFLICT: multiple handbook editions cited — {edition_summary}. "
                                            "Verify with SME which edition/volume is actually intended."
                                            if has_conflict else f"No edition conflicts detected. {edition_summary}."),
+            "missing_source_summary": missing_summary,
         }
 
         facts = {

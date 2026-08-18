@@ -598,3 +598,156 @@ def test_capability_name_lists_are_capped_with_an_honest_total():
     assert len(cap.unmatched_columns) == _CAPABILITY_NAME_CAP
     assert cap.unknown_variables_total == 60
     assert len(cap.unknown_variables) == _CAPABILITY_NAME_CAP
+
+
+# --------------------------------------------------------------------------- #
+# Prompt-declared additional day columns
+# --------------------------------------------------------------------------- #
+from promptops_app.services.prompt_capability import (  # noqa: E402
+    parse_extension_columns, _MAX_EXTENSION_COLUMNS,
+)
+
+_DECL = """ADDITIONAL DAY COLUMNS
+- Instructional Model Stage: which stage of the Block's model this day belongs to
+- Pilot Candidate: whether the SME recommends this day for pilot testing
+"""
+
+
+def test_a_declaration_carries_both_the_label_and_its_definition():
+    """The description is what reaches the fill prompt. A bare label would ask the
+    model to guess the column's purpose from its name."""
+    accepted, rejected = parse_extension_columns(_DECL)
+    assert [c["label"] for c in accepted] == ["Instructional Model Stage", "Pilot Candidate"]
+    assert accepted[0]["description"].startswith("which stage")
+    assert rejected == []
+
+
+def test_blank_lines_do_not_end_the_list_but_prose_does():
+    text = ("ADDITIONAL DAY COLUMNS\n"
+            "- A Column: first\n"
+            "\n"
+            "- B Column: still in the list\n"
+            "Now some prose about something else.\n"
+            "- C Column: no longer in the list\n")
+    accepted, _ = parse_extension_columns(text)
+    assert [c["label"] for c in accepted] == ["A Column", "B Column"]
+
+
+def test_a_declaration_colliding_with_an_emitted_column_is_refused():
+    """Emitting it would put two columns of the same meaning in one row. Caught
+    canonically, so an alias of an emitted label is caught too."""
+    accepted, rejected = parse_extension_columns(
+        "ADDITIONAL DAY COLUMNS\n- ACS Codes: a duplicate of an emitted column\n")
+    assert accepted == []
+    assert len(rejected) == 1 and "already emitted" in rejected[0]
+
+
+def test_a_repeated_declaration_is_refused_once():
+    accepted, rejected = parse_extension_columns(
+        "ADDITIONAL DAY COLUMNS\n- Stage: one\n- Stage: two\n")
+    assert [c["label"] for c in accepted] == ["Stage"]
+    assert len(rejected) == 1 and "more than once" in rejected[0]
+
+
+def test_over_cap_declarations_are_reported_not_silently_dropped():
+    """Silent truncation of a requested column is the exact failure this module
+    exists to prevent."""
+    body = "".join(f"- Column {i}: definition {i}\n" for i in range(_MAX_EXTENSION_COLUMNS + 3))
+    accepted, rejected = parse_extension_columns("ADDITIONAL DAY COLUMNS\n" + body)
+    assert len(accepted) == _MAX_EXTENSION_COLUMNS
+    assert len(rejected) == 3 and all("exceeds the limit" in r for r in rejected)
+
+
+def test_a_prompt_with_no_marker_declares_nothing():
+    """Opt-in by an explicit marker, not inferred from the column list: 4 of the 17
+    live prompts name existing columns under other labels, and treating those as
+    declarations would widen every one of their tables with duplicates."""
+    accepted, rejected = parse_extension_columns(
+        "| Day | Content Summary | Formative Assessment |\n|---|---|---|\n")
+    assert (accepted, rejected) == ([], [])
+
+
+def test_declaring_a_column_stops_it_being_reported_as_divergent():
+    """The loop that makes the feature coherent: a declared column IS emitted, so it
+    is matched rather than a finding."""
+    report = assess(_DECL + """
+| Day | Topic | Instructional Model Stage | Pilot Candidate |
+|---|---|---|---|
+""")
+    assert report.unmatched_columns == []
+    assert "Instructional Model Stage" in report.matched_columns
+    assert not report.has_findings
+
+
+def test_the_same_column_undeclared_is_reported_as_divergent():
+    """Control for the test above — without the declaration it must still surface."""
+    report = assess("""
+| Day | Topic | Instructional Model Stage |
+|---|---|---|
+""")
+    assert report.unmatched_columns == ["Instructional Model Stage"]
+    assert report.has_findings
+
+
+def test_a_refused_declaration_is_a_finding_a_reviewer_sees():
+    report = assess("ADDITIONAL DAY COLUMNS\n- ACS Codes: duplicate\n")
+    assert report.has_findings
+    assert any("refused" in m for _s, m in report._findings())
+
+
+def test_provenance_records_the_declared_labels_and_refusals():
+    report = assess(_DECL + "- ACS Codes: duplicate\n")
+    prov = report.to_provenance()
+    assert prov["extension_columns"] == ["Instructional Model Stage", "Pilot Candidate"]
+    assert prov["extension_rejections"]["total"] == 1
+
+
+def test_a_declaration_with_no_definition_is_reported_and_does_not_end_the_list():
+    """Found in review: an empty description failed the item pattern, which ended the
+    list and silently dropped every declaration after it — the silent truncation this
+    module exists to prevent, reintroduced by its own parser."""
+    accepted, rejected = parse_extension_columns(
+        "ADDITIONAL DAY COLUMNS\n- Broken Column:\n- Good Column: a real definition\n")
+    assert [c["label"] for c in accepted] == ["Good Column"]
+    assert len(rejected) == 1 and "declares no definition" in rejected[0]
+
+
+# --------------------------------------------------------------------------- #
+# The shipped AIM Blueprint prompt must stay reconciled with the pipeline
+# --------------------------------------------------------------------------- #
+def test_the_shipped_aim_blueprint_prompt_reconciles_clean():
+    """AIM_BLOCK_BLUEPRINT_PROMPT.md states the day-table columns literally, so a
+    change to _DAY_TABLE_HEADER silently invalidates it. This is the only thing that
+    would notice."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    doc = root / "AIM_BLOCK_BLUEPRINT_PROMPT.md"
+    assert doc.exists(), f"{doc.name} is missing — update this test if it was renamed"
+    fence = chr(96) * 3
+    parts = doc.read_text(encoding="utf-8").split(fence + "text")
+    assert len(parts) >= 3, "expected a fenced System Prompt and User Prompt block"
+    report = assess(parts[1].split(fence)[0] + parts[2].split(fence)[0])
+    assert report.unmatched_columns == [], (
+        "the prompt names day-table columns the renderer no longer emits: "
+        f"{report.unmatched_columns}")
+    assert report.extension_rejections == []
+    assert report.unknown_variables == []
+    assert report.blocking_demands == []
+    assert not report.has_findings
+    assert [c["label"] for c in report.extension_columns] == ["Instructional Model Stage"]
+
+
+def test_a_pathological_declaration_count_yields_a_bounded_finding():
+    """Found in review: the rejection message joined every refusal unbounded. This
+    string is rendered into a UI notice AND into the generated document."""
+    from promptops_app.services.prompt_capability import _FINDING_LIST_CAP
+    report = assess("ADDITIONAL DAY COLUMNS\n"
+                    + "".join(f"- Column {i}: definition {i}\n" for i in range(500)))
+    assert len(report.extension_rejections) == 500 - _MAX_EXTENSION_COLUMNS
+    message = next(m for _s, m in report._findings() if "refused" in m)
+    assert len(message) < 1500
+    assert f"and {500 - _MAX_EXTENSION_COLUMNS - _FINDING_LIST_CAP} more" in message
+    # and the provenance row stays bounded independently
+    prov = report.to_provenance()
+    assert len(prov["extension_rejections"]["items"]) == 40
+    assert prov["extension_rejections"]["total"] == 500 - _MAX_EXTENSION_COLUMNS
