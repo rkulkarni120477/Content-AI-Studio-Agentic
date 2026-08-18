@@ -321,7 +321,16 @@ def extract_xlsx(content: bytes, vision_fn=None, options: dict | None = None) ->
                     all_tables.append(cells)
 
             all_parts.append(f"[Sheet: {sheet_name}]\nColumns: {', '.join(h for h in headers if h)}")
-            all_parts.extend(sheet_rows[:500])  # cap at 500 rows per sheet in text
+            # Every row. This was `sheet_rows[:500]`, which silently dropped row 501
+            # onward from the TEXT — the field that gets chunked, embedded and
+            # retrieved — while `all_tables` above kept them, so nothing downstream
+            # could tell the difference between a 400-row sheet and a 4,000-row one
+            # truncated to 500. A teacher calendar or ACS-code workbook past that
+            # line was simply absent from every digest and every retrieval, forever,
+            # with no flag anywhere. extract_csv already keeps its rows in full for
+            # exactly this reason ("keep full CSV text for DIS/S3; UI paginates
+            # display"); the spreadsheet path was left behind.
+            all_parts.extend(sheet_rows)
 
         return ExtractionResult(
             text="\n".join(all_parts),
@@ -365,7 +374,11 @@ def extract_json(content: bytes, vision_fn=None, options: dict | None = None) ->
     try:
         data = json.loads(content)
         if isinstance(data, list):
-            text = "\n".join(json.dumps(item) for item in data[:500])
+            # All items — was `data[:500]`. Same silent loss as the xlsx row cap:
+            # the dropped tail never reaches the index and nothing records that it
+            # existed. A dict-valued document was already serialized whole below,
+            # so the list branch was the only shape that lost content.
+            text = "\n".join(json.dumps(item) for item in data)
         else:
             text = json.dumps(data, indent=2)
         return ExtractionResult(text=text)

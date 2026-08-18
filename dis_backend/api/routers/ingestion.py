@@ -188,7 +188,12 @@ def _extract_text_for_source_library(filename: str, content: bytes) -> str:
         return _clean_reading_text(content.decode("utf-8", errors="ignore"))
     except Exception as exc:
         log.warning("Source Library extraction failed for %s: %s", filename, exc)
-        return _clean_reading_text(content[:200000].decode("utf-8", errors="ignore"))
+        # Whole bytes. The `[:200000]` here silently cut the salvage attempt at 200KB
+        # — and this branch runs precisely when the typed extractor already failed,
+        # i.e. when the salvaged text is the ONLY text this document will ever have.
+        # Losing its tail is not a cheaper fallback, it is a permanently incomplete
+        # document that reads as complete everywhere downstream.
+        return _clean_reading_text(content.decode("utf-8", errors="ignore"))
 
 
 def _preview_text_for_source_library(filename: str, content: bytes, max_chars: int = _DEFERRED_PREVIEW_MAX_CHARS) -> str:

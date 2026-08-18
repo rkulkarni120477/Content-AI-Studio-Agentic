@@ -1386,6 +1386,42 @@ def _scope_hint(deep) -> str:
             "the instruction names it.")
 
 
+def _completeness_hint(deep) -> str:
+    """Name any document the model did not see in full.
+
+    Nothing is ever truncated to fit a budget, but two kinds of loss survive that
+    rule, and they need opposite responses — so they are reported separately rather
+    than merged into one "incomplete" sentence:
+
+    * ``omitted_documents`` — retrieved, never opened. None of it was read, so a
+      "not covered" conclusion says nothing about it. Fix: name it in the
+      instruction so it ranks ahead of what crowded it out.
+    * ``incomplete_documents`` — opened, but DIS packed only part of it before
+      answering. It DID inform the answer, partially, which is the more dangerous
+      of the two: a conclusion drawn from it looks as well-sourced as any other.
+      Fix: narrow the request so fewer documents compete.
+
+    Returns "" when everything retrieved was read in full, which is the normal case
+    — the note should not carry a caveat that does not apply.
+    """
+    parts: list[str] = []
+    omitted = list(getattr(deep, "omitted_documents", ()) or ())
+    incomplete = list(getattr(deep, "incomplete_documents", ()) or ())
+    if omitted:
+        shown = ", ".join(omitted[:_NOTE_SOURCE_LIMIT])
+        more = ", and others" if len(omitted) > _NOTE_SOURCE_LIMIT else ""
+        parts.append(f" These were found but not read, because higher-ranked documents "
+                     f"filled the request first: {shown}{more}. Naming one in the "
+                     "instruction moves it to the front.")
+    if incomplete:
+        shown = ", ".join(incomplete[:_NOTE_SOURCE_LIMIT])
+        more = ", and others" if len(incomplete) > _NOTE_SOURCE_LIMIT else ""
+        parts.append(f" These were read only in part: {shown}{more} — so nothing here "
+                     "rules out that they cover it. Asking about one of them "
+                     "specifically will retrieve more of it.")
+    return "".join(parts)
+
+
 def _noop_note(deep, *, target_text: str = "") -> str:
     """Explain an unchanged section in terms the user can act on.
 
@@ -1448,6 +1484,10 @@ def _noop_note(deep, *, target_text: str = "") -> str:
             + (", and nothing in it changed this. " if already_filled
                else ", but none of it covers what was asked. ")
             + _scope_hint(deep)
+            # Only on this branch. The empty-lookup branch below retrieved nothing,
+            # so it can have nothing omitted — and _pack_units always keeps at least
+            # one unit, so "found nothing" and "dropped something" cannot co-occur.
+            + _completeness_hint(deep)
             + " Nothing was saved."
             + tail
         )

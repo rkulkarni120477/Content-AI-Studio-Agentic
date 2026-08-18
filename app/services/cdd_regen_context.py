@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.exceptions import RegenerationTooLargeError
-from promptops_app.core.config import clip_tokens, count_tokens
+from promptops_app.core.config import count_tokens
 
 _log = logging.getLogger(__name__)
 
@@ -44,11 +44,27 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Budgets
 # ---------------------------------------------------------------------------
-# Per-part caps, then a whole-context cap. Two levels rather than one so a
-# single oversized worksheet (the ACS registry is 8k characters) cannot crowd
-# out the others: each part is trimmed to its own share first, and the total is
-# only a backstop.
-
+# These were per-part caps plus a whole-context cap, applied through `clip_tokens`
+# so that a single oversized worksheet could not crowd out the others. They are
+# retired as ENFORCED bounds, for two reasons.
+#
+# First, they never enforced anything: `clip_tokens` is governed by
+# PROMPTOPS_TOKEN_LIMIT_ENABLED, which defaults to False and is set nowhere in this
+# deployment, so every one of these was a no-op. The context was already going out
+# whole; the numbers described an intention, not the behaviour.
+#
+# Second, that intention is wrong for this context. What they would have trimmed is
+# the document's OWN worksheet content — the authoritative material the prompt
+# explicitly tells the model not to contradict. Cutting a scoped day-row table
+# mid-row hands the model a malformed table it cannot tell is malformed, and cutting
+# the ACS registry drops codes the regeneration is meant to reconcile against.
+# Crowding-out is a SELECTION problem, and this module already solves it by
+# selection: `parse_scope` narrows to the days, codes and columns the instruction
+# actually names, so only relevant parts are assembled in the first place.
+#
+# Kept as names because the sizing knowledge in them is real and still used for
+# routing decisions (see SMALL_WORKSHEET_TOKENS and the scoped-regen threshold);
+# deleting them would only mean re-measuring the same worksheets later.
 BLOCK_OVERVIEW_TOKENS = 800
 DAY_ROWS_TOKENS = 6000
 DAY_INDEX_TOKENS = 1200
@@ -269,7 +285,7 @@ def _codes_in_rows(table: MarkdownTable, rows: Sequence[str]) -> list[str]:
     return found
 
 
-def _day_index(table: MarkdownTable, limit_tokens: int) -> str:
+def _day_index(table: MarkdownTable) -> str:
     """A compact "Day N — topic" list for the whole block.
 
     Cross-day awareness without the 77k table: enough for the model to place a
@@ -281,7 +297,7 @@ def _day_index(table: MarkdownTable, limit_tokens: int) -> str:
         if len(parts) < 2:
             continue
         lines.append(f"{parts[0]} — {parts[1]}")
-    return clip_tokens("\n".join(lines), limit_tokens) if lines else ""
+    return "\n".join(lines) if lines else ""
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +497,7 @@ def build_context(
     used: list[str] = []
 
     if overview.strip():
-        parts.append("## BLOCK OVERVIEW\n" + clip_tokens(overview.strip(), BLOCK_OVERVIEW_TOKENS))
+        parts.append("## BLOCK OVERVIEW\n" + overview.strip())
         used.append("block_overview")
 
     scoped_rows: list[str] = []
@@ -494,10 +510,10 @@ def build_context(
 
         if scoped_rows:
             rendered = day_table.render(scoped_rows)
-            parts.append("## DAY ROWS IN SCOPE\n" + clip_tokens(rendered, DAY_ROWS_TOKENS))
+            parts.append("## DAY ROWS IN SCOPE\n" + rendered)
             used.append("day_rows")
         else:
-            index = _day_index(day_table, DAY_INDEX_TOKENS)
+            index = _day_index(day_table)
             if index:
                 parts.append("## DAY INDEX (whole block)\n" + index)
                 used.append("day_index")
@@ -506,19 +522,17 @@ def build_context(
         codes = list(scope.acs_codes) or _codes_in_rows(acs_table, scoped_rows)
         acs_rows = _rows_for_codes(acs_table, codes) if codes else []
         if acs_rows:
-            parts.append("## ACS CODES IN SCOPE\n"
-                         + clip_tokens(acs_table.render(acs_rows), ACS_ROWS_TOKENS))
+            parts.append("## ACS CODES IN SCOPE\n" + acs_table.render(acs_rows))
             used.append("acs_registry")
 
     if sources_md.strip() and _mentions_sources(instruction):
-        parts.append("## SOURCE FILE INVENTORY\n"
-                     + clip_tokens(sources_md.strip(), SOURCE_INVENTORY_TOKENS))
+        parts.append("## SOURCE FILE INVENTORY\n" + sources_md.strip())
         used.append("source_inventory")
 
     if not parts:
         return RegenContext(scope=scope)
 
-    body = clip_tokens("\n\n".join(parts), TOTAL_CONTEXT_TOKENS)
+    body = "\n\n".join(parts)
     text = (
         "=== CONTEXT FROM THIS DOCUMENT (authoritative — do not contradict) ===\n"
         f"{body}\n"

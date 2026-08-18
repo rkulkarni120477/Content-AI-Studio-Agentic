@@ -8,7 +8,7 @@ import logging
 import math
 import re
 import uuid
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -824,7 +824,8 @@ class ContextRetrievalService:
             query_text = (query_text + " " + calendar_hints["text"]).strip()
         query_terms = terms(query_text)
         top_k = min(int(retrieval.get("top_k", 8)), self.tenant_cfg.retrieval.max_results)
-        token_budget = min(int(retrieval.get("token_budget", 6000)), 20000)
+        token_budget = min(int(retrieval.get("token_budget", 6000)),
+                           self.tenant_cfg.retrieval.token_budget_cap)
         min_score = float(retrieval.get("min_score", 0.0))
 
         # Security/filter allow-set. A doc that passes the S3 gate
@@ -894,7 +895,9 @@ class ContextRetrievalService:
             chosen_units = self._score_s3_units(allowed_units, query_terms, min_score)
             retrieval_method = "s3_keyword"
 
-        selected, used_tokens, combined = self._pack_units(chosen_units, top_k, token_budget, include_visual_summary)
+        budget_dropped: List[Dict[str, Any]] = []
+        selected, used_tokens, combined = self._pack_units(
+            chosen_units, top_k, token_budget, include_visual_summary, dropped=budget_dropped)
         return {
             "context_pack_id": f"ctx_{uuid.uuid4().hex[:12]}",
             "tenant_id": self.tenant_cfg.tenant_id,
@@ -910,6 +913,15 @@ class ContextRetrievalService:
                 "estimated_tokens": used_tokens,
                 "avg_score": round(sum(float(u.get("score", 0.0)) for u in selected) / len(selected), 4) if selected else 0.0,
                 "quality_status": "good" if selected else "no_context",
+                # What the token budget removed, and from which documents. A caller
+                # that regroups source_units into whole documents cannot otherwise
+                # tell a complete document from a budget-clipped one, and would
+                # label a subset as though it were the source.
+                "budget_dropped_units": len(budget_dropped),
+                "budget_dropped_sources": sorted({
+                    str(d.get("source_file_name") or "") for d in budget_dropped
+                    if d.get("source_file_name")
+                }),
             },
             "source_units": selected,
             "combined_context": combined,
@@ -1077,14 +1089,33 @@ class ContextRetrievalService:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [u for _, u in scored]
 
-    def _pack_units(self, units: List[Dict[str, Any]], top_k: int, token_budget: int, include_visual_summary: bool) -> Tuple[List[Dict[str, Any]], int, str]:
-        """Pack ranked units into the token budget. Returns (selected, tokens, combined)."""
+    def _pack_units(self, units: List[Dict[str, Any]], top_k: int, token_budget: int,
+                    include_visual_summary: bool,
+                    dropped: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]], int, str]:
+        """Pack ranked units into the token budget. Returns (selected, tokens, combined).
+
+        Units are packed WHOLE — one is included or skipped, never cut — so the
+        caller's text is never a fragment presented as a unit.
+
+        ``dropped`` (optional) is appended to in place with a descriptor of every
+        unit the budget skipped. This used to be a bare ``continue``: the response
+        reported ``returned_units`` and said nothing about the ones it had removed,
+        so a caller regrouping these units into "whole documents" was silently
+        regrouping a subset — the one failure mode worse than returning less, because
+        the result looks complete. Reported so the caller can say so.
+        """
         selected: List[Dict[str, Any]] = []
         used_tokens = 0
         for unit in units:
             unit_text = self._format_unit(unit, include_visual_summary)
             t = estimate_tokens(unit_text)
             if selected and used_tokens + t > token_budget:
+                if dropped is not None:
+                    dropped.append({
+                        "content_unit_id": unit.get("content_unit_id"),
+                        "source_file_name": unit.get("source_file_name"),
+                        "estimated_tokens": t,
+                    })
                 continue
             unit["estimated_tokens"] = t
             selected.append(unit)

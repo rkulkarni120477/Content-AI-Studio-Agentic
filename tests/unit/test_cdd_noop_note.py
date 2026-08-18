@@ -78,3 +78,69 @@ def test_source_names_without_a_unit_count_are_still_counted():
                                   sources=("a.docx", "b.docx")))
     assert "2 unit(s)" in note
     assert "a.docx" in note
+
+
+# ---------------------------------------------------------------------------
+# Completeness — naming what the model did not see in full.
+# ---------------------------------------------------------------------------
+
+def _deep(**kw):
+    from app.services.cdd_deep_context import DeepContext
+    base = {"text": "### SOURCE LIBRARY DOCUMENTS\nbody", "level": "search", "units": 12,
+            "levels_tried": ("search",), "sources": ("Block 2 Teacher Calendar.xlsx",)}
+    base.update(kw)
+    return DeepContext(**base)
+
+
+def test_a_fully_read_result_carries_no_completeness_caveat():
+    """The normal case. A note that always warns about incompleteness teaches the
+    reader to ignore the warning."""
+    from app.api.v1.routers.cdd import _completeness_hint
+    assert _completeness_hint(_deep()) == ""
+
+
+def test_an_unread_document_is_named_with_the_action_that_reaches_it():
+    from app.api.v1.routers.cdd import _completeness_hint
+    hint = _completeness_hint(_deep(omitted_documents=("Block 2 Study Questions.docx",)))
+    assert "Block 2 Study Questions.docx" in hint
+    assert "not read" in hint
+    assert "Naming one in the instruction" in hint
+
+
+def test_a_partially_read_document_says_it_cannot_rule_the_answer_out():
+    """The more dangerous of the two: it DID inform the answer, so a "not covered"
+    conclusion drawn from it looks as well-sourced as any other."""
+    from app.api.v1.routers.cdd import _completeness_hint
+    hint = _completeness_hint(_deep(incomplete_documents=("Block 2 Handbook.pdf",)))
+    assert "Block 2 Handbook.pdf" in hint
+    assert "read only in part" in hint
+    assert "rules out" in hint
+
+
+def test_the_two_kinds_of_loss_stay_distinguishable():
+    """They demand opposite actions — name it vs narrow the request — so collapsing
+    them into one sentence would leave the reader unable to tell which they have."""
+    from app.api.v1.routers.cdd import _completeness_hint
+    hint = _completeness_hint(_deep(omitted_documents=("Never.docx",),
+                                    incomplete_documents=("Partial.pdf",)))
+    assert hint.index("Never.docx") < hint.index("Partial.pdf")
+    assert "not read" in hint and "read only in part" in hint
+
+
+def test_a_long_omission_list_is_bounded_but_the_note_says_so():
+    from app.api.v1.routers.cdd import _NOTE_SOURCE_LIMIT, _completeness_hint
+    names = tuple(f"Doc {i}.docx" for i in range(_NOTE_SOURCE_LIMIT + 3))
+    hint = _completeness_hint(_deep(omitted_documents=names))
+    assert hint.count(".docx") == _NOTE_SOURCE_LIMIT
+    assert ", and others" in hint
+
+
+def test_the_hint_survives_a_deep_context_without_the_fields():
+    """Defensive: the note layer must never raise on an older DeepContext shape —
+    a regeneration failing because its EXPLANATION failed is the worst trade."""
+    from app.api.v1.routers.cdd import _completeness_hint
+
+    class _Bare:
+        pass
+
+    assert _completeness_hint(_Bare()) == ""
