@@ -208,6 +208,7 @@ def _make_result(resp: LLMResponse, start: float, status: str) -> LLMResult:
         completion_tokens=resp.completion_tokens,
         total_duration_s=time.monotonic() - start,
         status=status,
+        stop_reason=resp.stop_reason,
     )
 
 

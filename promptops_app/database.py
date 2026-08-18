@@ -1512,17 +1512,25 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
     ),
-    # Observability drift. The live table carries `trace_id`; the ORM declares
-    # `langfuse_trace_id`, and because SQLAlchemy names every mapped column in
-    # its SELECT, the mismatch breaks EVERY read of this table — including the
-    # post-generation budget summary, which turned successful, paid-for CDD
-    # regenerations into 500s and silently discarded their output.
+    # Observability drift. SQLAlchemy names every mapped column in its SELECT, so
+    # a table missing one breaks EVERY read — including the post-generation budget
+    # summary, which turned successful, paid-for CDD regenerations into 500s and
+    # silently discarded their output.
     #
-    # Added rather than renamed: `trace_id` is populated in existing rows and
-    # something may still read it, so dropping or renaming it would trade one
-    # outage for another. The two coexist until the ORM is reconciled.
+    # This entry has now been on both sides of the same rename. It was added when
+    # the live table carried `trace_id` and the ORM declared `langfuse_trace_id`;
+    # the Phoenix migration reconciled the ORM to `trace_id`, which inverts the
+    # exposure rather than ending it, because revision 000100000017 creates the
+    # column AS `langfuse_trace_id`. A database that ran 17 but not the
+    # 000100000022 rename has only the name the ORM stopped asking for.
+    #
+    # So the statement follows the ORM, and only the ORM: a column no model
+    # declares cannot break a read, and repairing one is dead DDL that still takes
+    # a lock on every boot. tests/unit/test_usage_summary_failsafe.py reads the
+    # mapped column name off LLMUsageLog so the next rename cannot quietly leave
+    # this pointing at the old one.
     "llm_usage_logs": (
-        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS langfuse_trace_id VARCHAR(64)",
+        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)",
     ),
 }
 
