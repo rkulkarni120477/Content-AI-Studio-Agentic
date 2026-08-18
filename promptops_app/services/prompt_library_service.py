@@ -610,13 +610,12 @@ def resolve_parent_id(db: Session, parent_id, prompt_id: int | None = None,
     return parent_id
 
 
-def list_children(db: Session, parent_id: int) -> list[Prompt]:
-    return (
-        base_prompt_query(db)
-        .filter(Prompt.parent_id == parent_id)
-        .order_by(Prompt.updated_at.desc())
-        .all()
-    )
+def list_children(db: Session, parent_id: int, *, project_id: int | None = None,
+                  is_platform_admin: bool = False) -> list[Prompt]:
+    q = base_prompt_query(db).filter(Prompt.parent_id == parent_id)
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    return q.order_by(Prompt.updated_at.desc()).all()
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +683,8 @@ def _prompt_tags_list(p: Prompt) -> list[str]:
     return []
 
 
-def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> dict:
+def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True, *,
+                   project_id: int | None = None, is_platform_admin: bool = False) -> dict:
     d = {
         "id": p.id,
         "parent_id": p.parent_id,
@@ -724,8 +724,14 @@ def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> di
             "workflow_state": av.workflow_state if av else None,
         }
     if include_relations:
+        # Parent/children traverse ORM relationships with no tenant predicate
+        # of their own, so both ends need the same gate applied explicitly —
+        # a shared/global parent is visible to every tenant, but its children
+        # list must still only ever show the caller's own tenant's rows.
         parent = p.parent if p.parent_id else None
-        children = list(p.children) if p.children else list_children(db, p.id)
+        if parent is not None and not visible_to_tenant(parent.project_id, project_id, is_platform_admin):
+            parent = None
+        children = list_children(db, p.id, project_id=project_id, is_platform_admin=is_platform_admin)
         d["parent"] = _parent_summary(parent)
         d["children"] = [_child_summary(c) for c in children]
         d["_child_count"] = len(children)
@@ -778,20 +784,22 @@ def review_stats_batch(db: Session, prompt_ids: list) -> dict:
     return {r[0]: {"count": r[1], "avg": round(float(r[2] or 0), 1)} for r in rows}
 
 
-def child_count_batch(db: Session, parent_ids: list) -> dict:
+def child_count_batch(db: Session, parent_ids: list, *, project_id: int | None = None,
+                      is_platform_admin: bool = False) -> dict:
     if not parent_ids:
         return {}
-    rows = (
-        db.query(Prompt.parent_id, func.count(Prompt.id))
-        .filter(Prompt.parent_id.in_(parent_ids), Prompt.deleted_at.is_(None))
-        .group_by(Prompt.parent_id)
-        .all()
+    q = db.query(Prompt.parent_id, func.count(Prompt.id)).filter(
+        Prompt.parent_id.in_(parent_ids), Prompt.deleted_at.is_(None),
     )
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    rows = q.group_by(Prompt.parent_id).all()
     return {r[0]: r[1] for r in rows}
 
 
-def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None = None) -> dict:
-    d = prompt_to_dict(db, prompt)
+def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None = None, *,
+          project_id: int | None = None, is_platform_admin: bool = False) -> dict:
+    d = prompt_to_dict(db, prompt, project_id=project_id, is_platform_admin=is_platform_admin)
     s = stats.get(prompt.id, {"count": 0, "avg": 0})
     d["_review_stats"] = s
     d["_version_count"] = len(prompt.versions or [])

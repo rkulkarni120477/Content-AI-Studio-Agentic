@@ -614,7 +614,8 @@ export default function TenantsPage() {
             label="Client Name *"
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
-            placeholder="e.g. AIM 16 Block Development"
+            placeholder="e.g. Nova Publishing"
+            hint="Also names this tenant's Source Library client — must be distinct from every other tenant's once lowercased and underscored (e.g. 'Nova Publishing' and 'nova_publishing' would collide)."
             required
           />
           <Input

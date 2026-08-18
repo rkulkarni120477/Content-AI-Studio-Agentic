@@ -16,6 +16,14 @@ from promptops_app.database import (
 def tenant_scope_condition(project_id: int | None, is_platform_admin: bool):
     """Boolean SQL condition: does this row belong to the caller's tenant?
 
+    # ponytail: overlaps with app.core.tenant_context.apply_tenant_filter,
+    # which predates Prompt.project_id and is built around a string tenant_id
+    # column (or a bare int project_id FK) rather than this read/write split
+    # (see visible_to_tenant vs writable_by_tenant below — apply_tenant_filter
+    # has no write-side equivalent at all). Kept separate rather than forced
+    # into that shape; unify if a third model needs this exact read/write
+    # distinction and the duplication starts actually costing something.
+
     True (no restriction) for a platform admin — they may continue seeing
     every tenant's prompts, per the tenant-isolation ticket's own carve-out.
     Otherwise: a prompt with project_id NULL is shared/global and visible to
@@ -36,6 +44,20 @@ def visible_to_tenant(row_project_id: int | None, project_id: int | None, is_pla
     Same rule, one place — see ``tenant_scope_condition`` for the semantics.
     """
     return is_platform_admin or row_project_id is None or row_project_id == project_id
+
+
+def writable_by_tenant(row_project_id: int | None, project_id: int | None, is_platform_admin: bool) -> bool:
+    """Stricter than ``visible_to_tenant`` — the gate for content-mutating
+    actions (edit, delete, new version, promote, attachment add/remove).
+
+    A NULL ``project_id`` means "no single tenant owns this, everyone may
+    read it" — it does not mean "everyone may edit or delete it". Only a
+    platform admin or the row's own tenant may write; a shared/global row is
+    otherwise read-only to tenant callers.
+    """
+    if is_platform_admin:
+        return True
+    return row_project_id is not None and row_project_id == project_id
 
 
 # ---------------------------------------------------------------------------

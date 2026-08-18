@@ -74,3 +74,47 @@ def test_provision_dis_client_never_raises_on_filesystem_error(monkeypatch):
     monkeypatch.setattr(dis_provisioning, "_CLIENTS_DIR", "/proc/impossible/path/for/a/directory")
 
     dis_provisioning.provision_dis_client("nova-publishing", "Nova Publishing")  # must not raise
+
+
+def test_provision_is_skipped_entirely_when_dis_is_disabled(_isolate, monkeypatch):
+    monkeypatch.setattr(dis_provisioning.settings, "dis_enabled", False)
+
+    dis_provisioning.provision_dis_client("nova-publishing", "Nova Publishing")
+
+    assert not (_isolate / "clients" / "nova-publishing.yaml").exists()
+    assert not (_isolate / "dis_access.json").exists()
+
+
+def test_add_to_available_clients_raises_rather_than_destroy_malformed_file(_isolate):
+    """Finding #8: a parse failure must abort, never fall back to {} and
+    overwrite default_client_id/super_admin_usernames/client_admin_map with
+    a bare {"available_clients": [...]} skeleton."""
+    config_path = _isolate / "dis_access.json"
+    original = "{not valid json"
+    config_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(Exception):
+        dis_provisioning._add_to_available_clients("nova-publishing")
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_provision_dis_client_never_raises_and_never_destroys_malformed_file(_isolate, monkeypatch):
+    """The outer best-effort wrapper still doesn't raise, but the malformed
+    file must survive intact rather than being silently replaced."""
+    monkeypatch.setattr(dis_provisioning.settings, "dis_available_clients", "")
+    config_path = _isolate / "dis_access.json"
+    original = "{not valid json"
+    config_path.write_text(original, encoding="utf-8")
+
+    dis_provisioning.provision_dis_client("nova-publishing", "Nova Publishing")  # must not raise
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_add_to_available_clients_write_is_atomic_no_tmp_file_left_behind(_isolate):
+    dis_provisioning._add_to_available_clients("nova-publishing")
+
+    assert not (_isolate / "dis_access.json.tmp").exists()
+    cfg = json.loads((_isolate / "dis_access.json").read_text(encoding="utf-8"))
+    assert "nova-publishing" in cfg["available_clients"]

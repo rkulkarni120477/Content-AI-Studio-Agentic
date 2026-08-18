@@ -134,6 +134,16 @@ def admin_user(db):
     Create and return a test admin user in the test database.
 
     Used by auth_headers and any test that needs a real user record.
+
+    Platform admin (is_platform_admin=True) so login doesn't need an
+    organization_code — but that also means tenant_scope_condition returns
+    "no restriction" for this identity, so the ~60+ tests sharing this
+    fixture never exercise tenant boundaries. That's intentional: they
+    predate multi-tenancy and mostly assert platform-wide behavior (e.g.
+    test_projects.py's "admin sees all active projects"). Tests that need to
+    verify real cross-tenant isolation use their own dedicated
+    non-platform-admin fixtures instead (see two_tenants in
+    test_prompt_library_tenant_isolation.py) rather than this one.
     """
     from app.core.security import hash_password
     from promptops_app.database import User

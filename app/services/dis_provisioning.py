@@ -49,14 +49,30 @@ def _write_client_yaml(slug: str, display_name: str) -> None:
 
 
 def _add_to_available_clients(slug: str) -> None:
-    """Idempotently append *slug* to config/dis_access.json's available_clients."""
+    """Idempotently append *slug* to config/dis_access.json's available_clients.
+
+    Raises on a malformed existing file rather than silently treating it as
+    empty: the caller (provision_dis_client) already treats this whole
+    function as best-effort and logs + moves on, but swallowing a parse error
+    here would have gone on to overwrite default_client_id, default_tenant_id,
+    super_admin_usernames and client_admin_map with a bare
+    {"available_clients": [...]} skeleton — turning a momentary corruption
+    (a half-written concurrent edit, a hand-edit typo) into a permanent one.
+
+    The write itself is tmp-file-then-rename, atomic on the same filesystem,
+    so a crash mid-write can't leave a half-written file either.
+
+    # ponytail: no cross-process lock — two provisions racing on the exact
+    # same instant could still lose one's append (last replace wins). Add a
+    # lock (e.g. flock while both processes share a filesystem) if tenant
+    # creation ever becomes frequent enough for that to matter.
+    """
     path = _access_config_path()
     cfg: dict = {}
     if path.exists():
-        try:
-            cfg = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            cfg = {}
+        raw = path.read_text(encoding="utf-8")
+        if raw.strip():
+            cfg = json.loads(raw)
 
     available = list(cfg.get("available_clients") or [])
     if slug not in available:
@@ -64,7 +80,9 @@ def _add_to_available_clients(slug: str) -> None:
     cfg["available_clients"] = available
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    tmp_path = path.parent / (path.name + ".tmp")
+    tmp_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
 
     if str(settings.dis_available_clients or "").strip():
         _log.warning(
@@ -112,6 +130,9 @@ def provision_dis_client(client_name: str, display_name: str) -> None:
     Called after the tenant's own DB transaction has committed — this is an
     external side effect, not something to roll back the tenant over.
     """
+    if not settings.dis_enabled:
+        _log.info("dis_client_provisioning_skipped_dis_disabled  client_name=%r", client_name)
+        return
     slug = normalize_client_name(client_name)
     if not slug:
         _log.warning("dis_client_provisioning_skipped_empty_client_name  display_name=%r", display_name)

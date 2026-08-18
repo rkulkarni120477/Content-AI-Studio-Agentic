@@ -1498,6 +1498,7 @@ def init_db():
     # not support the PostgreSQL syntax used.
     if engine.dialect.name == "postgresql":
         _ensure_required_columns()
+        _heal_trace_id_column()
         _run_data_backfills()
 
 
@@ -1520,21 +1521,10 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
     ),
-    # Observability drift, other direction: the ORM declares `trace_id` (its
-    # migration renamed it from `langfuse_trace_id`), but a database that
-    # reaches this code before that migration runs still only has the old
-    # column. Same failure mode as the CDD archive columns above — SQLAlchemy
-    # names every mapped column in its SELECT, so the missing one breaks
-    # EVERY read of this table, including the post-generation budget summary.
-    #
-    # Added rather than relying on the rename: the migration's `alter_column`
-    # preserves existing rows' data, but only once it actually runs. Adding
-    # `trace_id` here is additive-only (existing `langfuse_trace_id` data
-    # isn't copied over) — good enough to stop the crash; the migration is
-    # still what makes old rows queryable under the new name.
-    "llm_usage_logs": (
-        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)",
-    ),
+    # llm_usage_logs.trace_id is NOT listed here — see _heal_trace_id_column.
+    # This dict only ever runs a bare ADD COLUMN IF NOT EXISTS with no data
+    # movement, which isn't safe for that column (would orphan historical
+    # langfuse_trace_id values — see that function's docstring).
 }
 
 
@@ -1585,6 +1575,41 @@ def _ensure_required_columns() -> None:
                 _log.warning("schema_self_heal  added missing column via: %s", statement)
             except Exception:  # noqa: BLE001 — a boot must not die on schema repair
                 _log.exception("schema_self_heal_failed  statement=%s", statement)
+
+
+def _heal_trace_id_column() -> None:
+    """Copy llm_usage_logs.langfuse_trace_id into trace_id when a deploy
+    reaches this table before migration 000100000022's rename has run.
+
+    Same race as ``_ensure_required_columns`` guards against, but that helper
+    can't cover this column: it only ever runs a bare ``ADD COLUMN IF NOT
+    EXISTS`` with no data movement. An empty ``trace_id`` would make
+    migration 22's own ``not _has_column(..., "trace_id")`` guard permanently
+    False, skipping the rename forever and orphaning every historical
+    ``langfuse_trace_id`` value in a column the ORM no longer reads. Copying
+    the data here means the end state is correct whether or not the
+    migration ever gets to run its (by then redundant) rename.
+
+    Failures are logged, not raised — same boot-must-not-die contract as
+    ``_ensure_required_columns``.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+
+    inspector = _sa_inspect(engine)
+    if "llm_usage_logs" not in inspector.get_table_names():
+        return  # fresh database — migrations will build it complete
+    columns = {c["name"] for c in inspector.get_columns("llm_usage_logs")}
+    if "trace_id" in columns or "langfuse_trace_id" not in columns:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)"))
+            conn.execute(text(
+                "UPDATE llm_usage_logs SET trace_id = langfuse_trace_id WHERE langfuse_trace_id IS NOT NULL"
+            ))
+        _log.warning("schema_self_heal  copied llm_usage_logs.langfuse_trace_id into trace_id")
+    except Exception:  # noqa: BLE001 — a boot must not die on schema repair
+        _log.exception("schema_self_heal_failed  table=llm_usage_logs  column=trace_id")
 
 
 def _run_legacy_ddl():
