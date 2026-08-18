@@ -31,6 +31,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db, require_permission
+from promptops_app.repositories.prompt_repository import visible_to_tenant
 from promptops_app.database import (
     AuditLog,
     Prompt,
@@ -120,9 +121,28 @@ def _client_ip(req: Request) -> str | None:
     return fwd or (req.client.host if req.client else None)
 
 
-def _get_library_prompt(db: Session, pid: int) -> Prompt | None:
-    """Resolve a WRITE/render target — library rows only, by construction."""
-    return svc.base_prompt_query(db).filter_by(id=pid).first()
+def _tenant_kwargs(user) -> dict:
+    return {
+        "project_id": getattr(user, "_project_id", None),
+        "is_platform_admin": getattr(user, "_is_platform_admin", False),
+    }
+
+
+def _get_library_prompt(db: Session, pid: int, *, project_id: int | None = None,
+                        is_platform_admin: bool = False) -> Prompt | None:
+    """Resolve a WRITE/render target — library rows only, by construction.
+
+    Same 404-for-both-cases contract as a read: a prompt that exists but
+    belongs to another tenant returns None here exactly like a truly
+    nonexistent id, so callers can't distinguish "not yours" from "doesn't
+    exist" (no enumeration oracle).
+    """
+    p = svc.base_prompt_query(db).filter_by(id=pid).first()
+    if p is None:
+        return None
+    if not visible_to_tenant(p.project_id, project_id, is_platform_admin):
+        return None
+    return p
 
 
 # ==============================================================================
@@ -138,7 +158,7 @@ def list_prompts(request: Request, db: Session = Depends(get_db),
                  user=Depends(require_permission("prompt_library.view"))):
     kind = request.query_params.get("kind")
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
-                                 include_deleted=_include_archived(request))
+                                 include_deleted=_include_archived(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_optin(request, q)
     return _paginated_body(_enrich_prompts(db, items), total, page, limit)
@@ -152,7 +172,7 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="q query parameter required")
     kind = request.query_params.get("kind")
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
-                                 include_deleted=_include_archived(request))
+                                 include_deleted=_include_archived(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_forced(request, q)
     return _paginated_body(_enrich_prompts(db, items), total, page, limit, extra={"q": q_text})
@@ -164,22 +184,23 @@ def meta(db: Session = Depends(get_db), user=Depends(require_permission("prompt_
     # tag filter needs pipeline tags for pipeline managers. Categories stay
     # library-derived — they feed the (now promote-path-only) create form.
     tag_kind = "pipeline" if svc.can_manage_pipeline_prompts(user.role) else "library"
+    tenant = _tenant_kwargs(user)
     return {
-        "categories": svc.list_distinct_categories(db, user.role, None),
-        "tags": svc.list_distinct_tags(db, user.role, None, kind=tag_kind),
+        "categories": svc.list_distinct_categories(db, user.role, None, **tenant),
+        "tags": svc.list_distinct_tags(db, user.role, None, kind=tag_kind, **tenant),
     }
 
 
 @router.get("/categories")
 def list_categories(db: Session = Depends(get_db), user=Depends(require_permission("prompt_library.view"))):
-    return {"categories": svc.list_distinct_categories(db, user.role, None)}
+    return {"categories": svc.list_distinct_categories(db, user.role, None, **_tenant_kwargs(user))}
 
 
 @router.get("/tags")
 def list_tags(category: str | None = Query(default=None), db: Session = Depends(get_db),
               user=Depends(require_permission("prompt_library.view"))):
     cat = (category or "").strip() or None
-    return {"tags": svc.list_distinct_tags(db, user.role, None, category=cat)}
+    return {"tags": svc.list_distinct_tags(db, user.role, None, category=cat, **_tenant_kwargs(user))}
 
 
 @router.get("/prompts/{pid}")
@@ -190,7 +211,7 @@ def get_prompt(pid: int, db: Session = Depends(get_db),
     # Pipeline managers may also open ARCHIVED rows (doc §9 "unless explicitly
     # enabled" — needed to inspect/restore); everyone else keeps the 404.
     p = db.query(Prompt).filter(Prompt.id == pid).first()
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
         raise HTTPException(status_code=404, detail="Not found")
     if p.deleted_at is not None and not svc.can_manage_pipeline_prompts(user.role):
         raise HTTPException(status_code=404, detail="Not found")
@@ -209,7 +230,7 @@ def restore_prompt(pid: int, request: Request, db: Session = Depends(get_db),
          .first())
     # Archived rows are visible to pipeline managers only (see get_prompt) —
     # nobody may restore what they cannot see.
-    if (not p or not svc.can_access_prompt(p, user.role, None)
+    if (not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user))
             or not svc.can_manage_pipeline_prompts(user.role)):
         raise HTTPException(status_code=404, detail="Not found")
     p.deleted_at = None
@@ -226,8 +247,8 @@ def restore_prompt(pid: int, request: Request, db: Session = Depends(get_db),
 @router.post("/prompts/{pid}/use")
 def mark_used(pid: int, db: Session = Depends(get_db),
               user=Depends(require_permission("prompt_library.view"))):
-    p = _get_library_prompt(db, pid)
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
         raise HTTPException(status_code=404, detail="Not found")
     p.last_used_at = svc.now_utc()
     db.commit()
@@ -239,8 +260,8 @@ def render_prompt(pid: int, payload: dict = Body(default=None), db: Session = De
                   user=Depends(require_permission("prompt_library.view"))):
     # Library rows only: the {{var}} engine must never touch a pipeline
     # template (Decision 2) — pipeline rows 404 here.
-    p = _get_library_prompt(db, pid)
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
         raise HTTPException(status_code=404, detail="Not found")
     variables = (payload or {}).get("variables") or {}
     if not isinstance(variables, dict):
@@ -289,7 +310,7 @@ def promote_prompt(pid: int, request: Request, payload: dict = Body(...), db: Se
     until an admin makes it a component default or binds a scope lock."""
     if not svc.can_manage_pipeline_prompts(user.role):
         raise HTTPException(status_code=403, detail="Pipeline manager role required")
-    p = _get_library_prompt(db, pid)
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     data = payload or {}
@@ -348,7 +369,7 @@ def create_prompt(request: Request, payload: dict = Body(...), db: Session = Dep
     if vis == "team" and not team_ids:
         raise HTTPException(status_code=400, detail="At least one team is required for team-based visibility")
     try:
-        parent_id = svc.resolve_parent_id(db, data.get("parent_id"))
+        parent_id = svc.resolve_parent_id(db, data.get("parent_id"), **_tenant_kwargs(user))
     except svc.HierarchyError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -363,6 +384,10 @@ def create_prompt(request: Request, payload: dict = Body(...), db: Session = Dep
         category=data["category"].strip(),
         visibility=vis,
         owner=actor,
+        # A platform admin has no single tenant (_project_id is None), so
+        # this naturally creates a shared/global prompt for them and a
+        # tenant-owned one for everyone else — no extra branch needed.
+        project_id=getattr(user, "_project_id", None),
         created_at=now,
         updated_at=now,
     )
@@ -391,7 +416,7 @@ def create_prompt(request: Request, payload: dict = Body(...), db: Session = Dep
 @router.put("/prompts/{pid}")
 def update_prompt(pid: int, request: Request, payload: dict = Body(...), db: Session = Depends(get_db),
                   user=Depends(require_permission("prompt_library.manage"))):
-    p = _get_library_prompt(db, pid)
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     data = dict(payload or {})
@@ -402,7 +427,7 @@ def update_prompt(pid: int, request: Request, payload: dict = Body(...), db: Ses
 
     if "parent_id" in data:
         try:
-            p.parent_id = svc.resolve_parent_id(db, data.get("parent_id"), prompt_id=pid)
+            p.parent_id = svc.resolve_parent_id(db, data.get("parent_id"), prompt_id=pid, **_tenant_kwargs(user))
         except svc.HierarchyError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -457,7 +482,8 @@ def update_prompt(pid: int, request: Request, payload: dict = Body(...), db: Ses
 
     p.updated_at = svc.now_utc()
     db.commit()
-    p_fresh = _get_library_prompt(db, pid)
+    db.refresh(p)
+    p_fresh = p
     changes = svc.compute_prompt_changes(before_snapshot, svc.build_prompt_snapshot(db, p_fresh))
     svc.log_event(db, "prompt.update", "update", entity_type="prompt", entity_id=pid,
                   summary=f"Updated prompt '{p_fresh.title}'", changes=changes,
@@ -470,7 +496,7 @@ def update_prompt(pid: int, request: Request, payload: dict = Body(...), db: Ses
 @router.delete("/prompts/{pid}")
 def delete_prompt(pid: int, request: Request, db: Session = Depends(get_db),
                   user=Depends(require_permission("prompt_library.manage"))):
-    p = _get_library_prompt(db, pid)
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     now = svc.now_utc()
@@ -489,14 +515,18 @@ def delete_prompt(pid: int, request: Request, db: Session = Depends(get_db),
 @router.post("/prompts/{pid}/duplicate", status_code=201)
 def duplicate_prompt(pid: int, request: Request, db: Session = Depends(get_db),
                      user=Depends(require_permission("prompt_library.manage"))):
-    src = _get_library_prompt(db, pid)
+    src = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not src:
         raise HTTPException(status_code=404, detail="Not found")
     now = svc.now_utc()
     actor = user.username
+    # Owned by the duplicating user's own tenant, not copied from src —
+    # duplicating a shared/global prompt makes a private copy, same as
+    # creating one fresh (create_prompt's identical project_id logic).
     cp = Prompt(prompt_kind="library", parent_id=None, title="Copy of " + src.title,
                 description=src.description, category=src.category, visibility=src.visibility,
-                owner=actor, created_at=now, updated_at=now)
+                owner=actor, project_id=getattr(user, "_project_id", None),
+                created_at=now, updated_at=now)
     db.add(cp)
     db.flush()
     for link in src.team_links or []:
@@ -524,7 +554,7 @@ def create_version(pid: int, request: Request, payload: dict = Body(...), db: Se
     data = payload or {}
     if not data.get("content"):
         raise HTTPException(status_code=400, detail="content required")
-    p = _get_library_prompt(db, pid)
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     actor = user.username
@@ -552,8 +582,8 @@ def create_version(pid: int, request: Request, payload: dict = Body(...), db: Se
 @router.get("/prompts/{pid}/reviews")
 def get_reviews(pid: int, db: Session = Depends(get_db),
                 user=Depends(require_permission("prompt_library.view"))):
-    p = _get_library_prompt(db, pid)
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
         raise HTTPException(status_code=404, detail="Not found")
     if not svc.is_manager(user.role):
         return []
@@ -564,8 +594,8 @@ def get_reviews(pid: int, db: Session = Depends(get_db),
 @router.post("/prompts/{pid}/reviews")
 def submit_review(pid: int, payload: dict = Body(...), db: Session = Depends(get_db),
                   user=Depends(require_permission("prompt_library.review"))):
-    p = _get_library_prompt(db, pid)
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
         raise HTTPException(status_code=404, detail="Not found")
     rating = (payload or {}).get("rating")
     if not isinstance(rating, (int, float)) or not (1 <= rating <= 5):
@@ -683,7 +713,7 @@ def update_request(rid: int, request: Request, payload: dict = Body(...), db: Se
 @router.post("/prompts/{pid}/attachments", status_code=201)
 def upload_attachment(pid: int, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db),
                       user=Depends(require_permission("prompt_library.manage"))):
-    p = _get_library_prompt(db, pid)
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     if not file.filename:
@@ -715,8 +745,8 @@ def upload_attachment(pid: int, request: Request, file: UploadFile = File(...), 
 @router.get("/prompts/{pid}/attachments/{aid}/download")
 def download_attachment(pid: int, aid: int, db: Session = Depends(get_db),
                         user=Depends(require_permission("prompt_library.view"))):
-    p = _get_library_prompt(db, pid)
-    if not p or not svc.can_access_prompt(p, user.role, None):
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
         raise HTTPException(status_code=404, detail="Not found")
     att = db.query(PromptAttachment).filter_by(id=aid, prompt_id=pid).first()
     if not att:
@@ -730,7 +760,7 @@ def download_attachment(pid: int, aid: int, db: Session = Depends(get_db),
 @router.delete("/prompts/{pid}/attachments/{aid}")
 def delete_attachment(pid: int, aid: int, request: Request, db: Session = Depends(get_db),
                       user=Depends(require_permission("prompt_library.manage"))):
-    p = _get_library_prompt(db, pid)
+    p = _get_library_prompt(db, pid, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     att = db.query(PromptAttachment).filter_by(id=aid, prompt_id=pid).first()

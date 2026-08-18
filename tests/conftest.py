@@ -143,6 +143,7 @@ def admin_user(db):
         password_hash=hash_password("test_password"),
         role="admin",
         is_active=True,
+        is_platform_admin=True,
     )
     db.add(user)
     db.commit()
@@ -161,6 +162,7 @@ def author_user(db):
         password_hash=hash_password("test_password"),
         role="author",
         is_active=True,
+        is_platform_admin=True,
     )
     db.add(user)
     db.commit()
@@ -178,7 +180,7 @@ def auth_headers(client, admin_user) -> dict:
     """
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "test_admin", "password": "test_password"},
+        json={"username": "test_admin", "password": "test_password", "platform_admin": True},
     )
     assert response.status_code == 200, f"Login failed: {response.text}"
     token = response.json()["access_token"]
@@ -190,7 +192,7 @@ def author_headers(client, author_user) -> dict:
     """Return Authorization headers for the test author user."""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "test_author", "password": "test_password"},
+        json={"username": "test_author", "password": "test_password", "platform_admin": True},
     )
     assert response.status_code == 200
     token = response.json()["access_token"]

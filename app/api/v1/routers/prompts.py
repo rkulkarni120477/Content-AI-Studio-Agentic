@@ -104,10 +104,16 @@ def list_prompts(
     """Return all prompt templates, optionally filtered."""
     from promptops_app.repositories import prompt_repository
 
+    project_id = getattr(current_user, "_project_id", None)
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
     if component:
-        prompts = prompt_repository.list_prompts_by_component(db, component)
+        prompts = prompt_repository.list_prompts_by_component(
+            db, component, project_id=project_id, is_platform_admin=is_platform_admin,
+        )
     else:
-        prompts = prompt_repository.list_all_prompts(db)
+        prompts = prompt_repository.list_all_prompts(
+            db, project_id=project_id, is_platform_admin=is_platform_admin,
+        )
 
     if search:
         q = search.lower()

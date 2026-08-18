@@ -16,7 +16,7 @@ class TestLogin:
         """Happy path: correct username and password returns a JWT."""
         response = client.post(
             "/api/v1/auth/login",
-            json={"username": "test_admin", "password": "test_password"},
+            json={"username": "test_admin", "password": "test_password", "platform_admin": True},
         )
 
         assert response.status_code == 200
@@ -32,7 +32,7 @@ class TestLogin:
         """Incorrect password must return 401, not 403 or 500."""
         response = client.post(
             "/api/v1/auth/login",
-            json={"username": "test_admin", "password": "wrong_password"},
+            json={"username": "test_admin", "password": "wrong_password", "platform_admin": True},
         )
 
         assert response.status_code == 401
@@ -46,7 +46,7 @@ class TestLogin:
         """
         response = client.post(
             "/api/v1/auth/login",
-            json={"username": "nobody", "password": "whatever"},
+            json={"username": "nobody", "password": "whatever", "platform_admin": True},
         )
 
         assert response.status_code == 401
@@ -61,13 +61,14 @@ class TestLogin:
             password_hash=hash_password("test_password"),
             role="author",
             is_active=False,
+            is_platform_admin=True,
         )
         db.add(inactive)
         db.commit()
 
         response = client.post(
             "/api/v1/auth/login",
-            json={"username": "inactive_user", "password": "test_password"},
+            json={"username": "inactive_user", "password": "test_password", "platform_admin": True},
         )
 
         assert response.status_code == 401

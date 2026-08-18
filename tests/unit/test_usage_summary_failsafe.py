@@ -92,7 +92,8 @@ def test_the_drifted_column_is_registered_for_self_heal():
     from promptops_app.database import _REQUIRED_COLUMNS
 
     statements = " ".join(_REQUIRED_COLUMNS.get("llm_usage_logs", ()))
-    assert "langfuse_trace_id" in statements
-    # Added, never renamed or dropped: `trace_id` holds data in existing rows.
+    assert "trace_id" in statements
+    # Added, never renamed or dropped: the migration's rename is what
+    # actually reconciles existing rows.
     assert "DROP" not in statements.upper()
     assert "RENAME" not in statements.upper()

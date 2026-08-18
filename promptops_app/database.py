@@ -226,6 +226,14 @@ class Prompt(Base):
     category       = Column(String(100), nullable=True)  # library category (freeform)
     visibility     = Column(String(20), nullable=False, default="draft",
                             server_default="draft")      # global|team|draft (library only)
+    # Tenant ownership — see prompt_library_service's tenant_scope_condition.
+    # NULL means shared/global, visible to every tenant (system-seeded
+    # defaults, and any prompt whose owner doesn't resolve to one tenant),
+    # same convention as Style.project_id. Applies to both prompt_kind
+    # values: pipeline-kind rows aren't always shared system templates — a
+    # tenant can have its own customized generation prompt, which needs the
+    # same isolation as a library row.
+    project_id     = Column(Integer, nullable=True, index=True)
     variant        = Column(String(50), nullable=True)   # pipeline: student|teacher|lesson|assessment|interactive
     parent_id      = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
                             nullable=True, index=True)   # library follow-up hierarchy
@@ -1512,17 +1520,20 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
     ),
-    # Observability drift. The live table carries `trace_id`; the ORM declares
-    # `langfuse_trace_id`, and because SQLAlchemy names every mapped column in
-    # its SELECT, the mismatch breaks EVERY read of this table — including the
-    # post-generation budget summary, which turned successful, paid-for CDD
-    # regenerations into 500s and silently discarded their output.
+    # Observability drift, other direction: the ORM declares `trace_id` (its
+    # migration renamed it from `langfuse_trace_id`), but a database that
+    # reaches this code before that migration runs still only has the old
+    # column. Same failure mode as the CDD archive columns above — SQLAlchemy
+    # names every mapped column in its SELECT, so the missing one breaks
+    # EVERY read of this table, including the post-generation budget summary.
     #
-    # Added rather than renamed: `trace_id` is populated in existing rows and
-    # something may still read it, so dropping or renaming it would trade one
-    # outage for another. The two coexist until the ORM is reconciled.
+    # Added rather than relying on the rename: the migration's `alter_column`
+    # preserves existing rows' data, but only once it actually runs. Adding
+    # `trace_id` here is additive-only (existing `langfuse_trace_id` data
+    # isn't copied over) — good enough to stop the crash; the migration is
+    # still what makes old rows queryable under the new name.
     "llm_usage_logs": (
-        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS langfuse_trace_id VARCHAR(64)",
+        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)",
     ),
 }
 
