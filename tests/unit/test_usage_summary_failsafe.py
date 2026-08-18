@@ -8,14 +8,23 @@ came back as a 500, the frontend committed nothing, and the user saw "no
 change" with no indication that anything had gone wrong or that they had been
 charged for it.
 
-The trigger was schema drift: ``llm_usage_logs`` carries ``trace_id`` while the
-ORM declares ``langfuse_trace_id``, and SQLAlchemy names every mapped column in
-its SELECT, so a query that wanted one row raised UndefinedColumn instead.
+The trigger was schema drift on ``llm_usage_logs``: the table carried
+``trace_id`` while the ORM declared ``langfuse_trace_id``, and SQLAlchemy names
+every mapped column in its SELECT, so a query that wanted one row raised
+UndefinedColumn instead.
 
-The drift is fixed separately (database._REQUIRED_COLUMNS). These tests pin the
-property that made it catastrophic rather than cosmetic — because the next
-drift, or the next transient database error, must cost a cost chip and nothing
-more.
+The Phoenix migration since reconciled the ORM to ``trace_id`` — which inverts
+that exposure rather than ending it, because revision 000100000017 creates the
+column AS ``langfuse_trace_id``. A database that ran 17 but not the
+000100000022 rename now has only the name the ORM stopped asking for.
+``database._heal_trace_id_column`` is the boot-time repair: unlike a bare
+``_REQUIRED_COLUMNS`` entry (tried and reverted — see its own comment), it
+copies ``langfuse_trace_id``'s data into the new column rather than leaving it
+empty, so migration 22's rename being skipped afterward doesn't orphan it.
+
+These tests pin the property that made the drift catastrophic rather than
+cosmetic — because the next drift, or the next transient database error, must
+cost a cost chip and nothing more.
 """
 
 import pytest
@@ -93,3 +102,21 @@ def test_the_drifted_column_is_registered_for_self_heal():
     from promptops_app.database import _heal_trace_id_column
 
     assert callable(_heal_trace_id_column)
+
+
+def test_the_failsafe_still_targets_whatever_the_orm_currently_declares():
+    """The guard that survives the next rename.
+
+    _heal_trace_id_column hardcodes "trace_id" as the column it creates and
+    backfills from langfuse_trace_id. If the ORM's mapped column is ever
+    renamed again without updating that function, this catches it here
+    rather than at boot in production — exactly what happened to the
+    previous version of this test across the Phoenix reconciliation.
+    """
+    from promptops_app.database import LLMUsageLog
+
+    mapped = {c.name for c in LLMUsageLog.__table__.columns if "trace" in c.name}
+    assert mapped == {"trace_id"}, (
+        f"LLMUsageLog's trace column(s) are now {mapped!r} — update "
+        "_heal_trace_id_column to match before this drifts silently"
+    )

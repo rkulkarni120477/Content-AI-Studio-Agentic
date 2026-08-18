@@ -470,7 +470,7 @@ def build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Opti
     not its generation.
 
     That is not hypothetical. ``llm_usage_logs`` drifted from its ORM (the table
-    has ``trace_id``; the model declares ``langfuse_trace_id``), and because
+    had ``trace_id``; the model declared ``langfuse_trace_id``), and because
     SQLAlchemy names every mapped column in its SELECT, this query raised
     UndefinedColumn on a table it only wanted to read one row from. A successful,
     paid-for CDD regeneration returned 500 and the corrected content was

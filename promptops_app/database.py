@@ -1523,8 +1523,12 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     # llm_usage_logs.trace_id is NOT listed here — see _heal_trace_id_column.
     # This dict only ever runs a bare ADD COLUMN IF NOT EXISTS with no data
-    # movement, which isn't safe for that column (would orphan historical
-    # langfuse_trace_id values — see that function's docstring).
+    # movement, which isn't safe for that column: a database that ran
+    # revision 17 (creates langfuse_trace_id) but not 22 (renames it to
+    # trace_id) needs the historical values carried across, not just an
+    # empty trace_id column that then makes 22's own rename guard skip it
+    # forever. See _heal_trace_id_column's docstring for the full history —
+    # this exact bare-ADD-COLUMN version was tried and reverted once already.
 }
 
 

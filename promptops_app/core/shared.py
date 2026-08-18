@@ -120,6 +120,8 @@ except ImportError:
 
 # Constants — core/constants.py (Phase 3 refactoring)
 from promptops_app.core.constants import WorkflowState, UserRole, DocumentStatus, FeedbackScope, ChangeSource
+from promptops_app.parsers.blueprint_parser import _strip_leading_bullet
+from promptops_app.parsers.markdown_emphasis import repair_emphasis
 # NOTE: Parser re-exports are placed AFTER local definitions further in this file
 # so they correctly override the legacy code. See end of file for:
 # parsers/cdd_parser.py re-exports and parsers/blueprint_parser.py re-exports.
@@ -1209,9 +1211,24 @@ def regen_single_item(
     if result.startswith("ERROR"):
         return item_text  # safe fallback
 
-    # Strip any accidental prefix the LLM added
+    # Strip any accidental prefix the LLM added.
+    #
+    # The bullet pattern here was ``^[-*•]\s*``, and because ``\s*`` matches zero
+    # characters it read the first ``*`` of ``**Label:**`` as a bullet and removed
+    # it, so a regenerated item came back with its label malformed
+    # (``*Label:** value``) on every run. That was fixed in
+    # promptops_app/parsers/blueprint_parser.py.
+    #
+    # This body does not run: the re-export at the end of this module rebinds
+    # ``regen_single_item`` to the parser's version, and no live API route
+    # imports it from here in any case. It is corrected rather than left alone
+    # because a duplicated regex is exactly what let the original fix miss one
+    # of two copies — an extraction from this file would have carried the defect
+    # back out. Delegating to the parser's helpers, rather than restating the
+    # patterns a third time, is the part that stops it recurring.
     result = _re_engine.sub(r"^\d+[.):]\s*", "", result.strip())
-    result = _re_engine.sub(r"^[-*•]\s*", "", result.strip())
+    result = _strip_leading_bullet(result.strip())
+    result, _emphasis = repair_emphasis(result.strip())
     return result.strip()
 
 
