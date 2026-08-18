@@ -18,6 +18,7 @@ import re
 from sqlalchemy.orm import Session
 
 from app.core.config import PLATFORM_SLUG
+from app.core.dis_access import normalize_client_name
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.permissions import get_permissions_for_role
 
@@ -108,6 +109,24 @@ def create_tenant(
     # Usernames are globally unique in Content AI Studio.
     if db.query(User).filter(User.username == admin_username).first():
         raise ValidationError(f"Username '{admin_username}' is already taken.")
+
+    # DIS provisioning (dis_provisioning.provision_dis_client) keys its client
+    # id on normalize_client_name(client_name or name) — two tenants whose
+    # names normalize to the same id (e.g. "Cengage Learning" and "Cengage")
+    # would be handed the same DIS namespace, sharing Source Library content.
+    # Caught here, before the tenant commits, rather than in that best-effort
+    # background task where there's no request left to reject.
+    effective_client_name = (client_name or "").strip() or name.strip()
+    new_slug = normalize_client_name(effective_client_name)
+    if new_slug:
+        for existing_name in db.query(Project.client_name, Project.name).filter(Project.is_active.is_(True)).all():
+            other = (existing_name.client_name or "").strip() or existing_name.name.strip()
+            if normalize_client_name(other) == new_slug:
+                raise ValidationError(
+                    f"'{effective_client_name}' normalizes to the same DIS client id "
+                    f"('{new_slug}') as an existing tenant's client name — choose a "
+                    "name that's distinct after lowercasing/underscoring."
+                )
 
     project = Project(
         name=name.strip(),

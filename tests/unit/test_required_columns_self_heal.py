@@ -218,3 +218,131 @@ def test_a_missing_table_is_skipped(monkeypatch):
     _ensure_required_columns()
 
     assert executed == []
+
+
+def _fake_inspector(columns, tables=("llm_usage_logs",)):
+    class FakeInspector:
+        def get_table_names(self):
+            return list(tables)
+
+        def get_columns(self, table):
+            return [{"name": c} for c in columns]
+
+    return FakeInspector()
+
+
+class TestHealTraceIdColumn:
+    """_heal_trace_id_column: the data-copying fix for finding #7 — a plain
+    _REQUIRED_COLUMNS entry can't safely cover this column (see the
+    function's own docstring)."""
+
+    def test_missing_table_is_skipped(self, monkeypatch):
+        import promptops_app.database as db_mod
+
+        executed = []
+
+        class FakeConn:
+            def execute(self, statement):
+                executed.append(str(statement))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("sqlalchemy.inspect", lambda _e: _fake_inspector([], tables=()))
+        monkeypatch.setattr(db_mod.engine, "begin", lambda: FakeConn())
+
+        db_mod._heal_trace_id_column()
+
+        assert executed == []
+
+    def test_trace_id_already_present_is_a_no_op(self, monkeypatch):
+        import promptops_app.database as db_mod
+
+        executed = []
+
+        class FakeConn:
+            def execute(self, statement):
+                executed.append(str(statement))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("sqlalchemy.inspect",
+                            lambda _e: _fake_inspector(["trace_id", "langfuse_trace_id"]))
+        monkeypatch.setattr(db_mod.engine, "begin", lambda: FakeConn())
+
+        db_mod._heal_trace_id_column()
+
+        assert executed == []
+
+    def test_neither_column_present_is_a_no_op(self, monkeypatch):
+        """Fully fresh table — the migration chain will build it complete."""
+        import promptops_app.database as db_mod
+
+        executed = []
+
+        class FakeConn:
+            def execute(self, statement):
+                executed.append(str(statement))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("sqlalchemy.inspect", lambda _e: _fake_inspector(["id"]))
+        monkeypatch.setattr(db_mod.engine, "begin", lambda: FakeConn())
+
+        db_mod._heal_trace_id_column()
+
+        assert executed == []
+
+    def test_adds_the_column_and_copies_the_data(self, monkeypatch):
+        """The exact race: langfuse_trace_id present, trace_id absent."""
+        import promptops_app.database as db_mod
+
+        executed = []
+
+        class FakeConn:
+            def execute(self, statement):
+                executed.append(str(statement))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("sqlalchemy.inspect",
+                            lambda _e: _fake_inspector(["id", "langfuse_trace_id"]))
+        monkeypatch.setattr(db_mod.engine, "begin", lambda: FakeConn())
+
+        db_mod._heal_trace_id_column()
+
+        assert len(executed) == 2
+        assert "ADD COLUMN IF NOT EXISTS trace_id" in executed[0]
+        assert "UPDATE llm_usage_logs SET trace_id = langfuse_trace_id" in executed[1]
+        assert "DROP" not in " ".join(executed).upper()
+
+    def test_a_refused_alter_does_not_kill_startup(self, monkeypatch):
+        import promptops_app.database as db_mod
+
+        class ExplodingConn:
+            def __enter__(self):
+                raise RuntimeError("permission denied for table")
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("sqlalchemy.inspect",
+                            lambda _e: _fake_inspector(["id", "langfuse_trace_id"]))
+        monkeypatch.setattr(db_mod.engine, "begin", lambda: ExplodingConn())
+
+        db_mod._heal_trace_id_column()  # must not raise

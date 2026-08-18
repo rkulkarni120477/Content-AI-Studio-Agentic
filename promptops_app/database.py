@@ -226,6 +226,14 @@ class Prompt(Base):
     category       = Column(String(100), nullable=True)  # library category (freeform)
     visibility     = Column(String(20), nullable=False, default="draft",
                             server_default="draft")      # global|team|draft (library only)
+    # Tenant ownership — see prompt_library_service's tenant_scope_condition.
+    # NULL means shared/global, visible to every tenant (system-seeded
+    # defaults, and any prompt whose owner doesn't resolve to one tenant),
+    # same convention as Style.project_id. Applies to both prompt_kind
+    # values: pipeline-kind rows aren't always shared system templates — a
+    # tenant can have its own customized generation prompt, which needs the
+    # same isolation as a library row.
+    project_id     = Column(Integer, nullable=True, index=True)
     variant        = Column(String(50), nullable=True)   # pipeline: student|teacher|lesson|assessment|interactive
     parent_id      = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
                             nullable=True, index=True)   # library follow-up hierarchy
@@ -1490,6 +1498,7 @@ def init_db():
     # not support the PostgreSQL syntax used.
     if engine.dialect.name == "postgresql":
         _ensure_required_columns()
+        _heal_trace_id_column()
         _run_data_backfills()
 
 
@@ -1512,26 +1521,14 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
     ),
-    # Observability drift. SQLAlchemy names every mapped column in its SELECT, so
-    # a table missing one breaks EVERY read — including the post-generation budget
-    # summary, which turned successful, paid-for CDD regenerations into 500s and
-    # silently discarded their output.
-    #
-    # This entry has now been on both sides of the same rename. It was added when
-    # the live table carried `trace_id` and the ORM declared `langfuse_trace_id`;
-    # the Phoenix migration reconciled the ORM to `trace_id`, which inverts the
-    # exposure rather than ending it, because revision 000100000017 creates the
-    # column AS `langfuse_trace_id`. A database that ran 17 but not the
-    # 000100000022 rename has only the name the ORM stopped asking for.
-    #
-    # So the statement follows the ORM, and only the ORM: a column no model
-    # declares cannot break a read, and repairing one is dead DDL that still takes
-    # a lock on every boot. tests/unit/test_usage_summary_failsafe.py reads the
-    # mapped column name off LLMUsageLog so the next rename cannot quietly leave
-    # this pointing at the old one.
-    "llm_usage_logs": (
-        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)",
-    ),
+    # llm_usage_logs.trace_id is NOT listed here — see _heal_trace_id_column.
+    # This dict only ever runs a bare ADD COLUMN IF NOT EXISTS with no data
+    # movement, which isn't safe for that column: a database that ran
+    # revision 17 (creates langfuse_trace_id) but not 22 (renames it to
+    # trace_id) needs the historical values carried across, not just an
+    # empty trace_id column that then makes 22's own rename guard skip it
+    # forever. See _heal_trace_id_column's docstring for the full history —
+    # this exact bare-ADD-COLUMN version was tried and reverted once already.
 }
 
 
@@ -1582,6 +1579,41 @@ def _ensure_required_columns() -> None:
                 _log.warning("schema_self_heal  added missing column via: %s", statement)
             except Exception:  # noqa: BLE001 — a boot must not die on schema repair
                 _log.exception("schema_self_heal_failed  statement=%s", statement)
+
+
+def _heal_trace_id_column() -> None:
+    """Copy llm_usage_logs.langfuse_trace_id into trace_id when a deploy
+    reaches this table before migration 000100000022's rename has run.
+
+    Same race as ``_ensure_required_columns`` guards against, but that helper
+    can't cover this column: it only ever runs a bare ``ADD COLUMN IF NOT
+    EXISTS`` with no data movement. An empty ``trace_id`` would make
+    migration 22's own ``not _has_column(..., "trace_id")`` guard permanently
+    False, skipping the rename forever and orphaning every historical
+    ``langfuse_trace_id`` value in a column the ORM no longer reads. Copying
+    the data here means the end state is correct whether or not the
+    migration ever gets to run its (by then redundant) rename.
+
+    Failures are logged, not raised — same boot-must-not-die contract as
+    ``_ensure_required_columns``.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+
+    inspector = _sa_inspect(engine)
+    if "llm_usage_logs" not in inspector.get_table_names():
+        return  # fresh database — migrations will build it complete
+    columns = {c["name"] for c in inspector.get_columns("llm_usage_logs")}
+    if "trace_id" in columns or "langfuse_trace_id" not in columns:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)"))
+            conn.execute(text(
+                "UPDATE llm_usage_logs SET trace_id = langfuse_trace_id WHERE langfuse_trace_id IS NOT NULL"
+            ))
+        _log.warning("schema_self_heal  copied llm_usage_logs.langfuse_trace_id into trace_id")
+    except Exception:  # noqa: BLE001 — a boot must not die on schema repair
+        _log.exception("schema_self_heal_failed  table=llm_usage_logs  column=trace_id")
 
 
 def _run_legacy_ddl():

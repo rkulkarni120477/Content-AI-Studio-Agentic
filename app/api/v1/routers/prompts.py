@@ -62,11 +62,32 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_prompt_or_404(db: Session, prompt_id: int):
-    """Fetch a prompt by ID or raise HTTP 404."""
+def _tenant_kwargs(user) -> dict:
+    return {
+        "project_id": getattr(user, "_project_id", None),
+        "is_platform_admin": getattr(user, "_is_platform_admin", False),
+    }
+
+
+def _get_prompt_or_404(db: Session, prompt_id: int, *, project_id: int | None = None,
+                        is_platform_admin: bool = False, for_write: bool = False):
+    """Fetch a prompt by ID or raise HTTP 404.
+
+    A prompt that exists but is out of bounds for the caller 404s exactly
+    like a nonexistent id — same no-enumeration-oracle contract as
+    prompt_library._get_library_prompt.
+
+    ``for_write=True`` applies the stricter ``writable_by_tenant`` gate: a
+    shared/global prompt (project_id NULL — every is_default seed and every
+    unresolvable-owner row from the backfill included) is readable by every
+    tenant but mutable only by its own tenant or a platform admin.
+    """
     from promptops_app.database import Prompt
+    from promptops_app.repositories.prompt_repository import visible_to_tenant, writable_by_tenant
+
     prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
-    if not prompt:
+    gate = writable_by_tenant if for_write else visible_to_tenant
+    if not prompt or not gate(prompt.project_id, project_id, is_platform_admin):
         raise NotFoundError("Prompt", prompt_id)
     return prompt
 
@@ -104,10 +125,16 @@ def list_prompts(
     """Return all prompt templates, optionally filtered."""
     from promptops_app.repositories import prompt_repository
 
+    project_id = getattr(current_user, "_project_id", None)
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
     if component:
-        prompts = prompt_repository.list_prompts_by_component(db, component)
+        prompts = prompt_repository.list_prompts_by_component(
+            db, component, project_id=project_id, is_platform_admin=is_platform_admin,
+        )
     else:
-        prompts = prompt_repository.list_all_prompts(db)
+        prompts = prompt_repository.list_all_prompts(
+            db, project_id=project_id, is_platform_admin=is_platform_admin,
+        )
 
     if search:
         q = search.lower()
@@ -157,6 +184,7 @@ def create_prompt(
         variant=request_body.variant or None,
         is_default=False,
         active_version="v1" if request_body.system_prompt and request_body.user_prompt_template else None,
+        project_id=getattr(current_user, "_project_id", None),
     )
     prompt_repository.set_prompt_tags(db, prompt, request_body.tags or component)
     db.add(prompt)
@@ -217,6 +245,7 @@ def create_from_template(
         description=f"Auto-created from '{request_body.template_name}' template.",
         owner=current_user.username,
         active_version="v1",
+        project_id=getattr(current_user, "_project_id", None),
     )
     prompt_repository.set_prompt_tags(db, prompt, tmpl.get("tags", ""))
     db.add(prompt)
@@ -301,6 +330,7 @@ def create_from_generation(
         component_type=source,
         is_default=False,
         active_version="v1",
+        project_id=getattr(current_user, "_project_id", None),
     )
     prompt_repository.set_prompt_tags(db, prompt, source)
     db.add(prompt)
@@ -359,6 +389,7 @@ def ai_generate_prompt(
         description=tmpl.get("description", request_body.description),
         owner=current_user.username,
         active_version="v1",
+        project_id=getattr(current_user, "_project_id", None),
     )
     prompt_repository.set_prompt_tags(db, prompt, tmpl.get("tags", "custom"))
     db.add(prompt)
@@ -471,7 +502,7 @@ def set_fixing(
 ) -> PromptFixingRead:
     from promptops_app.repositories import prompt_repository
 
-    target = _get_prompt_or_404(db, request_body.prompt_id)
+    target = _get_prompt_or_404(db, request_body.prompt_id, **_tenant_kwargs(current_user))
     if target.prompt_kind != "pipeline":
         raise ValidationError("Only pipeline prompts can be bound to a generation scope.")
     if target.deleted_at is not None:
@@ -814,7 +845,7 @@ def set_prompt_fragment(
 @router.get("/{prompt_id}", response_model=PromptDetailRead, summary="Get a prompt with active version")
 def get_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.view"))) -> PromptDetailRead:
     """Return prompt metadata and active version prompt text."""
-    return _prompt_detail(db, _get_prompt_or_404(db, prompt_id))
+    return _prompt_detail(db, _get_prompt_or_404(db, prompt_id, **_tenant_kwargs(current_user)))
 
 
 @router.put("/{prompt_id}", response_model=PromptRead, summary="Update prompt metadata")
@@ -830,7 +861,7 @@ def update_prompt(
     accepted only from ``prompt.pipeline.edit`` holders (admin). Omit/None =
     untouched; empty string = clear to NULL.
     """
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     if request_body.component_type is not None or request_body.variant is not None:
         if not effective_rbac_check(current_user, "prompt.pipeline.edit"):
             raise PermissionDeniedError("prompt.pipeline.edit", user_role=current_user.role)
@@ -857,7 +888,7 @@ def update_prompt(
 @router.delete("/{prompt_id}", status_code=204, summary="Delete a prompt asset")
 def delete_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.manage"))) -> None:
     """Hard-delete a prompt and all its versions. Admin or Lead only."""
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     db.delete(prompt)
     db.commit()
     _log.info("prompt_deleted  user=%s  prompt_id=%d", current_user.username, prompt_id)
@@ -867,7 +898,7 @@ def delete_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=De
 def list_prompt_versions(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.view"))) -> list[PromptVersionListItem]:
     """List all versions for a prompt."""
     from promptops_app.repositories import prompt_repository
-    _get_prompt_or_404(db, prompt_id)
+    _get_prompt_or_404(db, prompt_id, **_tenant_kwargs(current_user))
     versions = prompt_repository.list_versions_for_prompt(db, prompt_id)
     return [PromptVersionListItem.model_validate(v) for v in versions]
 
@@ -895,7 +926,7 @@ def create_prompt_version(
     from promptops_app.database import PromptVersion
     from promptops_app.repositories import prompt_repository
 
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     duplicate = db.query(PromptVersion).filter(
         PromptVersion.prompt_id == prompt_id,
         PromptVersion.version == request_body.version,
@@ -944,7 +975,7 @@ def deploy_prompt_version(
     """
     from promptops_app.database import Prompt, PromptVersion
 
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     ver = db.query(PromptVersion).filter(
         PromptVersion.prompt_id == prompt_id,
         PromptVersion.version == version,
@@ -987,7 +1018,7 @@ def set_default_flag(
 ) -> PromptRead:
     from promptops_app.database import Prompt
 
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     if prompt.prompt_kind != "pipeline":
         raise ValidationError("Only pipeline prompts can be a component default.")
 
@@ -1037,7 +1068,7 @@ def set_declared_variables(
     from promptops_app.prompts.prompt_builder import extract_variables
     from promptops_app.repositories import prompt_repository
 
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     if prompt.prompt_kind != "pipeline":
         raise ValidationError("Variable declarations apply to pipeline prompts only.")
 
@@ -1107,7 +1138,7 @@ def transition_workflow_state(
 
     from promptops_app.database import PromptVersion
 
-    prompt = _get_prompt_or_404(db, prompt_id)
+    prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     ver = db.query(PromptVersion).filter(
         PromptVersion.prompt_id == prompt_id,
         PromptVersion.version == version,

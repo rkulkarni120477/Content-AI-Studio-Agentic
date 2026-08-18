@@ -97,6 +97,7 @@ Technical-Requirements-Reverse-Pipeline-v2.md
 CDD_CONTEXT_REDESIGN_PLAN.md
 CDD_PHASE1_IMPLEMENTATION.md
 logs/
+import_uploads/
 .graphify_python
 graphify-out/
 claude_plan_platform_hardening/

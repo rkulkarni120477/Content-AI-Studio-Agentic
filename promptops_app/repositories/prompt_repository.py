@@ -13,6 +13,53 @@ from promptops_app.database import (
 )
 
 
+def tenant_scope_condition(project_id: int | None, is_platform_admin: bool):
+    """Boolean SQL condition: does this row belong to the caller's tenant?
+
+    # ponytail: overlaps with app.core.tenant_context.apply_tenant_filter,
+    # which predates Prompt.project_id and is built around a string tenant_id
+    # column (or a bare int project_id FK) rather than this read/write split
+    # (see visible_to_tenant vs writable_by_tenant below — apply_tenant_filter
+    # has no write-side equivalent at all). Kept separate rather than forced
+    # into that shape; unify if a third model needs this exact read/write
+    # distinction and the duplication starts actually costing something.
+
+    True (no restriction) for a platform admin — they may continue seeing
+    every tenant's prompts, per the tenant-isolation ticket's own carve-out.
+    Otherwise: a prompt with project_id NULL is shared/global and visible to
+    everyone; one with project_id set is visible only to that same tenant.
+    Callers AND this into their existing query — it never replaces a role/
+    visibility check, just adds the tenant boundary on top.
+    """
+    if is_platform_admin:
+        return None
+    if project_id is not None:
+        return or_(Prompt.project_id.is_(None), Prompt.project_id == project_id)
+    return Prompt.project_id.is_(None)
+
+
+def visible_to_tenant(row_project_id: int | None, project_id: int | None, is_platform_admin: bool) -> bool:
+    """Boolean twin of ``tenant_scope_condition`` for a single already-fetched
+    row (e.g. a resolved parent/target prompt) instead of a query filter.
+    Same rule, one place — see ``tenant_scope_condition`` for the semantics.
+    """
+    return is_platform_admin or row_project_id is None or row_project_id == project_id
+
+
+def writable_by_tenant(row_project_id: int | None, project_id: int | None, is_platform_admin: bool) -> bool:
+    """Stricter than ``visible_to_tenant`` — the gate for content-mutating
+    actions (edit, delete, new version, promote, attachment add/remove).
+
+    A NULL ``project_id`` means "no single tenant owns this, everyone may
+    read it" — it does not mean "everyone may edit or delete it". Only a
+    platform admin or the row's own tenant may write; a shared/global row is
+    otherwise read-only to tenant callers.
+    """
+    if is_platform_admin:
+        return True
+    return row_project_id is not None and row_project_id == project_id
+
+
 # ---------------------------------------------------------------------------
 # Tags
 #
@@ -51,10 +98,12 @@ def set_prompt_tags(db, prompt: Prompt, tags: list[str] | str | None) -> None:
 # Basic lookups
 # ---------------------------------------------------------------------------
 
-def list_all_prompts(db):
+def list_all_prompts(db, *, project_id: int | None = None, is_platform_admin: bool = False):
     # Soft-deleted rows are archived — never listed (doc §9).
-    return (db.query(Prompt).filter(Prompt.deleted_at.is_(None))
-            .order_by(Prompt.name.asc()).all())
+    q = db.query(Prompt).filter(Prompt.deleted_at.is_(None))
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    return q.order_by(Prompt.name.asc()).all()
 
 
 def get_prompt_by_name(db, name: str):
@@ -107,19 +156,19 @@ def get_default_prompt(
     return base.filter(Prompt.variant.is_(None)).first()
 
 
-def list_prompts_by_component(db, component_type: str) -> list[Prompt]:
+def list_prompts_by_component(
+    db, component_type: str, *, project_id: int | None = None, is_platform_admin: bool = False,
+) -> list[Prompt]:
     """Return all live prompts whose component_type matches, default first then alpha.
 
     Soft-deleted rows are excluded — this feeds CAS selection dropdowns
     (doc §9: archived prompts never appear in selection).
     """
-    return (
-        db.query(Prompt)
-        .filter(Prompt.component_type == component_type,
-                Prompt.deleted_at.is_(None))
-        .order_by(Prompt.is_default.desc(), Prompt.name.asc())
-        .all()
-    )
+    q = db.query(Prompt).filter(Prompt.component_type == component_type,
+                                Prompt.deleted_at.is_(None))
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    return q.order_by(Prompt.is_default.desc(), Prompt.name.asc()).all()
 
 
 def list_prompts_tagged(db, tag: str) -> list[Prompt]:
