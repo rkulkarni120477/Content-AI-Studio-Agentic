@@ -1,9 +1,11 @@
 import { createSlice } from '@reduxjs/toolkit';
 import { attachBlockJobReducers } from '@features/shared/blockJob';
+import { attachArchiveReducers } from '@features/shared/documentArchive';
 import {
   fetchCddsThunk, generateCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, activateCddVersionThunk,
   generateCddBlockThunk, pollCddJobThunk, resumeCddJobThunk,
+  fetchArchivedCddsThunk, cddArchiveThunks,
 } from './cddThunks';
 
 const initialState = {
@@ -15,6 +17,13 @@ const initialState = {
   error:      null,
   // Block-wide async job tracking (digest pipeline).
   blockJob:   null,  // { jobId, status, progress, currentStep }
+  // Archive. Held apart from `cdds` because that array feeds the generation
+  // dropdown — a retired document must not be one missed filter away from a prompt.
+  archivedCdds: [],
+  isArchiving:  false,
+  // A refused archive/purge, with the server's reasons. Separate from `error`
+  // so the list stays on screen while the user acts on the refusal.
+  archiveRefusal: null,
 };
 
 const cddSlice = createSlice({
@@ -22,6 +31,7 @@ const cddSlice = createSlice({
   initialState,
   reducers: {
     clearError(s) { s.error = null; },
+    clearArchiveRefusal(s) { s.archiveRefusal = null; },
     clearGenerating(s) { s.isGenerating = false; },
     setActiveCddLocal(s, { payload }) { s.activeCdd = payload; },
     // Clear stale block-job status so a completed/failed banner from one course
@@ -63,13 +73,24 @@ const cddSlice = createSlice({
         }
       });
 
+    b.addCase(fetchArchivedCddsThunk.fulfilled, (s, { payload }) => {
+      s.archivedCdds = payload ?? [];
+    });
+    // A failed archived-list load leaves the previous contents rather than
+    // emptying them — "no archived CDDs" and "we could not check" must not
+    // look the same right before someone decides to regenerate.
+
     // Shared block-wide async-job cases (pending/fulfilled/rejected + poll).
     attachBlockJobReducers(b, { generateThunk: generateCddBlockThunk, pollThunk: pollCddJobThunk,
                                  resumeThunk: resumeCddJobThunk });
+    // Shared archive/restore/purge cases.
+    attachArchiveReducers(b, cddArchiveThunks);
   },
 });
 
-export const { clearError, clearGenerating, setActiveCddLocal, resetBlockJob } = cddSlice.actions;
+export const {
+  clearError, clearArchiveRefusal, clearGenerating, setActiveCddLocal, resetBlockJob,
+} = cddSlice.actions;
 export default cddSlice.reducer;
 
 export const selectCdds           = (s) => s.cdd.cdds;
@@ -78,4 +99,7 @@ export const selectCddVersions    = (s) => s.cdd.versions;
 export const selectCddLoading     = (s) => s.cdd.isLoading;
 export const selectCddGenerating  = (s) => s.cdd.isGenerating;
 export const selectCddError       = (s) => s.cdd.error;
+export const selectArchivedCdds   = (s) => s.cdd.archivedCdds;
+export const selectCddArchiving   = (s) => s.cdd.isArchiving;
+export const selectCddArchiveRefusal = (s) => s.cdd.archiveRefusal;
 export const selectCddBlockJob     = (s) => s.cdd.blockJob;

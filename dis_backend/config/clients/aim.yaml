@@ -199,7 +199,26 @@ storage:
   local:
     base_path: /unused/s3-only
 retrieval:
-  max_results: 20
+  # Ceiling on the units a caller may request (clamps `retrieval.top_k`; its only
+  # use). Raised from 20 so a structural document can be retrieved WHOLE.
+  #
+  # A block's 20-day course calendar is 20 units on its own, so at 20 every
+  # other document competed with it for slots: a CDD regeneration asking about
+  # handbooks got both syllabi (1 unit each) plus 8 student-calendar sections,
+  # leaving 10 slots for a 20-day calendar. Half a calendar cannot answer a
+  # question about what Day 14 assumes Day 13 established.
+  #
+  # Safe for the other purposes because `token_budget` binds first: _pack_units
+  # skips a unit that would exceed the budget and only then checks this count, so
+  # a caller sending the 6,000-token default still receives ~6,000 tokens — just
+  # potentially more, smaller units within it. Only the CDD path raises its own
+  # token_budget to match. 40 stays under result_size_cap (50).
+  #
+  # Measured across all 14 blocks carrying cdd-purpose material: unit counts of
+  # 1, 8, 12, 30, 32, 41 (x6) and 49, token totals peaking at ~7,900. 40 would
+  # have truncated the seven blocks at 41+, so this is the measured maximum (49)
+  # rounded to result_size_cap.
+  max_results: 50
   result_size_cap: 50
   restricted_content_filter: true
 

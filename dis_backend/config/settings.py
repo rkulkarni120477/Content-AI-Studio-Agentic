@@ -727,7 +727,23 @@ class TenantRegistry:
         if base_prefix:
             tenant.storage.base_prefix = base_prefix
 
-        region = os.environ.get("AWS_REGION", os.environ.get("DIS_AWS_REGION", "")).strip()
+        # DIS-specific only. AWS_REGION is deliberately NOT consulted here.
+        #
+        # A bucket's region is a property of the bucket, not of the process's
+        # default AWS region, and AWS_REGION is set to wherever Bedrock runs
+        # (ap-south-1 in this deployment). Reading it here silently overrode the
+        # explicit, correct `region: us-east-1` in every client YAML, so DIS
+        # addressed a us-east-1 bucket through the ap-south-1 endpoint. S3
+        # answered with a redirect to the regional us-east-1 host, and where that
+        # host is unreachable the result was EndpointConnectionError after
+        # botocore's retries — surfacing in CAS as a source-library lookup that
+        # simply never returned.
+        #
+        # Every neighbouring override above and below uses a DIS_ prefix for
+        # exactly this reason: a generic SDK variable must not reach in and
+        # reconfigure per-tenant storage. DIS_AWS_REGION is kept for
+        # compatibility; DIS_S3_REGION is the accurate name for what it sets.
+        region = os.environ.get("DIS_S3_REGION", os.environ.get("DIS_AWS_REGION", "")).strip()
         if region:
             tenant.storage.s3.region = region
 

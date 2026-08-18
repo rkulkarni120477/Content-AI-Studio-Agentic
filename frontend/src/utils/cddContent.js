@@ -85,6 +85,14 @@ export function patchCddBlock(fullContent, sectionsObj, blockKey, newContent) {
     Object.assign(parsed, sectionsObj);
   }
   parsed[blockKey] = newContent;
+  // Deliberately NOT widened to every key in `parsed`. A block-wide (AIM) CDD
+  // commits a worksheet edit by splicing it into the 'Course Structure' blob and
+  // committing that, so the per-worksheet keys carried in `sectionsObj` are the
+  // PRE-edit copies. Preserving them here would leave a stale Worksheet 1 beside
+  // a freshly corrected blob, and any reader preferring the index would show the
+  // old text. Dropping them is lossless — full_content keeps everything — and
+  // app/services/cdd_regen_context.load_sections recovers the keys from the body,
+  // where they are guaranteed current.
   const sections = {};
   CDD_UI_BLOCKS.forEach(({ key }) => {
     if (parsed[key]) sections[key] = parsed[key];

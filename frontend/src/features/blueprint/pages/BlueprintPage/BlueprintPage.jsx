@@ -9,12 +9,16 @@ import {
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   generateBlueprintBlockThunk,
   resumeBlueprintJobThunk,
+  fetchArchivedBlueprintsThunk, archiveBlueprintThunk, restoreBlueprintThunk,
+  purgeBlueprintThunk, bulkArchiveBlueprintsThunk,
 } from '@features/blueprint/blueprintThunks';
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
   selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
   selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintError,
   selectBlueprintGenerationMode, setGenerationMode, selectBlueprintBlockJob, resetBlockJob,
+  selectArchivedBlueprints, selectBlueprintArchiving, selectBlueprintArchiveRefusal,
+  clearArchiveRefusal,
 } from '@features/blueprint/blueprintSlice';
 import { selectActiveCdd, selectCdds } from '@features/cdd/cddSlice';
 import { fetchCddsThunk } from '@features/cdd/cddThunks';
@@ -27,6 +31,7 @@ import { selectActiveStyle } from '@features/style/styleSlice';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { selectIsAdmin } from '@features/auth/authSlice';
 import { useAuth } from '@hooks/useAuth';
+import DocumentArchivePanel from '@components/generation/DocumentArchivePanel/DocumentArchivePanel';
 import BlockWidePanel from '@components/generation/BlockWidePanel/BlockWidePanel';
 import { adminService } from '@features/admin/services/adminService';
 import {
@@ -41,7 +46,7 @@ import { detectDluBlueprint, replaceDluBlueprintSection } from '@utils/dluBluepr
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { commitVersionSchema } from '@utils/validation';
 import { GENERATION_MODES } from '@utils/constants';
-import { downloadBlob } from '@utils/helpers';
+import { downloadBlob, formatDate } from '@utils/helpers';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import InlinePromptControls from '@components/generation/InlinePromptControls/InlinePromptControls';
@@ -81,6 +86,9 @@ export default function BlueprintPage() {
   const isGenerating = useAppSelector(selectBlueprintGenerating);
   const error = useAppSelector(selectBlueprintError);
   const blockJob = useAppSelector(selectBlueprintBlockJob);
+  const archivedBlueprints = useAppSelector(selectArchivedBlueprints);
+  const isArchiving = useAppSelector(selectBlueprintArchiving);
+  const archiveRefusal = useAppSelector(selectBlueprintArchiveRefusal);
   const { user } = useAuth();
   // Block-wide (digest-pipeline) generation is opt-in per DIS client — and the
   // client that matters is the COURSE'S, not the viewer's, because the pipeline
@@ -175,6 +183,9 @@ export default function BlueprintPage() {
     setBlockLabel('');
     blockLabelTouched.current = false;
     dispatch(fetchBlueprintsThunk(courseId));
+    // Loaded on mount rather than on first expand: the count is shown on the
+    // toggle itself, so it has to be known before the toggle is rendered.
+    dispatch(fetchArchivedBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
@@ -428,6 +439,31 @@ export default function BlueprintPage() {
   async function onPin(bpId) {
     await dispatch(setActiveBlueprintThunk({ blueprintId: bpId, courseId: Number(courseId) }));
     setViewBpId(bpId);
+  }
+
+  // ── Archive management ────────────────────────────────────────────────────
+  // Every handler passes courseId so the shared thunks can refetch both the
+  // live and archived lists — archiving moves a row between them.
+  const bpCourseId = Number(courseId);
+
+  function onArchiveBlueprint(bpId, { unpin } = {}) {
+    // The selection follows the row out of the list, so the page does not keep
+    // showing the contents of a document that is no longer in it.
+    if (viewBpId === bpId) setViewBpId(null);
+    dispatch(archiveBlueprintThunk({ id: bpId, courseId: bpCourseId, unpin }));
+  }
+
+  function onRestoreBlueprint(bpId) {
+    dispatch(restoreBlueprintThunk({ id: bpId, courseId: bpCourseId }));
+  }
+
+  function onPurgeBlueprint(bpId) {
+    dispatch(purgeBlueprintThunk({ id: bpId, courseId: bpCourseId }));
+  }
+
+  function onBulkArchiveBlueprints(ids) {
+    if (ids.includes(viewBpId)) setViewBpId(null);
+    dispatch(bulkArchiveBlueprintsThunk({ ids, courseId: bpCourseId, projectId }));
   }
 
   async function onCommitVersion(data) {
@@ -855,18 +891,26 @@ export default function BlueprintPage() {
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
-              ) : blueprints.length === 0 ? (
+              ) : (blueprints.length === 0 && archivedBlueprints.length === 0) ? (
                 <EmptyState
                   title={`No ${L.blueprints} yet`}
                   message={`Create your first ${L.blueprint} using the form above.`}
                 />
               ) : (
                 <>
+                  {blueprints.length > 0 && (
                   <Select
                     label={`Select ${L.blueprint} to View/Edit`}
+                    // Title and module alone do not identify a row — a course
+                    // can hold twenty blueprints for the same module. The date
+                    // and author are what make the option pickable.
                     options={blueprints.map((bp) => ({
                       value: String(bp.id),
-                      label: `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                      label: [
+                        `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                        formatDate(bp.created_at),
+                        bp.created_by,
+                      ].filter(Boolean).join(' — '),
                     }))}
                     value={viewBpId != null ? String(viewBpId) : ''}
                     onChange={(e) => {
@@ -875,6 +919,33 @@ export default function BlueprintPage() {
                       setSelectedBpId(id);
                       if (id) dispatch(fetchBlueprintVersionsThunk(id));
                     }}
+                  />
+                  )}
+
+                  {/* Outside the `displayBp` guard below and not conditioned on
+                      the live list: archiving the last live blueprint would
+                      otherwise take the archived list off screen with it,
+                      leaving no way to restore what was just archived. */}
+                  <DocumentArchivePanel
+                    label={L.blueprint}
+                    docs={blueprints}
+                    archivedDocs={archivedBlueprints}
+                    activeId={activeBlueprint?.id ?? null}
+                    selectedId={viewBpId}
+                    busy={isArchiving}
+                    canPurge={isAdmin}
+                    onSelect={(id) => {
+                      setViewBpId(id);
+                      setSelectedBpId(id);
+                      dispatch(fetchBlueprintVersionsThunk(id));
+                    }}
+                    onSetActive={onPin}
+                    onArchive={onArchiveBlueprint}
+                    onRestore={onRestoreBlueprint}
+                    onPurge={onPurgeBlueprint}
+                    onBulkArchive={onBulkArchiveBlueprints}
+                    refusal={archiveRefusal}
+                    onDismissRefusal={() => dispatch(clearArchiveRefusal())}
                   />
 
                   {displayBp && (

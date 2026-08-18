@@ -6,6 +6,7 @@
 import os
 from dotenv import load_dotenv
 import json
+import logging
 import re
 import hashlib
 import binascii
@@ -88,6 +89,8 @@ if not settings.db_url.startswith("sqlite"):
 engine = create_engine(settings.db_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+_log = logging.getLogger(__name__)
 
 # =============================================================================
 # Database Models
@@ -979,7 +982,14 @@ class CourseDesignDocument(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     project_id = Column(Integer, nullable=True)   # FK to projects.id (nullable for backward compat)
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    # Archive (soft delete). NULL = live. Indexed because every list query filters on it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(100), nullable=True)
     versions = relationship("CDDVersion", back_populates="cdd", cascade="all, delete-orphan")
+    # NOTE: this cascade means ``db.delete(cdd)`` also deletes every blueprint
+    # derived from it, and (through ModuleBlueprint.versions) their whole version
+    # history. Never hard-delete a CDD without first checking for referencing
+    # blueprints — app/services/design_doc_archive.py enforces that.
     blueprints = relationship("ModuleBlueprint", back_populates="cdd", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -1018,6 +1028,9 @@ class ModuleBlueprint(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     project_id = Column(Integer, nullable=True)   # FK to projects.id
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    # Archive (soft delete). NULL = live. Indexed because every list query filters on it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(100), nullable=True)
     cdd = relationship("CourseDesignDocument", back_populates="blueprints")
     versions = relationship("BlueprintVersion", back_populates="blueprint", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -1415,7 +1428,91 @@ def init_db():
     # Skipped on SQLite (the test suite) which has no legacy data and does
     # not support the PostgreSQL syntax used.
     if engine.dialect.name == "postgresql":
+        _ensure_required_columns()
         _run_data_backfills()
+
+
+# Columns the ORM declares that the application cannot read a table without.
+#
+# Everything else the ORM adds is optional in practice — a missing column only
+# breaks the feature that uses it. These are different: SQLAlchemy names every
+# mapped column in its SELECT, so a missing one makes EVERY query against that
+# table raise UndefinedColumn, including queries that never touch the new field.
+#
+# table -> (DDL statement, ...)
+_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    # Design-document archive (v22). Without these, listing or opening any CDD
+    # or Blueprint fails outright — the whole CDD and Blueprint UI goes down.
+    "course_design_documents": (
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+    ),
+    "module_blueprints": (
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+    ),
+    # Observability drift. The live table carries `trace_id`; the ORM declares
+    # `langfuse_trace_id`, and because SQLAlchemy names every mapped column in
+    # its SELECT, the mismatch breaks EVERY read of this table — including the
+    # post-generation budget summary, which turned successful, paid-for CDD
+    # regenerations into 500s and silently discarded their output.
+    #
+    # Added rather than renamed: `trace_id` is populated in existing rows and
+    # something may still read it, so dropping or renaming it would trade one
+    # outage for another. The two coexist until the ORM is reconciled.
+    "llm_usage_logs": (
+        "ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS langfuse_trace_id VARCHAR(64)",
+    ),
+}
+
+
+def _ensure_required_columns() -> None:
+    """Add ORM-required columns that the live schema is missing.
+
+    Deliberately NOT behind the DB_AUTO_DDL gate, unlike ``_run_legacy_ddl``.
+    That gate exists to stop optional legacy DDL from desyncing alembic_version,
+    and the trade it makes — schema drift is better than a confused migration
+    state — is the right one for columns whose absence merely disables a feature.
+
+    It is the wrong trade here. The deploy pipeline runs no ``alembic upgrade``
+    (backend-deploy.yml goes straight from ``git reset --hard`` to
+    ``docker compose up --build``), so new code reliably reaches a database that
+    the matching migration has not touched yet. For a column the ORM declares,
+    that window is not degraded service — it is every read of the table raising
+    UndefinedColumn. Verified 2026-08-14: with alembic_version at 000100000020
+    and the archive columns absent, listing the CDDs of any course failed with
+    "column course_design_documents.deleted_at does not exist".
+
+    Every statement is additive, nullable and IF NOT EXISTS, so this is a no-op
+    once the migration has run and safe to run before it. It never drops or
+    rewrites anything, and it does not touch alembic_version — the migration
+    stays the source of truth and is itself guarded to be a no-op here.
+
+    Failures are logged, not raised: a database that refuses DDL (a read-only
+    replica, a least-privilege role) should still serve every request that does
+    not need the new column.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+
+    inspector = _sa_inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table, statements in _REQUIRED_COLUMNS.items():
+        if table not in existing_tables:
+            continue  # fresh database — create_all/migrations will build it complete
+        present = {c["name"] for c in inspector.get_columns(table)}
+        # The column name is the token right after "IF NOT EXISTS".
+        missing = [
+            s for s in statements
+            if s.split("IF NOT EXISTS", 1)[1].strip().split()[0] not in present
+        ]
+        for statement in missing:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(statement))
+                _log.warning("schema_self_heal  added missing column via: %s", statement)
+            except Exception:  # noqa: BLE001 — a boot must not die on schema repair
+                _log.exception("schema_self_heal_failed  statement=%s", statement)
 
 
 def _run_legacy_ddl():
@@ -1453,6 +1550,11 @@ def _run_legacy_ddl():
         # module_blueprints (v18)
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS course_id INTEGER",
+        # course_design_documents / module_blueprints — archive (soft delete) (v22)
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
         # generations (v18)
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS course_id INTEGER",
@@ -1622,6 +1724,10 @@ def _run_legacy_ddl():
             # styles — workspace ownership scoping (v21)
             "CREATE INDEX IF NOT EXISTS idx_styles_course_id ON styles(course_id)",
             "CREATE INDEX IF NOT EXISTS idx_styles_project_id ON styles(project_id)",
+            # Archive (v22) — partial indexes: every list query asks for the live
+            # rows, so indexing only those keeps the index small as the archive grows.
+            "CREATE INDEX IF NOT EXISTS idx_cdd_live ON course_design_documents(course_id) WHERE deleted_at IS NULL",
+            "CREATE INDEX IF NOT EXISTS idx_blueprint_live ON module_blueprints(course_id) WHERE deleted_at IS NULL",
             "CREATE INDEX IF NOT EXISTS idx_cdd_versions_version_number ON cdd_versions(cdd_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_blueprint_versions_version_number ON blueprint_versions(blueprint_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC)",

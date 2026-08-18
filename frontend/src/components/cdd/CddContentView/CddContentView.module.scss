@@ -228,3 +228,64 @@
     vertical-align: top;
   }
 }
+
+/* Single-item regeneration confirm dialog. */
+.itemPrompt {
+  @include flex-col;
+  gap: $space-2;
+}
+
+.itemPrompt__label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: $font-weight-bold;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: $color-gray-600;
+}
+
+/* The line about to be rewritten. Monospaced and boxed so the markdown the
+   model receives is visible as-is — a lost delimiter is a real failure mode
+   here, not a cosmetic one. */
+.itemPrompt__current {
+  padding: $space-2 $space-3;
+  border: 1px solid $color-gray-200;
+  border-left: 3px solid #4f46e5;
+  border-radius: $radius-md;
+  background: $color-gray-50;
+  font-size: $font-size-sm;
+  line-height: 1.5;
+  max-height: 9rem;
+  overflow-y: auto;
+  word-break: break-word;
+}
+
+.itemPrompt__input {
+  width: 100%;
+  padding: $space-2 $space-3;
+  border: 1px solid $color-gray-300;
+  border-radius: $radius-md;
+  font-size: $font-size-sm;
+  line-height: 1.5;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.itemPrompt__check {
+  display: flex;
+  align-items: flex-start;
+  gap: $space-2;
+  font-size: $font-size-sm;
+  cursor: pointer;
+
+  input { margin-top: 0.2rem; flex-shrink: 0; }
+}
+
+.itemPrompt__hint {
+  display: block;
+  margin: $space-1 0 0;
+  font-size: 0.78rem;
+  font-style: normal;
+  color: $color-gray-600;
+  line-height: 1.45;
+}

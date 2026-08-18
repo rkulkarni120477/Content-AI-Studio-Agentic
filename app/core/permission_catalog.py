@@ -35,6 +35,8 @@ PERMISSION_CATEGORIES: list[dict] = [
             {"key": "cdd.review",   "label": "Review/approve a CDD"},
             {"key": "cdd.pin",      "label": "Pin a CDD version"},
             {"key": "cdd.version",  "label": "Create a new CDD version"},
+            {"key": "cdd.archive",  "label": "Archive / restore a CDD"},
+            {"key": "cdd.purge",    "label": "Permanently delete an archived CDD"},
         ],
     },
     {
@@ -46,6 +48,8 @@ PERMISSION_CATEGORIES: list[dict] = [
             {"key": "blueprint.review",   "label": "Review/approve a blueprint"},
             {"key": "blueprint.pin",      "label": "Pin a blueprint version"},
             {"key": "blueprint.version",  "label": "Create a new blueprint version"},
+            {"key": "blueprint.archive",  "label": "Archive / restore a blueprint"},
+            {"key": "blueprint.purge",    "label": "Permanently delete an archived blueprint"},
         ],
     },
     {

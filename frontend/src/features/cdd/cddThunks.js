@@ -5,6 +5,7 @@ import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@
 import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
 import { createBlockJobThunks } from '@features/shared/blockJob';
+import { createArchiveThunks } from '@features/shared/documentArchive';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -134,18 +135,41 @@ export const commitCddVersionThunk = createAsyncThunk(
   },
 );
 
+/**
+ * Report a regeneration's outcome exactly once.
+ *
+ * The thunk owns the toast, because it is the only layer that sees both the cost
+ * and the outcome. Previously it announced "Section regenerated. Used $0.05"
+ * whenever a usage summary came back, and the page then separately reported that
+ * nothing had changed — so a no-op produced a green success and a red failure
+ * side by side, contradicting each other, and the honest half looked like the
+ * mistake.
+ *
+ * A no-op is not a success: nothing was saved and the instruction was not
+ * carried out. The cost is still reported, because it was still incurred.
+ */
+function notifyRegenOutcome(result, label) {
+  const usageMsg = formatUsageSummaryMessage(result?.usage_summary);
+  if (result?.changed === false) {
+    const why = result.note
+      || `No change — the ${label.toLowerCase()} was returned unchanged. Nothing was saved.`;
+    toast.error([why, usageMsg].filter(Boolean).join(' '));
+    return;
+  }
+  if (!usageMsg) return;
+  if (hasOverBudget(result.usage_summary)) toast.error(`${label} regenerated. ${usageMsg}`);
+  else toast.success(`${label} regenerated. ${usageMsg}`);
+}
+
 export const regenerateCddItemThunk = createAsyncThunk(
   'cdd/regenerateItem',
-  async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
+  async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, useSources, modelChoice },
+          { rejectWithValue }) => {
     try {
       const result = await cddService.regenerateItem(cddId, {
-        sectionKey, sectionContent, itemIndex, feedback, modelChoice,
+        sectionKey, sectionContent, itemIndex, feedback, useSources, modelChoice,
       });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      if (usageMsg) {
-        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
-        else toast.success(`Item regenerated. ${usageMsg}`);
-      }
+      notifyRegenOutcome(result, 'Item');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -156,11 +180,7 @@ export const regenerateCddSectionThunk = createAsyncThunk(
   async ({ cddId, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
     try {
       const result = await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      if (usageMsg) {
-        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
-        else toast.success(`Section regenerated. ${usageMsg}`);
-      }
+      notifyRegenOutcome(result, 'Section');
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -173,3 +193,56 @@ export const exportCddThunk = createAsyncThunk(
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
+
+/**
+ * The archived CDDs for a course, kept in a separate list from the live ones.
+ *
+ * Deliberately not merged into `cdds` behind a flag: that array feeds the
+ * "select a CDD" dropdown and the generation flow, and one missed filter there
+ * would put a retired document back into a prompt.
+ */
+export const fetchArchivedCddsThunk = createAsyncThunk(
+  'cdd/fetchArchived',
+  async (courseId, { getState, rejectWithValue }) => {
+    try {
+      const cid = Number(courseId);
+      const items = await cddService.listCdds(cid, {
+        project_id: resolveProjectId(getState) ?? undefined,
+        course_id: cid,
+        include_archived: true,
+      });
+      return items.filter((c) => c.is_archived);
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+/**
+ * Archive / restore / permanently delete. The rules and the refusal handling
+ * are shared with Blueprints — see features/shared/documentArchive.js.
+ *
+ * Each one refetches both lists on success: archiving moves a row from one to
+ * the other, so refreshing only the list that was showing would leave the other
+ * stale until the next navigation.
+ */
+const cddArchiveThunks = createArchiveThunks({
+  name: 'cdd',
+  label: 'CDD',
+  api: {
+    archive: cddService.archiveCdd,
+    restore: cddService.restoreCdd,
+    purge: cddService.purgeCdd,
+    bulkArchive: cddService.bulkArchiveCdds,
+  },
+  refetch: (courseId) => async (dispatch) => {
+    await Promise.all([
+      dispatch(fetchCddsThunk(courseId)),
+      dispatch(fetchArchivedCddsThunk(courseId)),
+    ]);
+  },
+});
+
+export const archiveCddThunk = cddArchiveThunks.archiveThunk;
+export const restoreCddThunk = cddArchiveThunks.restoreThunk;
+export const purgeCddThunk = cddArchiveThunks.purgeThunk;
+export const bulkArchiveCddsThunk = cddArchiveThunks.bulkArchiveThunk;
+export { cddArchiveThunks };

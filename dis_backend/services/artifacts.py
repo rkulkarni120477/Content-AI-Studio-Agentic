@@ -12,9 +12,19 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from config.settings import TenantConfig, get_settings
+from config.settings import S3Config, TenantConfig, get_settings
 
 log = logging.getLogger(__name__)
+
+#: Bounded because every caller in this module is interactive: these are small
+#: JSON artifacts and key listings, not the large multi-part transfers that
+#: storage/provider.py deliberately gives long timeouts to. Three attempts still
+#: absorbs a transient blip, where provider.py's five 30-second connect attempts
+#: turn one bad endpoint into a two-minute stall inside a request someone is
+#: waiting on.
+S3_CONNECT_TIMEOUT_SECONDS = 10
+S3_READ_TIMEOUT_SECONDS = 30
+S3_MAX_ATTEMPTS = 3
 
 
 def _join_prefix(prefix: str, key: str) -> str:
@@ -82,13 +92,36 @@ class ArtifactWriter:
         if client is not None:
             return client
         import boto3
+        from botocore.config import Config
+
         cfg = self.tenant_cfg.storage.s3
-        kwargs = {"region_name": cfg.region or self.settings.aws_region}
+        # The region comes from the tenant's own storage config, never from
+        # settings.aws_region.
+        #
+        # settings.aws_region is where Bedrock runs, which is not where the
+        # buckets are. Using it as the fallback addressed a us-east-1 bucket
+        # through another region's host whenever the tenant config was not fully
+        # resolved, and that does not fail cleanly: botocore retried the
+        # unroutable endpoint and raised EndpointConnectionError after 70-140
+        # seconds, surfacing in CAS as a retrieval that "didn't work" with no
+        # usable reason. Guessing an unrelated region is worse than having no
+        # preference, because it produces a plausible-looking endpoint for the
+        # wrong place.
+        #
+        # The fallback reads S3Config's own declared default rather than
+        # repeating a literal, so the default lives in exactly one place and
+        # cannot drift from the schema.
+        kwargs = {"region_name": cfg.region or S3Config.model_fields["region"].default}
         if cfg.endpoint_url:
             kwargs["endpoint_url"] = cfg.endpoint_url
         if self.settings.aws_access_key_id:
             kwargs["aws_access_key_id"] = self.settings.aws_access_key_id
             kwargs["aws_secret_access_key"] = self.settings.aws_secret_access_key
+        kwargs["config"] = Config(
+            connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=S3_READ_TIMEOUT_SECONDS,
+            retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
+        )
         client = boto3.client("s3", **kwargs)
         self._cached_s3 = client
         return client
