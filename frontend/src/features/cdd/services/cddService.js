@@ -32,7 +32,9 @@ function mapGeneratePayload(data) {
     project_id: data.project_id,
     course_title: data.course_title,
     document_title: data.document_title || undefined,
-    estimated_duration_hours: data.estimated_duration_hours ?? data.duration_hours ?? 8,
+    // Optional: omitted when the form's duration box is left blank, so the prompt
+    // says nothing about duration rather than asserting a default nobody chose.
+    estimated_duration_hours: data.estimated_duration_hours ?? data.duration_hours ?? undefined,
     extra_instructions: data.extra_instructions || '',
     style_id: data.style_id ?? null,
     reference_document_ids: data.reference_document_ids || [],

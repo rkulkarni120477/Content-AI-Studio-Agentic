@@ -169,7 +169,11 @@ class DocumentProcessingConfig(BaseModel):
     enabled_document_types: List[str] = [
         "course_calendar", "syllabus", "lesson_slide_deck", "project_activity",
         "project_key", "quiz_exam", "quiz_answer_key", "study_questions",
-        "ebook_reference", "instructor_guide", "student_handout", "other"
+        "ebook_reference", "instructor_guide", "student_handout",
+        # Aggregate knowledge-test performance data (e.g. an AKTR missed-code
+        # rollup). Not in restricted_document_types below: it holds no questions and
+        # no answers, so it is design input, not exam content.
+        "knowledge_test_report", "other"
     ]
     # These document types are hidden from normal user context retrieval.
     # Client admins and super admins can still see/retrieve them.
@@ -188,6 +192,7 @@ class DocumentProcessingConfig(BaseModel):
         "ebook_reference": "page",
         "instructor_guide": "guide_section",
         "student_handout": "chunk",
+        "knowledge_test_report": "knowledge_test_item",
         "other": "chunk",
     }
     fallback_doc_type: str = "other"

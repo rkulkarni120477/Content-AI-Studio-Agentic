@@ -569,13 +569,23 @@ def generate_cdd(
         if style_context:
             extra_block = f"**ACTIVE STYLE — Apply throughout:**\n{style_context}\n\n{extra_block}"
 
+        # Duration is optional on the form, so it can be absent here. "unspecified"
+        # rather than a stand-in number: a template that prints
+        # "**Estimated Duration:** {estimated_duration} hours" must not assert a
+        # figure the requester never gave, and an empty string would read as a
+        # rendering bug rather than as an answer.
+        estimated_duration = (
+            str(request_body.estimated_duration_hours)
+            if request_body.estimated_duration_hours is not None else "unspecified"
+        )
+
         variables = {
             "course_title":        request_body.course_title,
             "course_name":         request_body.course_title,
             "target_audience":     request_body.target_audience,
             "expert_domain":       request_body.expert_domain,
             "audience_level":      request_body.audience_category,
-            "estimated_duration":  str(request_body.estimated_duration_hours),
+            "estimated_duration":  estimated_duration,
             "extra_instructions_block": extra_block,
             "extra_instructions":  extra_block,
             "style_guidelines":    style_context,
@@ -620,7 +630,7 @@ def generate_cdd(
                 target_audience=request_body.target_audience,
                 expert_domain=request_body.expert_domain,
                 audience_level=request_body.audience_category,
-                estimated_duration=str(request_body.estimated_duration_hours),
+                estimated_duration=estimated_duration,
                 extra_instructions_block=extra_block,
             )
             prompt_provenance = {"prompt_source": "builtin_fallback"}

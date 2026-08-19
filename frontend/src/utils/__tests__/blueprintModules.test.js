@@ -17,14 +17,37 @@ const LEGACY_DAY_TABLE = `
 
 // Block-wide digest pipeline's Day-by-Day Map shape: "Day" + "Topic" (no
 // literal "Day Title" column) — promptops_app/services/block_wide_service.py
-// _DAY_TABLE_HEADER.
+// _DAY_TABLE_HEADER. The Day CELL is "Day 1", not "1": that pipeline writes the
+// label form deliberately, matched cell-by-cell against the AIM reference (see
+// `day_label` in _day_table_from_rows). This fixture previously used bare numbers,
+// so it passed while every real block-wide CDD failed to parse — the Blueprint page
+// fell back to "Module 1" for a 20-day block.
 const DIGEST_PIPELINE_DAY_TABLE = `
 ## WORKSHEET 3: DAY-BY-DAY MAP
 
 | Day | Topic | Handbook Reference | ACS | Concept Type | Notes |
 |---|---|---|---|---|---|
-| 1 | Introduction to Aircraft Drawings | FAA-H-8083-30B | AM.I.B.K1 | Conceptual | n/a |
-| 2 | Basic Materials and Processes | FAA-H-8083-30B | AM.I.B.K2 | Procedural | n/a |
+| Day 1 | Introduction to Aircraft Drawings | FAA-H-8083-30B | AM.I.B.K1 | Conceptual | n/a |
+| Day 2 | Basic Materials and Processes | FAA-H-8083-30B | AM.I.B.K2 | Procedural | n/a |
+`;
+
+// The same shape with bare numeric day cells, which the legacy tables and any
+// hand-authored CDD may still use. Both forms must parse.
+const NUMERIC_DAY_CELL_TABLE = `
+| Day | Topic | Notes |
+|---|---|---|
+| 1 | Introduction | n/a |
+| 2 | Fundamentals | n/a |
+`;
+
+// A dayless row renders its Day cell as an em dash, and a summary row may cover a
+// RANGE. Neither is a day, and neither may become one.
+const NON_DAY_ROWS_TABLE = `
+| Day | Topic | Notes |
+|---|---|---|
+| Day 1 | Introduction | n/a |
+| — | Unscheduled material | no day resolved |
+| Days 2-3 | Combined review | range, not a day |
 `;
 
 const MODULE_CDD = `
@@ -101,6 +124,26 @@ describe('buildDayOptions', () => {
       { label: 'Day 1: Introduction to Aircraft Drawings', key: 1, isDay: true, title: 'Introduction to Aircraft Drawings' },
       { label: 'Day 2: Basic Materials and Processes', key: 2, isDay: true, title: 'Basic Materials and Processes' },
     ]);
+  });
+
+  it('reads a bare numeric Day cell too, so legacy and hand-authored tables still parse', () => {
+    expect(buildDayOptions(NUMERIC_DAY_CELL_TABLE).map((o) => o.key)).toEqual([1, 2]);
+  });
+
+  it('ignores an em-dash placeholder row and a day RANGE row', () => {
+    const options = buildDayOptions(NON_DAY_ROWS_TABLE);
+    expect(options.map((o) => o.key)).toEqual([1]);
+  });
+
+  it('tolerates a bolded Day cell', () => {
+    const bolded = ['| Day | Topic |', '|---|---|', '| **Day 4** | Wiring |'].join('\n');
+    expect(buildDayOptions(bolded).map((o) => o.key)).toEqual([4]);
+  });
+});
+
+describe('detectDluCdd on the real block-wide shape', () => {
+  it('detects a day schedule whose cells are written as "Day N"', () => {
+    expect(detectDluCdd(DIGEST_PIPELINE_DAY_TABLE)).toBe(true);
   });
 });
 

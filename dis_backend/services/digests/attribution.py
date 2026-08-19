@@ -45,10 +45,14 @@ SUBSTANTIVE = {"slide", "guide_section", "project_task", "quiz_question", "page"
                "study_question", "activity"}
 
 #: Document types that describe the BLOCK as a whole rather than any one day: a
-#: syllabus, a course calendar, or a whole-document handbook/standards reference.
+#: syllabus, a course calendar, a whole-document handbook/standards reference, or a
+#: knowledge-test performance report (whose rows are per ACS code, so its terms
+#: overlap every day of the block and term-overlap attribution would drag the whole
+#: report onto one arbitrary day).
 #: Matches the taxonomy in config/settings.py. Shared with worksheets.py so the
 #: two modules can never disagree about what "block-wide reference" means.
-BLOCK_WIDE_REFERENCE_DOC_TYPES = frozenset({"syllabus", "course_calendar", "ebook_reference"})
+BLOCK_WIDE_REFERENCE_DOC_TYPES = frozenset({"syllabus", "course_calendar", "ebook_reference",
+                                            "knowledge_test_report"})
 
 _STOP = set("the a an and or of to for in on with by from is are be this that as at "
             "you your it its will can may day block project quiz page part using use "
