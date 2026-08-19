@@ -33,8 +33,8 @@ domain, not at generation time.
 Complete. Every fact below is stated in the source document.
 
 ```text
-DOMAIN CONTEXT — apply in addition to the Master System Prompt (MSP-3.0) and the
-Course Style Guide already governing this project.
+DOMAIN CONTEXT — apply to every generation in this session, in addition to the
+rules stated in the active prompt and the active style guidelines.
 
 You are producing content for the GENERAL STUDIES domain, Group 1, Blocks 1-4, of
 the AIM Blocks V2 Curriculum Transformation project.
@@ -75,8 +75,8 @@ point of use.
 
 DOMAIN-LEVEL HANDLING RULES
 1. Where source coverage is complete - syllabus, content, hangar activities, study
-   questions, projects, and ACS codes all present - produce content according to
-   the Master System Prompt.
+   questions, projects, and ACS codes all present - produce content under the
+   rules stated in the active prompt and the active style guidelines.
 2. Where quizzes or instructor guides are incomplete or unavailable, do not
    generate or assume the missing content. Flag MISSING_SOURCE and route the issue
    to the instructional designer for confirmation before producing the affected
@@ -104,8 +104,8 @@ else about the other two. Fill the bracketed fields from the AIM curriculum
 structure and have ID confirm them — do not infer them from Domain 1.
 
 ```text
-DOMAIN CONTEXT — apply in addition to the Master System Prompt (MSP-3.0) and the
-Course Style Guide already governing this project.
+DOMAIN CONTEXT — apply to every generation in this session, in addition to the
+rules stated in the active prompt and the active style guidelines.
 
 You are producing content for the [DOMAIN NAME] domain, Group [N], Blocks [first]-
 [last], of the AIM Blocks V2 Curriculum Transformation project.

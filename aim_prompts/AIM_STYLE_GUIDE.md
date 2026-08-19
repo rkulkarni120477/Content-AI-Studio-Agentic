@@ -9,8 +9,8 @@ This is **not** a generation prompt and deliberately carries no System/User pair
 The app's `style` component prompt (`style_understanding` / `style_analysis`)
 *derives* a style from reference documents; the AIM "Style Creation" section is not
 that. It is the style itself — the standing guidance every other AIM prompt in this
-directory declares itself to operate within ("the Course Style Guide already
-governing this project — apply them; do not restate them").
+directory defers to, as "the active style guidelines in the user message" in
+each prompt's GOVERNING RULES block.
 
 The source section packages three different things under one heading, on three
 different lifetimes, so it is split here into two artifacts:
@@ -44,8 +44,8 @@ Paste into the Style record's guidelines. Applies to every Block and every domai
 AIM BLOCKS V2 — COURSE STYLE GUIDE
 
 Apply this style guide to every content-development session across the AIM Blocks
-V2 Curriculum Transformation project, in addition to the Master System Prompt
-(MSP-3.0) and any active domain-level context.
+V2 Curriculum Transformation project, in addition to the rules stated in the
+active prompt and any domain context supplied alongside it.
 
 OVERARCHING GOAL
 Produce client-ready, FAA-aligned instructional content for the AIM Aviation

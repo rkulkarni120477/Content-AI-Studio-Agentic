@@ -7,7 +7,7 @@ generation routes in this repo. One file per component.
 
 | File | Component | Route | Status |
 |---|---|---|---|
-| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82 |
+| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82, v2 |
 | `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
 | `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
 | `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
@@ -44,6 +44,49 @@ resolve it against. Inside the fences, the sections refer to each other the way 
 curriculum does — "Learn It", "Up Next in Class", "Block Blueprint", "Quick Check" —
 and never by filename.
 
+### There is no Master System Prompt at runtime
+
+Every prompt here descends from AIM's own stack, in which a **Master System Prompt
+(MSP-3.0)** and per-domain Domain prompts sit above the component prompts and carry
+the shared rules: the source hierarchy, the content-conduct rules, the
+technical-terminology requirement, and the ACS coverage requirement. You can read
+MSP-3.0's text in this repo at `BLOCK2_BLUEPRINT_PROMPT_V4.md:14`, where an earlier
+draft inlined it.
+
+**Nothing in this application injects MSP-3.0 or a Domain prompt.** The `cdd` route
+builds its system prompt from the template alone (`cdd.py:592-617`); the `generate`
+route prepends only a flag-gated `persona_tone` fragment and a citation instruction
+(`generation_jobs.py:313,405`). Of the three governors AIM's headers name, exactly
+one has a live channel: the pinned Style record, which reaches **both** routes as
+`{{style_guidelines}}` (`cdd.py:564,581` and `generation_jobs.py:307,328`).
+
+So the MSP's role is filled here by two things, and a third file would be neither:
+
+1. **`AIM_STYLE_GUIDE.md` Part A is the de facto MSP.** Pinned as the Style record,
+   it is the one place project-wide rules can live and actually arrive. It already
+   carries the source hierarchy and the conduct and terminology rules.
+2. **Each prompt restates those rules in its own fences,** so nothing depends on
+   that pin being set. The duplication is deliberate: unconditional beats DRY when
+   the alternative is a rule that silently vanishes if a record is not pinned.
+
+Consequently **no fenced block in this directory names MSP-3.0, a Domain prompt, or
+a Course Style Guide.** Every prompt opens with a `GOVERNING RULES` paragraph that
+says the operative rules are in this prompt or in the supplied style guidelines,
+and forbids inferring a rule from any document the model was not given. Naming the
+lineage inside a fence was rejected on purpose: the fence is read by the model, not
+by a reviewer, so a document name there is either ignorable or misleading — it tells
+the model governing text exists somewhere it cannot look. Lineage is documentation,
+so it lives here, outside the fences.
+
+**Do not reintroduce a document name into any fenced block, and do not add an MSP
+markdown file** — a seventh file would have no injection path, which is the same
+mistake in a new costume. The two governing files were corrected the same way: their
+own fenced blocks are pasted into the Style record and Extra instructions, so they
+reach a model too, and they no longer name MSP-3.0 either.
+
+The same caveat applies to `AIM_DOMAIN_CONTEXT_BLOCK.md`: its Domain 1 block reaches
+a generation only if someone pastes it into the Style record or Extra instructions.
+
 ## Variables
 
 `prompt_builder.render` is strict — a declared `{{var}}` that the route does not
@@ -72,6 +115,12 @@ sets it to the literal string `"As defined in the Blueprint for '<topic>'"`, or
 objective text. A prompt that labels it "derived day objective" is lying to the
 model. The five day-level prompts label it as generation scope and read the real
 objective out of the day plan.
+
+**`{{topic}}` is the component label.** `generations.py:169` sets
+`"topic": request_body.component_label`, so on a DLU day it renders as
+`Day 11: Corrosion Theory` — the day number arrives with it. That is also why the
+label-derived quiz-stem caveat below matters: `topic` and the stem selector read the
+same string.
 
 **Two flags are derived, not supplied.** `Assessment Adjacent` is not a Blueprint
 column at all — it is derived from whether an assessment falls on this day or the
