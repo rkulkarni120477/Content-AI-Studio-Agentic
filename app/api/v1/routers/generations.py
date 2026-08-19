@@ -455,6 +455,32 @@ def get_generation_trace(
             .first()
         )
 
+    # Imported items (prompt_name/version="import", editor_builder.py) have no
+    # GenerationJob at all — their content came from the uploaded package, not
+    # an LLM call, so the lookup above always misses for them. But the import
+    # DOES make one real, traced LLM call per module to reconstruct its
+    # Blueprint (reverse_blueprint.py), and every item in that module is linked
+    # to it via Generation.blueprint_id once that stage runs. Falling back to
+    # that module-level trace is honest, not exact: several lessons in the same
+    # module share one trace, since the call reconstructed the whole module,
+    # not any single lesson. scope in the response tells the frontend which
+    # case it got so it can label the trace accordingly.
+    scope = "generation"
+    if (usage_row is None or not usage_row.trace_id) and generation.blueprint_id:
+        from promptops_app.database import ModuleBlueprint
+
+        blueprint = db.get(ModuleBlueprint, generation.blueprint_id)
+        if blueprint is not None:
+            usage_row = (
+                db.query(LLMUsageLog)
+                .filter(LLMUsageLog.entity_type == "reverse_blueprint",
+                        LLMUsageLog.entity_id == str(blueprint.module_number),
+                        LLMUsageLog.course_id == blueprint.course_id)
+                .order_by(LLMUsageLog.id.desc())
+                .first()
+            )
+            scope = "module_reconstruction"
+
     if usage_row is None or not usage_row.trace_id:
         raise NotFoundError("Trace for generation", generation_id)
 
@@ -470,6 +496,7 @@ def get_generation_trace(
         "generation_id": generation_id,
         "trace_id": usage_row.trace_id,
         "observations": observations,
+        "scope": scope,
     }
 
 
