@@ -240,10 +240,15 @@ section default. Explicit selection is immune; a default is not.
 
 - **Nothing here has been generated with yet.** Every check so far is static:
   variables render, the format parses, the Blueprint reconciles 32/32.
-- **No AKTR ingestion.** `Targets for Quick Check` and the high-miss fields read
-  `NO AKTR DATA` until the data lands. `AIM_STYLE_GUIDE.md` Part B carries Block 2's
-  table by hand, and every prompt is written to say so explicitly rather than infer
-  difficulty. No prompt change can close this.
+- **AKTR data is read from the source library, not from a prompt.** Ingest the
+  block's AKTR missed-code rollup as a `knowledge_test_report` and
+  `Targets for Quick Check` plus the high-miss fields fill with the real figures,
+  computed in code (`dis_backend/services/digests/worksheets.build_acs_registry`).
+  Codes the rollup does not list still read `NO AKTR DATA`, per code. Where no such
+  document is ingested for a block, every field reads `NO AKTR DATA` as before —
+  `AIM_STYLE_GUIDE.md` Part B carries Block 2's table by hand, and every prompt is
+  written to say so explicitly rather than infer difficulty. No prompt change can
+  close this: it is an ingestion question.
 - **No Quick Check or Summative Assessment prompt**, per the note above.
 - **Domains 2 and 3 are a template**, not content. The source document describes
   only General Studies.

@@ -298,6 +298,52 @@ def extract_pptx(content: bytes, vision_fn=None, options: dict | None = None) ->
 
 # ── XLSX ──────────────────────────────────────────────────────────────────────
 
+def _xlsx_header_row(rows: list, scan_limit: int = 10) -> tuple:
+    """Index of the row that holds column names, plus the title rows above it.
+
+    A merged banner row ("ALL CAMPUS — Block 6 | Top 10 Most Missed ACS Codes")
+    occupies one cell and leaves the rest of the row empty. Taking it as the header
+    row gave every remaining column the same blank name, and ``dict(zip(...))`` then
+    collapsed them onto one key — last column wins. A four-column AKTR sheet
+    (Rank | % Missed | ACS Code | ACS Code Description) came out of here carrying
+    only rank and description: the ACS code and the miss rate, the only reason to
+    ingest the file, were silently gone from the text that gets chunked, embedded
+    and retrieved.
+
+    So the header is the first row within ``scan_limit`` that names at least two
+    columns. Sheets whose real header is row 1 (the common case, calendars
+    included) resolve to index 0 exactly as before, and a genuinely single-column
+    sheet falls back to row 1 rather than scanning off the end.
+    """
+    for idx, row in enumerate(rows[:scan_limit]):
+        if sum(1 for c in row if c is not None and str(c).strip()) >= 2:
+            titles = [str(c).strip() for r in rows[:idx] for c in r
+                      if c is not None and str(c).strip()]
+            return idx, titles
+    return 0, []
+
+
+def _unique_headers(row) -> list:
+    """Column names that never collide, so no column can overwrite another.
+
+    Blanks become ``column_N`` (positional, so a nameless column is still
+    addressable) and repeats get a numeric suffix.
+    """
+    headers: list = []
+    seen: dict = {}
+    for i, cell in enumerate(row, 1):
+        name = str(cell).strip() if cell is not None else ""
+        if not name:
+            name = f"column_{i}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name} ({seen[name]})"
+        else:
+            seen[name] = 1
+        headers.append(name)
+    return headers
+
+
 def extract_xlsx(content: bytes, vision_fn=None, options: dict | None = None) -> ExtractionResult:
     try:
         import openpyxl
@@ -310,17 +356,23 @@ def extract_xlsx(content: bytes, vision_fn=None, options: dict | None = None) ->
             rows = list(ws.iter_rows(values_only=True))
             if not rows:
                 continue
-            # First row as header
-            headers = [str(c) if c is not None else "" for c in rows[0]]
+            header_index, titles = _xlsx_header_row(rows)
+            headers = _unique_headers(rows[header_index])
             sheet_rows = []
-            for row in rows[1:]:
+            for row in rows[header_index + 1:]:
                 cells = [str(c) if c is not None else "" for c in row]
                 if any(cells):
                     row_dict = dict(zip(headers, cells))
                     sheet_rows.append(json.dumps(row_dict))
                     all_tables.append(cells)
 
-            all_parts.append(f"[Sheet: {sheet_name}]\nColumns: {', '.join(h for h in headers if h)}")
+            # Banner/title rows above the header carry the sheet's own caption (e.g.
+            # "ALL CAMPUS — Block 6 | Top 10 Most Missed ACS Codes"). They are not
+            # column names, but they ARE the only place the sheet says what it is
+            # about, so they stay in the text, above the columns they caption.
+            banner = "".join(f"\n{t}" for t in titles)
+            all_parts.append(f"[Sheet: {sheet_name}]{banner}\n"
+                             f"Columns: {', '.join(h for h in headers if h)}")
             # Every row. This was `sheet_rows[:500]`, which silently dropped row 501
             # onward from the TEXT — the field that gets chunked, embedded and
             # retrieved — while `all_tables` above kept them, so nothing downstream
