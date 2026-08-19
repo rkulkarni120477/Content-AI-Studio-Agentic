@@ -95,6 +95,9 @@ ADDITIONAL DAY COLUMNS
 - Pilot Candidate: whether the SME recommends this day for pilot testing
 ```
 
+Each declaration is one line: label, colon, definition. A wrapped continuation line
+is not read as part of the definition, so keep the whole definition on the bullet.
+
 They are appended after `Notes` and filled by a REDUCE-tier call from the day facts
 the pipeline already established — so they cost nothing but one batched call per
 generation, and **no digest is invalidated**. Limits, each reported rather than

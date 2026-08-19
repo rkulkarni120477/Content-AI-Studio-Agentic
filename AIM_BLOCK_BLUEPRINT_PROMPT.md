@@ -185,9 +185,7 @@ its flag recorded.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ADDITIONAL DAY COLUMNS
-- Instructional Model Stage: which stage of the Block's instructional model, named in
-  BLOCK STANDING DATA, this day belongs to - the stage name alone, and
-  "REVIEW NEEDED - no source available" where the standing data names no model.
+- Instructional Model Stage: which stage of the Block's instructional model, named in BLOCK STANDING DATA, this day belongs to - the stage name alone, and "REVIEW NEEDED - no source available" where the standing data names no model.
 
 CELL DETAIL for Worksheet 4 - what each cell you decide must contain:
   Concept Type: exactly one label from this closed vocabulary - Conceptual,
