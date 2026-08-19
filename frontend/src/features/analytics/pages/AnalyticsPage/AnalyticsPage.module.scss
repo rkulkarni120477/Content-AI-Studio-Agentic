@@ -121,7 +121,6 @@
 
 .kpiCard {
   @include card($space-5);
-  @include flex-start;
   gap: $space-4;
 
   &__icon { font-size: 2rem; flex-shrink: 0; }

@@ -516,6 +516,8 @@ def generate_style_intelligence(
     _sel_usr = None
     if request_body.prompt_id:
         from promptops_app.database import Prompt, PromptVersion
+        from promptops_app.repositories.prompt_repository import visible_to_tenant
+
         _sel_p = (
             db.query(Prompt)
             .filter(Prompt.id == request_body.prompt_id,
@@ -523,6 +525,12 @@ def generate_style_intelligence(
                     Prompt.deleted_at.is_(None))
             .first()
         )
+        # Same no-enumeration-oracle contract as the prompt registry itself: a
+        # prompt_id belonging to another tenant is silently ignored (falls
+        # back to the default/system prompt) exactly like an unknown id would,
+        # rather than applying that tenant's prompt content to this generation.
+        if _sel_p is not None and not visible_to_tenant(_sel_p.project_id, style.project_id, False):
+            _sel_p = None
         if _sel_p:
             _sel_pv = (
                 db.query(PromptVersion)
