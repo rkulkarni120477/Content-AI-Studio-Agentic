@@ -133,8 +133,13 @@ it; it needs an ingestion path.
 
 The "Prompt Template" dropdown selects the prompt that drives *single-call*
 generation and, on the block-wide path, is distilled into judgment guidance only. On
-selection the UI now shows how that template compares with what the pipeline emits —
+selection the UI reports how that template diverges from what the pipeline emits —
 requested-but-unemitted columns, variables this platform cannot supply, and whether
-generation would be refused outright. A red panel means the template asks for
-something impossible here (a code interpreter, an `.xlsx` file, a reply that is only
-a download link) and generation will refuse rather than store an empty document.
+generation would be refused outright. It speaks only when something diverges: a
+template that reconciles cleanly shows nothing, and the confirming detail
+("matched 32 of 32") goes to the version's `prompt_provenance` instead of
+interrupting the person generating. Each notice appears beside the Generate button
+it is true of — day-table findings sit with the block-wide panel, since that is the
+path which emits the day table. A red panel means the template asks for something
+impossible here (a code interpreter, an `.xlsx` file, a reply that is only a
+download link) and generation will refuse rather than store an empty document.

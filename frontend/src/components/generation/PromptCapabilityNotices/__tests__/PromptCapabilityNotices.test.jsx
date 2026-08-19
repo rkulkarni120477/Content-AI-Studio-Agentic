@@ -38,13 +38,35 @@ describe('PromptCapabilityNotices', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('lists every notice it is given', () => {
+  it('lists every actionable notice it is given', () => {
     render(<PromptCapabilityNotices capability={{
       ...base,
-      notices: [notice('warning', 'First finding.'), notice('info', 'Second finding.')],
+      notices: [notice('warning', 'First finding.'), notice('error', 'Second finding.')],
     }} />);
     expect(screen.getByText('First finding.')).toBeTruthy();
     expect(screen.getByText('Second finding.')).toBeTruthy();
+  });
+
+  // The picker interrupts someone mid-task. Confirmation that nothing is wrong reads
+  // as a warning to a reader who does not know a reconciliation runs at all, so it
+  // stays in provenance and in the generated document instead.
+  it('says nothing when every finding is informational', () => {
+    const { container } = render(<PromptCapabilityNotices capability={{
+      ...base,
+      notices: [notice('info', 'Matched 32 of 32 requested column(s).'),
+                notice('info', 'Emitting 1 additional day-table column(s).')],
+    }} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('keeps an actionable notice visible alongside informational ones', () => {
+    render(<PromptCapabilityNotices capability={{
+      ...base,
+      notices: [notice('info', 'Matched 32 of 32 requested column(s).'),
+                notice('warning', 'Requests 4 day-table column(s) not emitted.')],
+    }} />);
+    expect(screen.getByText(/not emitted/)).toBeTruthy();
+    expect(screen.queryByText(/Matched 32 of 32/)).toBeNull();
   });
 
   it('announces a refusal as an alert, not a status', () => {
@@ -76,10 +98,10 @@ describe('PromptCapabilityNotices', () => {
   it('tags each notice with its severity for styling and assistive tech', () => {
     render(<PromptCapabilityNotices capability={{
       ...base,
-      notices: [notice('info', 'Matched 9 of 13 requested column(s).')],
+      notices: [notice('warning', 'Requests 4 day-table column(s) not emitted.')],
     }} />);
-    expect(screen.getByText('Matched 9 of 13 requested column(s).')
-      .getAttribute('data-severity')).toBe('info');
+    expect(screen.getByText('Requests 4 day-table column(s) not emitted.')
+      .getAttribute('data-severity')).toBe('warning');
   });
 });
 
@@ -92,7 +114,7 @@ describe('PromptCapabilityNotices — scope', () => {
     ...base,
     notices: [
       scoped('info', 'block', 'Matched 32 of 32 requested column(s).'),
-      scoped('info', 'block', 'Emitting 1 additional day-table column(s).'),
+      scoped('warning', 'block', 'Requests 4 day-table column(s) not emitted.'),
       scoped('warning', 'single', 'No {{extra_instructions_block}} slot.'),
       scoped('warning', 'both', '1 template variable(s) this platform never supplies.'),
     ],
@@ -100,8 +122,7 @@ describe('PromptCapabilityNotices — scope', () => {
 
   it('shows only the block-wide notices beside the block-wide button', () => {
     render(<PromptCapabilityNotices capability={mixed} scope="block" />);
-    expect(screen.getByText(/Matched 32 of 32/)).toBeTruthy();
-    expect(screen.getByText(/additional day-table column/)).toBeTruthy();
+    expect(screen.getByText(/not emitted/)).toBeTruthy();
     expect(screen.getByText(/never supplies/)).toBeTruthy();
     expect(screen.queryByText(/extra_instructions_block/)).toBeNull();
   });
@@ -110,11 +131,11 @@ describe('PromptCapabilityNotices — scope', () => {
     render(<PromptCapabilityNotices capability={mixed} scope="single" />);
     expect(screen.getByText(/extra_instructions_block/)).toBeTruthy();
     expect(screen.getByText(/never supplies/)).toBeTruthy();
-    expect(screen.queryByText(/Matched 32 of 32/)).toBeNull();
+    expect(screen.queryByText(/not emitted/)).toBeNull();
   });
 
   it('renders nothing where no notice applies, rather than an empty box', () => {
-    const blockOnly = { ...base, notices: [scoped('info', 'block', 'Matched 32 of 32.')] };
+    const blockOnly = { ...base, notices: [scoped('warning', 'block', 'Requests 4 not emitted.')] };
     const { container } = render(
       <PromptCapabilityNotices capability={blockOnly} scope="single" />,
     );
@@ -126,9 +147,9 @@ describe('PromptCapabilityNotices — scope', () => {
     expect(screen.getByText(/block-wide pipeline emits/)).toBeTruthy();
   });
 
-  it('filters nothing without a scope, so an unscoped caller loses no notice', () => {
+  it('filters no scope without one, so an unscoped caller loses no actionable notice', () => {
     render(<PromptCapabilityNotices capability={mixed} />);
-    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
   });
 
   it('keeps a refusal visible beside the single-call button', () => {

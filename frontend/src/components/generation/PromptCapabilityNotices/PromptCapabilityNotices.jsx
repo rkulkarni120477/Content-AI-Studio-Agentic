@@ -5,14 +5,25 @@ import styles from './PromptCapabilityNotices.module.scss';
  * actually emit — served with the prompt detail as `capability`
  * (GET /api/v1/prompts/{id}), computed by promptops_app.services.prompt_capability.
  *
- * Renders nothing at all in four cases, which are NOT the same thing and must never
- * be collapsed into a reassuring "looks fine" message:
+ * The picker speaks only when something needs attention: `warning` and `error` render,
+ * `info` never does. Confirmation that nothing is wrong ("Matched 32 of 32 requested
+ * column(s)") reads as a warning to anyone who does not already know a reconciliation
+ * runs, and the caveat that follows it ("2 further tables were not reconciled") exists
+ * only to stop that line being read as a coverage guarantee — drop the claim and the
+ * caveat has nothing left to qualify. Both are still recorded where someone auditing a
+ * generation looks for them: the version row's `prompt_provenance`, and the
+ * PROMPT RECONCILIATION section of the generated document (`review_lines`, which is
+ * deliberately unfiltered).
+ *
+ * So nothing renders in five cases, which are NOT the same thing and must never be
+ * collapsed into a reassuring "looks fine" message:
  *   - `capability` is null: the API omits it for component types that never produce a
  *     day table, so nothing was assessed. Absence of notices is not absence of
  *     problems.
  *   - `assessed` is false: there was no prompt text to read.
  *   - the notice list is empty: the prompt and the pipeline agree.
  *   - nothing in the list applies to THIS `scope` (below).
+ *   - everything that applies is informational.
  *
  * `scope` places each notice beside the button it actually describes. One prompt
  * picker feeds two Generate buttons that produce different documents: the block-wide
@@ -28,7 +39,7 @@ import styles from './PromptCapabilityNotices.module.scss';
  * falls back — but the underlying error notice still shows, still styled as an error.
  */
 export default function PromptCapabilityNotices({ capability, scope = 'all' }) {
-  const all = capability?.notices ?? [];
+  const all = (capability?.notices ?? []).filter((n) => n.severity !== 'info');
   const notices = scope === 'all'
     ? all
     : all.filter((n) => !n.scope || n.scope === scope || n.scope === 'both');
