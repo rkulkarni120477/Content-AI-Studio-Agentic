@@ -39,7 +39,41 @@ class ContentUnitCreationAgent(BasePipelineAgent):
         doc_type = state.get('doc_type', '')
         effective_type = (state.get('doc_metadata') or {}).get('content_type') or doc_type
         calendar = state.get('calendar_structure') or {}
-        if doc_type == 'course_calendar' and calendar.get('days'):
+        knowledge_test = state.get('knowledge_test_structure') or {}
+        if knowledge_test.get('blocks'):
+            # One unit per block sheet, each carrying that block's OWN attribution.
+            # Word-chunking this file instead (the else branch) produced units stamped
+            # with the whole document's single `block`, which for a 16-sheet AKTR
+            # rollup meant every block's performance data was filed under the first
+            # one and invisible to `metadata_json->>'block' = %s` for the other
+            # fifteen. Chunk boundaries also split a block's table in half.
+            unit_type = ctx.cfg.document_processing.unit_type_map.get(effective_type, 'knowledge_test_item')
+            for i, blk in enumerate(knowledge_test['blocks'], 1):
+                codes = [c.get('acs_code') for c in blk.get('codes') or [] if c.get('acs_code')]
+                text = blk.get('source_text') or ''
+                units.append({
+                    'content_unit_id': f"{state['job_id']}:knowledge_test_{blk.get('block_number') or i}",
+                    'unit_type': unit_type,
+                    'unit_number': i,
+                    'title': blk.get('caption') or f"{blk.get('block')} — Most Missed ACS Codes",
+                    'text': text,
+                    'visual_summary': '',
+                    'keywords': list(dict.fromkeys(keywords(text) + codes)),
+                    'topics': keywords(text, limit=12),
+                    # doc_metadata is spread FIRST so this block's own attribution
+                    # wins over the document-level (deliberately blank) one.
+                    'metadata': {
+                        **state.get('doc_metadata', {}),
+                        'block': blk.get('block'),
+                        'block_number': blk.get('block_number'),
+                        'block_id': f"B{blk.get('block_number')}" if blk.get('block_number') else '',
+                        'acs_codes': codes,
+                        'missed_codes': blk.get('codes') or [],
+                        'sheet_name': blk.get('sheet'),
+                    },
+                    'assets': [],
+                })
+        elif doc_type == 'course_calendar' and calendar.get('days'):
             for day in calendar.get('days', []):
                 day_no = day.get('day_number') or len(units) + 1
                 text = day.get('source_text') or day.get('topic') or ''
@@ -57,7 +91,15 @@ class ContentUnitCreationAgent(BasePipelineAgent):
                     'test_prep_activities', 'hangar_activities',
                 ) if k in day}
                 unit_keywords = list(dict.fromkeys(keywords(text) + list(day.get('acs_codes') or [])))
-                units.append({'content_unit_id': f"{state['job_id']}:calendar_day_{day_no}", 'unit_type': ctx.cfg.document_processing.unit_type_map.get('course_calendar', 'calendar_day'), 'unit_number': int(day_no), 'title': day.get('lesson_title') or f'Day {day_no}', 'text': text, 'visual_summary': '', 'keywords': unit_keywords, 'topics': keywords((day.get('topic') or '') + ' ' + text, limit=12), 'metadata': {'day_number': day_no, 'block': calendar.get('block'), **cal_meta, **state.get('doc_metadata', {})}, 'assets': []})
+                # doc_metadata is spread FIRST, and this day's own day_number LAST.
+                # Spread last, it clobbered the per-day value with the DOCUMENT's
+                # day_number — which for a calendar is None (the AIM profile derives it
+                # from a B#D# filename token that a whole-block calendar has no reason
+                # to carry). Measured on Block 6: all 20 calendar_day units stored
+                # day_number=None, so ENUMERATE could attribute none of them, acs_by_day
+                # came out empty for every day, and each day row reached the Blueprint
+                # with no ACS codes at all.
+                units.append({'content_unit_id': f"{state['job_id']}:calendar_day_{day_no}", 'unit_type': ctx.cfg.document_processing.unit_type_map.get('course_calendar', 'calendar_day'), 'unit_number': int(day_no), 'title': day.get('lesson_title') or f'Day {day_no}', 'text': text, 'visual_summary': '', 'keywords': unit_keywords, 'topics': keywords((day.get('topic') or '') + ' ' + text, limit=12), 'metadata': {**state.get('doc_metadata', {}), 'block': calendar.get('block') or (state.get('doc_metadata') or {}).get('block'), **cal_meta, 'day_number': day_no}, 'assets': []})
         else:
             slide_texts = state.get('slide_texts', []) or []
             visual_map = {v.get('unit_number'): v.get('visual_summary') for v in state.get('visual_units', []) or []}

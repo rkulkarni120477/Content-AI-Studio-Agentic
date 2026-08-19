@@ -6,8 +6,13 @@ to ``to_summary()``) so ``units_by_day``/``unattributed``/``acs_by_day`` are sti
 available. Pure, read-only, no LLM — the same "never invent a fact" discipline as
 ENUMERATE/mapper: any field this repo can't source honestly renders as an explicit
 ``NOT AVAILABLE``/``NO AKTR DATA`` placeholder rather than a fabricated value (ACS1.pdf
-task-description text and AKTR miss-rate analytics are not ingested anywhere in this
-system — see CDD_CONTEXT_REDESIGN_PLAN.md).
+task-description text is not ingested anywhere in this system — see
+CDD_CONTEXT_REDESIGN_PLAN.md).
+
+AKTR miss-rate analytics ARE read, when a ``knowledge_test_report`` document has been
+ingested for the block (``services/knowledge_test_report.py``). The placeholder stands
+for exactly the codes that report does not cover, per code — never as a blanket claim
+that no data exists.
 """
 from __future__ import annotations
 
@@ -305,8 +310,91 @@ def _acs1_task_descriptions(en, cur, schema: str) -> Dict[str, str]:
     return _parse_acs1_task_descriptions(best_doc_text)
 
 
+def _aktr_missed_codes(en, cur, schema: str) -> Dict[str, Dict[str, Any]]:
+    """Real knowledge-test miss rates for THIS block, keyed by ACS code.
+
+    Reads the ``knowledge_test_report`` units ingestion wrote for the block (one unit
+    per block sheet of an AKTR rollup). ``metadata_json.missed_codes`` holds the
+    parsed rows, so the numbers are read structurally; a unit written before that
+    field existed falls back to parsing its composed text, which is the same format
+    ``knowledge_test_report._compose_text`` emits.
+
+    Matched on ``block`` OR ``block_number`` because this system carries the block tag
+    in more than one written form ("Block 6", "Block 06", "6"); a rollup whose sheet
+    named the block differently from the calendar must still be found.
+
+    Returns {} (never raises) when there is no cursor or no such document — the same
+    best-effort contract as ``_acs1_task_descriptions``, and for the same reason: this
+    lookup's failure must not discard the other worksheets built beside it.
+    """
+    if cur is None:
+        return {}
+    block_number = ""
+    m = re.search(r"(\d+)", str(en.block or ""))
+    if m:
+        block_number = str(int(m.group(1)))
+    try:
+        cur.execute(
+            f"""SELECT cu.metadata_json, cu.text_content
+                 FROM {schema}.dis_content_units cu
+                 JOIN {schema}.dis_documents doc ON doc.document_id = cu.document_id
+                WHERE cu.client_id = %s
+                  AND doc.document_type = 'knowledge_test_report'
+                  AND (cu.metadata_json->>'block' = %s
+                       OR (%s <> '' AND cu.metadata_json->>'block_number' = %s))""",
+            (en.client_id, en.block, block_number, block_number),
+        )
+        rows = cur.fetchall()
+    except Exception as exc:  # best-effort; a failed lookup must never sink the caller
+        log.warning("aktr missed-code lookup failed for client=%s block=%s: %s",
+                    en.client_id, en.block, exc)
+        return {}
+
+    from services.knowledge_test_report import parse_missed_codes
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        md = row["metadata_json"] or {}
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except ValueError:
+                md = {}
+        entries = md.get("missed_codes") or []
+        if entries:
+            for entry in entries:
+                code = str(entry.get("acs_code") or "").strip()
+                if code:
+                    out.setdefault(code, entry)
+            continue
+        for code, entry in parse_missed_codes(row["text_content"] or "").items():
+            out.setdefault(code, entry)
+    return out
+
+
+def _high_miss_cell(entry: Dict[str, Any]) -> str:
+    """One code's miss rate, as a figure the Blueprint can print verbatim.
+
+    A rollup row missing its percentage still says what it does know (the rank) —
+    reporting "NO AKTR DATA" for a code the report actually lists would be as wrong
+    as inventing a number for one it does not. A row carrying neither figure says
+    precisely that, rather than borrowing the wording for a code the report omits.
+    """
+    pct = entry.get("pct_missed")
+    rank = entry.get("rank")
+    if pct is None and rank is None:
+        return "NO FIGURE — listed in the report without a miss rate or rank"
+    parts = []
+    if pct is not None:
+        parts.append(f"{float(pct) * 100:.1f}% missed")
+    if rank is not None:
+        parts.append(f"rank #{rank}")
+    return ", ".join(parts)
+
+
 def build_acs_registry(en, cur=None, schema: str = "dis") -> List[Dict[str, Any]]:
-    """Per-code registry: days active, type, and an honest task-description /
+    """Per-code registry: days active, type, real AKTR miss rates where the block's
+    knowledge-test report covers the code, and an honest task-description /
     quick-check-priority / high-miss placeholder wherever we lack real source data."""
     by_code_days: Dict[str, set] = {}
     for dn, codes in en.acs_by_day.items():
@@ -314,17 +402,26 @@ def build_acs_registry(en, cur=None, schema: str = "dis") -> List[Dict[str, Any]
             by_code_days.setdefault(c, set()).add(dn)
 
     task_descriptions = _acs1_task_descriptions(en, cur, schema)
+    missed = _aktr_missed_codes(en, cur, schema)
 
     out = []
     for code in sorted(en.declared_acs, key=attribution.acs_sort_key):
         letter = _acs_type(code)
+        entry = missed.get(code)
         out.append({
             "acs_code": code,
             "acs_type": _acs_type_label(letter),
             "task_description": task_descriptions.get(code, "NOT AVAILABLE — ACS1.pdf not ingested"),
             "days_active": sorted(by_code_days.get(code, [])),
-            "high_miss": "NO AKTR DATA — not supplied",
-            "quick_check_priority": _DEFAULT_PRIORITY.get(letter, "RECALL (default)"),
+            "high_miss": _high_miss_cell(entry) if entry
+                         else ("NO AKTR DATA — code not in the ingested report" if missed
+                               else "NO AKTR DATA — not supplied"),
+            # A measured miss rate outranks the element-type default: the whole point
+            # of the report is that it says which codes cohorts actually fail.
+            "quick_check_priority": (
+                f"PRIORITY — {_high_miss_cell(entry)} on the knowledge test"
+                if entry and entry.get("pct_missed") is not None
+                else _DEFAULT_PRIORITY.get(letter, "RECALL (default)")),
         })
     return out
 
@@ -420,8 +517,9 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
         md = u.get("metadata_json") or {}
         doc_type = md.get("document_type") or "other"
         fname = md.get("source_file_name") or u.get("title") or "(untitled)"
-        entry = by_type.setdefault(doc_type, {"files": set(), "days": set()})
+        entry = by_type.setdefault(doc_type, {"files": set(), "days": set(), "visibility": set()})
         entry["files"].add(fname)
+        entry["visibility"].add(str(md.get("visibility") or "").strip().lower())
         if day_number is not None:
             entry["days"].add(day_number)
 
@@ -440,8 +538,18 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
     for doc_type, files in _block_wide_reference_files(en, cur, schema).items():
         if doc_type in by_type:
             continue
-        by_type[doc_type] = {"files": files, "days": set()}
+        by_type[doc_type] = {"files": files, "days": set(), "visibility": set()}
         block_wide_types.add(doc_type)
+
+    # A type that IS block-wide by construction but reached the inventory through the
+    # units pass instead (its units carry the block tag, so the filename-regex query
+    # above never looks at it) had no day evidence to print and fell to
+    # "Unattributed" / "day not resolved" — which reads as a tagging failure rather
+    # than the truth, that the document applies to the whole block. Only when there is
+    # genuinely no day evidence: a type with resolved days keeps them.
+    for doc_type, entry in by_type.items():
+        if not entry["days"] and doc_type in attribution.BLOCK_WIDE_REFERENCE_DOC_TYPES:
+            block_wide_types.add(doc_type)
 
     # Config UNION the built-in floor, never config alone. A tenant's
     # restricted_document_types list is an ADDITION to the families that are
@@ -488,11 +596,28 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
             # the classifier wrote onto the unit's metadata, and a stray "Instructor_Guide"
             # matching nothing would print the permissive label for restricted material.
             "production_action": ("Instructor-only — exclude from student-facing use"
-                                  if str(doc_type).strip().lower() in restricted_types
+                                  if (str(doc_type).strip().lower() in restricted_types
+                                      or _instructor_only(entry))
                                   else "Include in input bundle"),
             "status_notes": status_notes,
         })
     return out
+
+
+def _instructor_only(entry: Dict[str, Any]) -> bool:
+    """Whether every file of this type was ingested as instructor/internal-only.
+
+    Restricted doc types are caught by the type list; visibility catches the types
+    that are legitimate design input yet still not student-facing (a knowledge-test
+    performance report is the case in hand — cohort analytics, no exam content). Read
+    from the units' own metadata, and only when EVERY occurrence agrees, so a mixed
+    type is never labelled instructor-only on the strength of one file.
+    """
+    seen = {v for v in (entry.get("visibility") or set()) if v}
+    if not seen or len(seen) != len(entry.get("visibility") or set()):
+        return False  # some unit carried no visibility at all — do not assume
+    return seen <= {"instructor", "instructor_only", "internal", "internal_only",
+                    "admin_only", "restricted_admin"}
 
 
 def _subject_letter(code: str) -> str:

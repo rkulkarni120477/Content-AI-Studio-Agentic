@@ -23,8 +23,26 @@ STYLE_DOC_TYPES = {
     "sample_chapter",
     "approved_template",
 }
-CDD_DOC_TYPES = {"syllabus", "course_outline", "program_overview", "learning_objectives"}
-BLUEPRINT_DOC_TYPES = {"course_calendar", "syllabus", "chapter_outline", "module_map", "block_schedule"}
+# A knowledge-test performance report is course-design AND blueprint input: it is what
+# makes remediation and quick-check decisions evidence-based. Listed here as well as in
+# the tenant's retrieval.source_type_mapping because these two are read at different
+# times — the mapping gates retrieval, while these sets decide the `purpose` STORED on
+# the source-library record (and so what the Source Library UI filters show). A rollup
+# left out of these sets was stored as "general_reference" even with the mapping
+# widened, which is how it read in the UI.
+CDD_DOC_TYPES = {"syllabus", "course_outline", "program_overview", "learning_objectives",
+                 "knowledge_test_report"}
+BLUEPRINT_DOC_TYPES = {"course_calendar", "syllabus", "chapter_outline", "module_map",
+                       "block_schedule", "knowledge_test_report"}
+
+#: Doc types whose pipeline units are already the meaningful division of the document
+#: and must survive into the Source Library content file. The "full_document" policy
+#: below concatenates a document into ONE unit to keep small authoritative sources
+#: coherent — right for a syllabus, wrong for a whole-program knowledge-test rollup,
+#: whose sixteen per-block units would be welded into one blob covering every block.
+#: Retrieval reads THIS file (context_retrieval._iter_payloads), so collapsing here is
+#: what a Block 6 request would have received.
+PER_UNIT_DOC_TYPES = {"knowledge_test_report"}
 
 
 def normalize_visibility(value: str) -> str:
@@ -94,11 +112,22 @@ def chunking_strategy(purpose: str, document_type: str) -> str:
     """
     p = normalize_purpose(purpose, document_type)
     d = (document_type or "").strip().lower()
+    if d in PER_UNIT_DOC_TYPES:
+        return "per_unit"
     if p in {"style", "cdd", "blueprint"}:
         return "full_document"
     if d in STYLE_DOC_TYPES | CDD_DOC_TYPES | BLUEPRINT_DOC_TYPES:
         return "full_document"
     return "semantic_chunk"
+
+
+#: Unit-level metadata a ``per_unit`` document carries into the content file. A short
+#: allow-list, not the whole unit metadata dict: this file is what CAS prompts read, and
+#: the product rule for it is "no internal DIS metadata".
+_PER_UNIT_METADATA_KEYS = frozenset({
+    "block", "block_id", "block_number", "day_number", "acs_codes", "missed_codes",
+    "document_type", "content_type", "visibility", "sheet_name",
+})
 
 
 def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -130,13 +159,24 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
         for i, u in enumerate(units, start=1):
             text = str(u.get("text") or "").strip()
             if text:
-                clean_units.append({
+                clean_unit = {
                     "content_unit_id": u.get("content_unit_id") or f"{job_id}:{i}",
                     "unit_type": u.get("unit_type") or "content_chunk",
                     "unit_number": int(u.get("unit_number") or i),
                     "title": u.get("title") or title,
                     "text": text,
-                })
+                }
+                if strategy == "per_unit":
+                    # These units differ from each other in metadata, not just text —
+                    # each carries the block it belongs to. Retrieval merges unit
+                    # metadata over document metadata (_passes_filters), so without
+                    # this a Block 6 request could only see the document's own
+                    # (deliberately block-less) tag and would filter the rollup out
+                    # entirely. Scoped to per_unit types so no other document type's
+                    # filtering behaviour changes.
+                    clean_unit["metadata"] = {k: v for k, v in (u.get("metadata") or {}).items()
+                                              if k in _PER_UNIT_METADATA_KEYS}
+                clean_units.append(clean_unit)
         if not clean_units:
             clean_units = [{
                 "content_unit_id": f"{job_id}:0",

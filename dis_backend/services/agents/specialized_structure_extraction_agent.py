@@ -41,7 +41,28 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
         tables = state.get('tables', []) or []
         doc_processing = ctx.cfg.document_processing
         state['specialized_structure_type'] = 'none'
-        if doc_type == 'course_calendar':
+        # metadata_tagging runs before this step, so the client profile's
+        # content_type is already resolved and is the authoritative type (it is what
+        # unit_type_map and the retrieval gates key on). It is checked first because
+        # an AKTR rollup that the classifier typed as an assessment would otherwise
+        # be captured by the quiz branch below.
+        effective_type = (state.get('doc_metadata') or {}).get('content_type') or doc_type
+        if effective_type == 'knowledge_test_report':
+            state['knowledge_test_structure'] = self._extract_knowledge_test(state, filename)
+            state['specialized_structure_type'] = 'knowledge_test_report'
+            blocks = state['knowledge_test_structure'].get('blocks') or []
+            meta = state.setdefault('doc_metadata', {})
+            # The rollup covers many blocks, so record WHICH ones instead of a single
+            # `block`. enrich_metadata blanks the doc-level block for this type; the
+            # per-block attribution lives on the content units.
+            meta['blocks_covered'] = [b.get('block') for b in blocks]
+            meta['knowledge_test_blocks_detected'] = len(blocks)
+            skipped = state['knowledge_test_structure'].get('skipped_sheets') or []
+            if skipped:
+                state.setdefault('errors', []).append(
+                    'knowledge_test_report: no performance data read from '
+                    + ', '.join(f"{s.get('sheet')} ({s.get('reason')})" for s in skipped))
+        elif doc_type == 'course_calendar':
             state['calendar_structure'] = self._extract_calendar(state, filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'course_calendar'
             state.setdefault('doc_metadata', {})['block'] = state['calendar_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns)
@@ -57,6 +78,33 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
             state['project_structure'] = extract_project_structure(filename, text, doc_processing)
             state['specialized_structure_type'] = state['project_structure'].get('structure_type', doc_type)
         return ctx.step_done(state, 'specialized_structure_extraction')
+
+    def _extract_knowledge_test(self, state, filename):
+        """Parse an AKTR workbook into one record per block.
+
+        Needs the workbook itself: the flattened text loses which sheet a row came
+        from, and the sheet IS the block. Without raw bytes there is nothing to
+        parse, so an empty result is returned and the generic word-chunking path
+        takes over — which cannot attribute blocks, hence the recorded reason.
+        """
+        raw_bytes = state.get('raw_bytes') or b''
+        if not raw_bytes:
+            state.setdefault('errors', []).append(
+                'knowledge_test_report: raw bytes unavailable, per-block attribution skipped')
+            return {'structure_type': 'knowledge_test_report', 'blocks': [], 'skipped_sheets': []}
+        try:
+            from services.knowledge_test_report import (
+                looks_like_aktr_report,
+                build_knowledge_test_structure,
+            )
+            if not looks_like_aktr_report(raw_bytes):
+                state.setdefault('errors', []).append(
+                    'knowledge_test_report: no AKTR sheet structure found, per-block attribution skipped')
+                return {'structure_type': 'knowledge_test_report', 'blocks': [], 'skipped_sheets': []}
+            return build_knowledge_test_structure(raw_bytes, filename)
+        except Exception as exc:  # noqa: BLE001 — never sink the document over this
+            state.setdefault('errors', []).append(f'knowledge_test_report: {exc}')
+            return {'structure_type': 'knowledge_test_report', 'blocks': [], 'skipped_sheets': []}
 
     def _extract_calendar(self, state, filename, text, tables, doc_processing):
         """Use the AIM column-aware parser for AIM teacher-calendar workbooks;

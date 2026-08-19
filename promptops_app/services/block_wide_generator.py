@@ -715,11 +715,11 @@ class BlockWideGenerator:
 
         **Deliberately not LLM-generated.** The AIM reference builds "Targets for
         Quick Check" from an AKTR miss-rate table with real figures ("79.6%, rank
-        #1"), and that table is not ingested anywhere in this system (see
-        dis_backend/services/digests/worksheets.py's module docstring). Asking a model
-        for it would manufacture percentages, so this states the day's codes and the
-        registry's own priority, and says NO AKTR DATA where the analytics are absent
-        — the same honesty rule the rest of the pipeline follows.
+        #1"). Those figures now come from the block's ingested
+        ``knowledge_test_report``, read in code by
+        dis_backend/services/digests/worksheets.build_acs_registry — asking a model for
+        them would manufacture percentages. Codes the report does not cover still say
+        NO AKTR DATA, the same honesty rule the rest of the pipeline follows.
 
         "Summative Exam Item Cluster" is likewise an estimate in the reference ("Items
         ~6-10 (estimated)"); without an ingested exam blueprint there is no item count
@@ -744,7 +744,12 @@ class BlockWideGenerator:
                 miss = str(entry.get("high_miss") or "").strip()
                 if miss and miss.upper() not in {"NO", "N/A", "NONE", "NO AKTR DATA"}:
                     high_miss.append(f"{code} ({miss})")
-                priority = str(entry.get("priority") or "").strip()
+                # The registry writes this as `quick_check_priority`
+                # (worksheets.build_acs_registry); reading only `priority` meant this
+                # list was ALWAYS empty, so every day fell to the "NO AKTR DATA"
+                # branch below even for codes the registry had a priority for.
+                priority = str(entry.get("quick_check_priority")
+                               or entry.get("priority") or "").strip()
                 if priority:
                     priorities.append(f"{code}: {priority}")
 

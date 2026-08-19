@@ -46,6 +46,14 @@ class PipelineState(TypedDict, total=False):
     syllabus_structure: Dict[str, Any]
     quiz_structure: Dict[str, Any]
     project_structure: Dict[str, Any]
+    # Every key a node needs to hand to a LATER node must be declared here:
+    # LangGraph propagates only the channels this TypedDict names, so a key written
+    # by one agent and read by another is silently dropped if it is missing. That is
+    # exactly what happened to knowledge_test_structure — the AKTR parser ran and its
+    # per-block records never reached content_unit_creation, which fell back to
+    # word-chunking (one block-less chunk instead of one unit per block).
+    knowledge_test_structure: Dict[str, Any]
+    specialized_structure_type: str
     content_units: List[Dict[str, Any]]
     studio_payload: Dict[str, Any]
     artifact_urls: Dict[str, str]

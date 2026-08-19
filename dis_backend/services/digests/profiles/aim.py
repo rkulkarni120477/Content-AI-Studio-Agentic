@@ -31,6 +31,13 @@ class AIMCurriculumProfile(CurriculumProfile):
         )
 
     def coverage_codes(self, unit: Dict[str, Any]) -> List[str]:
+        # A knowledge-test report's codes are EVIDENCE ABOUT codes (which ones
+        # cohorts miss), not a declaration that this block teaches them — its top-10
+        # list routinely names codes from other blocks. Counting them as declared
+        # would inflate the block's coverage set and then report those same codes as
+        # taught on no day.
+        if unit.get("unit_type") == "knowledge_test_item":
+            return []
         codes = (unit.get("metadata_json") or {}).get("acs_codes") or []
         return [c for c in codes if c]
 
