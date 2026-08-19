@@ -299,7 +299,7 @@ export default function InlinePromptControls({
       })).unwrap();
       toast.success(`"${createForm.name.trim()}" created.`);
       setShowCreate(false);
-      dispatch(fetchPromptsThunk({ component }));
+      dispatch(fetchPromptsThunk({ component, project_id: selProject?.id }));
     } catch (err) {
       toast.error(extractErrorMessage(err));
     }
@@ -322,7 +322,7 @@ export default function InlinePromptControls({
         ? `Version ${editForm.version} saved and deployed.`
         : `Version ${editForm.version} saved as a draft — it deploys after approval.`);
       setShowEdit(false);
-      dispatch(fetchPromptsThunk({ component }));
+      dispatch(fetchPromptsThunk({ component, project_id: selProject?.id }));
       loadPromptDetail(selectedPrompt.id);
     } catch (err) {
       toast.error(extractErrorMessage(err));
