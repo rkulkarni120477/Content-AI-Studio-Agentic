@@ -185,6 +185,13 @@ class PromptCapabilityNotice(BaseModel):
     """One thing a requester should know before choosing this prompt."""
 
     severity: str = Field(description="error | warning | info")
+    scope: str = Field(
+        default="both",
+        description="Which generation path this notice is true of: 'block' (the "
+                    "block-wide digest pipeline, which owns the day table), 'single' "
+                    "(the legacy single-call path), or 'both'. The prompt picker is "
+                    "shared by both Generate buttons, so the UI places each notice "
+                    "beside the button it actually describes.")
     message: str = Field(description="Plain sentence, ready to display as-is.")
 
 

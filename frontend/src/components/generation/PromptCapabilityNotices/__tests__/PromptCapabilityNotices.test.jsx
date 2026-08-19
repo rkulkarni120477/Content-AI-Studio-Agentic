@@ -82,3 +82,77 @@ describe('PromptCapabilityNotices', () => {
       .getAttribute('data-severity')).toBe('info');
   });
 });
+
+// One picker feeds two Generate buttons that produce different documents. Placing a
+// notice beside the wrong one is not cosmetic: "Matched 32 of 32 day-table columns"
+// above the single-call button describes a table that button never emits.
+describe('PromptCapabilityNotices — scope', () => {
+  const scoped = (severity, scope, message) => ({ severity, scope, message });
+  const mixed = {
+    ...base,
+    notices: [
+      scoped('info', 'block', 'Matched 32 of 32 requested column(s).'),
+      scoped('info', 'block', 'Emitting 1 additional day-table column(s).'),
+      scoped('warning', 'single', 'No {{extra_instructions_block}} slot.'),
+      scoped('warning', 'both', '1 template variable(s) this platform never supplies.'),
+    ],
+  };
+
+  it('shows only the block-wide notices beside the block-wide button', () => {
+    render(<PromptCapabilityNotices capability={mixed} scope="block" />);
+    expect(screen.getByText(/Matched 32 of 32/)).toBeTruthy();
+    expect(screen.getByText(/additional day-table column/)).toBeTruthy();
+    expect(screen.getByText(/never supplies/)).toBeTruthy();
+    expect(screen.queryByText(/extra_instructions_block/)).toBeNull();
+  });
+
+  it('shows only the single-call notices beside the single-call button', () => {
+    render(<PromptCapabilityNotices capability={mixed} scope="single" />);
+    expect(screen.getByText(/extra_instructions_block/)).toBeTruthy();
+    expect(screen.getByText(/never supplies/)).toBeTruthy();
+    expect(screen.queryByText(/Matched 32 of 32/)).toBeNull();
+  });
+
+  it('renders nothing where no notice applies, rather than an empty box', () => {
+    const blockOnly = { ...base, notices: [scoped('info', 'block', 'Matched 32 of 32.')] };
+    const { container } = render(
+      <PromptCapabilityNotices capability={blockOnly} scope="single" />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('names the block-wide pipeline in its own heading', () => {
+    render(<PromptCapabilityNotices capability={mixed} scope="block" />);
+    expect(screen.getByText(/block-wide pipeline emits/)).toBeTruthy();
+  });
+
+  it('filters nothing without a scope, so an unscoped caller loses no notice', () => {
+    render(<PromptCapabilityNotices capability={mixed} />);
+    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+  });
+
+  it('keeps a refusal visible beside the single-call button', () => {
+    const refusing = {
+      ...base,
+      would_refuse_single_call: true,
+      notices: [scoped('error', 'both', 'asks for an output this platform cannot produce')],
+    };
+    render(<PromptCapabilityNotices capability={refusing} scope="single" />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByText(/cannot be used for generation/)).toBeTruthy();
+  });
+
+  it('drops the refusal headline for the block-wide path but keeps the error', () => {
+    // That path does run; it refuses only if it falls back to single-call. Claiming
+    // "cannot be used" beside a button that works would be the opposite error.
+    const refusing = {
+      ...base,
+      would_refuse_single_call: true,
+      notices: [scoped('error', 'both', 'asks for an output this platform cannot produce')],
+    };
+    render(<PromptCapabilityNotices capability={refusing} scope="block" />);
+    expect(screen.queryByText(/cannot be used for generation/)).toBeNull();
+    expect(screen.getByText(/cannot produce/)).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+});

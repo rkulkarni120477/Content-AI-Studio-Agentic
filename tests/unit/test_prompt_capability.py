@@ -692,7 +692,7 @@ def test_the_same_column_undeclared_is_reported_as_divergent():
 def test_a_refused_declaration_is_a_finding_a_reviewer_sees():
     report = assess("ADDITIONAL DAY COLUMNS\n- ACS Codes: duplicate\n")
     assert report.has_findings
-    assert any("refused" in m for _s, m in report._findings())
+    assert any("refused" in m for _s, _sc, m in report._findings())
 
 
 def test_provenance_records_the_declared_labels_and_refusals():
@@ -811,10 +811,89 @@ def test_a_pathological_declaration_count_yields_a_bounded_finding():
     report = assess("ADDITIONAL DAY COLUMNS\n"
                     + "".join(f"- Column {i}: definition {i}\n" for i in range(500)))
     assert len(report.extension_rejections) == 500 - _MAX_EXTENSION_COLUMNS
-    message = next(m for _s, m in report._findings() if "refused" in m)
+    message = next(m for _s, _sc, m in report._findings() if "refused" in m)
     assert len(message) < 1500
     assert f"and {500 - _MAX_EXTENSION_COLUMNS - _FINDING_LIST_CAP} more" in message
     # and the provenance row stays bounded independently
     prov = report.to_provenance()
     assert len(prov["extension_rejections"]["items"]) == 40
     assert prov["extension_rejections"]["total"] == 500 - _MAX_EXTENSION_COLUMNS
+
+
+# --------------------------------------------------------------------------- #
+# Each notice names the generation path it is true of
+# --------------------------------------------------------------------------- #
+_SCOPES = {"block", "single", "both"}
+
+
+def _shipped_prompt_text() -> str:
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    fence = chr(96) * 3
+    parts = (root / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
+    return parts[1].split(fence)[0] + parts[2].split(fence)[0]
+
+
+def _for(notices, scope):
+    """What the UI renders at *scope* — the same filter the panel applies."""
+    return [n for n in notices if n["scope"] in (scope, "both")]
+
+
+def test_every_notice_declares_a_scope():
+    report = assess(_shipped_prompt_text(), component="cdd")
+    notices = report.selection_notices()
+    assert notices, "the shipped prompt should still produce its informational lines"
+    assert {n["scope"] for n in notices} <= _SCOPES
+
+
+def test_day_table_findings_are_scoped_to_the_block_wide_path():
+    """The defect this exists for: the picker is shared by both Generate buttons, and
+    these lines were rendering above the single-call one. That path does not emit the
+    renderer's day table at all — the model writes the whole document — so 'matched 32
+    of 32' described a document that button never produces."""
+    notices = assess(_shipped_prompt_text(), component="cdd").selection_notices()
+    block_only = _for(notices, "block")
+    assert len(block_only) == len(notices)
+    assert _for(notices, "single") == []
+    assert any("additional day-table column" in n["message"] for n in block_only)
+    assert any("Matched 32 of 32" in n["message"] for n in block_only)
+
+
+def test_an_impossible_output_demand_reaches_both_placements():
+    """Scoping must not hide a refusal. The block-wide pipeline falls back to the
+    single-call path on a DIS or reduce failure, so this is true wherever it runs."""
+    report = assess("Return the result as a downloadable .xlsx file at sandbox:/out.xlsx.")
+    notices = report.selection_notices()
+    demand = [n for n in notices if n["severity"] == "error"]
+    assert demand and demand[0]["scope"] == "both"
+    assert _for(notices, "single") and _for(notices, "block")
+
+
+def test_the_missing_source_slot_warning_is_single_call_only():
+    """It says so in its own text: the block-wide pipeline supplies sources directly,
+    so beside the block-wide button it would be false."""
+    report = assess("Produce a plan for {{course_title}} with no source slot at all.")
+    assert report.has_source_context_slot is False
+    slot = [n for n in report.selection_notices() if "No {{extra_instructions_block}}" in n["message"]]
+    assert len(slot) == 1 and slot[0]["scope"] == "single"
+
+
+def test_a_column_divergence_is_block_scoped_not_hidden():
+    report = assess("| Day | Topic | Invented Column |\n|---|---|---|\n")
+    unmatched = [n for n in report.selection_notices() if "not emitted" in n["message"]]
+    assert len(unmatched) == 1 and unmatched[0]["scope"] == "block"
+
+
+def test_an_unsupplied_variable_is_true_on_either_path():
+    report = assess("Use {{nonexistent_thing}}.", component="cdd")
+    unknown = [n for n in report.selection_notices() if "never" in n["message"]]
+    assert len(unknown) == 1 and unknown[0]["scope"] == "both"
+
+
+def test_the_document_section_is_unchanged_by_scoping():
+    """review_lines shares _findings with the UI. Scope is a placement hint for the
+    picker; the generated document reports every finding regardless."""
+    report = assess("| Day | Topic | Invented Column |\n|---|---|---|\nUse {{nope}}.")
+    lines = report.review_lines()
+    assert any("not emitted" in ln for ln in lines)
+    assert any("never" in ln for ln in lines)

@@ -528,26 +528,41 @@ class CapabilityReport:
     has_source_context_slot: bool = True
 
     # -- findings ----------------------------------------------------------------
-    def _findings(self) -> List[Tuple[str, str]]:
-        """``(severity, plain sentence)`` for everything worth a reviewer's attention.
+    def _findings(self) -> List[Tuple[str, str, str]]:
+        """``(severity, scope, plain sentence)`` for everything worth a reviewer's
+        attention.
 
         One source of truth with two renderers — ``review_lines`` (markdown, for the
         generated document) and ``selection_notices`` (structured, for the UI). Two
         copies of this wording would drift, and the two media would then disagree
         about the same prompt.
+
+        ``scope`` names the generation path a finding is TRUE OF, because the two
+        paths produce different documents from the same prompt:
+
+        * ``"block"`` — the block-wide digest pipeline. Everything about the day
+          table lives here: the renderer owns that table, so "matched 32 of 32" and
+          the extra-column lines describe the block-wide document and nothing else.
+        * ``"single"`` — the legacy single-call path, where the model writes the
+          whole document itself and no day-table reconciliation applies.
+        * ``"both"`` — true wherever the prompt runs.
+
+        Without this the UI had no way to place a notice: the picker is shared by
+        both Generate buttons, so day-table findings were rendering directly above
+        the single-call button, describing a document that button does not produce.
         """
         if not self.assessed:
             return []
-        out: List[Tuple[str, str]] = []
+        out: List[Tuple[str, str, str]] = []
         if self.artifact_demands:
             out.append((
-                "error",
+                "error", "both",
                 "The selected prompt asks for an output this platform cannot produce: "
                 + "; ".join(self.artifact_demands) + ".",
             ))
         if self.unmatched_columns:
             out.append((
-                "warning",
+                "warning", "block",
                 f"Requests {len(self.unmatched_columns)} day-table column(s) not emitted "
                 f"under that name: {', '.join(self.unmatched_columns)}. A column may exist "
                 "under a different label — this is a naming and scope difference to "
@@ -555,7 +570,7 @@ class CapabilityReport:
             ))
         if self.extension_columns:
             out.append((
-                "info",
+                "info", "block",
                 f"Emitting {len(self.extension_columns)} additional day-table column(s) "
                 "this prompt declared: "
                 + ", ".join(c["label"] for c in self.extension_columns) + ".",
@@ -567,7 +582,7 @@ class CapabilityReport:
             # would otherwise turn one finding into an unreadable wall.
             shown = self.extension_rejections[:_FINDING_LIST_CAP]
             out.append((
-                "warning",
+                "warning", "block",
                 f"{len(self.extension_rejections)} additional-column declaration(s) refused: "
                 + "; ".join(shown)
                 + (f" … and {len(self.extension_rejections) - len(shown)} more"
@@ -576,14 +591,14 @@ class CapabilityReport:
         if self.matched_columns:
             shown = self.matched_columns[:_FINDING_LIST_CAP]
             out.append((
-                "info",
+                "info", "block",
                 f"Matched {len(self.matched_columns)} of {len(self.requested_day_columns)} "
                 f"requested column(s): " + ", ".join(shown)
                 + (" …" if len(self.matched_columns) > len(shown) else "") + ".",
             ))
         if self.unknown_variables:
             out.append((
-                "warning",
+                "warning", "both",
                 f"{len(self.unknown_variables)} template variable(s) this platform never "
                 f"supplies: {', '.join(self.unknown_variables[:_FINDING_LIST_CAP])}"
                 + (" …" if len(self.unknown_variables) > _FINDING_LIST_CAP else "")
@@ -591,7 +606,7 @@ class CapabilityReport:
             ))
         if self.other_requested_tables:
             out.append((
-                "info",
+                "info", "block",
                 f"{self.other_requested_tables} further table(s) in the prompt were not "
                 "reconciled: only the day-by-day table can be identified from its own "
                 "content, and Worksheets 1 and 5 have no static column list to compare "
@@ -655,7 +670,7 @@ class CapabilityReport:
             "rather than assumed._",
             "",
         ]
-        for severity, text in self._findings():
+        for severity, _scope, text in self._findings():
             prefix = "⚠ " if severity in ("error", "warning") else ""
             out.append(f"- {prefix}{text}")
         return out
@@ -670,10 +685,12 @@ class CapabilityReport:
         """
         if not self.assessed:
             return []
-        notices = [{"severity": s, "message": m} for s, m in self._findings()]
+        notices = [{"severity": s, "scope": sc, "message": m}
+                   for s, sc, m in self._findings()]
         if not self.has_source_context_slot:
             notices.append({
                 "severity": "warning",
+                "scope": "single",
                 "message": (
                     "No {{extra_instructions_block}} slot: on the single-call path the "
                     "retrieved source material and the active style would not reach the "

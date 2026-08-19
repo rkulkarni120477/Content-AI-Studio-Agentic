@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
@@ -54,6 +54,9 @@ export default function InlinePromptControls({
   onExtraInstructionsChange,
   showExtraInstructions = false,
   onPromptsChange,
+  // Lets the page place the block-wide half of the reconciliation beside the
+  // block-wide Generate button instead of here, above the single-call one.
+  onCapabilityChange,
   headerHint,
   embedded = false,
 }) {
@@ -99,6 +102,12 @@ export default function InlinePromptControls({
   // API omits it for components that never produce a day table — so it must never be
   // rendered as "no problems found".
   const [capability, setCapability] = useState(null);
+  // Held in a ref, not a dependency: loadPromptDetail feeds a useEffect dep array, so
+  // a caller passing an inline arrow would re-create the callback every render and
+  // re-fetch the prompt detail in a loop. The ref keeps the latest callback without
+  // making the identity of loadPromptDetail depend on the caller's render.
+  const onCapabilityChangeRef = useRef(onCapabilityChange);
+  onCapabilityChangeRef.current = onCapabilityChange;
 
   const compLabel = COMPONENT_LABELS[component] || component;
   const defaults = DEFAULTS[component] || { system: '', user: '' };
@@ -155,7 +164,7 @@ export default function InlinePromptControls({
     if (!promptId) {
       setSystemPrompt(defaults.system);
       setUserPrompt(defaults.user);
-      setCapability(null);
+      setCapability(null); onCapabilityChangeRef.current?.(null);
       return;
     }
     setLoadingDetail(true);
@@ -163,13 +172,13 @@ export default function InlinePromptControls({
       const detail = await promptsService.getPromptDetail(promptId);
       setSystemPrompt(detail.system_prompt || defaults.system);
       setUserPrompt(detail.user_prompt_template || defaults.user);
-      setCapability(detail.capability || null);
+      setCapability(detail.capability || null); onCapabilityChangeRef.current?.(detail.capability || null);
     } catch {
       setSystemPrompt(defaults.system);
       setUserPrompt(defaults.user);
       // Cleared, not left stale: notices from the PREVIOUS template would be read as
       // describing the one now selected.
-      setCapability(null);
+      setCapability(null); onCapabilityChangeRef.current?.(null);
     } finally {
       setLoadingDetail(false);
     }
@@ -384,7 +393,7 @@ export default function InlinePromptControls({
             </Button>
           </div>
 
-          <PromptCapabilityNotices capability={capability} />
+          <PromptCapabilityNotices capability={capability} scope="single" />
 
           {hasOverride && (
             <div className={styles.overrideBanner}>

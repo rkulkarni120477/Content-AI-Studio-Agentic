@@ -103,6 +103,9 @@ export default function CddPage() {
   const [sourceError, setSourceError] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
   const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
+  // Reconciliation for the selected prompt, lifted out of InlinePromptControls so the
+  // block-wide half renders beside the block-wide button rather than the single-call one.
+  const [promptCapability, setPromptCapability] = useState(null);
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [showSaveInstr, setShowSaveInstr] = useState(false);
@@ -947,6 +950,7 @@ export default function CddPage() {
                 embedded
                 extraInstructions={extraInstructions}
                 onPromptsChange={setPromptConfig}
+                onCapabilityChange={setPromptCapability}
                 headerHint={`📝 Fill in the ${L.titleLower} fields above, then configure the prompt and generate your ${L.cdd} below.`}
               />
 
@@ -967,6 +971,7 @@ export default function CddPage() {
 
               {digestPipelineEnabled && (
                 <BlockWidePanel
+                  capability={promptCapability}
                   label={L.cdd}
                   hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Applies the ${L.styleLower}, additional instructions and duration set above; the document selection does not apply, since every ingested source in the block is used. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
                   block={blockLabel}
