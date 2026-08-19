@@ -59,11 +59,16 @@ describe('CDD page', () => {
 describe('Blueprint page', () => {
   const source = read('features/blueprint/pages/BlueprintPage/BlueprintPage.jsx');
 
-  it('sends the active style with a block-wide generation', () => {
-    expect(functionBody(source, 'onGenerateBlock')).toContain('style_id');
+  it('sends the active style with a per-module generation', () => {
+    expect(functionBody(source, 'onGenerate')).toContain('style_id');
   });
 
-  it('sends it with a per-module generation too', () => {
-    expect(functionBody(source, 'onGenerate')).toContain('style_id');
+  // The block-wide (digest) flow is deliberately not offered on this page — the
+  // panel, its payload builder and its job-resume effect were removed together, so
+  // a half-restored version (a builder with no panel, or a panel with no style)
+  // fails here rather than shipping.
+  it('offers no block-wide flow at all', () => {
+    expect(source).not.toContain('BlockWidePanel');
+    expect(source).not.toContain('onGenerateBlock');
   });
 });
