@@ -126,7 +126,9 @@ function isSeparatorRow(cells) {
  * Parse a DLU day-by-day schedule out of a CDD.
  *
  * Primary source: a markdown table whose header contains "Day" and "Day Title"
- * (the Instructional Sequence Map). Each data row is `| N | Title | ... |`.
+ * (the Instructional Sequence Map), or "Day" + "Topic" (the block-wide digest
+ * pipeline's Day-by-Day Map). Each data row is `| N | Title | ... |` or
+ * `| Day N | Topic | ... |` — both cell forms are in live use.
  * Fallback: a "Total Instructional Days: N" marker -> generic Day 1..N.
  *
  * @returns {{ day: number, title: string }[]} ordered, de-duplicated by day.
@@ -170,9 +172,19 @@ export function parseDaySchedule(cddContent) {
       if (!raw.trim().startsWith('|')) break; // table ended
       const cells = splitTableRow(raw);
       if (isSeparatorRow(cells)) continue;
-      const numStr = (cells[0] || '').trim();
-      if (!/^\d+$/.test(numStr)) continue;
-      const day = parseInt(numStr, 10);
+      // Accepts BOTH "1" and "Day 1". The legacy Instructional Sequence Map wrote a
+      // bare number, but the block-wide digest pipeline deliberately writes "Day 5"
+      // in this column — matched cell-by-cell against the AIM reference, see the
+      // `day_label` comment in block_wide_service._day_table_from_rows. Requiring a
+      // bare integer therefore rejected every row of a real block-wide CDD: the
+      // header matched, no row did, so the day schedule came out empty and the
+      // Blueprint page silently fell back to Module selection ("Module 1") for a
+      // 20-day block. Anchored and single-number by design, so a range ("Days 1-3")
+      // or the em-dash placeholder a dayless row carries still does not match.
+      const numStr = (cells[0] || '').trim().replace(/^\*+|\*+$/g, '').trim();
+      const dayMatch = /^(?:day\s*)?(\d+)$/i.exec(numStr);
+      if (!dayMatch) continue;
+      const day = parseInt(dayMatch[1], 10);
       if (seen.has(day)) continue;
       let title = (cells[1] || '').trim().replace(/^\*+|\*+$/g, '').trim();
       title = title.replace(/<br\s*\/?>/gi, ' ').trim();
