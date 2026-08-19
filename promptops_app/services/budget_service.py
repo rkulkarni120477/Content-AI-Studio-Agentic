@@ -1,12 +1,19 @@
 """Budget/quota enforcement — P2 of claude_plan_platform_hardening.
 
 Two spend-tracking paths, deliberately separate:
-  - `current_period_spend()` — a plain SUM() over LLMUsageLog. Historical/
-    dashboard view (P3). Not what enforcement checks — see P2.2's note in the
-    plan: only add a materialized rollup if this is ever measured slow.
+  - `current_period_spend()` / `current_period_usage()` — a plain SUM() over
+    LLMUsageLog. Historical/display view: the Platform Admin budget dashboard
+    (P3) and _build_usage_summary's post-call toast both read this, so a
+    user's own toast always agrees with what an admin sees for the same
+    budget. Not what enforcement checks — see P2.2's note in the plan: only
+    add a materialized rollup if this is ever measured slow.
   - `budget_period_spend` (the table) — the race-safe running total
     `check_budget()`/`reconcile_budget()` reserve against via one atomic
-    UPDATE per call. This is enforcement's actual source of truth.
+    UPDATE per call. This is enforcement's actual source of truth, and it can
+    legitimately fall behind the SUM() above (kill switch, check_budget's
+    fail-open catch, a call made before a policy existed, an unreserved
+    settlement) — that gap is tolerated for enforcement's race-safety, but
+    must never leak into what a user or admin is shown as their real spend.
 
 Reserve strategy (resolved 2026-08-05, flagged for sign-off per the plan's own
 "OPEN DESIGN QUESTION" note — a real cost is unknowable before the provider
@@ -520,13 +527,21 @@ def _build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Opt
         policy = _get_policy(db, scope, scope_id)
         if policy is None:
             continue
-        # Read from budget_period_spend (check_budget()'s own source of
-        # truth), not a SUM() over LLMUsageLog — the two can disagree (e.g. a
-        # reservation not yet reconciled), and showing the latter here would
-        # let the displayed headroom mismatch what actually blocks the next call.
-        pkey = period_key(policy.period)
-        spent_usd = _current_total(db, scope, scope_id, pkey, "usd")
-        spent_tokens = int(_current_total(db, scope, scope_id, pkey, "tokens"))
+        # current_period_usage() — the live SUM() over llm_usage_logs the
+        # Platform Admin budget dashboard itself uses (list_budgets) — not
+        # the budget_period_spend ledger check_budget() reserves against.
+        # That ledger is a write-through cache and can silently fall behind
+        # true logged spend for the rest of the billing period: the
+        # enforcement kill switch, check_budget()'s own fail-open exception
+        # handler, a call made before a BudgetPolicy existed yet, and the
+        # block-wide MAP settlement's swallow-and-proceed-unreserved path
+        # all log real cost to llm_usage_logs without ever crediting it to
+        # the ledger. A user's own toast disagreeing with the number the
+        # Platform Admin dashboard shows for the exact same budget is a worse
+        # bug than this figure occasionally running ahead of what the ledger
+        # will technically block on the very next call.
+        spent_usd, spent_tokens = current_period_usage(db, scope, scope_id, policy.period)
+        spent_tokens = int(spent_tokens)
         limit_type = policy.limit_type or "usd"
         entry = {
             "scope": scope, "scope_id": scope_id, "limit_type": limit_type,
