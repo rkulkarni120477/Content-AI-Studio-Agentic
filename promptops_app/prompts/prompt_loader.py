@@ -111,7 +111,7 @@ _REGISTRY: dict[str, dict] = {
         "required_vars": ["course_name", "target_audience", "expert_domain"],
         "optional_vars": [
             "grade_level", "audience_level", "estimated_duration",
-            "style_guidelines", "extra_instructions",
+            "style_guidelines", "extra_instructions", "block",
         ],
     },
     "blueprint_generation": {
@@ -120,6 +120,7 @@ _REGISTRY: dict[str, dict] = {
         "required_vars": ["cdd_context", "selected_module"],
         "optional_vars": [
             "teacher_mode", "student_mode", "style_guidelines", "extra_instructions",
+            "block",
         ],
     },
     "content_generation": {

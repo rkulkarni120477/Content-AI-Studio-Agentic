@@ -236,6 +236,16 @@ NARRATIVE_CONTRACT = PromptContract(
     ),
 )
 
+#: Prompt-declared additional day columns (_fill_extensions). The reply keys are the
+#: DECLARED labels, so they cannot be listed here — the contract pins the two things
+#: that are stable instead: the payload placeholders, and that the template still asks
+#: for a per-day mapping. An admin edit that drops {{columns}} would otherwise ask the
+#: model to fill columns it was never shown.
+EXTENSION_CONTRACT = PromptContract(
+    required_placeholders=("columns", "block_context", "guidance_block", "day_records"),
+    required_json_keys=("day_number",),
+)
+
 #: Patterns & Design Notes synthesis (_patterns_notes) — two prose fields.
 PATTERNS_CONTRACT = PromptContract(
     required_placeholders=("facts", "guidance_block"),

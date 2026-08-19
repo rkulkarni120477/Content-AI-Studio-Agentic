@@ -236,11 +236,18 @@ def run_block_wide_job(job_id: str) -> None:
 
         from promptops_app.services.prompt_guidance import resolve_prompt_guidance
         map_guidance = resolve_prompt_guidance(db, req, deliverable, user)
+        # Same reconciliation the sync branch runs (run_block_wide_sync) — the async
+        # job is the path the UI actually takes, so omitting it here would leave the
+        # report visible only in the rarely-used sync branch.
+        from promptops_app.services.prompt_capability import assess_selected_prompt
+        capability = assess_selected_prompt(db, req, deliverable)
 
         if deliverable == "blueprint":
-            gen = block_wide_service.generate_blueprint_via_digests(db, req, user, dis_client_id, map_guidance)
+            gen = block_wide_service.generate_blueprint_via_digests(
+                db, req, user, dis_client_id, map_guidance, capability=capability)
         else:
-            gen = block_wide_service.generate_cdd_via_digests(db, req, user, dis_client_id, map_guidance)
+            gen = block_wide_service.generate_cdd_via_digests(
+                db, req, user, dis_client_id, map_guidance, capability=capability)
 
         if gen is None:
             # Prefer the specific cause the service recorded. The generic sentence is

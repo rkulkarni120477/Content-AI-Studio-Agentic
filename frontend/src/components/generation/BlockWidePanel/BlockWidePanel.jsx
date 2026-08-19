@@ -3,6 +3,7 @@ import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
 import { isTerminalJobStatus, JOB_STATUSES } from '@utils/constants';
+import PromptCapabilityNotices from '@components/generation/PromptCapabilityNotices/PromptCapabilityNotices';
 import styles from './BlockWidePanel.module.scss';
 
 const TIER_OPTIONS = [
@@ -80,7 +81,7 @@ function statusLine(blockJob, label, block) {
  */
 export default function BlockWidePanel({
   label, hint, block, onBlockChange, qualityTier, onQualityTierChange,
-  isGenerating, blockJob, onGenerate,
+  isGenerating, blockJob, onGenerate, capability,
 }) {
   const line = statusLine(blockJob, label, block);
   const running = Boolean(blockJob && !isTerminalJobStatus(blockJob.status));
@@ -88,6 +89,11 @@ export default function BlockWidePanel({
     <div className={styles.blockWide}>
       <SectionBadge title={`🧩 Block-wide ${label} (digest pipeline)`} />
       <p className={styles.blockWide__hint}>{hint}</p>
+      {/* The day-table reconciliation belongs HERE, not beside the single-call
+          button: this pipeline is what owns that table. The picker is shared, so
+          without the scope split these lines described a document the other
+          button does not produce. */}
+      <PromptCapabilityNotices capability={capability} scope="block" />
       <div className={styles.blockWide__row}>
         <Input
           label="Block"

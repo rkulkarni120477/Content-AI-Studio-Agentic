@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
@@ -6,6 +6,7 @@ import { selectIsAdmin, selectIsReviewer } from '@features/auth/authSlice';
 import { fetchPromptsThunk } from '@features/prompts/promptsThunks';
 import { commitPromptThunk } from '@features/prompts/promptsThunks';
 import { promptsService } from '@features/prompts/services/promptsService';
+import PromptCapabilityNotices from '@components/generation/PromptCapabilityNotices/PromptCapabilityNotices';
 import { adminService } from '@features/admin/services/adminService';
 import { selectPrompts, selectPromptsLoading } from '@features/prompts/promptsSlice';
 import {
@@ -53,6 +54,9 @@ export default function InlinePromptControls({
   onExtraInstructionsChange,
   showExtraInstructions = false,
   onPromptsChange,
+  // Lets the page place the block-wide half of the reconciliation beside the
+  // block-wide Generate button instead of here, above the single-call one.
+  onCapabilityChange,
   headerHint,
   embedded = false,
 }) {
@@ -93,6 +97,17 @@ export default function InlinePromptControls({
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [loadingDetail, setLoadingDetail] = useState(false);
+  // Reconciliation of the selected template against what the pipeline emits, served
+  // with the prompt detail (no extra round trip). Null means "not applicable" — the
+  // API omits it for components that never produce a day table — so it must never be
+  // rendered as "no problems found".
+  const [capability, setCapability] = useState(null);
+  // Held in a ref, not a dependency: loadPromptDetail feeds a useEffect dep array, so
+  // a caller passing an inline arrow would re-create the callback every render and
+  // re-fetch the prompt detail in a loop. The ref keeps the latest callback without
+  // making the identity of loadPromptDetail depend on the caller's render.
+  const onCapabilityChangeRef = useRef(onCapabilityChange);
+  onCapabilityChangeRef.current = onCapabilityChange;
 
   const compLabel = COMPONENT_LABELS[component] || component;
   const defaults = DEFAULTS[component] || { system: '', user: '' };
@@ -149,6 +164,7 @@ export default function InlinePromptControls({
     if (!promptId) {
       setSystemPrompt(defaults.system);
       setUserPrompt(defaults.user);
+      setCapability(null); onCapabilityChangeRef.current?.(null);
       return;
     }
     setLoadingDetail(true);
@@ -156,9 +172,13 @@ export default function InlinePromptControls({
       const detail = await promptsService.getPromptDetail(promptId);
       setSystemPrompt(detail.system_prompt || defaults.system);
       setUserPrompt(detail.user_prompt_template || defaults.user);
+      setCapability(detail.capability || null); onCapabilityChangeRef.current?.(detail.capability || null);
     } catch {
       setSystemPrompt(defaults.system);
       setUserPrompt(defaults.user);
+      // Cleared, not left stale: notices from the PREVIOUS template would be read as
+      // describing the one now selected.
+      setCapability(null); onCapabilityChangeRef.current?.(null);
     } finally {
       setLoadingDetail(false);
     }
@@ -372,6 +392,8 @@ export default function InlinePromptControls({
               👁 View
             </Button>
           </div>
+
+          <PromptCapabilityNotices capability={capability} scope="single" />
 
           {hasOverride && (
             <div className={styles.overrideBanner}>

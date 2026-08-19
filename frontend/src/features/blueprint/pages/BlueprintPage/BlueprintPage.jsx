@@ -119,6 +119,9 @@ export default function BlueprintPage() {
   const [documentTitle, setDocumentTitle] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
   const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
+  // Reconciliation for the selected prompt, lifted out of InlinePromptControls so the
+  // block-wide half renders beside the block-wide button rather than the single-call one.
+  const [promptCapability, setPromptCapability] = useState(null);
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [showSaveInstr, setShowSaveInstr] = useState(false);
@@ -1098,6 +1101,7 @@ export default function BlueprintPage() {
                 extraInstructions={extraInstructions}
                 showExtraInstructions={false}
                 onPromptsChange={setPromptConfig}
+                onCapabilityChange={setPromptCapability}
                 headerHint={`📝 Select the source ${L.cdd} and module above, then configure the prompt and generate your ${L.blueprint} below.`}
               />
 
@@ -1124,6 +1128,7 @@ export default function BlueprintPage() {
 
               {digestPipelineEnabled && (
                 <BlockWidePanel
+                  capability={promptCapability}
                   label={L.blueprint}
                   hint={`Generate a whole-block ${L.blueprint} — a day-by-day plan built from every source in the block via enumerate → digest → reduce, with coverage checks. Applies the active ${L.styleLower} and the additional instructions set above. Runs in the background and is pinned as active when it finishes.`}
                   block={blockLabel}
