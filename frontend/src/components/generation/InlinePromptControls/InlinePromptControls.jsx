@@ -185,8 +185,13 @@ export default function InlinePromptControls({
   }, [defaults.system, defaults.user]);
 
   useEffect(() => {
-    dispatch(fetchPromptsThunk({ component }));
-  }, [dispatch, component]);
+    // project_id only matters for a platform admin (see list_prompts) — it
+    // scopes their dropdown to the tenant/course they're currently working
+    // in instead of every tenant's prompts; a tenant user is always scoped
+    // to their own project regardless. Refetches on tenant-context change
+    // too, so switching project mid-session doesn't leave a stale list.
+    dispatch(fetchPromptsThunk({ component, project_id: selProject?.id }));
+  }, [dispatch, component, selProject?.id]);
 
   useEffect(() => {
     async function loadSaved() {

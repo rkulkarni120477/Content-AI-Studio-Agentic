@@ -169,6 +169,15 @@ def _prompt_detail(db: Session, prompt) -> PromptDetailRead:
 def list_prompts(
     search: str | None = Query(default=None, description="Search by name, description, or tags."),
     component: str | None = Query(default=None, description="Filter by component scope, e.g. 'generate'."),
+    project_id: int | None = Query(
+        default=None,
+        description=(
+            "Platform admins only — scope the list to this project's prompts "
+            "(plus shared/global ones) instead of every tenant's. Ignored for "
+            "a tenant caller, who is always scoped to their own project "
+            "regardless of this value."
+        ),
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -177,8 +186,18 @@ def list_prompts(
     """Return all prompt templates, optionally filtered."""
     from promptops_app.repositories import prompt_repository
 
-    project_id = getattr(current_user, "_project_id", None)
     is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    if is_platform_admin and project_id is not None:
+        # A platform admin working inside one tenant's course (the Style/
+        # Generate page's "Prompt Template" dropdown) should see that
+        # tenant's prompts plus globals, not literally every other tenant's
+        # private ones too — the platform-wide "see everything" carve-out is
+        # for admin consoles/audits, not a course-scoped picker. Scoped the
+        # same way a real member of that tenant would be, not treated as a
+        # platform admin for this one lookup.
+        is_platform_admin = False
+    else:
+        project_id = getattr(current_user, "_project_id", None)
     if component:
         prompts = prompt_repository.list_prompts_by_component(
             db, component, project_id=project_id, is_platform_admin=is_platform_admin,
