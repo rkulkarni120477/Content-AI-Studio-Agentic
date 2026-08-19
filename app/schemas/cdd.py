@@ -34,8 +34,8 @@ class CDDGenerateRequest(BaseModel):
     """
     All parameters required to generate a Course Design Document with AI.
 
-    The LLM uses ``course_title``, ``estimated_duration_hours``, and the
-    active style (``style_id``) to produce a structured CDD.
+    The LLM uses ``course_title``, ``estimated_duration_hours`` (optional) and
+    the active style (``style_id``) to produce a structured CDD.
     ``extra_instructions`` lets the user guide the AI for this specific generation.
 
     ``system_prompt_override`` and ``user_prompt_override`` are advanced options
@@ -61,11 +61,15 @@ class CDDGenerateRequest(BaseModel):
         description="Optional label for this CDD document. Defaults to '<course_title> — CDD'.",
         examples=["Nursing Foundations CDD v1"],
     )
-    estimated_duration_hours: int = Field(
-        ...,
+    estimated_duration_hours: Optional[int] = Field(
+        default=None,
         ge=1,
         le=500,
-        description="Total course duration in hours.",
+        description=(
+            "Total course duration in hours. Optional: when omitted the prompt "
+            "carries no duration at all, rather than a default the requester "
+            "never chose."
+        ),
         examples=[8],
     )
     extra_instructions: str = Field(

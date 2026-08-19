@@ -137,7 +137,10 @@ export default function CddPage() {
 
   const generateForm = useForm({
     resolver: zodResolver(createCddSchema),
-    defaultValues: { course_title: '', document_title: '', duration_hours: 8 },
+    // duration_hours starts empty, not at 8: it is an optional input now, and a
+    // pre-filled default is indistinguishable on screen from a figure the user
+    // deliberately chose.
+    defaultValues: { course_title: '', document_title: '', duration_hours: undefined },
   });
   const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
 
@@ -330,7 +333,7 @@ export default function CddPage() {
       project_id: selProject?.id,
       course_title: data.course_title,
       document_title: data.document_title,
-      estimated_duration_hours: data.duration_hours || 8,
+      estimated_duration_hours: data.duration_hours || undefined,
       extra_instructions: extraInstructions,
       style_id: selectedStyleId || null,
       reference_document_ids: refDocIds,
@@ -755,11 +758,18 @@ export default function CddPage() {
                   {...generateForm.register('document_title')}
                 />
                 <Input
-                  label="Estimated Duration (hours) *"
+                  label="Estimated Duration (hours)"
                   type="number"
                   min={1}
                   max={500}
-                  {...generateForm.register('duration_hours', { valueAsNumber: true })}
+                  placeholder="Optional — leave blank to omit it from the prompt"
+                  error={generateForm.formState.errors.duration_hours?.message}
+                  {...generateForm.register('duration_hours', {
+                    // setValueAs, not valueAsNumber: an empty box yields NaN under
+                    // valueAsNumber, and NaN fails the optional number schema — so a
+                    // blank optional field would block the Generate button.
+                    setValueAs: (v) => (v === '' || v === null ? undefined : Number(v)),
+                  })}
                 />
 
                 <div className={styles.extraSection}>
