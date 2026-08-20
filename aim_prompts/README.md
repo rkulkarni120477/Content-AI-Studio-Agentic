@@ -8,8 +8,8 @@ per component.
 
 | File | Component | Route | Status |
 |---|---|---|---|
-| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82, v2 |
-| `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | Not yet in the DB |
+| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82, v3 |
+| `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | **Live** as DB prompt id 91, v1 |
 | `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
 | `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
 | `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
@@ -369,7 +369,18 @@ reasoning stops holding.
     notes. No section was invented for a row the prompt's own format already
     carried.
 
-12. **Cognitive-level and difficulty judgments are data-gated.** The source requires
+12. **The day-type mapping was reconciled with two closed vocabularies.** The docx
+    keys Teaching Day off "Conceptual, Procedural, Calculation, Safety, or Mixed"
+    and Review Day off Review-Assessment alone. Neither Calculation nor Safety is a
+    value the Blueprint can emit, and two labels it *can* emit — Summative
+    Assessment and the compound Project-Application / Review — get no day type from
+    the docx at all. Both now resolve to Review Day, which is where
+    `AIM_TODAYS_MISSION_PROMPT.md` already puts them, so the two prompts cannot
+    disagree about the same day. The prompt states that every label in the closed
+    set selects exactly one day type, because a label with no rule is the one case
+    where the model must invent something.
+
+13. **Cognitive-level and difficulty judgments are data-gated.** The source requires
     APPLY or ANALYZE treatment for codes in "AKTR high-miss data" without saying
     where that data comes from. Here it arrives only as an ingested missed-code
     rollup or `knowledge_test_report`; absent one, the prompt writes `NO AKTR DATA`
@@ -412,9 +423,16 @@ section default. Explicit selection is immune; a default is not.
   Outline: its six declared variables render against the blueprint route's real
   dict, its output shape parses into Overview + the five parts through the actual
   `dluBlueprint.js` (and survives a splice round trip), and it trips neither
-  `reject_if_unsatisfiable` nor `context_was_dropped`. **It is not in the DB** —
-  until its fenced blocks are loaded into a `PromptVersion` with `component_type`
-  `blueprint`, selecting it on the Blueprint page is not possible.
+  `reject_if_unsatisfiable` nor `context_was_dropped`. It **is** in the DB now —
+  prompt id 91, v1, registered the way prompt 82 is (`prompt_kind` `pipeline`,
+  `is_default` False, `project_id` NULL, no variant, and no `PromptVariable`
+  declarations, so what gets enforced is `blueprint_generation`'s registry pair,
+  `cdd_context` + `selected_module`), differing only in `component_type`, which is
+  `blueprint`. Verified after loading: it appears in
+  `list_prompts_by_component(db, "blueprint")`, `build_prompt(..., prompt_id=91)`
+  resolves and renders with no placeholder left behind, and the stored text is
+  byte-identical to this file's fences. Being `is_default` False it changes no
+  generation until someone picks it in the Prompt Template dropdown.
 - **AKTR data is read from the source library, not from a prompt.** Ingest the
   block's AKTR missed-code rollup as a `knowledge_test_report` and
   `Targets for Quick Check` plus the high-miss fields fill with the real figures,

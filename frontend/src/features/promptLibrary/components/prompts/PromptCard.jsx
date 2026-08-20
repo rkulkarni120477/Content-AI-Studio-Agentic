@@ -8,7 +8,10 @@ export default function PromptCard({
 }) {
   const navigate = useNavigate();
   const vars = p.variables || [];
-  const verCount = (p.versions || []).length || 1;
+  // `_version_count` is authoritative: the browse list ships the count without
+  // the (potentially large) versions array, while the detail payload still
+  // carries the array — read whichever is present.
+  const verCount = (p._version_count ?? (p.versions || []).length) || 1;
   const rs = p._review_stats || { count: 0, avg: 0 };
   const category = p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category;
 

@@ -131,7 +131,10 @@ select the day type:
     Up Next in Class describes where and how the project is executed.
     Day Reflection becomes a project debrief.
 
-  REVIEW DAY - Review-Assessment or Summative Assessment.
+  REVIEW DAY - Review-Assessment, Summative Assessment, or the compound label
+  Project-Application / Review, which is a review day whatever project runs
+  alongside it. Every label in the closed vocabulary above selects exactly one of
+  these three day types; none is left to judgment.
     Today's Mission becomes readiness framing.
     Learn It becomes review content, and its part header is written
     "Learn It (Review Content)" so it keeps its name.
@@ -185,8 +188,8 @@ record that as an open item rather than completing it from your own knowledge.
 
 Where a Skill-type code is active, state the Master Mechanic Moment status
 explicitly: "Present in source material" where a supplied source verifies it, and
-REQUIRES_ID_JUDGMENT where none does. Never imply that Canvas content or a Quick
-Check alone satisfies a Skill code's performance requirement.
+REQUIRES_ID_JUDGMENT where none does. Never imply that Canvas Learn It content or
+a Quick Check alone satisfies a Skill code's performance requirement.
 
 Performance data reaches you only through the supplied source material - a missed-
 code rollup or knowledge-test report for this block. Where a code active today
@@ -262,8 +265,8 @@ of the code's own description.
 
 ## MASTER MECHANIC MOMENT STATUS
 Label lines: the Skill codes active today, the status, the evidence or the reason,
-and the standing note that Canvas content and a Quick Check do not independently
-satisfy a Skill code's performance requirement.
+and the standing note that Learn It and a Quick Check do not independently satisfy
+a Skill code's performance requirement.
 
 ## INTERACTIVE AND JOB AID NOTES
 Label lines: interactive candidacy as the row records it, the interactive or
@@ -316,8 +319,8 @@ The parts carry:
   Up Next in Class - a short preview of the next hands-on or instructor-led
   activity, derived ONLY from the application connection and the physical
   demonstration required as the row records them, adding nothing from elsewhere,
-  and the limit that this is a preview only: no station rotation, no practical
-  activity design.
+  and the limit that this is a Phase 1 preview only: no station rotation, no
+  station design, no practical activity design.
   Day Reflection - two 90-second reflection prompts tied to the derived day
   objective, each followed by the line "Status: DERIVED - requires ID and SME
   confirmation before use." Reflections are visible to the instructor and are not

@@ -13,6 +13,8 @@ when that lands.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 
 def _create(client, headers, **overrides):
@@ -569,3 +571,80 @@ class TestPromoteEndpoint:
         r = self._promote(client, reviewer, created["id"])
         assert r.status_code == 403
         assert "Pipeline manager" in r.json()["detail"]
+
+
+class TestListPayloadAndQueryBudget:
+    """The browse list is a projection, not a page of detail payloads.
+
+    Serializing each row through the detail serializer meant one lazy
+    ``versions`` load plus one ``list_children`` query PER ROW: a 47-row page
+    measured 101 SQL statements / 8.5 s and an 863 KB body against Postgres.
+    These tests pin both halves of the fix — the trimmed row shape, and the
+    fact that the statement count no longer tracks the row count.
+    """
+
+    LIST_URL = "/api/v1/prompt-library/prompts"
+    DETAIL_ONLY = {"versions", "attachments", "parent", "children"}
+
+    @staticmethod
+    def _get_counting_sql(client, headers, url, db):
+        # A real request begins with a cold session; the test client shares one
+        # across requests, so expire it or the identity map hides lazy loads.
+        db.expire_all()
+        statements: list[str] = []
+
+        def _record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(Engine, "after_cursor_execute", _record)
+        try:
+            resp = client.get(url, headers=headers)
+        finally:
+            event.remove(Engine, "after_cursor_execute", _record)
+        assert resp.status_code == 200, resp.text
+        return resp.json(), statements
+
+    def test_list_rows_drop_the_detail_only_relations(self, client, auth_headers):
+        _create(client, auth_headers)
+        rows = client.get(self.LIST_URL, headers=auth_headers).json()
+        row = next(r for r in rows if r["title"] == "Course Kickoff Playbook")
+        assert self.DETAIL_ONLY.isdisjoint(row)
+        # Everything a list view or the CSV export reads is still there.
+        assert row["content"].startswith("Draft a kickoff")
+        assert row["_version_count"] == 1
+        assert row["_child_count"] == 0
+        assert row["_review_stats"] == {"count": 0, "avg": 0}
+        assert sorted(row["tags"]) == ["cte", "kickoff"]
+        assert [v["name"] for v in row["variables"]] == ["course_name", "audience"]
+
+    def test_detail_endpoint_keeps_the_full_payload(self, client, auth_headers):
+        created = _create(client, auth_headers).json()
+        detail = client.get(f"{self.LIST_URL}/{created['id']}", headers=auth_headers).json()
+        assert self.DETAIL_ONLY <= set(detail)
+        assert detail["versions"][0]["content"].startswith("Draft a kickoff")
+
+    def test_sql_cost_does_not_grow_with_the_number_of_rows(self, client, auth_headers, db):
+        for i in range(2):
+            assert _create(client, auth_headers, title=f"Budget small {i}").status_code == 201
+        small_rows, small_sql = self._get_counting_sql(client, auth_headers, self.LIST_URL, db)
+
+        for i in range(6):
+            assert _create(client, auth_headers, title=f"Budget large {i}").status_code == 201
+        large_rows, large_sql = self._get_counting_sql(client, auth_headers, self.LIST_URL, db)
+
+        assert len(small_rows) == 2
+        assert len(large_rows) == 8
+        assert len(large_sql) == len(small_sql), (
+            "GET /prompts issued more SQL for more rows — a per-row query is "
+            f"back ({len(small_sql)} statements for 2 rows, {len(large_sql)} for 8):\n"
+            + "\n".join(large_sql)
+        )
+
+    def test_search_shares_the_list_projection(self, client, auth_headers):
+        _create(client, auth_headers, title="Searchable Kickoff")
+        body = client.get(
+            f"{self.LIST_URL}/search?q=Searchable", headers=auth_headers
+        ).json()
+        assert body["total"] == 1
+        assert self.DETAIL_ONLY.isdisjoint(body["items"][0])
+        assert body["items"][0]["_version_count"] == 1
