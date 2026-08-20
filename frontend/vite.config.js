@@ -56,7 +56,13 @@ export default defineConfig({
         // lands on that dead relay. dns.setDefaultResultOrder('ipv4first') above
         // is not enough on its own (http-proxy's agent can still pick ::1), so we
         // pin the address explicitly and sidestep DNS entirely.
-        target: process.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000',
+        //
+        // Hardcoded on purpose — do NOT read VITE_API_BASE_URL here. Vite exposes
+        // every VITE_* var to the browser via import.meta.env, so any value that
+        // made this proxy target useful would simultaneously make apiClient call
+        // that host directly and bypass the proxy. The proxy is dev-only (it does
+        // not exist in `vite build`), and in dev the backend is always local.
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

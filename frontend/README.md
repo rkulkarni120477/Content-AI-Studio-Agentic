@@ -56,7 +56,7 @@ Copy `.env.example` → `.env` and fill in:
 
 | Variable | Description | Default |
 |---|---|---|
-| `VITE_API_BASE_URL` | Backend FastAPI/Django base URL | `http://localhost:8000` |
+| `VITE_API_BASE_URL` | Backend base URL. **Leave empty in dev** — requests go through the Vite proxy. Set to the backend origin only in a real deployment. | _(empty)_ |
 | `VITE_TOKEN_KEY` | JWT localStorage key | `content_ai_jwt` |
 | `VITE_ENABLE_ASYNC_GENERATION` | Use Celery background jobs | `true` |
 | `VITE_ENABLE_PLAGIARISM_CHECK` | Enable Copyleaks integration | `true` |

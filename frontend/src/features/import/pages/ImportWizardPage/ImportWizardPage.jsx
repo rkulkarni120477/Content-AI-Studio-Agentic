@@ -130,7 +130,7 @@ export default function ImportWizardPage() {
           <button type="button" className={styles.back} onClick={() => navigate(coursesRoute)}>
             ← {L.titles}
           </button>
-          <h1 className={styles.title}>Import a {L.title}</h1>
+          <h1 className={styles.title}>Import {L.title}</h1>
           <p className={styles.subtitle}>
             Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS {L.titleLower}.
           </p>
@@ -140,7 +140,7 @@ export default function ImportWizardPage() {
           <div className={styles.body}>
             <FileUpload
               accept=".imscc,.zip,.xml"
-              label={`Drop a ${L.titleLower} package here or click to browse`}
+              label={`Drop your ${L.titleLower} package here or click to browse`}
               hint="Canvas IMSCC (.imscc / .zip) or Cengage CendocXML (.zip / .xml)"
               onChange={handleFile}
               error={validateError || undefined}

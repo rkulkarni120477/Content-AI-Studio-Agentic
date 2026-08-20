@@ -626,7 +626,7 @@ export default function EditorPage() {
         {scopeLabel && (
           <div className={styles.scopeBanner}>
             <strong>{scopeLabel}</strong>
-            <span> — the file list below includes lessons from every module in this title.</span>
+            <span> — the file list below includes lessons from every module in this {L.titleLower}.</span>
           </div>
         )}
 

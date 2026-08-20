@@ -810,7 +810,7 @@ export default function AnalyticsPage({ embedded = false }) {
                     label={L.title}
                     required
                     disabled={Boolean(budgetForm.id) || !budgetForm._courseProjectId}
-                    placeholder={budgetCoursesLoading ? `Loading ${L.titlesLower}…` : `Select a ${L.titleLower}…`}
+                    placeholder={budgetCoursesLoading ? `Loading ${L.titlesLower}…` : `Select ${L.titleLower}…`}
                     options={budgetCourseOptions}
                     value={budgetForm.scope_id}
                     onChange={(e) => setBudgetForm({ ...budgetForm, scope_id: e.target.value })}
