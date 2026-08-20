@@ -30,26 +30,31 @@ const dashboardSlice = createSlice({
   initialState,
   reducers: {
     setSelectedProject(state, { payload }) {
+      // Only ever clears selectedCluster/selectedCourse — the "current
+      // selection pointer" metadata, which really is stale once the project
+      // changes. Does NOT touch clusters/courses: those lists are owned
+      // exclusively by fetchClustersThunk/fetchCoursesThunk's own pending/
+      // fulfilled reducers below, which already track their real fetch
+      // lifecycle (isLoadingClusters/isLoadingCourses gates the stale-data
+      // flash a page's render logic would otherwise show). This reducer
+      // firing here too was a second, uncoordinated writer: on a hard
+      // refresh, ClustersPage/CoursesPage's own sync effect re-derives
+      // selectedProject/selectedCluster via 1-2 sequential API calls while a
+      // separate effect fetches the real list in a single call — that
+      // fetch's `fulfilled` would win the race and populate the list
+      // correctly, only for this reducer's reset to fire moments later and
+      // wipe it back to empty, rendering "No titles"/"No categories" for
+      // data that was already loaded right.
       const prevId = state.selectedProject?.id;
       state.selectedProject = payload;
-      if (!payload) {
+      if (!payload || prevId !== payload.id) {
         state.selectedCluster = null;
         state.selectedCourse  = null;
-        state.clusters        = { items: [], total: 0 };
-        state.courses         = { items: [], total: 0 };
-        return;
-      }
-      if (prevId !== payload.id) {
-        state.selectedCluster = null;
-        state.selectedCourse  = null;
-        state.clusters        = { items: [], total: 0 };
-        state.courses         = { items: [], total: 0 };
       }
     },
     setSelectedCluster(state, { payload }) {
       state.selectedCluster = payload;
       state.selectedCourse  = null;
-      state.courses         = { items: [], total: 0 };
     },
     setSelectedCourse(state, { payload }) {
       state.selectedCourse = payload;
