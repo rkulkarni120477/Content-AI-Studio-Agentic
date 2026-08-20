@@ -717,7 +717,7 @@ export default function CddPage() {
                 </Button>
               </div>
 
-              <div className={styles.sectionLabel}>📎 CDD Reference Documents</div>
+              <div className={styles.sectionLabel}>📎 {L.cdd} Reference Documents</div>
 
               <div className={styles.fieldRow}>
                 <label className={styles.fieldLabel} htmlFor="cdd-ref-docs">
@@ -847,13 +847,13 @@ export default function CddPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>📂 Your Title Design Documents</summary>
+            <summary className={styles.accordion__summary}>📂 Your {L.cdds}</summary>
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
               ) : (cdds.length === 0 && archivedCdds.length === 0) ? (
                 <EmptyState
-                  title="No CDDs yet"
+                  title={`No ${L.cdds} yet`}
                   message={`Create your first ${L.cdd} using the form above.`}
                 />
               ) : (
@@ -1021,7 +1021,7 @@ export default function CddPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>🎯 CDD Prompts</summary>
+            <summary className={styles.accordion__summary}>🎯 {L.cdd} Prompts</summary>
             <div className={styles.accordion__body}>
               <InlinePromptControls
                 component="cdd"

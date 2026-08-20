@@ -447,7 +447,7 @@ export default function WorkflowPage() {
               onChange={(e) => handleFilter('courseId', e.target.value ? Number(e.target.value) : null)}
             />
           ) : scopeProjId ? (
-            <p className={styles.filters__noCourses}>No titles in this project.</p>
+            <p className={styles.filters__noCourses}>No {L.titlesLower} in this project.</p>
           ) : null}
         </div>
 

@@ -18,6 +18,7 @@ import ClusterPromptManager from '@components/cluster/ClusterPromptManager/Clust
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import { useAuth } from '@hooks/useAuth';
+import { useLabels } from '@hooks/useLabels';
 import { ROUTES, projectHomeRoute } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import gridStyles from '@features/dashboard/styles/selectionGrid.module.scss';
@@ -28,6 +29,7 @@ export default function ClustersPage() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const { hasPermission, isAdmin, isPlatformAdmin, projectId: authProjectId } = useAuth();
+  const L = useLabels();
   const clusters = useAppSelector(selectClusters);
   const selProj = useAppSelector(selectSelectedProject);
   const isLoadingClusters = useAppSelector(selectIsLoadingClusters);
@@ -127,7 +129,7 @@ export default function ClustersPage() {
         <SelectionPageHeader
           eyebrow={`Project: ${selProj.name}`}
           title="Select Category"
-          subtitle="Choose a domain category to browse its titles."
+          subtitle={`Choose a domain category to browse its ${L.titlesLower}.`}
         />
         {canManage && (
           <Button
