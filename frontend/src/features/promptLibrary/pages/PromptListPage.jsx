@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
   deletePrompt,
   duplicatePrompt,
   fetchMeta,
   fetchPrompts,
+  fetchPromptUsage,
   markPromptUsed,
   restorePrompt,
 } from '../api/prompts';
 import { fetchPromptsByCourse } from '../api/flow';
 import { plCourses } from '../paths';
 import CompactSelect from '../components/CompactSelect';
+import DeletePromptDialog from '../components/prompts/DeletePromptDialog';
 import PromptCard from '../components/prompts/PromptCard';
 import PromptListTable from '../components/prompts/PromptListTable';
 import { useAuth } from '../context/AuthContext';
@@ -25,6 +27,9 @@ export default function PromptListPage() {
   const { show } = useToast();
   const canEdit = canManagePrompts(user);
   const canPipeline = canManagePipelinePrompts(user);
+  // Deleting a pipeline row is the admin tier, not the manager tier the rest
+  // of the library uses — the backend enforces the same split.
+  const canDelete = canPipeline;
 
   const [prompts, setPrompts] = useState([]);
   const [meta, setMeta] = useState({ categories: [], tags: [] });
@@ -43,6 +48,22 @@ export default function PromptListPage() {
   const [scopeGroups, setScopeGroups] = useState([]);
   const [scopeCluster, setScopeCluster] = useState('');
   const [scopeCourse, setScopeCourse] = useState('');
+
+  // Delete flow: open the dialog immediately, then fill in the usage check as
+  // it lands, so the click feels instant but the confirm button cannot be
+  // pressed before the blast radius is known.
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteUsage, setDeleteUsage] = useState(null);
+  const [deleteChecking, setDeleteChecking] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  // Guards against a stale usage response landing on a newer dialog when the
+  // user opens one row's dialog, cancels, and opens another's straight away.
+  const usageReqRef = useRef(0);
+
+  // Bumped by every mutation (not by filtering), so the list view can refresh
+  // its open follow-up panels without refetching them on each keystroke.
+  const [refreshToken, setRefreshToken] = useState(0);
 
   function buildFilterParams() {
     // Only CAS pipeline prompts are surfaced (Phase 12b) — the freeform
@@ -130,6 +151,13 @@ export default function PromptListPage() {
     void load();
   }, [load]);
 
+  // Reload after a write. Callers use this instead of load() so the token and
+  // the list can never drift apart.
+  function reloadAfterMutation() {
+    setRefreshToken((n) => n + 1);
+    void load();
+  }
+
   function setViewMode(v) {
     setView(v);
     localStorage.setItem('plib_view', v);
@@ -144,14 +172,61 @@ export default function PromptListPage() {
   async function handleDuplicate(id) {
     await duplicatePrompt(id);
     show('Prompt duplicated!');
-    void load();
+    reloadAfterMutation();
   }
 
-  async function handleDelete(id) {
-    if (!window.confirm('Delete this prompt?')) return;
-    await deletePrompt(id);
-    show('Prompt deleted.');
-    void load();
+  function requestDelete(prompt) {
+    setDeleteTarget(prompt);
+    setDeleteUsage(null);
+    setDeleteError('');
+    setDeleteChecking(true);
+    const token = usageReqRef.current + 1;
+    usageReqRef.current = token;
+    void fetchPromptUsage(prompt.id)
+      .then((usage) => {
+        if (usageReqRef.current !== token) return;
+        setDeleteUsage(usage);
+      })
+      .catch((err) => {
+        if (usageReqRef.current !== token) return;
+        setDeleteError(err instanceof Error ? err.message : 'Could not check prompt usage');
+      })
+      .finally(() => {
+        if (usageReqRef.current === token) setDeleteChecking(false);
+      });
+  }
+
+  function closeDelete() {
+    // Bump the token so an in-flight usage check cannot repopulate a closed
+    // dialog or leak into the next one.
+    usageReqRef.current += 1;
+    setDeleteTarget(null);
+    setDeleteUsage(null);
+    setDeleteChecking(false);
+    setDeleteError('');
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      // Force only what the user was actually shown. If the preflight failed
+      // we send force=false and let the server decide — never unbind blind.
+      await deletePrompt(deleteTarget.id, { force: Boolean(deleteUsage?.blocking) });
+      const name = deleteTarget.title || deleteTarget.pipeline?.name || 'Prompt';
+      show(`${name} archived — restore it any time from the 🗄 Archived filter.`);
+      closeDelete();
+      reloadAfterMutation();
+    } catch (err) {
+      // 409 means the preflight was stale: someone bound the prompt between
+      // the check and the click. Re-render the dialog from the server's own
+      // payload so the next press is an informed one, not a silent force.
+      if (err?.status === 409 && err.usage) setDeleteUsage(err.usage);
+      setDeleteError(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function handleRestore(id) {
@@ -161,7 +236,7 @@ export default function PromptListPage() {
     } catch (err) {
       show(err instanceof Error ? err.message : 'Restore failed');
     }
-    void load();
+    reloadAfterMutation();
   }
 
   function filterByTag(t) {
@@ -312,8 +387,10 @@ export default function PromptListPage() {
           <PromptListTable
             prompts={prompts}
             isAdmin={canEdit}
+            canDelete={canDelete}
+            refreshToken={refreshToken}
             onCopy={handleCopy}
-            onDelete={handleDelete}
+            onDelete={requestDelete}
             onRestore={handleRestore}
             onTagClick={filterByTag}
           />
@@ -324,9 +401,10 @@ export default function PromptListPage() {
                 key={p.id}
                 prompt={p}
                 isAdmin={canEdit}
+                canDelete={canDelete}
                 onCopy={(id) => void handleCopy(id, p.content)}
                 onDuplicate={handleDuplicate}
-                onDelete={handleDelete}
+                onDelete={requestDelete}
                 onRestore={handleRestore}
                 onTagClick={filterByTag}
               />
@@ -334,6 +412,17 @@ export default function PromptListPage() {
           </div>
         )}
       </div>
+
+      <DeletePromptDialog
+        open={Boolean(deleteTarget)}
+        prompt={deleteTarget}
+        usage={deleteUsage}
+        checking={deleteChecking}
+        deleting={deleting}
+        error={deleteError}
+        onCancel={closeDelete}
+        onConfirm={confirmDelete}
+      />
     </>
   );
 }

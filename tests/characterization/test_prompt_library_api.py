@@ -174,7 +174,13 @@ class TestDeleteAndDuplicate:
             f"/api/v1/prompt-library/prompts/{created['id']}", headers=auth_headers
         )
         assert resp.status_code == 200
-        assert resp.json() == {"deleted": created["id"]}
+        # Additive contract change (prompt-delete ticket): the body still
+        # carries `deleted`, and now also reports that the delete was an
+        # ARCHIVE and which generation bindings it had to release to get
+        # there — None when the prompt held none, as here.
+        assert resp.json() == {
+            "deleted": created["id"], "archived": True, "released": None,
+        }
         # Hidden from list and 404 on read (deleted_at soft-delete filter).
         listing = client.get(
             "/api/v1/prompt-library/prompts", headers=auth_headers

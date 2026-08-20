@@ -654,6 +654,99 @@ def can_access_prompt(prompt: Prompt, role: str | None, user_team,
 
 
 # ---------------------------------------------------------------------------
+# Generation bindings — what an archive would take away
+# ---------------------------------------------------------------------------
+
+_SCOPE_ID_ATTR = {"project": "project_id", "cluster": "cluster_id", "course": "course_id"}
+_SCOPE_MODEL = {"project": Project, "cluster": Cluster, "course": Course}
+
+
+def _fixing_scope_name(db: Session, f: PromptFixing) -> str | None:
+    """Human name of the scope a lock is bound to (None for global locks)."""
+    model = _SCOPE_MODEL.get(f.scope_level)
+    if model is None:
+        return None
+    sid = getattr(f, _SCOPE_ID_ATTR[f.scope_level], None)
+    if sid is None:
+        return None
+    row = db.get(model, sid)
+    return getattr(row, "name", None) if row is not None else None
+
+
+def _fixing_summary(db: Session, f: PromptFixing) -> dict:
+    return {
+        "id": f.id,
+        "component": f.component,
+        "scope_level": f.scope_level,
+        "scope_name": _fixing_scope_name(db, f),
+    }
+
+
+def prompt_usage(db: Session, prompt: Prompt) -> dict:
+    """The generation bindings *prompt* currently holds.
+
+    Two things make a pipeline row live: the component-default flag (every
+    scope without a lock inherits it) and PromptFixing scope locks. Archiving
+    a row that holds either silently changes what other people's courses
+    generate, so ``blocking`` marks the cases the delete endpoint refuses
+    without an explicit force.
+
+    Library rows are never resolved for generation and can never be bound to a
+    scope (``set_fixing`` rejects them), so their usage is always empty.
+    """
+    if prompt.prompt_kind != "pipeline":
+        return {
+            "prompt_id": prompt.id,
+            "prompt_kind": prompt.prompt_kind,
+            "is_default": False,
+            "component_type": None,
+            "variant": None,
+            "fixings": [],
+            "blocking": False,
+        }
+    fixings = (
+        db.query(PromptFixing)
+        .filter(PromptFixing.prompt_id == prompt.id)
+        .order_by(PromptFixing.component.asc(), PromptFixing.id.asc())
+        .all()
+    )
+    is_default = bool(prompt.is_default)
+    return {
+        "prompt_id": prompt.id,
+        "prompt_kind": prompt.prompt_kind,
+        "is_default": is_default,
+        "component_type": prompt.component_type,
+        "variant": prompt.variant,
+        "fixings": [_fixing_summary(db, f) for f in fixings],
+        "blocking": is_default or bool(fixings),
+    }
+
+
+def clear_prompt_bindings(db: Session, prompt: Prompt) -> dict:
+    """Release every generation binding held by *prompt* (the forced-archive
+    path) and return what was released, for the audit event.
+
+    Scope locks are DELETED rather than left with a NULL ``prompt_id``: a lock
+    that resolves to nothing behaves exactly like no lock at resolution time,
+    but a NULLed row keeps showing up in every fixings listing and "used by"
+    facet, so removing it keeps the stored state and the resolved state in
+    agreement. Restoring the prompt later does NOT restore its bindings —
+    they are re-bound deliberately, from the Titles view.
+
+    Flushed, not committed: the caller owns the transaction.
+    """
+    released = {"was_default": bool(prompt.is_default), "fixings": []}
+    if prompt.prompt_kind != "pipeline":
+        return released
+    prompt.is_default = False
+    for f in db.query(PromptFixing).filter(PromptFixing.prompt_id == prompt.id).all():
+        released["fixings"].append(_fixing_summary(db, f))
+        db.delete(f)
+    db.flush()
+    return released
+
+
+# ---------------------------------------------------------------------------
 # Serializers
 # ---------------------------------------------------------------------------
 

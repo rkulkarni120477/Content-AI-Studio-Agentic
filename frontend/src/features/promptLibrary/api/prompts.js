@@ -1,4 +1,4 @@
-import { apiFetch, apiUrl, apiDownload } from './client';
+import { apiFetch, apiUrl, apiDownload, errorMessage } from './client';
 
 export async function fetchPrompts(params) {
   const qs = new URLSearchParams(params).toString();
@@ -90,9 +90,35 @@ export async function updatePrompt(id, body) {
   return data;
 }
 
-export async function deletePrompt(id) {
-  const res = await apiFetch(`/api/prompts/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Delete failed');
+// What generation would lose if this prompt were archived: the component
+// default flag plus every scope lock pointing at it. The delete flow calls this
+// BEFORE the destructive request so the confirmation can name the blast radius;
+// the server computes it from the same helper its own 409 guard uses, so the
+// dialog and the guard can never disagree.
+export async function fetchPromptUsage(id) {
+  const res = await apiFetch(`/api/prompts/${id}/usage`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(errorMessage(data, 'Could not check where this prompt is used'));
+  return data;
+}
+
+// Archive a prompt (soft delete — restorable from the Archived filter).
+// The server refuses with 409 when the prompt still drives generation; `force`
+// tells it to release those bindings first. The rejection carries the usage
+// payload, which is attached to the thrown error so the caller can re-render
+// the confirmation against the server's own view instead of guessing.
+export async function deletePrompt(id, { force = false } = {}) {
+  const res = await apiFetch(`/api/prompts/${id}${force ? '?force=true' : ''}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(errorMessage(data, 'Delete failed'));
+    err.status = res.status;
+    err.usage = data?.detail?.usage || null;
+    throw err;
+  }
+  return data;
 }
 
 export async function duplicatePrompt(id) {

@@ -342,6 +342,13 @@ def resolve_fixed_prompt(
     project or cluster the course belongs to.  This keeps lookup correct
     even when the caller only knows some of the hierarchy IDs (e.g. cluster_id=None).
 
+    Only locks that can actually be honoured are returned: the bound prompt
+    must still exist and be live. A lock whose prompt was archived (or whose
+    ``prompt_id`` was nulled by the FK's ON DELETE SET NULL) is skipped and the
+    next, broader scope is consulted — matching what the loader does when it
+    re-checks the row it was handed, so a dead course lock can no longer mask
+    a live cluster lock.
+
     acceptable_variants:
         ``None`` (default) — legacy behavior: no variant/kind filtering.
         Otherwise a sequence of acceptable ``Prompt.variant`` values (``None``
@@ -362,11 +369,16 @@ def resolve_fixed_prompt(
     checks.append(("global", None, None))   # always check global as final fallback
 
     for scope, id_col, id_val in checks:
+        # Inner join on the bound row: a lock only wins when its prompt exists
+        # and is live, so NULL/archived targets fall through to broader scopes
+        # instead of short-circuiting resolution to "no lock at all".
         q = (
             db.query(PromptFixing)
+            .join(Prompt, PromptFixing.prompt_id == Prompt.id)
             .filter(
                 PromptFixing.component   == component,
                 PromptFixing.scope_level == scope,
+                Prompt.deleted_at.is_(None),
             )
         )
         if id_col is not None:
@@ -376,12 +388,12 @@ def resolve_fixed_prompt(
                 Prompt.variant.is_(None) if v is None else Prompt.variant == v
                 for v in acceptable_variants
             ]
-            q = q.join(Prompt, PromptFixing.prompt_id == Prompt.id).filter(
+            q = q.filter(
                 Prompt.prompt_kind == "pipeline",
                 or_(*variant_conds) if variant_conds else False,
             )
         fixing = q.first()
-        if fixing and fixing.prompt_id:
+        if fixing is not None:
             return fixing
     return None
 
