@@ -10,6 +10,7 @@ import {
   restorePrompt,
 } from '../api/prompts';
 import { fetchPromptsByCourse } from '../api/flow';
+import { useDebounce } from '@hooks/useDebounce';
 import { plCourses } from '../paths';
 import CompactSelect from '../components/CompactSelect';
 import DeletePromptDialog from '../components/prompts/DeletePromptDialog';
@@ -40,8 +41,16 @@ export default function PromptListPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [sort, setSort] = useState('updated');
   const [view, setView] = useState(() => localStorage.getItem('plib_view') || 'card');
+  // Two loading tiers, so a filter change never blanks the results the user is
+  // reading: `loading` covers the first load only (the AC's "display after the
+  // loading process is completed"), `refreshing` every later refetch, during
+  // which the previous rows stay on screen behind aria-busy.
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // Typing must not fire one full request per keystroke; the other filters are
+  // discrete clicks and stay immediate.
+  const qDebounced = useDebounce(q, 300);
   // Scope filter (Phase 11, doc §8; cluster-basis) — pipeline tab only:
   // narrow to the prompts a cluster/course actually uses (locks + inherited
   // defaults). Both selects derive from the one by-course batch call.
@@ -61,6 +70,15 @@ export default function PromptListPage() {
   // user opens one row's dialog, cancels, and opens another's straight away.
   const usageReqRef = useRef(0);
 
+  // Same guard for the list itself: every load is numbered and the in-flight
+  // one is aborted when a newer one starts, so the rows on screen always belong
+  // to the newest filter set — never to whichever response happened to land
+  // last. The unmount cleanup bumps the counter so a cancelled load cannot
+  // touch state afterwards.
+  const loadReqRef = useRef(0);
+  const loadAbortRef = useRef(null);
+  const loadedOnceRef = useRef(false);
+
   // Bumped by every mutation (not by filtering), so the list view can refresh
   // its open follow-up panels without refetching them on each keystroke.
   const [refreshToken, setRefreshToken] = useState(0);
@@ -74,7 +92,7 @@ export default function PromptListPage() {
     // course is picked.
     if (scopeCourse) params.course_id = scopeCourse;
     else if (scopeCluster && scopeCluster !== 'none') params.cluster_id = scopeCluster;
-    if (q) params.q = q;
+    if (qDebounced) params.q = qDebounced;
     // Categories are the doc's six CAS names, resolved server-side to the
     // (component_type, variant) resolution keys.
     if (category.startsWith('cas:')) params.cas_category = category.slice(4);
@@ -89,18 +107,48 @@ export default function PromptListPage() {
 
   const load = useCallback(async () => {
     if (!canPipeline) return;
-    setLoading(true);
+    // Supersede whatever is in flight: its response is already irrelevant, and
+    // leaving it running would waste a full list transfer.
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const token = loadReqRef.current + 1;
+    loadReqRef.current = token;
+    const isCurrent = () => loadReqRef.current === token;
+
+    if (loadedOnceRef.current) setRefreshing(true);
+    else setLoading(true);
     try {
-      const list = await fetchPrompts(buildFilterParams());
-      setPrompts(list);
-    } catch {
+      const list = await fetchPrompts(buildFilterParams(), { signal: controller.signal });
+      if (!isCurrent()) return;
+      // Tolerate both list shapes: the endpoint returns a bare array, or
+      // {items,total,…} if a caller ever opts into its page/limit params.
+      setPrompts(Array.isArray(list) ? list : list?.items || []);
+      // Only a SUCCESSFUL load retires the placeholder — if the first one
+      // failed, the next attempt should still read as loading rather than as
+      // an empty library.
+      loadedOnceRef.current = true;
+    } catch (err) {
+      // An abort is this component cancelling itself, not a failure — it must
+      // neither clear the rows nor raise a toast.
+      if (controller.signal.aborted || err?.name === 'AbortError' || !isCurrent()) return;
       setPrompts([]);
       show('Could not load prompts.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, wfState, showArchived, sort, scopeCluster, scopeCourse]);
+  }, [qDebounced, category, tag, wfState, showArchived, sort, scopeCluster, scopeCourse]);
+
+  // Cancel an in-flight load on unmount, and bump the counter first so its
+  // rejection can no longer reach setState.
+  useEffect(() => () => {
+    loadReqRef.current += 1;
+    loadAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     void fetchMeta().then(setMeta).catch(() => {});
@@ -243,17 +291,20 @@ export default function PromptListPage() {
     setTag(t);
   }
 
-  async function handleExportCsv() {
-    if (loading || exporting) return;
+  // Export exactly the rows on screen. `prompts` is always the newest completed
+  // load for the current filters (and the button is disabled while a load is in
+  // flight), so this needs no second full-list request — the list payload
+  // already carries every column the CSV writes, content included.
+  function handleExportCsv() {
+    if (loading || refreshing || exporting) return;
+    if (!prompts.length) {
+      show('No prompts to export for the current filters.');
+      return;
+    }
     setExporting(true);
     try {
-      const list = await fetchPrompts(buildFilterParams());
-      if (!list.length) {
-        show('No prompts to export for the current filters.');
-        return;
-      }
-      exportPromptsCsv(list);
-      show(`Exported ${list.length} prompt${list.length !== 1 ? 's' : ''} to CSV.`);
+      exportPromptsCsv(prompts);
+      show(`Exported ${prompts.length} prompt${prompts.length !== 1 ? 's' : ''} to CSV.`);
     } catch {
       show('Export failed. Please try again.');
     } finally {
@@ -367,7 +418,7 @@ export default function PromptListPage() {
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={handleExportCsv}
-            disabled={loading || exporting || prompts.length === 0}
+            disabled={loading || refreshing || exporting || prompts.length === 0}
             title="Download filtered prompts as CSV (includes full prompt text)"
           >
             {exporting ? 'Exporting…' : '⬇ Export CSV'}
@@ -375,7 +426,14 @@ export default function PromptListPage() {
         </div>
       </div>
 
-      <div className="page-card">
+      {/* A refetch keeps the previous rows on screen (dimmed, aria-busy) instead
+          of swapping them for the placeholder — changing a filter must not
+          blank what the user is reading. Only the first load shows "Loading…". */}
+      <div
+        className="page-card"
+        aria-busy={loading || refreshing}
+        style={refreshing ? { opacity: 0.6, transition: 'opacity 120ms ease' } : undefined}
+      >
         {loading ? (
           <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 48 }}>Loading…</p>
         ) : !prompts.length ? (

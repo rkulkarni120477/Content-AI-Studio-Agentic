@@ -1,8 +1,12 @@
 import { apiFetch, apiUrl, apiDownload, errorMessage } from './client';
 
-export async function fetchPrompts(params) {
+// The browse list. `signal` lets a caller cancel a superseded request (the list
+// page refetches on every filter change, and an abandoned response must never
+// land on screen); an aborted fetch rejects with a DOMException named
+// 'AbortError', which callers are expected to swallow.
+export async function fetchPrompts(params, { signal } = {}) {
   const qs = new URLSearchParams(params).toString();
-  const res = await apiFetch(`/api/prompts${qs ? `?${qs}` : ''}`);
+  const res = await apiFetch(`/api/prompts${qs ? `?${qs}` : ''}`, signal ? { signal } : {});
   if (res.status === 401) throw new Error('unauthorized');
   return res.json();
 }

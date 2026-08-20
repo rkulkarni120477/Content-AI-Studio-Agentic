@@ -115,14 +115,28 @@ def _paginated_body(items, total, page, limit, extra: dict | None = None):
     return body
 
 
-def _enrich_prompts(db: Session, prompts: list, *, project_id: int | None = None,
-                    is_platform_admin: bool = False) -> list:
+def _list_rows(db: Session, prompts: list, *, project_id: int | None = None,
+               is_platform_admin: bool = False) -> list:
+    """Serialize a page of browse results.
+
+    Fixed query cost regardless of page size: two batch aggregates here, plus
+    the collection loads ``svc.list_query_loaders`` arranged on the query. The
+    row shape is ``svc.prompt_to_list_dict``, which cannot query at all — the
+    old per-row ``svc.enrich`` walked ``versions`` and ran a ``list_children``
+    query for every row (47 rows = 101 queries; now 8).
+    """
     stats = svc.review_stats_batch(db, [p.id for p in prompts])
     parent_ids = [p.id for p in prompts if p.parent_id is None]
     child_counts = svc.child_count_batch(db, parent_ids, project_id=project_id,
                                          is_platform_admin=is_platform_admin)
-    return [svc.enrich(db, p, stats, child_counts, project_id=project_id,
-                       is_platform_admin=is_platform_admin) for p in prompts]
+    return [
+        svc.prompt_to_list_dict(
+            p,
+            review_stats=stats.get(p.id),
+            child_count=child_counts.get(p.id, 0),
+        )
+        for p in prompts
+    ]
 
 
 def _client_ip(req: Request) -> str | None:
@@ -228,8 +242,8 @@ def list_prompts(request: Request, db: Session = Depends(get_db),
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
                                  include_deleted=_include_archived(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
-    items, total, page, limit = _paginate_optin(request, q)
-    return _paginated_body(_enrich_prompts(db, items, **_tenant_kwargs(user)), total, page, limit)
+    items, total, page, limit = _paginate_optin(request, svc.list_query_loaders(q))
+    return _paginated_body(_list_rows(db, items, **_tenant_kwargs(user)), total, page, limit)
 
 
 @router.get("/prompts/search")
@@ -242,8 +256,8 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
                                  include_deleted=_include_archived(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
-    items, total, page, limit = _paginate_forced(request, q)
-    return _paginated_body(_enrich_prompts(db, items, **_tenant_kwargs(user)), total, page, limit, extra={"q": q_text})
+    items, total, page, limit = _paginate_forced(request, svc.list_query_loaders(q))
+    return _paginated_body(_list_rows(db, items, **_tenant_kwargs(user)), total, page, limit, extra={"q": q_text})
 
 
 @router.get("/meta")
