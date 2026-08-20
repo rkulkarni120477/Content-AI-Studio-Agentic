@@ -29,6 +29,21 @@ export async function apiFetch(path, init = {}) {
   return fetch(apiUrl(path), { ...init, headers });
 }
 
+// FastAPI raises {"detail": "..."} for plain errors and {"detail": {...}} when a
+// handler carries structured data (the delete guard's PROMPT_IN_USE payload);
+// the host's AppError envelope is {"error": {code, message, detail}}. One reader
+// for all three, so a server-side reason always reaches the user instead of
+// being flattened to a generic fallback or "[object Object]".
+export function errorMessage(data, fallback = 'Request failed') {
+  for (const v of [data?.detail, data?.error]) {
+    if (typeof v === 'string' && v.trim()) return v;
+    if (v && typeof v === 'object' && typeof v.message === 'string' && v.message.trim()) {
+      return v.message;
+    }
+  }
+  return fallback;
+}
+
 // Authenticated file download. Direct <a href> GETs cannot carry the Bearer token,
 // so we fetch the response as a blob and trigger a browser download.
 export async function apiDownload(path, filename) {
