@@ -16,6 +16,7 @@ from promptops_app.core.constants import ChangeSource
 from promptops_app.database import (
     Block,
     BlockVersion,
+    Cluster,
     Course,
     CourseImport,
     CourseModule,
@@ -27,8 +28,8 @@ from promptops_app.importers.imscc_importer import parse_package
 from tests.importers.fixtures import build_content_imscc
 
 
-def _new_course(db, name="Imported", project_id=1) -> Course:
-    course = Course(name=name, project_id=project_id)
+def _new_course(db, name="Imported", project_id=1, cluster_id=None) -> Course:
+    course = Course(name=name, project_id=project_id, cluster_id=cluster_id)
     db.add(course)
     db.commit()
     db.refresh(course)
@@ -207,15 +208,28 @@ def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     user can watch progress. If the job then fails outright, nothing about
     that Course row itself changes on its own — it must be the job's failure
     handler that archives it, or the empty, content-less shell stays visible
-    in the Titles list forever, badged "Imported"."""
+    in the Titles list forever, badged "Imported".
+
+    Asserted against list_courses_for_cluster(..., include_archived=True) —
+    the exact call CoursesPage makes (dashboardThunks.js fetchCoursesThunk) —
+    not list_courses_for_project, which no page actually calls with archived
+    items included. is_active=False alone is not enough here: the Titles page
+    deliberately shows archived courses (for permanent-delete management), so
+    a failed-import shell needs its own exclusion, not just the archive flag.
+    """
     from promptops_app.jobs import import_jobs
     from promptops_app.repositories import job_repository
-    from promptops_app.repositories.course_repository import list_courses_for_project
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
     monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
 
-    course = _new_course(db, name="WillFail", project_id=3)
+    cluster = Cluster(name="C", project_id=3)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="WillFail", project_id=3, cluster_id=cluster.id)
     course_id = course.id
     ci = CourseImport(course_id=course_id, project_id=3, status="queued", package_name="x.imscc")
     db.add(ci)
@@ -248,4 +262,66 @@ def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     course = db.query(Course).filter_by(id=course_id).first()
     assert course.is_active is False
 
-    assert course_id not in {c.id for c in list_courses_for_project(db, 3)}
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id not in visible_ids
+
+
+def test_import_job_failing_after_reconstruction_leaves_the_course_untouched(db, monkeypatch, mock_llm):
+    """Review finding: the outer except also catches failures AFTER
+    editor_builder.build already committed real content (e.g. a transient DB
+    error in _finalize/set_completed). That course must stay fully visible
+    and usable — it must not be archived alongside a genuinely empty shell
+    just because something failed somewhere in the same try block."""
+    from promptops_app.jobs import import_jobs
+    from promptops_app.repositories import job_repository
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+    monkeypatch.setattr(
+        import_jobs, "_finalize",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("transient DB error")),
+    )
+
+    cluster = Cluster(name="C", project_id=4)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="ReconstructedThenFails", project_id=4, cluster_id=cluster.id)
+    course_id = course.id
+    ci = CourseImport(course_id=course_id, project_id=4, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    import os
+    fd, pkg_path = tempfile.mkstemp(prefix="test_imscc_", suffix=".imscc")
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(build_content_imscc())
+
+    job_id = job_repository.create_job(
+        db,
+        user_name="u",
+        request_params={
+            "import_id": import_id, "course_id": course_id, "project_id": 4,
+            "user_name": "u", "package_path": pkg_path, "package_name": "x.imscc",
+        },
+        project_id=4, course_id=course_id, job_type="import",
+    )
+
+    import_jobs.run_import_job(job_id)
+
+    db.expire_all()
+    job = db.query(GenerationJob).filter_by(id=job_id).first()
+    assert job.status == "failed"   # _finalize did blow up — the job itself must say so
+
+    course = db.query(Course).filter_by(id=course_id).first()
+    assert course.is_active is True   # ...but the real, built content must not be hidden
+
+    gens = db.query(Generation).filter_by(course_id=course_id).all()
+    assert len(gens) == 3   # reconstruction really did complete before the failure
+
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id in visible_ids

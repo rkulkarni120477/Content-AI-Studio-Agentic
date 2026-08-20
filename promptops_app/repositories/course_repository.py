@@ -38,7 +38,28 @@ def get_course_by_id(db, course_id: int):
     return db.query(Course).filter(Course.id == course_id).first()
 
 
+def _failed_import_course_ids(db):
+    """Courses whose reconstruction never completed — an empty shell with no
+    usable content. Excluded even from ``include_archived=True`` views: unlike
+    a course a user chose to archive, this was never a real course to manage,
+    and its own CourseImport row already keeps the "failed" audit trail.
+
+    Requires BOTH Course.is_active==False and CourseImport.status=="failed":
+    a course whose reconstruction succeeded before a later stage failed (e.g.
+    a transient error in _finalize) also gets CourseImport.status=="failed",
+    but stays is_active==True and must remain fully visible — see
+    import_jobs.run_import_job's ``reconstructed`` gate.
+    """
+    return (
+        db.query(CourseImport.course_id)
+        .join(Course, Course.id == CourseImport.course_id)
+        .filter(CourseImport.status == "failed", Course.is_active == False)  # noqa: E712
+    )
+
+
 def list_courses_for_project(db, project_id: int):
+    # No include_archived option here, so is_active==True alone already
+    # excludes a failed import shell — no need for the extra join.
     return (
         db.query(Course)
         .filter(Course.project_id == project_id, Course.is_active == True)  # noqa: E712
@@ -51,6 +72,7 @@ def list_courses_for_cluster(db, cluster_id: int, *, include_archived: bool = Fa
     q = db.query(Course).filter(Course.cluster_id == cluster_id)
     if not include_archived:
         q = q.filter(Course.is_active == True)  # noqa: E712
+    q = q.filter(~Course.id.in_(_failed_import_course_ids(db)))
     return q.order_by(Course.created_at.asc()).all()
 
 
