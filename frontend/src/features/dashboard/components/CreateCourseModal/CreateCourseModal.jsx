@@ -95,9 +95,9 @@ export default function CreateCourseModal({
             onClick={() => setMode('new')}
           >
             <span className={styles.choice__icon} aria-hidden="true">✨</span>
-            <span className={styles.choice__title}>New Title</span>
+            <span className={styles.choice__title}>New {L.title}</span>
             <span className={styles.choice__desc}>
-              Build from scratch — Style → CDD → Blueprint → Generate → Editor.
+              Build from scratch — {L.style} → {L.cdd} → {L.blueprint} → Generate → Editor.
             </span>
           </button>
 

@@ -699,7 +699,7 @@ export default function BlueprintPage() {
           <div className={styles.configPanel__heading}>Approved Configuration (Read-Only)</div>
           <div className={styles.configPanel__row}>
             <div>
-              <div className={styles.configPanel__item}>🎨 Style</div>
+              <div className={styles.configPanel__item}>🎨 {L.style}</div>
               <div className={styles.configPanel__value} style={{ color: styleOk ? '#10b981' : '#f59e0b' }}>
                 {styleLabel}
                 <span className={styles.configPanel__status} style={{ color: styleOk ? '#10b981' : '#f59e0b' }}>
@@ -708,7 +708,7 @@ export default function BlueprintPage() {
               </div>
             </div>
             <div>
-              <div className={styles.configPanel__item}>📘 CDD</div>
+              <div className={styles.configPanel__item}>📘 {L.cdd}</div>
               <div className={styles.configPanel__value} style={{ color: cddOk ? '#6366f1' : '#f59e0b' }}>
                 {cddLabel}
                 <span className={styles.configPanel__status} style={{ color: cddOk ? '#6366f1' : '#f59e0b' }}>
@@ -755,7 +755,7 @@ export default function BlueprintPage() {
 
         <div className={styles.layout}>
           <details className={styles.accordion} open>
-            <summary className={styles.accordion__summary}>➕ Create New Blueprint</summary>
+            <summary className={styles.accordion__summary}>➕ Create New {L.blueprint}</summary>
             <div className={styles.accordion__body}>
               <Select
                 label={`📘 Source ${L.cdd}`}
@@ -800,7 +800,7 @@ export default function BlueprintPage() {
                 label={`${L.blueprint} Title (optional)`}
                 placeholder={
                   selectedModuleOpt
-                    ? `e.g. ${selectedModuleOpt.isDay ? 'Day' : 'Module'} ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || 'Blueprint'}`
+                    ? `e.g. ${selectedModuleOpt.isDay ? 'Day' : 'Module'} ${selectedModuleOpt.key} — ${linkedCdd?.course_title || linkedCdd?.title || L.blueprint}`
                     : `e.g. Module 1 — Patient Assessment ${L.blueprint}`
                 }
                 value={documentTitle}
@@ -887,7 +887,7 @@ export default function BlueprintPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>📂 Your Module Blueprints</summary>
+            <summary className={styles.accordion__summary}>📂 Your Module {L.blueprints}</summary>
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
@@ -1069,7 +1069,7 @@ export default function BlueprintPage() {
                       </Button>
 
                       <div className={styles.downloadBlock}>
-                        <p className={styles.downloadBlock__title}>📥 Download Blueprint</p>
+                        <p className={styles.downloadBlock__title}>📥 Download {L.blueprint}</p>
                         <div className={styles.downloadBlock__row}>
                           <Button variant="secondary" fullWidth onClick={() => onExport('docx')}>
                             ⬇️ Word (.docx)
@@ -1090,7 +1090,7 @@ export default function BlueprintPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>🎯 Blueprint Prompts</summary>
+            <summary className={styles.accordion__summary}>🎯 {L.blueprint} Prompts</summary>
             <div className={styles.accordion__body}>
               <InlinePromptControls
                 component="blueprint"

@@ -11,6 +11,20 @@ export const CDD_UI_BLOCKS = [
   { key: 'Course Level Assessment', label: '🏆 Title Level Assessment' },
 ];
 
+/**
+ * Display label for a CDD UI block, honouring the tenant's rename of "Title".
+ * `L` is the label set from useLabels(); falls back to "Title" when absent.
+ */
+export function cddBlockLabel(key, L) {
+  const word = L?.title || 'Title';
+  switch (key) {
+    case 'Course Details':          return `📋 ${word} Details`;
+    case 'Course Structure':        return `🗂️ ${word} Structure & Module Assessments`;
+    case 'Course Level Assessment': return `🏆 ${word} Level Assessment`;
+    default:                        return key;
+  }
+}
+
 export function parseCddFlat(rawText) {
   return parseFlatFromModules(rawText);
 }
@@ -44,7 +58,7 @@ export function prepareCddBlockContent(blockKey, content) {
 /**
  * @returns {{ key: string, label: string, content: string }[]}
  */
-export function buildCddUiBlocks(fullContent, sectionsObj) {
+export function buildCddUiBlocks(fullContent, sectionsObj, L) {
   const parsed = { ...parseCddFlat(fullContent) };
   if (sectionsObj && typeof sectionsObj === 'object') {
     Object.entries(sectionsObj).forEach(([key, val]) => {
@@ -55,10 +69,10 @@ export function buildCddUiBlocks(fullContent, sectionsObj) {
   }
 
   return CDD_UI_BLOCKS
-    .map(({ key, label }) => {
+    .map(({ key }) => {
       const content = prepareCddBlockContent(key, parsed[key]);
       if (!content) return null;
-      return { key, label, content };
+      return { key, label: cddBlockLabel(key, L), content };
     })
     .filter(Boolean);
 }

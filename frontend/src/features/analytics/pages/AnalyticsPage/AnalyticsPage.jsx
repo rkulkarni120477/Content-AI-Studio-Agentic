@@ -316,7 +316,7 @@ export default function AnalyticsPage({ embedded = false }) {
                   { label: 'Content Blocks', value: formatNumber(summary?.blocks), icon: '🧩' },
                   { label: 'Prompt Assets', value: formatNumber(summary?.prompt_assets), icon: '📚' },
                   { label: 'Documents', value: formatNumber(summary?.documents), icon: '📄' },
-                  { label: 'CDDs', value: formatNumber(summary?.cdds), icon: '📋' },
+                  { label: L.cdds, value: formatNumber(summary?.cdds), icon: '📋' },
                   { label: L.blueprints, value: formatNumber(summary?.blueprints), icon: '🗂️' },
                 ].map((kpi) => (
                   <div key={kpi.label} className={styles.kpiCard}>
@@ -338,7 +338,7 @@ export default function AnalyticsPage({ embedded = false }) {
                       { key: 'client', header: 'Client' },
                       { key: 'generations', header: 'Generations', align: 'right' },
                       { key: 'blocks', header: 'Blocks', align: 'right' },
-                      { key: 'cdds', header: 'CDDs', align: 'right' },
+                      { key: 'cdds', header: L.cdds, align: 'right' },
                       { key: 'blueprints', header: L.blueprints, align: 'right' },
                     ]}
                     rows={projectRows}
@@ -370,8 +370,8 @@ export default function AnalyticsPage({ embedded = false }) {
                         { key: 'topic', header: 'Topic' },
                         { key: 'prompt_name', header: 'Asset' },
                         { key: 'prompt_version', header: 'V' },
-                        { key: 'cdd_label', header: 'CDD' },
-                        { key: 'blueprint_label', header: 'Blueprint' },
+                        { key: 'cdd_label', header: L.cdd },
+                        { key: 'blueprint_label', header: L.blueprint },
                         { key: 'created_at', header: 'Time', render: (v) => formatDate(v) },
                         {
                           key: 'actions', header: '', render: (_, row) => (
@@ -429,7 +429,7 @@ export default function AnalyticsPage({ embedded = false }) {
                       rowKey="id"
                       pagination={false}
                     />
-                  ) : <p className={styles.emptyHint}>No CDD or Blueprint events yet.</p>
+                  ) : <p className={styles.emptyHint}>No {L.cdd} or {L.blueprint} events yet.</p>
                 )}
               </section>
 
@@ -778,7 +778,7 @@ export default function AnalyticsPage({ embedded = false }) {
                 disabled={Boolean(budgetForm.id)}
                 options={[
                   { value: 'project', label: 'Tenant' },
-                  { value: 'course', label: 'Title' },
+                  { value: 'course', label: L.title },
                   { value: 'user', label: 'User' },
                 ]}
                 value={budgetForm.scope}
@@ -807,10 +807,10 @@ export default function AnalyticsPage({ embedded = false }) {
                     onChange={(e) => setBudgetForm({ ...budgetForm, _courseProjectId: e.target.value, scope_id: '' })}
                   />
                   <Select
-                    label="Title"
+                    label={L.title}
                     required
                     disabled={Boolean(budgetForm.id) || !budgetForm._courseProjectId}
-                    placeholder={budgetCoursesLoading ? 'Loading titles…' : 'Select a title…'}
+                    placeholder={budgetCoursesLoading ? `Loading ${L.titlesLower}…` : `Select a ${L.titleLower}…`}
                     options={budgetCourseOptions}
                     value={budgetForm.scope_id}
                     onChange={(e) => setBudgetForm({ ...budgetForm, scope_id: e.target.value })}

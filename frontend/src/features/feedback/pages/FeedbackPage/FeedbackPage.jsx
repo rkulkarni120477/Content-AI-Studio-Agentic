@@ -13,6 +13,7 @@ import ErrorState from '@components/common/ErrorState/ErrorState';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import Modal from '@components/common/Modal/Modal';
 import { renderMarkdownPreview } from '@utils/markdownPreview';
+import { useLabels } from '@hooks/useLabels';
 import { fetchBlueprintsThunk } from '@features/blueprint/blueprintThunks';
 import { selectBlueprints } from '@features/blueprint/blueprintSlice';
 import {
@@ -44,8 +45,8 @@ const PRIORITIES = {
 const ACCEPTED = '.pptx,.docx,.pdf,.xlsx,.txt';
 const COURSE_WIDE = '';
 
-function blueprintLabel(bp) {
-  const title = (bp.module_title || bp.title || '').trim() || `Blueprint ${bp.id}`;
+function blueprintLabel(bp, L) {
+  const title = (bp.module_title || bp.title || '').trim() || `${L.blueprint} ${bp.id}`;
   const num = bp.module_number;
   return num != null ? `Module ${num} — ${title}` : title;
 }
@@ -75,6 +76,7 @@ function compilePreview(selectedItems) {
 export default function FeedbackPage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
+  const L = useLabels();
 
   const items        = useAppSelector(selectFeedbackItems);
   const blueprints   = useAppSelector(selectBlueprints);
@@ -102,15 +104,15 @@ export default function FeedbackPage() {
   const [applyTarget, setApplyTarget] = useState(COURSE_WIDE);
 
   const moduleOptions = useMemo(() => {
-    const opts = [{ value: COURSE_WIDE, label: 'Entire title' }];
+    const opts = [{ value: COURSE_WIDE, label: `Entire ${L.titleLower}` }];
     const sorted = [...(blueprints || [])].sort(
       (a, b) => (a.module_number ?? 0) - (b.module_number ?? 0),
     );
     sorted.forEach((bp) => {
-      opts.push({ value: String(bp.id), label: blueprintLabel(bp) });
+      opts.push({ value: String(bp.id), label: blueprintLabel(bp, L) });
     });
     return opts;
-  }, [blueprints]);
+  }, [blueprints, L]);
 
   useEffect(() => {
     if (courseId) {
@@ -163,10 +165,10 @@ export default function FeedbackPage() {
     const rest = moduleOptions.filter((o) => o.value !== COURSE_WIDE);
     return [
       { value: '', label: 'All modules' },
-      { value: 'course', label: 'Entire title' },
+      { value: 'course', label: `Entire ${L.titleLower}` },
       ...rest,
     ];
-  }, [moduleOptions]);
+  }, [moduleOptions, L]);
 
   const stats = useMemo(() => ({
     total:      items.length,
@@ -392,7 +394,7 @@ export default function FeedbackPage() {
           <EmptyState
             icon="💬"
             title="No feedback yet"
-            message="Upload a reviewer document above to extract feedback for this title."
+            message={`Upload a reviewer document above to extract feedback for this ${L.titleLower}.`}
           />
         ) : (
           <div className={styles.card}>

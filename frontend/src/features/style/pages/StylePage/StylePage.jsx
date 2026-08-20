@@ -732,7 +732,7 @@ export default function StylePage() {
           <div className={styles.refinePanel}>
             <div className={styles.refineBlock}>
               <h3 className={styles.refineBlock__title}>Current Intelligence Layer (excerpt)</h3>
-              <p className={styles.refineBlock__caption}>Style Understanding Output</p>
+              <p className={styles.refineBlock__caption}>{L.style} Understanding Output</p>
               <div className={styles.refineExcerpt}>{refineStyle?.excerpt || '—'}</div>
             </div>
             <label className={styles.refineLabel} htmlFor="refine-corrections">
