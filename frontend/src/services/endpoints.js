@@ -155,6 +155,9 @@ export const CDD = {
   LIST_ALL:         '/api/v1/cdd',
   GET:              (id)       => `/api/v1/cdd/${id}`,
   GENERATE:         '/api/v1/cdd/generate',
+  // Upload an existing Blueprint/CDD file (Excel/DOCX/PDF) → extracted, normalized
+  // into the worksheet shape, saved as a normal CDD, and pinned active. Multipart.
+  IMPORT:           '/api/v1/cdd/import',
   // Block-wide (digest-pipeline) async generation → returns a job handle to poll
   // via GENERATE.JOB_STATUS. Flag-gated server-side (AIM only, off by default).
   GENERATE_BLOCK:   '/api/v1/cdd/generate-block',

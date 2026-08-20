@@ -88,7 +88,7 @@ def course(db, project):
 def make_db_prompt(db, name: str, *, system: str, user: str,
                    version: str = "v1", component_type: str | None = None,
                    is_default: bool = False, is_active: bool = True,
-                   variant: str | None = None):
+                   variant: str | None = None, project_id: int | None = None):
     """Create a native Prompt + PromptVersion pair the way the admin UI does."""
     from promptops_app.database import Prompt, PromptVersion
 
@@ -100,6 +100,7 @@ def make_db_prompt(db, name: str, *, system: str, user: str,
         component_type=component_type,
         is_default=is_default,
         variant=variant,
+        project_id=project_id,
     )
     db.add(prompt)
     db.commit()

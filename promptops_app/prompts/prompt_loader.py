@@ -388,13 +388,16 @@ def _from_db(
     """Try to load from the Prompt / PromptVersion ORM tables.  Returns None on any miss."""
     try:
         from promptops_app.database import Prompt, PromptVersion
+        from promptops_app.repositories.prompt_repository import visible_to_tenant
 
         prompt = None
         # Highest priority: a specific pipeline prompt the user picked in the
         # "Prompt Template" dropdown. Guarded to prompt_kind='pipeline' so a
         # library row can never be injected into a generation call (Decision 1).
-        # A miss (wrong kind, soft-deleted, or unknown id) falls through to the
-        # normal scope/default resolution below.
+        # A miss (wrong kind, soft-deleted, unknown id, or another tenant's
+        # prompt) falls through to the normal scope/default resolution below —
+        # same no-enumeration-oracle contract as everywhere else a prompt id
+        # is resolved: a caller can't tell "not yours" from "doesn't exist".
         if prompt_id is not None:
             prompt = (
                 db.query(Prompt)
@@ -403,6 +406,13 @@ def _from_db(
                         Prompt.deleted_at.is_(None))
                 .first()
             )
+            # No platform-admin bypass here (unlike the read-side checks this
+            # mirrors): this is a generation-time injection point reached from
+            # background jobs with no live request/user context, only the
+            # generation's own project_id. A prompt scoped to *that* project,
+            # or shared (project_id NULL), is always enough.
+            if prompt is not None and not visible_to_tenant(prompt.project_id, project_id, False):
+                prompt = None
         if prompt is None and component_resolution_enabled():
             prompt = _resolve_pipeline_row(
                 db, name,
@@ -415,8 +425,13 @@ def _from_db(
                 return None
             # Legacy secondary key: exact stem-named row (never soft-deleted —
             # dormant guard, no write path soft-deletes pipeline rows today).
-            prompt = db.query(Prompt).filter(Prompt.name == name,
-                                             Prompt.deleted_at.is_(None)).first()
+            # Same tenant gate as the explicit-id tier above: a stem-named row
+            # scoped to a different tenant must not apply to everyone's
+            # generation just because its name happens to match the stem.
+            _stem_row = db.query(Prompt).filter(Prompt.name == name,
+                                                Prompt.deleted_at.is_(None)).first()
+            if _stem_row is not None and visible_to_tenant(_stem_row.project_id, project_id, False):
+                prompt = _stem_row
         if not prompt:
             return None
 

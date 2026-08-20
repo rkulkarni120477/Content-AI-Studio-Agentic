@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchCddsThunk, generateCddThunk, setActiveCddThunk,
+  fetchCddsThunk, generateCddThunk, importCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
   activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
   generateCddBlockThunk,
@@ -15,7 +15,7 @@ import {
 import { cddService } from '@features/cdd/services/cddService';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
-  selectCddLoading, selectCddGenerating, selectCddError, selectCddBlockJob,
+  selectCddLoading, selectCddGenerating, selectCddImporting, selectCddError, selectCddBlockJob,
   selectArchivedCdds, selectCddArchiving, selectCddArchiveRefusal,
   resetBlockJob, clearArchiveRefusal,
 } from '@features/cdd/cddSlice';
@@ -77,6 +77,7 @@ export default function CddPage() {
   const audienceCategory = useAppSelector(selectAudienceCategory);
   const isLoading = useAppSelector(selectCddLoading);
   const isGenerating = useAppSelector(selectCddGenerating);
+  const isImporting = useAppSelector(selectCddImporting);
   const error = useAppSelector(selectCddError);
   const blockJob = useAppSelector(selectCddBlockJob);
   const archivedCdds = useAppSelector(selectArchivedCdds);
@@ -97,6 +98,10 @@ export default function CddPage() {
     selCourse?.digest_pipeline_enabled ?? Boolean(user?.digest_pipeline_enabled);
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
+  // Upload-existing-blueprint control (Excel/DOCX/PDF → imported as an active CDD).
+  const importFileRef = useRef(null);
+  const [importFile, setImportFile] = useState(null);
+  const [importProgress, setImportProgress] = useState(0);
   const [refDocIds, setRefDocIds] = useState([]);
   const [sourceDocs, setSourceDocs] = useState([]);
   const [sourceLoading, setSourceLoading] = useState(false);
@@ -349,6 +354,38 @@ export default function CddPage() {
         : undefined,
     };
     await dispatch(generateCddThunk(payload));
+  }
+
+  function onImportFileChange(e) {
+    setImportFile(e.target.files?.[0] || null);
+    setImportProgress(0);
+  }
+
+  // Import an existing Blueprint file. Reuses the Block / Document Title already
+  // typed in the form above when present; otherwise the server derives them from
+  // the file. On success the imported CDD is set active (by the thunk) and shown
+  // in "Your Title Design Documents" like a generated one.
+  async function onImportBlueprint() {
+    if (!importFile) return;
+    const data = generateForm.getValues();
+    const res = await dispatch(importCddThunk({
+      file: importFile,
+      courseId: Number(courseId),
+      projectId: selProject?.id ?? projectId,
+      courseTitle: data.course_title || '',
+      documentTitle: data.document_title || '',
+      modelChoice,
+      onProgress: setImportProgress,
+    }));
+    if (importCddThunk.fulfilled.match(res)) {
+      setImportFile(null);
+      setImportProgress(0);
+      if (importFileRef.current) importFileRef.current.value = '';
+      if (res.payload?.id) {
+        setViewCddId(res.payload.id);
+        setSelectedCddId(res.payload.id);
+      }
+    }
   }
 
   async function onGenerateBlock() {
@@ -648,6 +685,37 @@ export default function CddPage() {
                   ℹ️ No {L.stylesLower} created yet. Go to the <strong>{L.style}</strong> tab to create one.
                 </div>
               )}
+
+              <div className={styles.sectionLabel}>📤 Upload existing {L.cdd}</div>
+              <div className={styles.fieldRow}>
+                <p className={styles.requiredHint}>
+                  Upload an existing {L.cdd} (Excel, Word or PDF). It's extracted, shown below, and set as active.
+                </p>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".xlsx,.xls,.docx,.pdf"
+                  onChange={onImportFileChange}
+                  disabled={isImporting}
+                />
+                {importFile && (
+                  <div className={styles.refDocsBanner}>
+                    📄 <strong>{importFile.name}</strong> selected
+                  </div>
+                )}
+                {importProgress > 0 && importProgress < 100 && (
+                  <div className={styles.refDocsBanner}>Uploading… {importProgress}%</div>
+                )}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  onClick={onImportBlueprint}
+                  disabled={!importFile || isImporting}
+                >
+                  {isImporting ? 'Importing…' : `📤 Import ${L.cdd}`}
+                </Button>
+              </div>
 
               <div className={styles.sectionLabel}>📎 CDD Reference Documents</div>
 

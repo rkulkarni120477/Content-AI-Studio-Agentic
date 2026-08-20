@@ -61,6 +61,7 @@ from promptops_app.database import (
     PromptVersion,
     Team,
 )
+from promptops_app.repositories.prompt_repository import tenant_scope_condition, visible_to_tenant
 
 # Roles that can see everything and manage prompts (PromptLibrary "manager").
 MANAGER_ROLES = ("admin", "reviewer")
@@ -272,7 +273,9 @@ def base_prompt_query(db: Session) -> Query:
 
 def browse_prompts_query(db: Session, role: str | None, user_team,
                          kind: str | None = None,
-                         include_deleted: bool = False) -> Query:
+                         include_deleted: bool = False,
+                         project_id: int | None = None,
+                         is_platform_admin: bool = False) -> Query:
     """Console browse across kinds. ``kind`` in {library, pipeline, all};
     callers without pipeline-manager access are silently stripped to
     library-only regardless of the requested kind (server-side, no 403).
@@ -287,7 +290,8 @@ def browse_prompts_query(db: Session, role: str | None, user_team,
         q = q.filter(Prompt.deleted_at.is_(None))
     if kind != "all":
         q = q.filter(Prompt.prompt_kind == kind)
-    return apply_visibility_filter(q, role or "author", user_team)
+    return apply_visibility_filter(q, role or "author", user_team,
+                                   project_id=project_id, is_platform_admin=is_platform_admin)
 
 
 def apply_sort(q: Query, sort: str) -> Query:
@@ -300,7 +304,15 @@ def apply_sort(q: Query, sort: str) -> Query:
     return q.order_by(Prompt.updated_at.desc())
 
 
-def apply_visibility_filter(q: Query, role: str | None, user_team) -> Query:
+def apply_visibility_filter(q: Query, role: str | None, user_team,
+                            project_id: int | None = None,
+                            is_platform_admin: bool = False) -> Query:
+    # Tenant boundary first, unconditionally — role/visibility below govern
+    # what a caller sees WITHIN their own tenant (or globally-shared rows),
+    # never across tenants. is_manager/admin is a per-tenant credential, so
+    # it must not bypass this the way it bypasses the role checks below.
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
     if is_manager(role):
         return q
     if not user_team:
@@ -509,12 +521,17 @@ def _apply_scope_filter(q: Query, scope: dict) -> Query:
     )
 
 
-def visible_prompts_query(db: Session, role: str | None, user_team) -> Query:
-    return apply_visibility_filter(base_prompt_query(db), role or "author", user_team)
+def visible_prompts_query(db: Session, role: str | None, user_team,
+                          project_id: int | None = None,
+                          is_platform_admin: bool = False) -> Query:
+    return apply_visibility_filter(base_prompt_query(db), role or "author", user_team,
+                                   project_id=project_id, is_platform_admin=is_platform_admin)
 
 
-def list_distinct_categories(db: Session, role: str | None, user_team) -> list[str]:
-    q = visible_prompts_query(db, role, user_team)
+def list_distinct_categories(db: Session, role: str | None, user_team,
+                             project_id: int | None = None,
+                             is_platform_admin: bool = False) -> list[str]:
+    q = visible_prompts_query(db, role, user_team, project_id=project_id, is_platform_admin=is_platform_admin)
     rows = (
         q.with_entities(Prompt.category)
         .filter(Prompt.category.isnot(None), Prompt.category != "")
@@ -526,15 +543,19 @@ def list_distinct_categories(db: Session, role: str | None, user_team) -> list[s
 
 
 def list_distinct_tags(db: Session, role: str | None, user_team, *, category: str | None = None,
-                       kind: str = "library") -> list[str]:
+                       kind: str = "library",
+                       project_id: int | None = None,
+                       is_platform_admin: bool = False) -> list[str]:
     # kind="pipeline" backs the console's tag filter now that only CAS
     # pipeline prompts are surfaced (Phase 12b) — pipeline managers only;
     # anyone else silently falls back to the library scope (no leak).
     if kind == "pipeline" and can_manage_pipeline_prompts(role):
         q = db.query(Prompt).filter(Prompt.deleted_at.is_(None),
                                     Prompt.prompt_kind == "pipeline")
+        if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+            q = q.filter(cond)
     else:
-        q = visible_prompts_query(db, role, user_team)
+        q = visible_prompts_query(db, role, user_team, project_id=project_id, is_platform_admin=is_platform_admin)
     if category:
         q = q.filter(func.lower(Prompt.category) == category.strip().lower())
     rows = (
@@ -560,7 +581,8 @@ def child_count(db: Session, prompt_id: int) -> int:
     return base_prompt_query(db).filter(Prompt.parent_id == prompt_id).count()
 
 
-def resolve_parent_id(db: Session, parent_id, prompt_id: int | None = None) -> int | None:
+def resolve_parent_id(db: Session, parent_id, prompt_id: int | None = None,
+                      project_id: int | None = None, is_platform_admin: bool = False) -> int | None:
     if parent_id is None or str(parent_id).strip() == "":
         return None
     try:
@@ -571,6 +593,10 @@ def resolve_parent_id(db: Session, parent_id, prompt_id: int | None = None) -> i
         raise HierarchyError("A prompt cannot be its own parent")
 
     parent = base_prompt_query(db).filter_by(id=parent_id).first()
+    # Same "not found" for another tenant's prompt as for a truly nonexistent
+    # one — no enumeration oracle for parent_id probing either.
+    if parent and not visible_to_tenant(parent.project_id, project_id, is_platform_admin):
+        parent = None
     if not parent:
         raise HierarchyError("Parent prompt not found")
     if parent.parent_id is not None:
@@ -584,20 +610,26 @@ def resolve_parent_id(db: Session, parent_id, prompt_id: int | None = None) -> i
     return parent_id
 
 
-def list_children(db: Session, parent_id: int) -> list[Prompt]:
-    return (
-        base_prompt_query(db)
-        .filter(Prompt.parent_id == parent_id)
-        .order_by(Prompt.updated_at.desc())
-        .all()
-    )
+def list_children(db: Session, parent_id: int, *, project_id: int | None = None,
+                  is_platform_admin: bool = False) -> list[Prompt]:
+    q = base_prompt_query(db).filter(Prompt.parent_id == parent_id)
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    return q.order_by(Prompt.updated_at.desc()).all()
 
 
 # ---------------------------------------------------------------------------
 # Access control
 # ---------------------------------------------------------------------------
 
-def can_access_prompt(prompt: Prompt, role: str | None, user_team) -> bool:
+def can_access_prompt(prompt: Prompt, role: str | None, user_team,
+                      project_id: int | None = None,
+                      is_platform_admin: bool = False) -> bool:
+    # Tenant boundary first — a prompt owned by another tenant is invisible
+    # regardless of role/kind; manager/admin is a per-tenant credential and
+    # must not bypass this (only a genuine platform admin can).
+    if not visible_to_tenant(prompt.project_id, project_id, is_platform_admin):
+        return False
     if prompt.prompt_kind != "library":
         # Pipeline rows are visible only to pipeline managers (Decision 1);
         # everyone else gets the same 404 as a nonexistent id — no leak.
@@ -744,7 +776,8 @@ def _prompt_tags_list(p: Prompt) -> list[str]:
     return []
 
 
-def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> dict:
+def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True, *,
+                   project_id: int | None = None, is_platform_admin: bool = False) -> dict:
     d = {
         "id": p.id,
         "parent_id": p.parent_id,
@@ -784,8 +817,14 @@ def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True) -> di
             "workflow_state": av.workflow_state if av else None,
         }
     if include_relations:
+        # Parent/children traverse ORM relationships with no tenant predicate
+        # of their own, so both ends need the same gate applied explicitly —
+        # a shared/global parent is visible to every tenant, but its children
+        # list must still only ever show the caller's own tenant's rows.
         parent = p.parent if p.parent_id else None
-        children = list(p.children) if p.children else list_children(db, p.id)
+        if parent is not None and not visible_to_tenant(parent.project_id, project_id, is_platform_admin):
+            parent = None
+        children = list_children(db, p.id, project_id=project_id, is_platform_admin=is_platform_admin)
         d["parent"] = _parent_summary(parent)
         d["children"] = [_child_summary(c) for c in children]
         d["_child_count"] = len(children)
@@ -838,20 +877,22 @@ def review_stats_batch(db: Session, prompt_ids: list) -> dict:
     return {r[0]: {"count": r[1], "avg": round(float(r[2] or 0), 1)} for r in rows}
 
 
-def child_count_batch(db: Session, parent_ids: list) -> dict:
+def child_count_batch(db: Session, parent_ids: list, *, project_id: int | None = None,
+                      is_platform_admin: bool = False) -> dict:
     if not parent_ids:
         return {}
-    rows = (
-        db.query(Prompt.parent_id, func.count(Prompt.id))
-        .filter(Prompt.parent_id.in_(parent_ids), Prompt.deleted_at.is_(None))
-        .group_by(Prompt.parent_id)
-        .all()
+    q = db.query(Prompt.parent_id, func.count(Prompt.id)).filter(
+        Prompt.parent_id.in_(parent_ids), Prompt.deleted_at.is_(None),
     )
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    rows = q.group_by(Prompt.parent_id).all()
     return {r[0]: r[1] for r in rows}
 
 
-def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None = None) -> dict:
-    d = prompt_to_dict(db, prompt)
+def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None = None, *,
+          project_id: int | None = None, is_platform_admin: bool = False) -> dict:
+    d = prompt_to_dict(db, prompt, project_id=project_id, is_platform_admin=is_platform_admin)
     s = stats.get(prompt.id, {"count": 0, "avg": 0})
     d["_review_stats"] = s
     d["_version_count"] = len(prompt.versions or [])

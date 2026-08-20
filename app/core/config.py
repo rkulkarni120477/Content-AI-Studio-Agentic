@@ -245,7 +245,11 @@ class AppSettings(BaseSettings):
     dis_service_token: str = Field(default="dev-dis-token", alias="DIS_SERVICE_TOKEN")
     dis_default_tenant_id: str = Field(default="aim", alias="DIS_DEFAULT_TENANT_ID")
     dis_default_client_id: str = Field(default="", alias="DIS_DEFAULT_CLIENT_ID")
-    dis_available_clients: str = Field(default="aim,cengage", alias="DIS_AVAILABLE_CLIENTS")
+    # Blank by default so config/dis_access.json's own available_clients list
+    # (which tenant creation now writes new clients into) is actually the
+    # fallback it's meant to be — a non-empty default here would always win
+    # over the file, per load_dis_access_config's own env-overrides-file logic.
+    dis_available_clients: str = Field(default="", alias="DIS_AVAILABLE_CLIENTS")
     dis_super_admin_usernames: str = Field(default="", alias="DIS_SUPER_ADMIN_USERNAMES")
 
     # ── Phoenix observability (self-hosted LLM tracing) ───────────────────────

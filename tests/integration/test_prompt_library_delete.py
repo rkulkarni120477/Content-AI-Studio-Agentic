@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.security import hash_password
+
 PL = "/api/v1/prompt-library"
 REG = "/api/v1/prompts"
 
@@ -274,3 +276,122 @@ class TestUsageEndpoint:
         p = _library_prompt(client, auth_headers, "Usage library row")
         body = client.get(f"{PL}/prompts/{p['id']}/usage", headers=auth_headers).json()
         assert body["blocking"] is False and body["fixings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-tenant isolation for the surfaces this feature ADDED.
+#
+# test_prompt_library_tenant_isolation.py already covers deleting a library row
+# across tenants. What it cannot cover is what did not exist when it was
+# written: archiving a PIPELINE row through the prompt-library endpoint, and the
+# usage probe that precedes it. Both are new reachability into a table the
+# tenant-scoping ticket had just finished fencing off, so they get the same
+# zero-tolerance treatment here.
+# ---------------------------------------------------------------------------
+
+def _tenant_headers(db, *, username, project_id=None, role="admin", is_platform_admin=False):
+    from app.core.security import create_access_token
+    from promptops_app.database import TenantMembership, User
+
+    user = User(username=username, password_hash=hash_password("test_password"),
+                role=role, is_active=True, is_platform_admin=is_platform_admin,
+                project_id=project_id)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    if not is_platform_admin and project_id is not None:
+        db.add(TenantMembership(user_id=user.id, project_id=project_id, role=role, active=True))
+        db.commit()
+    token = create_access_token(user.username, role, project_id=project_id,
+                                is_platform_admin=is_platform_admin)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def tenants(db):
+    from promptops_app.database import Project
+
+    a = Project(name="Del Tenant A", slug="del-tenant-a", is_active=True, status="active")
+    b = Project(name="Del Tenant B", slug="del-tenant-b", is_active=True, status="active")
+    db.add_all([a, b])
+    db.commit()
+    db.refresh(a)
+    db.refresh(b)
+    return {
+        "a": a, "b": b,
+        "a_headers": _tenant_headers(db, username="del_a_admin", project_id=a.id),
+        "b_headers": _tenant_headers(db, username="del_b_admin", project_id=b.id),
+        "platform_headers": _tenant_headers(db, username="del_platform_admin",
+                                            is_platform_admin=True),
+    }
+
+
+def _pipeline_row(db, name, project_id):
+    """A pipeline prompt straight into the table — the registry POST stamps the
+    caller's own tenant, which is the wrong shape for the shared/global case."""
+    from promptops_app.database import Prompt
+
+    p = Prompt(prompt_kind="pipeline", name=name, component_type="cdd", project_id=project_id)
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+class TestCrossTenantIsolation:
+    def test_cannot_archive_another_tenants_pipeline_prompt(self, client, db, tenants):
+        p = _pipeline_row(db, "del_iso_owned", tenants["a"].id)
+
+        resp = client.delete(f"{PL}/prompts/{p.id}", headers=tenants["b_headers"])
+        assert resp.status_code == 404
+        db.refresh(p)
+        assert p.deleted_at is None
+
+    def test_force_does_not_punch_through_the_tenant_boundary(self, client, db, tenants):
+        """force is permission to release bindings, never permission to reach
+        another tenant's row."""
+        p = _pipeline_row(db, "del_iso_forced", tenants["a"].id)
+
+        resp = client.delete(f"{PL}/prompts/{p.id}?force=true", headers=tenants["b_headers"])
+        assert resp.status_code == 404
+        db.refresh(p)
+        assert p.deleted_at is None
+
+    def test_tenant_cannot_archive_a_shared_pipeline_prompt(self, client, db, tenants):
+        """A shared row (project_id NULL) is readable by every tenant but
+        writable by none of them — the read/write split writable_by_tenant
+        exists for. One tenant archiving it would silently change generation
+        for all the others."""
+        p = _pipeline_row(db, "del_iso_shared", None)
+
+        resp = client.delete(f"{PL}/prompts/{p.id}", headers=tenants["a_headers"])
+        assert resp.status_code == 404
+        db.refresh(p)
+        assert p.deleted_at is None
+
+    def test_platform_admin_can_archive_a_shared_pipeline_prompt(self, client, db, tenants):
+        p = _pipeline_row(db, "del_iso_shared_ok", None)
+
+        resp = client.delete(f"{PL}/prompts/{p.id}", headers=tenants["platform_headers"])
+        assert resp.status_code == 200, resp.text
+        db.refresh(p)
+        assert p.deleted_at is not None
+
+    def test_usage_probe_does_not_leak_another_tenants_prompt(self, client, db, tenants):
+        """The probe runs before the delete, so leaking here would leak just as
+        much as the delete itself — it carries the read gate get_prompt uses."""
+        p = _pipeline_row(db, "del_iso_usage", tenants["a"].id)
+
+        assert client.get(f"{PL}/prompts/{p.id}/usage",
+                          headers=tenants["b_headers"]).status_code == 404
+
+    def test_usage_probe_reads_a_shared_prompt(self, client, db, tenants):
+        """Deliberately the permissive read gate, not the write gate: a tenant
+        may see what a shared prompt is bound to even though it may not archive
+        it — that is what makes the 404 on delete explicable rather than
+        mysterious."""
+        p = _pipeline_row(db, "del_iso_usage_shared", None)
+
+        resp = client.get(f"{PL}/prompts/{p.id}/usage", headers=tenants["a_headers"])
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["blocking"] is False

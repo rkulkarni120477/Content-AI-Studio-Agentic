@@ -4,7 +4,7 @@
 // fetch rather than client.js's remapping apiFetch.
 import { tokenStorage } from '@utils/storage';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 async function hostFetch(path, init = {}) {
   const headers = new Headers(init.headers || {});

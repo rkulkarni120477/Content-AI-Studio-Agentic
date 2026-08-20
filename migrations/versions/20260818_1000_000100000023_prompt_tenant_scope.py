@@ -17,12 +17,23 @@ leaked to every other tenant's admin exactly like the library rows did.
 System-seeded defaults (is_default=True) are always shared and stay NULL.
 
 Backfill: for existing non-default rows, resolve `owner` (a username) to
-that user's own tenant (users.project_id) and stamp it — retroactively
-applies real isolation to prompts that already have an obvious owning
-tenant. An owner that doesn't resolve to a user with a project_id (deleted
-account, a literal "system"/"admin" seed value, a platform admin with no
-single tenant) stays NULL — safe fallback, matches current behavior, never
+that user's own tenant and stamp it — retroactively applies real isolation
+to prompts that already have an obvious owning tenant.
+
+Resolves via tenant_memberships, not users.project_id: the latter is
+documented (database.py) as "last-active tenant", not ownership, so for a
+user who belongs to several tenants it would stamp whichever org they
+happened to be logged into most recently — confidently wrong, not merely
+imprecise, and it would hide the prompt from its real owning tenant. Only a
+user with EXACTLY ONE active membership resolves unambiguously; a user with
+zero or several active memberships stays NULL (no historical record ties an
+existing prompt to which tenant context created it) — safe fallback, never
 silently hides a prompt nobody can already tell used to be tenant-only.
+
+`is_default IS NOT TRUE` rather than `= FALSE`: the column has only a
+Python-side default (no server_default), so a row written before the ORM
+default applied can have `is_default IS NULL` — `= FALSE` silently skips
+those, `IS NOT TRUE` treats NULL the same as FALSE (not a shared default).
 
 Revision ID: 000100000023
 Revises: 000100000022
@@ -42,21 +53,30 @@ def _has_column(table: str, column: str) -> bool:
     return column in {c["name"] for c in sa.inspect(bind).get_columns(table)}
 
 
+# Module-level so tests/unit/test_prompt_tenant_scope_backfill.py can load this
+# file and exercise the exact statement rather than a hand-copied duplicate.
+BACKFILL_SQL = """
+    UPDATE prompts
+    SET project_id = m.project_id
+    FROM users u
+    JOIN tenant_memberships m ON m.user_id = u.id AND m.active = TRUE
+    WHERE prompts.owner = u.username
+      AND (prompts.is_default IS NOT TRUE)
+      AND prompts.project_id IS NULL
+      AND (
+          SELECT COUNT(*) FROM tenant_memberships m2
+          WHERE m2.user_id = u.id AND m2.active = TRUE
+      ) = 1
+"""
+
+
 def upgrade() -> None:
     if not _has_column("prompts", "project_id"):
         op.add_column("prompts", sa.Column("project_id", sa.Integer(), nullable=True))
     op.create_index("ix_prompts_project_id", "prompts", ["project_id"], if_not_exists=True)
 
     bind = op.get_bind()
-    bind.execute(sa.text("""
-        UPDATE prompts
-        SET project_id = u.project_id
-        FROM users u
-        WHERE prompts.owner = u.username
-          AND prompts.is_default = FALSE
-          AND u.project_id IS NOT NULL
-          AND prompts.project_id IS NULL
-    """))
+    bind.execute(sa.text(BACKFILL_SQL))
 
 
 def downgrade() -> None:

@@ -174,7 +174,13 @@ class TestDeleteAndDuplicate:
             f"/api/v1/prompt-library/prompts/{created['id']}", headers=auth_headers
         )
         assert resp.status_code == 200
-        assert resp.json() == {"deleted": created["id"]}
+        # Additive contract change (prompt-delete ticket): the body still
+        # carries `deleted`, and now also reports that the delete was an
+        # ARCHIVE and which generation bindings it had to release to get
+        # there — None when the prompt held none, as here.
+        assert resp.json() == {
+            "deleted": created["id"], "archived": True, "released": None,
+        }
         # Hidden from list and 404 on read (deleted_at soft-delete filter).
         listing = client.get(
             "/api/v1/prompt-library/prompts", headers=auth_headers
@@ -492,10 +498,11 @@ class TestPromoteEndpoint:
         from promptops_app.database import User
 
         db.add(User(username="test_reviewer", password_hash=hash_password("test_password"),
-                    role="reviewer", is_active=True))
+                    role="reviewer", is_active=True, is_platform_admin=True))
         db.commit()
         r = client.post("/api/v1/auth/login",
-                        json={"username": "test_reviewer", "password": "test_password"})
+                        json={"username": "test_reviewer", "password": "test_password",
+                              "platform_admin": True})
         assert r.status_code == 200
         return {"Authorization": f"Bearer {r.json()['access_token']}"}
 

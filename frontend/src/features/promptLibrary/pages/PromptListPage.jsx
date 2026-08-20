@@ -381,7 +381,7 @@ export default function PromptListPage() {
         ) : !prompts.length ? (
           <div className="empty">
             <div className="big">📭</div>
-            <p>No prompts found. Try adjusting the search or filters.</p>
+            <p>No prompt titles found for this tenant. Try adjusting the search or filters.</p>
           </div>
         ) : view === 'list' ? (
           <PromptListTable
