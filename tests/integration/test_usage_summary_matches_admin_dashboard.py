@@ -13,9 +13,12 @@ for the exact same budget: reported case was budget $3.00, true spend
 $2.8788, but the toast showed "$2.19 left" (as if only ~$0.81 had been
 spent) instead of the correct ~$0.12.
 
-Fixed by reading current_period_usage() (the same live SUM() list_budgets
-uses) instead of the ledger. This test pins that: a real gap between the
-ledger and the log table must not leak into the toast's numbers.
+Fixed by reading max(current_period_usage() — the same live SUM() list_budgets
+uses — , the ledger). Bare SUM() alone would understate spend when the
+ledger is ahead of it (a worst-case reservation for an in-flight call, not
+yet reconciled) — taking the max keeps the toast never worse than the true
+log total (this bug) and never rosier than what the next call will actually
+be blocked against (review finding #4).
 """
 
 from __future__ import annotations
@@ -97,19 +100,19 @@ def test_toast_reflects_true_spend_even_when_the_ledger_has_fallen_behind(db):
     assert user_budget["remaining_usd"] != pytest.approx(2.19, abs=0.01)
 
 
-def test_toast_and_admin_dashboard_report_the_identical_figure(db):
-    """Direct equivalence check: whatever the toast shows for spent/remaining
-    must be exactly what list_budgets (the admin dashboard's own query) would
-    compute for the same user, at the same instant."""
+def test_toast_matches_admin_dashboard_when_the_ledger_is_behind(db):
+    """The common case (and the reported bug's shape): the ledger is stale
+    relative to the log, so the toast must match what the admin dashboard
+    would show — not silently use the smaller, wrong ledger value."""
     from promptops_app.database import BudgetPeriodSpend
 
     policy = _seed_policy(db, scope_id="admin_compare_user", limit_usd=10.00)
     _log_usage_row(db, user_id="admin_compare_user", entity_type="block_item_regen",
                    entity_id="1", cost_usd=1.50, total_tokens=1000)
-    # Ledger deliberately wrong/stale — must not affect either figure.
+    # Ledger deliberately behind the true log total (the reported bug's shape).
     db.add(BudgetPeriodSpend(scope="user", scope_id="admin_compare_user",
                             period_key=budget_service.period_key("monthly"),
-                            spent_usd=999.0, spent_tokens=1))
+                            spent_usd=0.10, spent_tokens=1))
     db.commit()
     _log_usage_row(db, user_id="admin_compare_user", entity_type="block_item_regen",
                    entity_id="2", cost_usd=0.25, total_tokens=200)
@@ -121,3 +124,33 @@ def test_toast_and_admin_dashboard_report_the_identical_figure(db):
 
     assert user_budget["spent_usd"] == round(admin_spend, 4)
     assert user_budget["remaining_usd"] == round(policy.limit_usd - admin_spend, 4)
+
+
+def test_toast_never_overstates_headroom_while_the_ledger_is_ahead(db):
+    """Review finding #4: the ledger legitimately runs AHEAD of the log mid-
+    call (check_budget reserves a worst-case estimate before the provider
+    responds; reconcile_budget settles it after). A bare SUM() would show
+    more headroom than actually exists for the very next call. The toast
+    must reflect the higher (more conservative) of the two — diverging from
+    the admin dashboard's bare SUM() is the correct, safe direction here."""
+    from promptops_app.database import BudgetPeriodSpend
+
+    policy = _seed_policy(db, scope_id="in_flight_user", limit_usd=10.00)
+    _log_usage_row(db, user_id="in_flight_user", entity_type="block_item_regen",
+                   entity_id="1", cost_usd=1.75, total_tokens=1200)
+    # A worst-case reservation for an in-flight call, not yet reconciled —
+    # genuinely ahead of what's been logged so far.
+    db.add(BudgetPeriodSpend(scope="user", scope_id="in_flight_user",
+                            period_key=budget_service.period_key("monthly"),
+                            spent_usd=4.00, spent_tokens=5000))
+    db.commit()
+
+    summary = budget_service.build_usage_summary(db, _Ctx("in_flight_user"), "block_item_regen", "1")
+    user_budget = next(b for b in summary["budgets"] if b["scope"] == "user")
+
+    admin_spend, _ = budget_service.current_period_usage(db, "user", "in_flight_user", policy.period)
+    assert admin_spend == pytest.approx(1.75)  # the bare SUM() an admin would see right now
+
+    # The toast must not show more headroom than the reservation allows.
+    assert user_budget["spent_usd"] == pytest.approx(4.00)
+    assert user_budget["remaining_usd"] == pytest.approx(6.00)

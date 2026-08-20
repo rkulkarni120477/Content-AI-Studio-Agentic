@@ -527,21 +527,29 @@ def _build_usage_summary(db, usage_ctx, entity_type: str, entity_id: str) -> Opt
         policy = _get_policy(db, scope, scope_id)
         if policy is None:
             continue
-        # current_period_usage() — the live SUM() over llm_usage_logs the
-        # Platform Admin budget dashboard itself uses (list_budgets) — not
-        # the budget_period_spend ledger check_budget() reserves against.
-        # That ledger is a write-through cache and can silently fall behind
-        # true logged spend for the rest of the billing period: the
-        # enforcement kill switch, check_budget()'s own fail-open exception
-        # handler, a call made before a BudgetPolicy existed yet, and the
-        # block-wide MAP settlement's swallow-and-proceed-unreserved path
-        # all log real cost to llm_usage_logs without ever crediting it to
-        # the ledger. A user's own toast disagreeing with the number the
-        # Platform Admin dashboard shows for the exact same budget is a worse
-        # bug than this figure occasionally running ahead of what the ledger
-        # will technically block on the very next call.
-        spent_usd, spent_tokens = current_period_usage(db, scope, scope_id, policy.period)
-        spent_tokens = int(spent_tokens)
+        # max(live SUM() over llm_usage_logs, budget_period_spend ledger).
+        # The SUM() is current_period_usage() — the same call the Platform
+        # Admin dashboard uses (list_budgets) — and it can run BEHIND the
+        # ledger: the ledger reserves a worst-case estimate before a call and
+        # settles it after (check_budget/reconcile_budget), so mid-call it is
+        # legitimately ahead of what's been logged so far. But the ledger can
+        # also fall permanently behind the log for the rest of the billing
+        # period — the enforcement kill switch, check_budget's own fail-open
+        # handler, a call made before a BudgetPolicy existed, and the
+        # block-wide MAP settlement's swallow-and-proceed-unreserved path all
+        # log real cost without ever crediting the ledger. Taking the max of
+        # both gets both properties: never understates spend the way the bare
+        # ledger read used to (the reported bug), and never overstates
+        # headroom the way a bare SUM() would while a call is in flight.
+        #
+        # For a "rolling" policy the two operands are still different windows
+        # (SUM() is a true trailing-30-day figure; the ledger buckets by
+        # calendar month — see period_key's own note) — matches the admin
+        # dashboard, which has the same property, but worth naming here too.
+        pkey = period_key(policy.period)
+        spent_usd_log, spent_tokens_log = current_period_usage(db, scope, scope_id, policy.period)
+        spent_usd = max(spent_usd_log, _current_total(db, scope, scope_id, pkey, "usd"))
+        spent_tokens = int(max(spent_tokens_log, _current_total(db, scope, scope_id, pkey, "tokens")))
         limit_type = policy.limit_type or "usd"
         entry = {
             "scope": scope, "scope_id": scope_id, "limit_type": limit_type,

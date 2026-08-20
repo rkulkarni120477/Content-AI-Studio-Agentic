@@ -296,6 +296,7 @@ export default function InlinePromptControls({
         component_type: component,
         system_prompt: createForm.system,
         user_prompt_template: createForm.user,
+        project_id: selProject?.id,
       })).unwrap();
       toast.success(`"${createForm.name.trim()}" created.`);
       setShowCreate(false);

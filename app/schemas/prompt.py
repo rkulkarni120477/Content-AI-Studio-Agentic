@@ -50,6 +50,14 @@ class PromptCreateRequest(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="Initial system prompt (creates v1).")
     user_prompt_template: Optional[str] = Field(default=None, description="Initial user template (creates v1).")
     change_reason: str = Field(default="Initial commit.", max_length=500)
+    project_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Platform admins only — stamp the new prompt as owned by this "
+            "project instead of shared/global. Ignored for a tenant caller, "
+            "whose own project is always used regardless of this value."
+        ),
+    )
 
 
 class PromptCreateFromTemplateRequest(BaseModel):

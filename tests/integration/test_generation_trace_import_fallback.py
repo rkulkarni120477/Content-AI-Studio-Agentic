@@ -157,6 +157,52 @@ def test_imported_item_with_no_blueprint_link_still_404s(client, db):
     assert resp.status_code == 404
 
 
+def test_forward_generated_lesson_with_missing_trace_does_not_borrow_the_module_trace(client, db):
+    """The exact review finding: a real, forward-generated lesson (not an
+    import) can also carry a blueprint_id and have its own trace missing for
+    an unrelated reason (Phoenix down, job row reaped). It must 404, not
+    silently render the module's reverse_blueprint trace under a caption
+    that flatly claims 'this item was imported' — a false provenance claim
+    in an audit surface."""
+    from promptops_app.database import Course, Generation, LLMUsageLog, ModuleBlueprint, Project
+
+    project = Project(name="Forward Gen With Blueprint Project", is_active=True)
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    course = Course(name="Course", project_id=project.id, created_by="tester")
+    db.add(course)
+    db.commit()
+    db.refresh(course)
+    blueprint = ModuleBlueprint(title="Module 1 Blueprint", module_title="Module 1", module_number=1,
+                               project_id=project.id, course_id=course.id, created_by="tester")
+    db.add(blueprint)
+    db.commit()
+    db.refresh(blueprint)
+    # The module DOES have a real reverse_blueprint trace available...
+    db.add(LLMUsageLog(
+        user_id="tester", project_id=project.id, course_id=course.id,
+        entity_type="reverse_blueprint", entity_id=str(blueprint.module_number),
+        model_name="gpt-4o", status="success", trace_id="module-1-blueprint-trace",
+    ))
+    db.commit()
+
+    # ...but this item was forward-generated (prompt_name != "import"), and
+    # its own trace is genuinely missing.
+    forward_item = Generation(prompt_name="content_generation", prompt_version="v1", block_type="lesson",
+                              topic="Real Generated Lesson", output_text="content", project_id=project.id,
+                              course_id=course.id, blueprint_id=blueprint.id, created_by="tester")
+    db.add(forward_item)
+    db.commit()
+    db.refresh(forward_item)
+
+    resp = client.get(
+        f"/api/v1/generations/{forward_item.id}/trace",
+        headers=_headers(db, username="forward_gen_user", project_id=project.id),
+    )
+    assert resp.status_code == 404
+
+
 def test_imported_item_linked_to_a_module_whose_reverse_blueprint_failed_still_404s(client, db):
     """blueprint_id is set but the reverse_blueprint LLM call for that module
     never produced a usage row (e.g. it errored before logging) — still no
