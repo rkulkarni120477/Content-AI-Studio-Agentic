@@ -369,7 +369,18 @@ reasoning stops holding.
     notes. No section was invented for a row the prompt's own format already
     carried.
 
-12. **Cognitive-level and difficulty judgments are data-gated.** The source requires
+12. **The day-type mapping was reconciled with two closed vocabularies.** The docx
+    keys Teaching Day off "Conceptual, Procedural, Calculation, Safety, or Mixed"
+    and Review Day off Review-Assessment alone. Neither Calculation nor Safety is a
+    value the Blueprint can emit, and two labels it *can* emit — Summative
+    Assessment and the compound Project-Application / Review — get no day type from
+    the docx at all. Both now resolve to Review Day, which is where
+    `AIM_TODAYS_MISSION_PROMPT.md` already puts them, so the two prompts cannot
+    disagree about the same day. The prompt states that every label in the closed
+    set selects exactly one day type, because a label with no rule is the one case
+    where the model must invent something.
+
+13. **Cognitive-level and difficulty judgments are data-gated.** The source requires
     APPLY or ANALYZE treatment for codes in "AKTR high-miss data" without saying
     where that data comes from. Here it arrives only as an ingested missed-code
     rollup or `knowledge_test_report`; absent one, the prompt writes `NO AKTR DATA`
