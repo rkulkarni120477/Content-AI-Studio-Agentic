@@ -890,6 +890,13 @@ export default function AnalyticsPage({ embedded = false }) {
         >
           {generationTraceLoading && <div className={styles.center}><Loader size="lg" /></div>}
           {generationTraceError && <p className={styles.emptyHint} role="alert">{generationTraceError}</p>}
+          {generationTrace?.scope === 'module_reconstruction' && (
+            <p className={styles.scopeCaption}>
+              This item was imported, not AI-generated itself — showing the trace for the
+              AI call that reconstructed its module's Blueprint from the imported content
+              (shared by every lesson in that module).
+            </p>
+          )}
           {generationTrace && <TraceViewer observations={generationTrace.observations} />}
         </Modal>
       </div>

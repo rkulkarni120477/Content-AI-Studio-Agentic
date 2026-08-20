@@ -18,6 +18,7 @@ export const promptsService = {
       system_prompt: data.system_prompt,
       user_prompt_template: data.user_prompt_template,
       change_reason: data.change_reason || 'Initial commit.',
+      project_id: data.project_id,
     });
   },
   updatePrompt: (id, d) => api.put(PROMPTS.UPDATE(id), d),

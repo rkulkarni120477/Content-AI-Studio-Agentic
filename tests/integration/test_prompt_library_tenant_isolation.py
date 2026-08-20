@@ -469,3 +469,123 @@ class TestSharedPromptsAreReadOnlyToTenants:
 
         resp = client.delete(f"/api/v1/prompts/{p.id}", headers=two_tenants["headers_platform"])
         assert resp.status_code == 204
+
+
+class TestPlatformAdminViewAsProjectScoping:
+    """The Style/Generate page's 'Prompt Template' dropdown must scope a
+    platform admin's own view to the tenant they're currently working in
+    (?project_id=... from the frontend's selected-project context), not
+    always show every tenant's prompts just because the caller happens to be
+    a platform admin. The platform-wide 'see everything' carve-out is for
+    admin consoles/audits, not a course-scoped picker embedded in one
+    tenant's Style page."""
+
+    @pytest.fixture()
+    def style_prompts(self, db, two_tenants):
+        from promptops_app.database import Prompt
+
+        prompt_a = Prompt(prompt_kind="pipeline", name="tenant-a-style-prompt",
+                          component_type="style", owner="pl_admin_a", project_id=two_tenants["a"].id)
+        prompt_b = Prompt(prompt_kind="pipeline", name="tenant-b-style-prompt",
+                          component_type="style", owner="pl_admin_b", project_id=two_tenants["b"].id)
+        shared = Prompt(prompt_kind="pipeline", name="shared-style-prompt",
+                        component_type="style", owner="seed", project_id=None)
+        db.add_all([prompt_a, prompt_b, shared])
+        db.commit()
+        for p in (prompt_a, prompt_b, shared):
+            db.refresh(p)
+        return {"a": prompt_a, "b": prompt_b, "shared": shared}
+
+    def test_platform_admin_with_no_project_id_sees_every_tenant(self, client, two_tenants, style_prompts):
+        resp = client.get("/api/v1/prompts", params={"component": "style"}, headers=two_tenants["headers_platform"])
+        assert resp.status_code == 200
+        names = {p["name"] for p in resp.json()["items"]}
+        assert {"tenant-a-style-prompt", "tenant-b-style-prompt", "shared-style-prompt"} <= names
+
+    def test_platform_admin_viewing_as_tenant_a_sees_only_tenant_a_and_shared(self, client, two_tenants, style_prompts):
+        resp = client.get(
+            "/api/v1/prompts",
+            params={"component": "style", "project_id": two_tenants["a"].id},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 200
+        names = {p["name"] for p in resp.json()["items"]}
+        assert "tenant-a-style-prompt" in names
+        assert "shared-style-prompt" in names
+        assert "tenant-b-style-prompt" not in names
+
+    def test_platform_admin_viewing_as_tenant_b_sees_only_tenant_b_and_shared(self, client, two_tenants, style_prompts):
+        resp = client.get(
+            "/api/v1/prompts",
+            params={"component": "style", "project_id": two_tenants["b"].id},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 200
+        names = {p["name"] for p in resp.json()["items"]}
+        assert "tenant-b-style-prompt" in names
+        assert "shared-style-prompt" in names
+        assert "tenant-a-style-prompt" not in names
+
+    def test_tenant_caller_cannot_use_project_id_to_see_another_tenant(self, client, two_tenants, style_prompts):
+        """A regular tenant user passing ?project_id=<someone else's project>
+        must still be scoped to their own tenant — the param only means
+        anything for a genuine platform admin."""
+        resp = client.get(
+            "/api/v1/prompts",
+            params={"component": "style", "project_id": two_tenants["b"].id},
+            headers=two_tenants["headers_a"],
+        )
+        assert resp.status_code == 200
+        names = {p["name"] for p in resp.json()["items"]}
+        assert "tenant-a-style-prompt" in names
+        assert "tenant-b-style-prompt" not in names
+
+
+class TestPlatformAdminCreateHonorsViewAsProject:
+    """Review finding #2: the tenant fix landed on the read side only. A
+    platform admin's own _project_id is always None, so a prompt they
+    created while viewing tenant A's Style page still landed shared/global
+    (visible to every tenant) — the one realistic way a prompt authored in
+    one tenant's context could show up in another's dropdown after the read
+    fix. POST /api/v1/prompts now honors the same project_id for a platform
+    admin that the dropdown listing already does."""
+
+    def test_platform_admin_creating_while_viewing_tenant_a_scopes_to_tenant_a(self, client, db, two_tenants):
+        from promptops_app.database import Prompt
+
+        resp = client.post(
+            "/api/v1/prompts",
+            json={"name": "admin-created-while-viewing-a", "component_type": "style",
+                 "project_id": two_tenants["a"].id},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 201, resp.text
+        row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
+        assert row.project_id == two_tenants["a"].id
+
+    def test_platform_admin_creating_with_no_project_id_still_lands_global(self, client, db, two_tenants):
+        from promptops_app.database import Prompt
+
+        resp = client.post(
+            "/api/v1/prompts",
+            json={"name": "admin-created-no-project", "component_type": "style"},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 201, resp.text
+        row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
+        assert row.project_id is None
+
+    def test_tenant_caller_cannot_use_project_id_to_create_for_another_tenant(self, client, db, two_tenants):
+        """A regular tenant's own project always wins — the field only means
+        anything for a genuine platform admin."""
+        from promptops_app.database import Prompt
+
+        resp = client.post(
+            "/api/v1/prompts",
+            json={"name": "tenant-a-tries-to-spoof-b", "component_type": "style",
+                 "project_id": two_tenants["b"].id},
+            headers=two_tenants["headers_a"],
+        )
+        assert resp.status_code == 201, resp.text
+        row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
+        assert row.project_id == two_tenants["a"].id
