@@ -200,3 +200,52 @@ def test_run_import_job_end_to_end(db, monkeypatch, mock_llm):
     assert course.active_cdd_id is not None
     assert db.query(ModuleBlueprint).filter_by(course_id=course_id).count() == 2
     assert db.query(CourseDesignDocument).filter_by(course_id=course_id).count() == 1
+
+
+def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
+    """A course row is created eagerly (API layer) before the job runs, so the
+    user can watch progress. If the job then fails outright, nothing about
+    that Course row itself changes on its own — it must be the job's failure
+    handler that archives it, or the empty, content-less shell stays visible
+    in the Titles list forever, badged "Imported"."""
+    from promptops_app.jobs import import_jobs
+    from promptops_app.repositories import job_repository
+    from promptops_app.repositories.course_repository import list_courses_for_project
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+
+    course = _new_course(db, name="WillFail", project_id=3)
+    course_id = course.id
+    ci = CourseImport(course_id=course_id, project_id=3, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    job_id = job_repository.create_job(
+        db,
+        user_name="u",
+        request_params={
+            # No file staged at this path — _read_package raises
+            # PackageValidationError, matching a real "package no longer
+            # available on the server" failure.
+            "import_id": import_id, "course_id": course_id, "project_id": 3,
+            "user_name": "u", "package_path": None, "package_name": "x.imscc",
+        },
+        project_id=3, course_id=course_id, job_type="import",
+    )
+
+    import_jobs.run_import_job(job_id)
+
+    db.expire_all()
+    job = db.query(GenerationJob).filter_by(id=job_id).first()
+    assert job.status == "failed"
+
+    record = db.query(CourseImport).filter_by(id=import_id).first()
+    assert record.status == "failed"
+
+    course = db.query(Course).filter_by(id=course_id).first()
+    assert course.is_active is False
+
+    assert course_id not in {c.id for c in list_courses_for_project(db, 3)}

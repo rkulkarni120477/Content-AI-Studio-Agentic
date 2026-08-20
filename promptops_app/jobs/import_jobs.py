@@ -68,6 +68,7 @@ def run_import_job(job_id: str) -> None:
     job = None
     course_import = None
     package_path = None
+    course_id = None
     try:
         job = db.query(GenerationJob).filter(GenerationJob.id == job_id).first()
         if not job:
@@ -141,10 +142,10 @@ def run_import_job(job_id: str) -> None:
 
     except PackageValidationError as exc:
         _log.warning("Import job %s: invalid package: %s", job_id, exc)
-        _mark_failed(db, job, course_import, f"Invalid IMSCC package: {exc}")
+        _mark_failed(db, job, course_import, f"Invalid IMSCC package: {exc}", course_id=course_id)
     except Exception as exc:  # noqa: BLE001 - background boundary; log full, expose clean
         _log.exception("Import job %s failed: %s", job_id, exc)
-        _mark_failed(db, job, course_import, "Import failed while reconstructing the course.")
+        _mark_failed(db, job, course_import, "Import failed while reconstructing the course.", course_id=course_id)
     finally:
         _cleanup_package(package_path)
         db.close()
@@ -282,11 +283,20 @@ def _finalize(db, course_id: int, course_import, import_id: int, result) -> None
     db.commit()
 
 
-def _mark_failed(db, job, course_import, message: str) -> None:
+def _mark_failed(db, job, course_import, message: str, *, course_id: int | None = None) -> None:
     try:
         if course_import is not None:
             course_import.status = "failed"
-            db.commit()
+        if course_id is not None:
+            # The initial reconstruction never produced a usable Editor —
+            # hide the empty shell rather than leaving a broken title badged
+            # "Imported" in the Titles list (same is_active flag the archive
+            # endpoint uses; the course row + any partial content stay in
+            # place for support/debugging, just no longer listed).
+            course_row = db.get(Course, course_id)
+            if course_row is not None:
+                course_row.is_active = False
+        db.commit()
     except Exception:  # pragma: no cover - best-effort status write
         db.rollback()
     if job is not None:
