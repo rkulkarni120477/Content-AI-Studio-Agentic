@@ -579,7 +579,7 @@ export default function SourceLibraryPage() {
         <div>
           <div className={styles.eyebrow}>Knowledge Sources</div>
           <h1 className={styles.title}>Source Library</h1>
-          <p className={styles.subtitle}>Upload, review, and trace source documents used by Style, CDD, Blueprint, and Title Generation. The list auto-loads from S3 whenever you reopen this page. Project client: <strong>{selectedClientId || 'auto'}</strong>.</p>
+          <p className={styles.subtitle}>Upload, review, and trace source documents used by {L.style}, {L.cdd}, {L.blueprint}, and {L.title} Generation. The list auto-loads from S3 whenever you reopen this page. Project client: <strong>{selectedClientId || 'auto'}</strong>.</p>
         </div>
         <div className={styles.actions}>
           <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => setShowFolderScan((v) => !v)}>Scan Folder</button>

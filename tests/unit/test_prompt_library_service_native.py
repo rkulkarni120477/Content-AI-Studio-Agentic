@@ -492,3 +492,140 @@ class TestPromotionHelpers:
                       deleted_at=svc.now_utc()))
         db.flush()
         assert svc.unique_prompt_name(db, "ph_gone") == "ph_gone_2"
+
+
+# ---------------------------------------------------------------------------
+# Browse-list serializer (list-load performance work)
+# ---------------------------------------------------------------------------
+
+# Relation expansions that belong to the DETAIL payload only. Each one cost a
+# lazy load or an extra query per row, and none is rendered by a list view.
+LIST_EXCLUDED_KEYS = {"versions", "attachments", "parent", "children"}
+
+# Counters the list rows carry in place of the arrays above.
+LIST_COUNTER_KEYS = {"_review_stats", "_version_count", "_child_count"}
+
+
+class TestListSerializer:
+    def test_list_dict_drops_the_detail_only_relations(self, db):
+        p = _mk_library_prompt(db)
+        db.add(PromptTag(prompt_id=p.id, tag="t1"))
+        db.add(PromptVariable(prompt_id=p.id, name="name", label="Name", sort_order=0))
+        db.flush()
+
+        d = svc.prompt_to_list_dict(p)
+        assert LIST_EXCLUDED_KEYS.isdisjoint(d)
+        # …while still carrying everything a list row renders.
+        assert OLD_PROMPT_DICT_KEYS | LIST_COUNTER_KEYS | {"prompt_kind", "archived",
+                                                           "can_have_children"} <= set(d)
+        assert d["content"] == "Hello {{name}}"
+        assert d["tags"] == ["t1"]
+        assert d["variables"] == [{"name": "name", "label": "Name", "hint": ""}]
+        # Library rows carry no pipeline block, exactly as in the detail dict.
+        assert "pipeline" not in d
+
+    def test_list_dict_agrees_with_detail_dict_on_every_shared_key(self, db):
+        """Drift guard: the two serializers share ``_prompt_base_dict``, so a
+        key published by both must always carry the same value. If this fails,
+        the list and detail payloads have started to disagree."""
+        p = _mk_library_prompt(db, title="Parity")
+        db.add(PromptTag(prompt_id=p.id, tag="parity"))
+        db.flush()
+
+        detail = svc.prompt_to_dict(db, p)
+        listed = svc.prompt_to_list_dict(p)
+        shared = (set(detail) & set(listed)) - LIST_COUNTER_KEYS
+        assert shared  # guard against the intersection silently emptying
+        for key in shared:
+            assert listed[key] == detail[key], key
+
+    def test_pipeline_list_row_keeps_the_console_block_minus_system_prompt(self, db):
+        p = _mk_pipeline_prompt(db, name="default_blueprint_prompt",
+                                component_type="blueprint")
+        p.variant = "teacher"
+        p.active_version = "v1"
+        db.add(PromptVersion(
+            prompt_id=p.id, version="v1", version_number=1,
+            system_prompt="SYS", user_prompt_template="USER {{cdd_context}}",
+            workflow_state="active", is_active=True, created_by="admin",
+        ))
+        db.flush()
+
+        d = svc.prompt_to_list_dict(p)
+        # The status badge needs is_default + workflow_state; nothing in a list
+        # renders the system prompt, which was 31% of the response body.
+        assert d["pipeline"] == {
+            "name": "default_blueprint_prompt",
+            "component_type": "blueprint",
+            "variant": "teacher",
+            "is_default": True,
+            "active_version": "v1",
+            "workflow_state": "active",
+        }
+        # The detail payload still carries it.
+        assert svc.prompt_to_dict(db, p)["pipeline"]["system_prompt"] == "SYS"
+
+    def test_counters_replace_the_dropped_arrays(self, db):
+        parent = _mk_library_prompt(db, title="Has follow-ups")
+        _mk_library_prompt(db, title="Follow-up", parent_id=parent.id)
+        db.add(PromptReview(prompt_id=parent.id, username="bob", rating=4))
+        db.flush()
+
+        stats = svc.review_stats_batch(db, [parent.id])
+        counts = svc.child_count_batch(db, [parent.id])
+        d = svc.prompt_to_list_dict(parent, review_stats=stats.get(parent.id),
+                                    child_count=counts.get(parent.id, 0))
+        assert d["_version_count"] == 1          # was len(versions)
+        assert d["_child_count"] == 1            # was len(children)
+        assert d["_review_stats"] == {"count": 1, "avg": 4.0}
+        # Defaults stay render-safe when no batch data is passed.
+        bare = svc.prompt_to_list_dict(parent)
+        assert bare["_review_stats"] == {"count": 0, "avg": 0}
+        assert bare["_child_count"] == 0
+
+    def test_list_loaders_do_not_corrupt_a_later_detail_dict(self, db):
+        """Loader options must not outlive the list response.
+
+        A cancelled (``noload``) collection is marked permanently loaded-and-
+        empty on the instance, so a detail dict built from the same identity map
+        would silently publish an empty collection for a prompt that has rows.
+        Deferred version columns are safe by comparison — re-reading them costs a
+        query but returns the truth. This pins both.
+        """
+        from promptops_app.database import PromptAttachment
+
+        p = _mk_library_prompt(db, title="Has an attachment")
+        svc.set_prompt_content(db, p, "revised body", create_version=True,
+                               note="why it changed", created_by="alice")
+        db.add(PromptAttachment(prompt_id=p.id, original_name="brief.pdf",
+                                stored_name="stored.pdf", size_bytes=10,
+                                uploaded_by="alice"))
+        db.flush()
+        db.expire_all()
+
+        # A list query runs first, then the SAME instance is serialized through
+        # the detail serializer — the shape a shared session would produce.
+        rows = svc.list_query_loaders(svc.browse_prompts_query(db, "admin", None)).all()
+        listed = next(r for r in rows if r.id == p.id)
+        detail = svc.prompt_to_dict(db, listed)
+
+        assert [a["original_name"] for a in detail["attachments"]] == ["brief.pdf"]
+        assert detail["versions"][-1]["note"] == "why it changed"
+        assert svc.prompt_to_list_dict(listed)["content"] == "revised body"
+
+    def test_list_query_loaders_leave_the_result_set_untouched(self, db):
+        """Loader options are a performance concern only — they must not change
+        which rows come back or how the active version resolves."""
+        a = _mk_library_prompt(db, title="Loaded A")
+        svc.set_prompt_content(db, a, "v2 body", create_version=True, note="second",
+                               created_by="alice")
+        db.flush()
+        _mk_library_prompt(db, title="Loaded B")
+
+        plain = svc.browse_prompts_query(db, "admin", None)
+        loaded = svc.list_query_loaders(svc.browse_prompts_query(db, "admin", None))
+        assert [p.id for p in plain.all()] == [p.id for p in loaded.all()]
+
+        row = next(p for p in loaded.all() if p.id == a.id)
+        assert svc.prompt_to_list_dict(row)["content"] == "v2 body"
+        assert svc.prompt_to_list_dict(row)["_version_count"] == 2

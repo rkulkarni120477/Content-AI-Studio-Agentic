@@ -365,8 +365,10 @@ def _resolve_pipeline_row(
             db.query(Prompt)
             .filter(Prompt.id == fixing.prompt_id,
                     Prompt.prompt_kind == "pipeline",
-                    # A soft-deleted bound row never resolves (doc §9);
-                    # falling through lands on the component default.
+                    # Belt-and-braces: resolve_fixed_prompt already refuses to
+                    # return a lock on an archived row (it falls through to the
+                    # next scope instead), so this only catches a row archived
+                    # between the two queries. Missing it lands on the default.
                     Prompt.deleted_at.is_(None))
             .first()
         )

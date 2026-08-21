@@ -459,8 +459,8 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           <p className={styles.subtitle}>
             {courseName ? (
               <>
-                Title: <strong>{courseName}</strong> — modules and sequence follow the CDD /
-                Blueprint. Preview or regenerate Canvas HTML, then export IMS CC.
+                {L.title}: <strong>{courseName}</strong> — modules and sequence follow the {L.cdd} /
+                {' '}{L.blueprint}. Preview or regenerate Canvas HTML, then export IMS CC.
               </>
             ) : (
               <>Modules follow the {L.blueprint} structure. Export as an IMS CC package for LMS import.</>
@@ -510,15 +510,15 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
       ) : blockCount === 0 ? (
         <div className={styles.hint}>
           <p>
-            No published blocks in <strong>{courseName || `title #${courseId}`}</strong> yet.
+            No published blocks in <strong>{courseName || `${L.titleLower} #${courseId}`}</strong> yet.
           </p>
           <p>
             Publish blocks from the <strong>Workflow</strong> page after generating content from
-            the Blueprint, then return here to export.
+            the {L.blueprint}, then return here to export.
           </p>
           {projectCourses.length > 1 && (
             <p className={styles.hintCourses}>
-              Titles in this project: {projectCourses.map((c) => c.name).join(', ')}
+              {L.titles} in this project: {projectCourses.map((c) => c.name).join(', ')}
             </p>
           )}
         </div>
@@ -555,7 +555,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
               <div className={styles.moduleHeader}>
                 <h3 className={styles.moduleTitle}>Other published content</h3>
                 <span className={styles.moduleHint}>
-                  Not matched to a Blueprint lesson — exported after Blueprint modules
+                  Not matched to a {L.blueprint} lesson — exported after {L.blueprint} modules
                 </span>
               </div>
               <ol className={styles.list}>

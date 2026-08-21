@@ -13,9 +13,15 @@ request/response shapes, with the planned cutover changes:
 
 Kind separation (Decision 1): list/search accept ``kind=library|pipeline|all``
 but non-pipeline-managers are silently stripped to library rows server-side;
-every WRITE endpoint resolves its target through the library-only base query,
-so pipeline rows are untouchable here (they stay on /api/v1/prompts until the
-Phase 8 approval gate).
+content-editing endpoints resolve their target through the library-only base
+query, so pipeline rows are untouchable here (their content is edited on
+/api/v1/prompts, behind the Phase 8 approval gate).
+
+The one deliberate exception is DELETE /prompts/{pid} (archive), which spans
+both kinds: the console Library lists only pipeline rows (Phase 12b), so a
+library-only resolver would leave every row on screen undeletable. It carries
+its own tier check (pipeline rows = admin) and refuses to archive a prompt
+generation still resolves unless the caller forces it.
 
 "Manager" access (create/edit/delete/review-read-all) = host roles admin + reviewer.
 """
@@ -109,14 +115,28 @@ def _paginated_body(items, total, page, limit, extra: dict | None = None):
     return body
 
 
-def _enrich_prompts(db: Session, prompts: list, *, project_id: int | None = None,
-                    is_platform_admin: bool = False) -> list:
+def _list_rows(db: Session, prompts: list, *, project_id: int | None = None,
+               is_platform_admin: bool = False) -> list:
+    """Serialize a page of browse results.
+
+    Fixed query cost regardless of page size: two batch aggregates here, plus
+    the collection loads ``svc.list_query_loaders`` arranged on the query. The
+    row shape is ``svc.prompt_to_list_dict``, which cannot query at all — the
+    old per-row ``svc.enrich`` walked ``versions`` and ran a ``list_children``
+    query for every row (47 rows = 101 queries; now 8).
+    """
     stats = svc.review_stats_batch(db, [p.id for p in prompts])
     parent_ids = [p.id for p in prompts if p.parent_id is None]
     child_counts = svc.child_count_batch(db, parent_ids, project_id=project_id,
                                          is_platform_admin=is_platform_admin)
-    return [svc.enrich(db, p, stats, child_counts, project_id=project_id,
-                       is_platform_admin=is_platform_admin) for p in prompts]
+    return [
+        svc.prompt_to_list_dict(
+            p,
+            review_stats=stats.get(p.id),
+            child_count=child_counts.get(p.id, 0),
+        )
+        for p in prompts
+    ]
 
 
 def _client_ip(req: Request) -> str | None:
@@ -156,6 +176,57 @@ def _get_library_prompt(db: Session, pid: int, *, project_id: int | None = None,
     return p
 
 
+def _get_deletable_prompt(db: Session, pid: int, role: str | None, *,
+                          project_id: int | None = None,
+                          is_platform_admin: bool = False) -> Prompt | None:
+    """Resolve a live prompt of ANY kind the caller is allowed to archive.
+
+    Deletion is the one write path that must reach pipeline rows: the console
+    Library lists nothing else (Phase 12b), so ``_get_library_prompt`` would
+    make the action unreachable for every row on screen. Everything else about
+    the gate is deliberately the same as that helper's ``for_write=True`` path.
+
+    Three checks, all of which 404 rather than 403 so the response never
+    confirms that an id the caller may not touch exists:
+      * the row must be live (archiving twice is not an archive)
+      * ``writable_by_tenant`` — a shared/global row (project_id NULL) is
+        readable by every tenant but deletable only by its owner or a platform
+        admin, so one tenant can never archive a prompt another relies on
+      * ``can_access_prompt`` — the kind tier: library rows need the manager
+        role the endpoint already requires, pipeline rows need admin
+    """
+    p = (
+        db.query(Prompt)
+        .filter(Prompt.id == pid, Prompt.deleted_at.is_(None))
+        .first()
+    )
+    if p is None or not writable_by_tenant(p.project_id, project_id, is_platform_admin):
+        return None
+    if not svc.can_access_prompt(p, role, None, project_id=project_id,
+                                 is_platform_admin=is_platform_admin):
+        return None
+    return p
+
+
+def _in_use_message(p: Prompt, usage: dict) -> str:
+    """Plain-language 409 reason naming every binding that blocks the archive."""
+    parts = []
+    if usage["is_default"]:
+        label = usage["component_type"] or "its component"
+        if usage["variant"]:
+            label = f"{label}/{usage['variant']}"
+        parts.append(f"it is the default prompt for {label}")
+    n = len(usage["fixings"])
+    if n:
+        parts.append(f"it is locked to {n} scope{'s' if n != 1 else ''}")
+    return (
+        f"'{p.title or p.name or p.id}' is still used by generation \u2014 "
+        + " and ".join(parts)
+        + ". Deleting it anyway releases those bindings; every affected scope "
+          "falls back to the component default."
+    )
+
+
 # ==============================================================================
 # Prompts
 # ==============================================================================
@@ -171,8 +242,8 @@ def list_prompts(request: Request, db: Session = Depends(get_db),
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
                                  include_deleted=_include_archived(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
-    items, total, page, limit = _paginate_optin(request, q)
-    return _paginated_body(_enrich_prompts(db, items, **_tenant_kwargs(user)), total, page, limit)
+    items, total, page, limit = _paginate_optin(request, svc.list_query_loaders(q))
+    return _paginated_body(_list_rows(db, items, **_tenant_kwargs(user)), total, page, limit)
 
 
 @router.get("/prompts/search")
@@ -185,8 +256,8 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
                                  include_deleted=_include_archived(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
-    items, total, page, limit = _paginate_forced(request, q)
-    return _paginated_body(_enrich_prompts(db, items, **_tenant_kwargs(user)), total, page, limit, extra={"q": q_text})
+    items, total, page, limit = _paginate_forced(request, svc.list_query_loaders(q))
+    return _paginated_body(_list_rows(db, items, **_tenant_kwargs(user)), total, page, limit, extra={"q": q_text})
 
 
 @router.get("/meta")
@@ -230,12 +301,37 @@ def get_prompt(pid: int, db: Session = Depends(get_db),
     return svc.enrich(db, p, stats, **_tenant_kwargs(user))
 
 
+@router.get("/prompts/{pid}/usage")
+def prompt_usage(pid: int, db: Session = Depends(get_db),
+                 user=Depends(require_permission("prompt_library.view"))):
+    """The generation bindings this prompt holds — component default + scope locks.
+
+    Read-gated exactly like GET /prompts/{pid}, so it can never reveal a row the
+    caller could not already open. The delete confirmation calls this first so
+    the blast radius is shown BEFORE the destructive request, and it is computed
+    by the same service function the DELETE guard uses, so the dialog and the
+    server can never disagree about whether a prompt is in use.
+    """
+    p = db.query(Prompt).filter(Prompt.id == pid).first()
+    if not p or not svc.can_access_prompt(p, user.role, None, **_tenant_kwargs(user)):
+        raise HTTPException(status_code=404, detail="Not found")
+    if p.deleted_at is not None and not svc.can_manage_pipeline_prompts(user.role):
+        raise HTTPException(status_code=404, detail="Not found")
+    return svc.prompt_usage(db, p)
+
+
 @router.post("/prompts/{pid}/restore")
 def restore_prompt(pid: int, request: Request, db: Session = Depends(get_db),
                    user=Depends(require_permission("prompt_library.manage"))):
     """Un-archive a soft-deleted prompt (doc §9 "unless explicitly enabled").
     The same visibility rule as reads applies: a caller who could not see the
-    row gets the same 404 as a nonexistent id."""
+    row gets the same 404 as a nonexistent id.
+
+    Restore brings back the ROW, not its generation bindings: a forced archive
+    releases the component-default flag and any scope locks (see delete_prompt),
+    and those are re-bound deliberately from the Titles view — silently
+    re-pointing other people's courses at a restored prompt would be worse than
+    making the operator re-state the intent."""
     p = (db.query(Prompt)
          .filter(Prompt.id == pid, Prompt.deleted_at.isnot(None))
          .first())
@@ -505,22 +601,77 @@ def update_prompt(pid: int, request: Request, payload: dict = Body(...), db: Ses
 
 
 @router.delete("/prompts/{pid}")
-def delete_prompt(pid: int, request: Request, db: Session = Depends(get_db),
+def delete_prompt(pid: int, request: Request,
+                  force: bool = Query(
+                      default=False,
+                      description="Release the prompt's generation bindings (component "
+                                  "default + scope locks) and archive it anyway."),
+                  db: Session = Depends(get_db),
                   user=Depends(require_permission("prompt_library.manage"))):
-    p = _get_library_prompt(db, pid, for_write=True, **_tenant_kwargs(user))
+    """Archive a prompt — soft delete, restorable via POST /prompts/{pid}/restore.
+
+    Soft, not permanent: the row keeps its version history, reviews and audit
+    trail, and leaves every listing, picker and resolution path at once (doc
+    §9). Pipeline managers can still see it behind the Archived filter.
+
+    A pipeline prompt that generation still resolves — the component default,
+    or the target of one or more scope locks — is refused with 409 and the full
+    usage payload, so the caller can show what breaks before committing.
+    ``force=true`` releases those bindings first and records exactly what was
+    released in the audit event; each affected scope then falls back to the
+    component default (or the shipped file template). Restoring the prompt does
+    not restore its bindings.
+
+    The released locks are never another tenant's: the write gate below means
+    a tenant caller can only reach a row its own tenant owns, which no other
+    tenant could have bound. A platform admin can reach a shared/global row,
+    whose locks may span tenants — that IS the blast radius, and they are the
+    one caller entitled to see and clear it.
+    """
+    p = _get_deletable_prompt(db, pid, user.role, **_tenant_kwargs(user))
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
+
+    usage = svc.prompt_usage(db, p)
+    if usage["blocking"] and not force:
+        raise HTTPException(status_code=409, detail={
+            "code": "PROMPT_IN_USE",
+            "message": _in_use_message(p, usage),
+            "usage": usage,
+        })
+
+    released = svc.clear_prompt_bindings(db, p) if usage["blocking"] else None
     now = svc.now_utc()
-    title = p.title
+    kind = p.prompt_kind
+    title = p.title or p.name or str(pid)
+    # Library follow-ups are archived with their parent. list_children is
+    # library-scoped by construction, so this is inert for pipeline rows —
+    # which carry no parent/child hierarchy.
+    child_ids = []
     for child in svc.list_children(db, pid, **_tenant_kwargs(user)):
         child.deleted_at = now
+        child.updated_at = now
+        child_ids.append(child.id)
     p.deleted_at = now
+    p.updated_at = now
     db.commit()
+
+    changes: dict = {"archived": {"old": False, "new": True}}
+    if child_ids:
+        changes["archived_children"] = {"old": None, "new": child_ids}
+    if released and released["was_default"]:
+        changes["is_default"] = {"old": True, "new": False}
+    if released and released["fixings"]:
+        changes["released_scope_locks"] = {"old": released["fixings"], "new": None}
+    freed = bool(released and (released["was_default"] or released["fixings"]))
     svc.log_event(db, "prompt.delete", "delete", entity_type="prompt", entity_id=pid,
-                  summary=f"Deleted prompt '{title}'", actor_username=user.username, actor_role=user.role,
+                  summary=f"Archived {kind} prompt '{title}'"
+                          + (" and released its generation bindings" if freed else ""),
+                  changes=changes,
+                  actor_username=user.username, actor_role=user.role,
                   ip_address=_client_ip(request), user_agent=request.headers.get("User-Agent"))
     db.commit()
-    return {"deleted": pid}
+    return {"deleted": pid, "archived": True, "released": released}
 
 
 @router.post("/prompts/{pid}/duplicate", status_code=201)

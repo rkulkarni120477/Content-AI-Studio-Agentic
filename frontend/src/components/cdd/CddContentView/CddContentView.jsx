@@ -3,6 +3,7 @@ import { buildCddUiBlocks } from '@utils/cddContent';
 import { detectDluCddContent, buildDluWorksheetBlocks, replaceWorksheet } from '@utils/cddWorksheets';
 import { renderMarkdownPreview, renderInlineMarkdown } from '@utils/markdownPreview';
 import { parseItemsFromSection } from '@utils/blockItems';
+import { useLabels } from '@hooks/useLabels';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Modal from '@components/common/Modal/Modal';
@@ -17,6 +18,7 @@ export default function CddContentView({
   onRegenerateSection,
   onRegenerateItem,
 }) {
+  const L = useLabels();
   // DLU (worksheet-based) CDDs render as tabs; standard CDDs use the accordion.
   const isDlu = useMemo(() => detectDluCddContent(fullContent), [fullContent]);
 
@@ -26,8 +28,8 @@ export default function CddContentView({
   );
 
   const uiBlocks = useMemo(
-    () => (isDlu ? [] : buildCddUiBlocks(fullContent, sections)),
-    [isDlu, fullContent, sections],
+    () => (isDlu ? [] : buildCddUiBlocks(fullContent, sections, L)),
+    [isDlu, fullContent, sections, L],
   );
 
   const [expanded, setExpanded] = useState(null);
@@ -289,7 +291,7 @@ export default function CddContentView({
   const blocks = isDlu ? dluBlocks : uiBlocks;
 
   if (!fullContent?.trim() && blocks.length === 0) {
-    return <p className={styles.empty}>No CDD content yet.</p>;
+    return <p className={styles.empty}>No {L.cdd} content yet.</p>;
   }
 
   if (blocks.length === 0) {

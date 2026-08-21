@@ -128,11 +128,11 @@ export default function ImportWizardPage() {
       <div className={styles.card}>
         <header className={styles.header}>
           <button type="button" className={styles.back} onClick={() => navigate(coursesRoute)}>
-            ← Titles
+            ← {L.titles}
           </button>
-          <h1 className={styles.title}>Import a Title</h1>
+          <h1 className={styles.title}>Import {L.title}</h1>
           <p className={styles.subtitle}>
-            Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS title.
+            Upload a Canvas IMSCC or Cengage CendocXML package and reconstruct it as an editable CAS {L.titleLower}.
           </p>
         </header>
 
@@ -140,7 +140,7 @@ export default function ImportWizardPage() {
           <div className={styles.body}>
             <FileUpload
               accept=".imscc,.zip,.xml"
-              label="Drop a title package here or click to browse"
+              label={`Drop your ${L.titleLower} package here or click to browse`}
               hint="Canvas IMSCC (.imscc / .zip) or Cengage CendocXML (.zip / .xml)"
               onChange={handleFile}
               error={validateError || undefined}
@@ -229,8 +229,8 @@ export default function ImportWizardPage() {
               </p>
               <p className={styles.progress__hint}>
                 {contentReady
-                  ? 'Title content is in the Editor. Design artifacts (Blueprint / CDD / Style) are still finishing — you can continue below.'
-                  : 'Reconstructing modules, pages and quizzes. This can take a moment for large titles.'}
+                  ? `${L.title} content is in the Editor. Design artifacts (${L.blueprint} / ${L.cdd} / ${L.style}) are still finishing — you can continue below.`
+                  : `Reconstructing modules, pages and quizzes. This can take a moment for large ${L.titlesLower}.`}
               </p>
             </div>
 
@@ -302,7 +302,7 @@ export default function ImportWizardPage() {
           <div className={styles.body}>
             <p role="alert" className={styles.error}>{error || 'Something went wrong.'}</p>
             <div className={styles.actions}>
-              <Button variant="ghost" onClick={() => navigate(coursesRoute)}>Back to Titles</Button>
+              <Button variant="ghost" onClick={() => navigate(coursesRoute)}>Back to {L.titles}</Button>
               <Button variant="primary" onClick={handleRetry}>Try Again</Button>
             </div>
           </div>

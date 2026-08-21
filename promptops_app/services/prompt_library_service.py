@@ -43,7 +43,7 @@ import re
 from datetime import datetime, timezone
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Query, Session
+from sqlalchemy.orm import Query, Session, noload, selectinload
 
 from promptops_app.database import (
     AuditLog,
@@ -292,6 +292,54 @@ def browse_prompts_query(db: Session, role: str | None, user_team,
         q = q.filter(Prompt.prompt_kind == kind)
     return apply_visibility_filter(q, role or "author", user_team,
                                    project_id=project_id, is_platform_admin=is_platform_admin)
+
+
+# Columns of the active version that the LIST serializer reads. ``system_prompt``
+# and ``change_reason`` are excluded on purpose: nothing in a list view renders
+# them, and on a real tenant they carried most of the version payload. They stay
+# deferred rather than raiseload'd — an accidental access then costs one extra
+# query instead of a 500, and ``TestListPayloadAndQueryBudget`` fails on it.
+_LIST_VERSION_COLUMNS = (
+    PromptVersion.prompt_id,
+    PromptVersion.version,
+    PromptVersion.version_number,
+    PromptVersion.workflow_state,
+    PromptVersion.user_prompt_template,
+    PromptVersion.is_active,
+)
+
+
+def list_query_loaders(q: Query) -> Query:
+    """Eager-load exactly what :func:`prompt_to_list_dict` touches — no more.
+
+    ``Prompt.versions`` has no ``lazy=`` on the model, so it is a plain lazy
+    load: serializing a page of rows without this costs ONE QUERY PER ROW (a
+    47-row page measured 101 queries / 8.5 s against RDS). ``tag_rows``,
+    ``variables`` and ``team_links`` are already ``lazy="selectin"``, so they
+    cost one batched query each for the whole page and need no option here.
+
+    ``children`` is selectin by default, never appears in a list row, and is the
+    expensive one — every child loaded is itself a ``Prompt`` whose own selectin
+    collections then load in turn — so it is cancelled outright. Nothing reads
+    ``Prompt.children`` anywhere: the detail payload builds its children from the
+    tenant-filtered ``list_children`` query, so cancelling it cannot alter a
+    response. (The one hard ``db.delete`` of a prompt lives in the registry
+    router, a different request and session, and the FK carries
+    ``ondelete=CASCADE`` of its own — so no ORM cascade depends on this
+    collection being loaded here either.)
+
+    ``attachments`` is deliberately NOT cancelled even though the list ignores
+    it. ``noload`` marks the collection permanently loaded-and-empty on the
+    instance, so any later ``prompt_to_dict`` on the same identity map would
+    publish ``attachments: []`` for a prompt that has some. Request-scoped
+    sessions make that unreachable today, which is exactly the kind of guarantee
+    that quietly stops holding — one extra batched query is the cheaper side of
+    that trade. See ``test_list_loaders_do_not_corrupt_a_later_detail_dict``.
+    """
+    return q.options(
+        selectinload(Prompt.versions).load_only(*_LIST_VERSION_COLUMNS),
+        noload(Prompt.children),
+    )
 
 
 def apply_sort(q: Query, sort: str) -> Query:
@@ -654,6 +702,99 @@ def can_access_prompt(prompt: Prompt, role: str | None, user_team,
 
 
 # ---------------------------------------------------------------------------
+# Generation bindings — what an archive would take away
+# ---------------------------------------------------------------------------
+
+_SCOPE_ID_ATTR = {"project": "project_id", "cluster": "cluster_id", "course": "course_id"}
+_SCOPE_MODEL = {"project": Project, "cluster": Cluster, "course": Course}
+
+
+def _fixing_scope_name(db: Session, f: PromptFixing) -> str | None:
+    """Human name of the scope a lock is bound to (None for global locks)."""
+    model = _SCOPE_MODEL.get(f.scope_level)
+    if model is None:
+        return None
+    sid = getattr(f, _SCOPE_ID_ATTR[f.scope_level], None)
+    if sid is None:
+        return None
+    row = db.get(model, sid)
+    return getattr(row, "name", None) if row is not None else None
+
+
+def _fixing_summary(db: Session, f: PromptFixing) -> dict:
+    return {
+        "id": f.id,
+        "component": f.component,
+        "scope_level": f.scope_level,
+        "scope_name": _fixing_scope_name(db, f),
+    }
+
+
+def prompt_usage(db: Session, prompt: Prompt) -> dict:
+    """The generation bindings *prompt* currently holds.
+
+    Two things make a pipeline row live: the component-default flag (every
+    scope without a lock inherits it) and PromptFixing scope locks. Archiving
+    a row that holds either silently changes what other people's courses
+    generate, so ``blocking`` marks the cases the delete endpoint refuses
+    without an explicit force.
+
+    Library rows are never resolved for generation and can never be bound to a
+    scope (``set_fixing`` rejects them), so their usage is always empty.
+    """
+    if prompt.prompt_kind != "pipeline":
+        return {
+            "prompt_id": prompt.id,
+            "prompt_kind": prompt.prompt_kind,
+            "is_default": False,
+            "component_type": None,
+            "variant": None,
+            "fixings": [],
+            "blocking": False,
+        }
+    fixings = (
+        db.query(PromptFixing)
+        .filter(PromptFixing.prompt_id == prompt.id)
+        .order_by(PromptFixing.component.asc(), PromptFixing.id.asc())
+        .all()
+    )
+    is_default = bool(prompt.is_default)
+    return {
+        "prompt_id": prompt.id,
+        "prompt_kind": prompt.prompt_kind,
+        "is_default": is_default,
+        "component_type": prompt.component_type,
+        "variant": prompt.variant,
+        "fixings": [_fixing_summary(db, f) for f in fixings],
+        "blocking": is_default or bool(fixings),
+    }
+
+
+def clear_prompt_bindings(db: Session, prompt: Prompt) -> dict:
+    """Release every generation binding held by *prompt* (the forced-archive
+    path) and return what was released, for the audit event.
+
+    Scope locks are DELETED rather than left with a NULL ``prompt_id``: a lock
+    that resolves to nothing behaves exactly like no lock at resolution time,
+    but a NULLed row keeps showing up in every fixings listing and "used by"
+    facet, so removing it keeps the stored state and the resolved state in
+    agreement. Restoring the prompt later does NOT restore its bindings —
+    they are re-bound deliberately, from the Titles view.
+
+    Flushed, not committed: the caller owns the transaction.
+    """
+    released = {"was_default": bool(prompt.is_default), "fixings": []}
+    if prompt.prompt_kind != "pipeline":
+        return released
+    prompt.is_default = False
+    for f in db.query(PromptFixing).filter(PromptFixing.prompt_id == prompt.id).all():
+        released["fixings"].append(_fixing_summary(db, f))
+        db.delete(f)
+    db.flush()
+    return released
+
+
+# ---------------------------------------------------------------------------
 # Serializers
 # ---------------------------------------------------------------------------
 
@@ -683,9 +824,16 @@ def _prompt_tags_list(p: Prompt) -> list[str]:
     return []
 
 
-def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True, *,
-                   project_id: int | None = None, is_platform_admin: bool = False) -> dict:
-    d = {
+def _prompt_base_dict(p: Prompt) -> dict:
+    """Every field that comes from the prompt row itself plus its small batched
+    collections (tags, variables, team links).
+
+    Shared verbatim by the detail serializer (:func:`prompt_to_dict`) and the
+    list serializer (:func:`prompt_to_list_dict`), so the two can never drift
+    apart on a key they both publish. Touches no relationship that is lazy on
+    the model, so it is safe to call on a row loaded by a list query.
+    """
+    return {
         "id": p.id,
         "parent_id": p.parent_id,
         "title": p.title if p.title is not None else (p.name or ""),
@@ -708,21 +856,37 @@ def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True, *,
         # include-archived path (pipeline managers) — additive key.
         "archived": p.deleted_at is not None,
     }
+
+
+def _pipeline_block(p: Prompt, *, include_system_prompt: bool) -> dict:
+    """Additive pipeline block for the console (Phase 7b). Only admins ever
+    receive pipeline rows (browse strips them server-side for everyone else),
+    so exposing the resolution keys + workflow state here leaks nothing.
+    Library dicts keep their exact legacy shape.
+
+    ``include_system_prompt`` is False on the list path: no list view renders
+    the active system prompt, and on a real tenant it was 31% of the whole
+    response body.
+    """
+    av = active_version(p)
+    block = {
+        "name": p.name or "",
+        "component_type": p.component_type,
+        "variant": p.variant,
+        "is_default": bool(p.is_default),
+        "active_version": p.active_version,
+        "workflow_state": av.workflow_state if av else None,
+    }
+    if include_system_prompt:
+        block["system_prompt"] = (av.system_prompt if av else "") or ""
+    return block
+
+
+def prompt_to_dict(db: Session, p: Prompt, include_relations: bool = True, *,
+                   project_id: int | None = None, is_platform_admin: bool = False) -> dict:
+    d = _prompt_base_dict(p)
     if p.prompt_kind == "pipeline":
-        # Additive pipeline block for the console (Phase 7b). Only admins ever
-        # receive pipeline rows (browse strips them server-side for everyone
-        # else), so exposing the resolution keys + workflow state here leaks
-        # nothing. Library dicts keep their exact legacy shape.
-        av = active_version(p)
-        d["pipeline"] = {
-            "name": p.name or "",
-            "component_type": p.component_type,
-            "variant": p.variant,
-            "is_default": bool(p.is_default),
-            "active_version": p.active_version,
-            "system_prompt": (av.system_prompt if av else "") or "",
-            "workflow_state": av.workflow_state if av else None,
-        }
+        d["pipeline"] = _pipeline_block(p, include_system_prompt=True)
     if include_relations:
         # Parent/children traverse ORM relationships with no tenant predicate
         # of their own, so both ends need the same gate applied explicitly —
@@ -805,6 +969,36 @@ def enrich(db: Session, prompt: Prompt, stats: dict, child_counts: dict | None =
     d["_version_count"] = len(prompt.versions or [])
     if child_counts is not None and prompt.parent_id is None:
         d["_child_count"] = child_counts.get(prompt.id, 0)
+    return d
+
+
+def prompt_to_list_dict(p: Prompt, *, review_stats: dict | None = None,
+                        child_count: int = 0) -> dict:
+    """Row shape for the browse list (GET /prompts, GET /prompts/search).
+
+    A deliberately narrower projection than :func:`prompt_to_dict`. The list
+    views (card grid, list table, CSV export) read the base fields plus the
+    three ``_``-prefixed counters; the relation expansions only the detail page
+    renders — the full ``versions`` array, ``attachments``, ``parent``,
+    ``children`` — are omitted, as is the active ``system_prompt``. On a real
+    tenant (47 pipeline prompts) those were 88% of the response body: 863 KB
+    down to 102 KB.
+
+    Deliberately takes no ``Session``: a list row must be serializable purely
+    from already-loaded state, which makes a per-row query impossible by
+    construction. Pair it with :func:`list_query_loaders` so the collections it
+    does read are batched for the whole page.
+
+    ``_version_count`` replaces the dropped ``versions`` array for the callers
+    that only counted it, and ``_child_count`` the dropped ``children`` array.
+    """
+    d = _prompt_base_dict(p)
+    if p.prompt_kind == "pipeline":
+        d["pipeline"] = _pipeline_block(p, include_system_prompt=False)
+    d["can_have_children"] = p.parent_id is None
+    d["_review_stats"] = review_stats or {"count": 0, "avg": 0}
+    d["_version_count"] = len(p.versions or [])
+    d["_child_count"] = child_count
     return d
 
 

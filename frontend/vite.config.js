@@ -48,7 +48,21 @@ export default defineConfig({
       // rewrite). The previous config stripped the leading /api, which would
       // have 404'd every request had the app ever used the proxy.
       '/api': {
-        target: process.env.VITE_API_BASE_URL || 'http://localhost:8000',
+        // Target the literal IPv4 loopback, NOT "localhost". On Docker Desktop
+        // for Windows the backend is published on both 127.0.0.1 and [::1], and
+        // the IPv6 relay periodically wedges (accepts the TCP connection but
+        // never answers) — surfacing as ECONNREFUSED / "socket hang up" here and
+        // a failed login in the app. "localhost" resolves to ::1 first, so it
+        // lands on that dead relay. dns.setDefaultResultOrder('ipv4first') above
+        // is not enough on its own (http-proxy's agent can still pick ::1), so we
+        // pin the address explicitly and sidestep DNS entirely.
+        //
+        // Hardcoded on purpose — do NOT read VITE_API_BASE_URL here. Vite exposes
+        // every VITE_* var to the browser via import.meta.env, so any value that
+        // made this proxy target useful would simultaneously make apiClient call
+        // that host directly and bypass the proxy. The proxy is dev-only (it does
+        // not exist in `vite build`), and in dev the backend is always local.
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

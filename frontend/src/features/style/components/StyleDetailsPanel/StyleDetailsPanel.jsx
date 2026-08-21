@@ -1,4 +1,5 @@
 import Loader from '@components/common/Loader/Loader';
+import { useLabels } from '@hooks/useLabels';
 import {
   parseStyleUnderstanding,
   styleUnderstandingText,
@@ -15,6 +16,8 @@ export default function StyleDetailsPanel({
   inModal = false,
   onPreviewDocument,
 }) {
+  const L = useLabels();
+
   if (loading) {
     return (
       <div className={inModal ? styles.inModal : styles.panel}>
@@ -36,11 +39,11 @@ export default function StyleDetailsPanel({
       aria-label={`Style details for ${style.name}`}
     >
       {!inModal && (
-        <h3 className={styles.heading}>📋 Style Details — {style.name}</h3>
+        <h3 className={styles.heading}>📋 {L.style} Details — {style.name}</h3>
       )}
 
       <div className={styles.block}>
-        <h4 className={styles.blockTitle}><strong>Style ID:</strong></h4>
+        <h4 className={styles.blockTitle}><strong>{L.style} ID:</strong></h4>
         {styleSlug(style) ? (
           <code className={styles.metaCode}>{styleSlug(style)}</code>
         ) : (
@@ -96,7 +99,7 @@ export default function StyleDetailsPanel({
       <hr className={styles.divider} />
 
       <div className={styles.block}>
-        <h4 className={styles.intelTitle}>🧠 Style Intelligence Layer (stored understanding):</h4>
+        <h4 className={styles.intelTitle}>🧠 {L.style} Intelligence Layer (stored understanding):</h4>
 
         {!understanding?.trim() ? (
           <p className={styles.empty}>

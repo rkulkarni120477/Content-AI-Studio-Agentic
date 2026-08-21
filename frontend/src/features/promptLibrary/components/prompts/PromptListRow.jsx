@@ -6,6 +6,7 @@ import VisibilityBadge from './VisibilityBadge';
 export default function PromptListRow({
   prompt: p,
   isAdmin,
+  canDelete = false,
   isFollowUp = false,
   expandControl,
   onCopy,
@@ -78,16 +79,16 @@ export default function PromptListRow({
           </button>
         )}
         {isAdmin && !p.archived && (
-          <>
-            <Link to={plPromptEdit(p.id)} className="icon-btn" title="Edit">
-              ✏️
-            </Link>
-            {p.prompt_kind !== 'pipeline' && (
-              <button type="button" className="icon-btn del" title="Delete" onClick={() => onDelete(p.id)}>
-                🗑
-              </button>
-            )}
-          </>
+          <Link to={plPromptEdit(p.id)} className="icon-btn" title="Edit">
+            ✏️
+          </Link>
+        )}
+        {/* Same rule as the card view: Delete is kind-agnostic, and hands up
+            the whole prompt so the confirmation can name it. */}
+        {canDelete && !p.archived && (
+          <button type="button" className="icon-btn del" title="Delete" onClick={() => onDelete(p)}>
+            🗑
+          </button>
         )}
       </div>
     </div>

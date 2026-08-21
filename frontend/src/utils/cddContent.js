@@ -5,11 +5,23 @@
 import { parseCddFlat as parseFlatFromModules } from '@utils/blueprintModules';
 import { stripUiHiddenText } from '@utils/blueprintContent';
 
+// `{title}` is substituted with the tenant's word for "Title" by cddBlockLabel().
 export const CDD_UI_BLOCKS = [
-  { key: 'Course Details', label: '📋 Title Details' },
-  { key: 'Course Structure', label: '🗂️ Title Structure & Module Assessments' },
-  { key: 'Course Level Assessment', label: '🏆 Title Level Assessment' },
+  { key: 'Course Details',          labelTemplate: '📋 {title} Details' },
+  { key: 'Course Structure',        labelTemplate: '🗂️ {title} Structure & Module Assessments' },
+  { key: 'Course Level Assessment', labelTemplate: '🏆 {title} Level Assessment' },
 ];
+
+/**
+ * Display label for a CDD UI block, honouring the tenant's rename of "Title".
+ * Derived from the single labelTemplate in CDD_UI_BLOCKS so there's one source
+ * of truth. `L` is the label set from useLabels(); falls back to "Title".
+ */
+export function cddBlockLabel(key, L) {
+  const word = L?.title || 'Title';
+  const entry = CDD_UI_BLOCKS.find((b) => b.key === key);
+  return entry ? entry.labelTemplate.replace('{title}', word) : key;
+}
 
 export function parseCddFlat(rawText) {
   return parseFlatFromModules(rawText);
@@ -44,7 +56,7 @@ export function prepareCddBlockContent(blockKey, content) {
 /**
  * @returns {{ key: string, label: string, content: string }[]}
  */
-export function buildCddUiBlocks(fullContent, sectionsObj) {
+export function buildCddUiBlocks(fullContent, sectionsObj, L) {
   const parsed = { ...parseCddFlat(fullContent) };
   if (sectionsObj && typeof sectionsObj === 'object') {
     Object.entries(sectionsObj).forEach(([key, val]) => {
@@ -55,10 +67,10 @@ export function buildCddUiBlocks(fullContent, sectionsObj) {
   }
 
   return CDD_UI_BLOCKS
-    .map(({ key, label }) => {
+    .map(({ key }) => {
       const content = prepareCddBlockContent(key, parsed[key]);
       if (!content) return null;
-      return { key, label, content };
+      return { key, label: cddBlockLabel(key, L), content };
     })
     .filter(Boolean);
 }
