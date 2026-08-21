@@ -307,6 +307,49 @@ def _load_course_blocks(db, course_id: int) -> list[tuple[str, str]]:
     return out
 
 
+def _load_module_blocks(db, blueprint_id: int) -> list[tuple[str, str]]:
+    """Return [(label, content), ...] for the blocks of ONE module (blueprint).
+
+    Uses the current version of each lesson in the module (latest generation per
+    topic), mirroring how the module is assembled for export, so a feedback item
+    mapped to a module is grounded only in that module's content.
+    """
+    if blueprint_id is None:
+        return []
+    from promptops_app.repositories.generation_repository import (
+        list_blocks_for_gen_ids,
+        list_latest_generations_for_blueprint,
+    )
+
+    gens = list_latest_generations_for_blueprint(db, blueprint_id)
+    gen_ids = [g.id for g in gens]
+    if not gen_ids:
+        return []
+    blocks = list_blocks_for_gen_ids(db, gen_ids, limit=2000)
+    out: list[tuple[str, str]] = []
+    for i, b in enumerate(blocks):
+        content = (getattr(b, "content", None) or "").strip()
+        if content:
+            out.append((_block_label(b, i), content))
+    return out
+
+
+def _load_blocks_for_item(db, course_id, blueprint_id) -> list[tuple[str, str]]:
+    """Blocks used to ground a feedback item's recommendation.
+
+    When the item is mapped to a module (``blueprint_id`` set), restrict the
+    context to that module's blocks so the recommendation stays relevant to the
+    target module. Fall back to the whole course when the item has no module
+    mapping, or the module has no usable blocks yet — scoping must never leave the
+    model with nothing to work from.
+    """
+    if blueprint_id is not None:
+        module_blocks = _load_module_blocks(db, blueprint_id)
+        if module_blocks:
+            return module_blocks
+    return _load_course_blocks(db, course_id)
+
+
 def _select_relevant_blocks(
     blocks: list[tuple[str, str]], feedback_item, *, max_chars: int = _REC_CONTEXT_CHARS,
 ) -> list[tuple[str, str]]:
@@ -366,11 +409,15 @@ def _format_course_content(selected: list[tuple[str, str]]) -> str:
 
 
 _REC_FALLBACK_SYSTEM = (
-    "You are an instructional-design editor. Given one reviewer feedback item and "
+    "You are an instructional-design editor. Given ONE reviewer feedback item and "
     "labelled excerpts of a course's content, produce a concrete, actionable "
-    "recommendation for revising the content. Write the recommendation as rich "
-    "Markdown: a one-line **bold summary**, then 2-4 `-` bullets naming what to "
-    "change and where, then an optional `> **Suggested revision:**` blockquote. "
+    "recommendation for revising the content. Address only this feedback item. "
+    "Write the recommendation as rich Markdown with three labelled sections in "
+    "order: a `**Summary**` one-liner starting with an action verb; a "
+    "`**What to change**` heading followed by 1-3 distinct `-` bullets naming what "
+    "to change and where (no duplicates or contradictions); a `**Why**` heading "
+    "followed by 1-2 `-` bullets on how it resolves the feedback; then, when a "
+    "concrete rewrite helps, a `> **Suggested revision:**` blockquote. "
     'Return ONLY a JSON object {"recommendation": "string", "referenced_blocks": '
     '["label", ...]} with "\\n" for line breaks. Cite only labels that appear in '
     "the provided content; use an empty array if none apply."
@@ -521,22 +568,28 @@ def recommend_for_items(
     from promptops_app.database import Course
 
     course_cache: dict[int, object] = {}
-    blocks_cache: dict[int, list[tuple[str, str]]] = {}
+    # Blocks are cached per (course, module) — items in the same course but
+    # different modules must not share a scoped block set.
+    blocks_cache: dict[tuple, list[tuple[str, str]]] = {}
 
     for item in items:
         course_id = getattr(item, "course_id", None)
+        blueprint_id = getattr(item, "blueprint_id", None)
         course = None
+        blocks: list[tuple[str, str]] = []
         if course_id is not None:
             if course_id not in course_cache:
                 course_cache[course_id] = (
                     db.query(Course).filter(Course.id == course_id).first()
                 )
             course = course_cache[course_id]
-            if course_id not in blocks_cache:
-                blocks_cache[course_id] = _load_course_blocks(db, course_id)
+            cache_key = (course_id, blueprint_id)
+            if cache_key not in blocks_cache:
+                blocks_cache[cache_key] = _load_blocks_for_item(db, course_id, blueprint_id)
+            blocks = blocks_cache[cache_key]
 
         model_choice = _resolve_requested_model(model_override, course)
-        selected = _select_relevant_blocks(blocks_cache.get(course_id, []), item)
+        selected = _select_relevant_blocks(blocks, item)
         course_content = _format_course_content(selected)
         allowed_labels = [label for label, _c in selected]
 

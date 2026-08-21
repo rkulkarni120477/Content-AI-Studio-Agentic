@@ -29,7 +29,7 @@ def _fake_llm(text="", *, is_error=False, status="success", model="gpt-4o"):
 
 def _item(**kw):
     base = dict(
-        id=1, course_id=None, project_id=7,
+        id=1, course_id=None, blueprint_id=None, project_id=7,
         feedback_text="", theme=None, source_location=None,
         recommendation=None, recommendation_refs=None, recommendation_model=None,
         recommendation_status="none", recommended_at=None, recommended_by=None,
@@ -137,7 +137,82 @@ def test_format_guidance():
     assert "focus on assessments" in out and "REVIEWER" in out
 
 
+# ── _load_blocks_for_item (module scoping with safe fallback) ─────────────────
+
+@patch.object(fs, "_load_course_blocks", return_value=[("Course", "course-wide")])
+@patch.object(fs, "_load_module_blocks")
+def test_load_blocks_no_module_uses_whole_course(mock_module, mock_course):
+    # Item not mapped to a module → whole-course context; module loader untouched.
+    out = fs._load_blocks_for_item(MagicMock(), 5, None)
+    assert out == [("Course", "course-wide")]
+    mock_course.assert_called_once()
+    mock_module.assert_not_called()
+
+
+@patch.object(fs, "_load_course_blocks", return_value=[("Course", "course-wide")])
+@patch.object(fs, "_load_module_blocks", return_value=[("Lesson 1", "module-only")])
+def test_load_blocks_mapped_module_scopes_to_module(mock_module, mock_course):
+    # Module has blocks → context is scoped to that module; course loader not used.
+    out = fs._load_blocks_for_item(MagicMock(), 5, 42)
+    assert out == [("Lesson 1", "module-only")]
+    mock_module.assert_called_once()
+    mock_course.assert_not_called()
+
+
+@patch.object(fs, "_load_course_blocks", return_value=[("Course", "course-wide")])
+@patch.object(fs, "_load_module_blocks", return_value=[])
+def test_load_blocks_empty_module_falls_back_to_course(mock_module, mock_course):
+    # Mapped to a module that has no usable blocks yet → fall back to whole course,
+    # so scoping never leaves the model with nothing to work from.
+    out = fs._load_blocks_for_item(MagicMock(), 5, 42)
+    assert out == [("Course", "course-wide")]
+    mock_module.assert_called_once()
+    mock_course.assert_called_once()
+
+
 # ── recommend_for_items orchestration ─────────────────────────────────────────
+
+@patch.object(fs, "_build_recommendation_prompt", return_value=("sys", "user"))
+@patch.object(fs, "generate_with_metadata")
+@patch.object(fs, "_load_blocks_for_item", return_value=[("Lesson 1", "content")])
+def test_recommend_scopes_blocks_by_item_course_and_module(mock_load, mock_gen, _mock_prompt):
+    # The orchestrator must load blocks scoped to each item's (course, module),
+    # not the whole course, when the item carries a blueprint_id.
+    mock_gen.return_value = _fake_llm('{"recommendation":"ok"}', status="success")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        config_model_choice=None, cluster_id=None, name="C",
+    )
+    item = _item(id=1, course_id=9, blueprint_id=77, feedback_text="fb")
+    fs.recommend_for_items(db, items=[item], created_by="e")
+    mock_load.assert_called_once_with(db, 9, 77)
+    assert item.recommendation == "ok"
+
+
+@patch.object(fs, "_build_recommendation_prompt", return_value=("sys", "user"))
+@patch.object(fs, "generate_with_metadata")
+@patch.object(fs, "_load_blocks_for_item", return_value=[])
+def test_recommend_caches_blocks_per_course_module(mock_load, mock_gen, _mock_prompt):
+    # Two items, same course but different modules, must NOT share a scoped block
+    # set — the cache is keyed by (course_id, blueprint_id), so each module loads
+    # once. A third item repeating the first module reuses the cache (no reload).
+    mock_gen.return_value = _fake_llm('{"recommendation":"ok"}', status="success")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        config_model_choice=None, cluster_id=None, name="C",
+    )
+    items = [
+        _item(id=1, course_id=9, blueprint_id=1),
+        _item(id=2, course_id=9, blueprint_id=2),
+        _item(id=3, course_id=9, blueprint_id=1),  # same (course, module) as id=1
+    ]
+    fs.recommend_for_items(db, items=items, created_by="f")
+    calls = {c.args for c in mock_load.call_args_list}
+    assert calls == {(db, 9, 1), (db, 9, 2)}  # module 1 loaded once, reused for id=3
+    assert mock_load.call_count == 2
+
+
+
 
 @patch.object(fs, "_build_recommendation_prompt", return_value=("sys", "user"))
 @patch.object(fs, "generate_with_metadata")
