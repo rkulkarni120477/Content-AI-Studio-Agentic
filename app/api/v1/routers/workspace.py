@@ -97,9 +97,14 @@ def update_workspace(
     payload = decode_access_token(credentials.credentials)
     existing_cfg = payload.get("cfg", {})
 
+    # Carry forward the tenant scope too. Omitting project_id/is_platform_admin
+    # here re-mints a project-less token (create_access_token defaults them to
+    # None/False); the next /me then reports no workspace and strands the user.
     new_token = create_access_token(
         current_user.username,
         current_user.role,
+        project_id=getattr(current_user, "_project_id", None),
+        is_platform_admin=getattr(current_user, "_is_platform_admin", False),
         workspace=request_body.model_dump(exclude_none=True),
         config=existing_cfg or None,
     )
@@ -130,9 +135,13 @@ def update_workspace_config(
     payload = decode_access_token(credentials.credentials)
     existing_ws = payload.get("ws", {})
 
+    # Carry forward the tenant scope (see update_workspace): dropping it re-mints
+    # a project-less token that strands the user on the next /me.
     new_token = create_access_token(
         current_user.username,
         current_user.role,
+        project_id=getattr(current_user, "_project_id", None),
+        is_platform_admin=getattr(current_user, "_is_platform_admin", False),
         workspace=existing_ws or None,
         config=request_body.model_dump(),
     )
