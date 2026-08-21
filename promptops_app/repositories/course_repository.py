@@ -38,22 +38,40 @@ def get_course_by_id(db, course_id: int):
     return db.query(Course).filter(Course.id == course_id).first()
 
 
-def _failed_import_course_ids(db):
-    """Courses whose reconstruction never completed — an empty shell with no
-    usable content. Excluded even from ``include_archived=True`` views: unlike
-    a course a user chose to archive, this was never a real course to manage,
-    and its own CourseImport row already keeps the "failed" audit trail.
+def _empty_shell_course_ids(db):
+    """Archived courses with NO reconstructed content at all — the shell an
+    import job never got to build anything into. Excluded even from
+    ``include_archived=True`` views: unlike a course a user chose to archive,
+    this was never a real course to manage, and its own CourseImport row
+    already keeps the failure's audit trail.
 
-    Requires BOTH Course.is_active==False and CourseImport.status=="failed":
-    a course whose reconstruction succeeded before a later stage failed (e.g.
-    a transient error in _finalize) also gets CourseImport.status=="failed",
-    but stays is_active==True and must remain fully visible — see
-    import_jobs.run_import_job's ``reconstructed`` gate.
+    Deliberately keyed on content, not on CourseImport.status or GenerationJob
+    status: those are mutable by unrelated paths and both over- and
+    under-fire if reused here. Concretely: (a) a course that DID reconstruct
+    before a later stage failed keeps CourseImport.status=="failed" forever,
+    so a status-based rule would wrongly re-catch it the moment a user
+    archives it through the normal archive action; (b) POST
+    .../retry unconditionally flips CourseImport.status to "completed" even
+    when it rebuilt nothing (no modules to work with), so a status-based rule
+    would wrongly stop excluding an empty shell the instant someone retries
+    it. "Zero CourseModule/Generation rows" can't be un-set by anything
+    except real reconstruction, so neither case can happen here.
+
+    Generation.course_id is nullable (course-less generations exist
+    elsewhere) — filtered out explicitly, since one NULL in a NOT IN subquery
+    silently empties the whole result on every backend (SQLite and Postgres
+    alike). CourseModule.course_id has no such column-level nullability, so
+    no equivalent filter is needed there.
     """
+    module_course_ids = db.query(CourseModule.course_id)
+    generation_course_ids = db.query(Generation.course_id).filter(Generation.course_id.isnot(None))
     return (
-        db.query(CourseImport.course_id)
-        .join(Course, Course.id == CourseImport.course_id)
-        .filter(CourseImport.status == "failed", Course.is_active == False)  # noqa: E712
+        db.query(Course.id)
+        .filter(
+            Course.is_active == False,  # noqa: E712
+            ~Course.id.in_(module_course_ids),
+            ~Course.id.in_(generation_course_ids),
+        )
     )
 
 
@@ -72,7 +90,7 @@ def list_courses_for_cluster(db, cluster_id: int, *, include_archived: bool = Fa
     q = db.query(Course).filter(Course.cluster_id == cluster_id)
     if not include_archived:
         q = q.filter(Course.is_active == True)  # noqa: E712
-    q = q.filter(~Course.id.in_(_failed_import_course_ids(db)))
+    q = q.filter(~Course.id.in_(_empty_shell_course_ids(db)))
     return q.order_by(Course.created_at.asc()).all()
 
 

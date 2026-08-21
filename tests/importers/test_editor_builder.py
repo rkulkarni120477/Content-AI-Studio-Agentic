@@ -325,3 +325,108 @@ def test_import_job_failing_after_reconstruction_leaves_the_course_untouched(db,
 
     visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
     assert course_id in visible_ids
+
+
+def test_archiving_a_reconstructed_course_does_not_hide_it_alongside_empty_shells(db):
+    """Review finding (over-fire): a course that DID reconstruct (real
+    content) before a later stage failed keeps CourseImport.status=="failed"
+    forever. If the user later archives that course through the ordinary
+    archive action (only is_active changes), a status-keyed hiding rule would
+    wrongly re-catch it the moment it's archived — burying real content
+    behind a page it can no longer even be purged from. The content-based
+    rule (course_repository._empty_shell_course_ids) must not care about
+    CourseImport.status at all."""
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
+
+    cluster = Cluster(name="C", project_id=6)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="ReconstructedThenArchived", project_id=6, cluster_id=cluster.id)
+    course_id = course.id
+    editor_builder.build(
+        db, parse_package(build_content_imscc()),
+        course_id=course_id, project_id=6, import_id=99, user_name="u",
+    )
+    ci = CourseImport(course_id=course_id, project_id=6, status="failed", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+
+    # The ordinary archive action — same field the courses.py archive
+    # endpoint flips, nothing about CourseImport touched.
+    course = db.query(Course).filter_by(id=course_id).first()
+    course.is_active = False
+    db.commit()
+
+    assert db.query(Generation).filter_by(course_id=course_id).count() == 3
+
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id in visible_ids
+
+
+def test_retry_on_a_never_reconstructed_import_does_not_resurrect_the_hidden_shell(db, monkeypatch, mock_llm):
+    """Review finding (under-fire): POST .../retry (run_reverse_gen_job)
+    unconditionally sets CourseImport.status="completed" even when it
+    rebuilt nothing, because collect_course_modules found zero modules to
+    work with. A status-keyed hiding rule would resurrect the still-empty,
+    still-broken shell in the Titles list the instant someone clicks Retry
+    on it. The content-based rule can't be moved by that flip."""
+    from promptops_app.jobs import import_jobs
+    from promptops_app.repositories import job_repository
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+
+    cluster = Cluster(name="C", project_id=5)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="NeverBuilt", project_id=5, cluster_id=cluster.id)
+    course_id = course.id
+    ci = CourseImport(course_id=course_id, project_id=5, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    # The initial import job fails outright (no staged package) — same empty
+    # shell as test_failed_import_job_hides_the_empty_course_shell.
+    job_id = job_repository.create_job(
+        db, user_name="u",
+        request_params={
+            "import_id": import_id, "course_id": course_id, "project_id": 5,
+            "user_name": "u", "package_path": None, "package_name": "x.imscc",
+        },
+        project_id=5, course_id=course_id, job_type="import",
+    )
+    import_jobs.run_import_job(job_id)
+
+    db.expire_all()
+    course = db.query(Course).filter_by(id=course_id).first()
+    assert course.is_active is False
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id not in visible_ids
+
+    # The user hits Retry. run_reverse_gen_job finds zero modules, returns
+    # early from _reverse_generate, but still unconditionally marks the
+    # CourseImport "completed".
+    retry_job_id = job_repository.create_job(
+        db, user_name="u",
+        request_params={"import_id": import_id, "course_id": course_id, "project_id": 5, "user_name": "u"},
+        project_id=5, course_id=course_id, job_type="import_reverse",
+    )
+    import_jobs.run_reverse_gen_job(retry_job_id)
+
+    db.expire_all()
+    record = db.query(CourseImport).filter_by(id=import_id).first()
+    assert record.status == "completed"   # the mutable signal DID flip...
+
+    course = db.query(Course).filter_by(id=course_id).first()
+    assert course.is_active is False
+    assert db.query(Generation).filter_by(course_id=course_id).count() == 0   # ...but nothing rebuilt it
+
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id not in visible_ids   # still hidden regardless of the status flip
