@@ -2,7 +2,7 @@
 DIS – Ingestion Router  /v1/ingest
 """
 from __future__ import annotations
-import logging, uuid, asyncio, re, hashlib
+import logging, os, uuid, asyncio, re, hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -19,11 +19,25 @@ from storage.provider import get_storage_provider
 from services.artifacts import ArtifactWriter
 from services.source_library import write_source_content_and_index, normalize_purpose, normalize_visibility
 from services.indexing import rds_upsert as do_rds_upsert, generate_embeddings, opensearch_upsert as do_opensearch_upsert
+from services.job_store import get_job_store
 
 router = APIRouter(prefix="/ingest", tags=["Ingestion"])
 log = logging.getLogger(__name__)
-_jobs: Dict[str, Dict[str, Any]] = {}   # production: move to RDS/DynamoDB
-_scans: Dict[str, Dict[str, Any]] = {}  # scan-level tracking for folder-scan
+# Tier 2 Step 5: job status lives in a JobStore instead of a process-local dict, so
+# it's visible across the API and the (future) worker. MemoryJobStore by default
+# (identical to the old dict); RedisJobStore when DIS_REDIS_URL is set. All access
+# goes through job_store.create/get/update/list — never index/mutate a returned dict.
+job_store = get_job_store()
+_scans: Dict[str, Dict[str, Any]] = {}  # scan-level tracking for folder-scan (Step 7: move to store)
+
+# Tier 2 (memory guardrail): at most this many ingestion pipelines PARSE at once, so
+# peak DIS RAM stays well under the 2 GB container cap regardless of how many files
+# are uploaded together. A large (~192 MB) file peaks ~500 MB while parsing, so 2
+# keeps the worst case ~baseline + ~1 GB. This — not folder size / file count — is
+# what actually bounds memory. Tunable via env (DIS_MAX_CONCURRENT_PIPELINES) with
+# no code change; excess jobs simply wait here for a free slot.
+_PROCESS_CONCURRENCY = max(1, int(os.environ.get("DIS_MAX_CONCURRENT_PIPELINES", "2")))
+_process_semaphore = asyncio.Semaphore(_PROCESS_CONCURRENCY)
 
 # Uploads at/under this size get an inline text preview built during the request.
 # Larger files defer ALL text extraction to the background pipeline, so the web
@@ -394,7 +408,7 @@ async def _publish_immediate_payload(
       this file" 500). Returns ``True`` on success, ``False`` if the preview
       could not be written.
 
-    Updates ``_jobs[job_id]`` (payload_storage_url / artifact_urls / metadata).
+    Updates the job record via ``job_store`` (payload_storage_url / artifact_urls / metadata).
     """
     do_immediate_extract = len(content) <= _IMMEDIATE_EXTRACT_MAX_BYTES
     if not do_immediate_extract:
@@ -419,17 +433,21 @@ async def _publish_immediate_payload(
                 _write_source_library_payload,
                 tenant_cfg=tenant_cfg, namespace=namespace, job_id=job_id, payload=immediate_payload,
             )
-        job = _jobs.get(job_id)
+        job = job_store.get(job_id)
         if job is not None:
-            job["payload_storage_url"] = payload_url
-            job.setdefault("artifact_urls", {})["studio_payload"] = payload_url
-            job["metadata"] = {"doc_type": immediate_payload["metadata"].get("document_type"), "source_library_ready": True}
+            artifact_urls = dict(job.get("artifact_urls") or {})
+            artifact_urls["studio_payload"] = payload_url
+            job_store.update(
+                job_id,
+                payload_storage_url=payload_url,
+                artifact_urls=artifact_urls,
+                metadata={"doc_type": immediate_payload["metadata"].get("document_type"), "source_library_ready": True},
+            )
         return True
     except Exception as exc:
         log.exception("[%s] Immediate Source Library payload failed (upload continues): %s", job_id, exc)
-        job = _jobs.get(job_id)
-        if job is not None:
-            job["metadata"] = {"source_library_ready": False, "immediate_payload_error": str(exc)}
+        if job_store.get(job_id) is not None:
+            job_store.update(job_id, metadata={"source_library_ready": False, "immediate_payload_error": str(exc)})
         return False
 
 
@@ -463,62 +481,10 @@ def _resolve_tenant_and_client_for_ingestion(request: Request, current_tenant_cf
     return current_tenant_cfg, actual
 
 
-async def _create_ingestion_job(
-    *, request: Request, background_tasks: BackgroundTasks, tenant_cfg: TenantConfig,
-    actual_client_id: str, user_id: str, namespace: str, filename: str, content: bytes,
-    content_type: str, source_relative_path: str = "", source_root: str = "", skip_duplicate: bool = False
-) -> UploadResponse:
-    client_cfg = tenant_cfg.get_client(actual_client_id)
-    if not client_cfg:
-        raise HTTPException(404, f"Client '{actual_client_id}' is not configured for tenant '{tenant_cfg.tenant_id}'")
-    if not content:
-        raise HTTPException(400, "Empty file")
-
-    validator = ValidationService(tenant_cfg, client_cfg)
-    result = await validator.validate(filename or "unnamed", content, content_type or "")
-    if not result.passed:
-        raise HTTPException(422, {"errors": result.errors, "warnings": result.warnings})
-    # Duplicate detection is handled by DeduplicationAgent using client dedup_manifest.json.
-
-    # Do not block file upload using LLM token quota.
-    # Token quota is checked only immediately before actual LLM calls inside the pipeline.
-    # Large PDFs/DOCX files can be several MB; estimating tokens from raw bytes causes false 429 errors.
-
-    job_id = str(uuid.uuid4())
-    env_name = get_settings().environment or "development"
-    safe_rel_path = _safe_relative_path(source_relative_path, filename or "unnamed")
-    s3_key = f"raw/{namespace}/{env_name}/{job_id}/{safe_rel_path}"
-    provider = get_storage_provider(tenant_cfg)
-    try:
-        storage_url = await provider.upload(s3_key, content, content_type or "application/octet-stream")
-    except Exception as exc:
-        log.error("[%s] Storage upload failed: %s", job_id, exc)
-        raise HTTPException(500, f"Storage upload failed: {exc}")
-
-    presigned = await provider.presigned_url(s3_key, expires=3600)
-    now = datetime.utcnow()
-    _jobs[job_id] = {
-        "job_id": job_id, "tenant_id": tenant_cfg.tenant_id, "client_id": actual_client_id,
-        "user_id": user_id, "namespace": namespace, "filename": filename,
-        "source_relative_path": safe_rel_path, "source_root": source_root,
-        "s3_key": s3_key, "storage_url": storage_url, "status": JobStatus.PENDING,
-        "progress_pct": 0, "current_step": None, "errors": [],
-        "created_at": now, "updated_at": now, "completed_at": None, "metadata": {},
-        "artifact_urls": {}, "payload_storage_url": "", "studio_job_id": "",
-        "validation_report_url": "",
-    }
-
-    background_tasks.add_task(
-        _process, job_id=job_id, tenant_cfg=tenant_cfg,
-        client_id=actual_client_id, user_id=user_id, namespace=namespace,
-        filename=filename or "unnamed", s3_key=s3_key, content=content, raw_storage_url=storage_url,
-        source_relative_path=safe_rel_path, source_root=source_root,
-    )
-    return UploadResponse(
-        job_id=job_id, tenant_id=tenant_cfg.tenant_id, client_id=actual_client_id,
-        namespace=namespace, s3_key=s3_key, upload_url=presigned,
-        status=JobStatus.PENDING, created_at=now,
-    )
+# _create_ingestion_job was removed here (Tier 2 Step 5): it was dead code — never
+# called from anywhere (verified) and a stale duplicate of the live upload flow. The
+# live producers are upload_file, batch_upload, and the folder-scan path
+# (_create_job_record_and_upload). Removing it also drops its old _jobs[...] write.
 
 
 @router.post("/upload", response_model=UploadResponse, status_code=202)
@@ -589,7 +555,7 @@ async def upload_file(
     presigned = await provider.presigned_url(s3_key, expires=3600)
 
     now = datetime.utcnow()
-    _jobs[job_id] = {
+    job_store.create(job_id, {
         "job_id": job_id, "tenant_id": tenant_cfg.tenant_id, "client_id": actual_client_id,
         "user_id": user_id, "namespace": namespace, "filename": file.filename,
         "source_relative_path": safe_rel_path, "source_root": source_root,
@@ -598,7 +564,7 @@ async def upload_file(
         "created_at": now, "updated_at": now, "completed_at": None, "metadata": {},
         "artifact_urls": {}, "payload_storage_url": "", "studio_job_id": "",
         "validation_report_url": "",
-    }
+    })
     log.info("[%s] Job created. tenant=%s client=%s file=%s", job_id, tenant_cfg.tenant_id, actual_client_id, file.filename)
 
     metadata_hints = {
@@ -620,10 +586,16 @@ async def upload_file(
         source_root=source_root, metadata_hints=metadata_hints,
     )
 
+    # Tier 2 Step 1 (memory): do NOT hand the raw bytes to the background task.
+    # Passing content=None makes _process re-download from S3 (the file is already
+    # stored above), so the full-file buffer is released as soon as this response
+    # returns instead of being retained for the whole pipeline. This is what stops
+    # back-to-back folder uploads from stacking file-sized buffers and OOM-killing
+    # the container. Behaviour is otherwise identical (same bytes, from S3).
     background_tasks.add_task(
         _process, job_id=job_id, tenant_cfg=tenant_cfg,
         client_id=actual_client_id, user_id=user_id, namespace=namespace,
-        filename=file.filename or "unnamed", s3_key=s3_key, content=content, raw_storage_url=storage_url,
+        filename=file.filename or "unnamed", s3_key=s3_key, content=None, raw_storage_url=storage_url,
         source_relative_path=safe_rel_path, source_root=source_root, metadata_hints=metadata_hints,
     )
 
@@ -665,7 +637,7 @@ async def batch_upload(
             provider = get_storage_provider(tenant_cfg)
             storage_url = await provider.upload(s3_key, content, f.content_type or "application/octet-stream")
             now = datetime.utcnow()
-            _jobs[job_id] = {
+            job_store.create(job_id, {
                 "job_id": job_id, "tenant_id": tenant_cfg.tenant_id, "client_id": actual_client_id,
                 "user_id": getattr(request.state, "user_id", "batch"), "namespace": namespace,
                 "filename": f.filename, "s3_key": s3_key, "status": JobStatus.PENDING,
@@ -673,7 +645,7 @@ async def batch_upload(
                 "created_at": now, "updated_at": now, "completed_at": None, "metadata": {},
                 "artifact_urls": {}, "payload_storage_url": "", "studio_job_id": "",
                 "validation_report_url": "",
-            }
+            })
             # Make batch-uploaded files visible in Source Library immediately.
             # Non-fatal + off the event loop + size-gated via the shared helper:
             # the raw file is already stored and the pipeline will still process
@@ -685,10 +657,13 @@ async def batch_upload(
                 content_type=f.content_type or "application/octet-stream",
                 raw_storage_url=storage_url, s3_key=s3_key, metadata_hints=metadata_hints,
             )
+            # Tier 2 Step 1 (memory): content=None → _process re-downloads from S3
+            # (already uploaded above), so the raw buffer isn't retained through the
+            # pipeline. See the matching note in upload_file.
             background_tasks.add_task(
                 _process, job_id=job_id, tenant_cfg=tenant_cfg, client_id=actual_client_id,
                 user_id=getattr(request.state, "user_id", "batch"), namespace=namespace,
-                filename=f.filename or "unnamed", s3_key=s3_key, content=content, raw_storage_url=storage_url,
+                filename=f.filename or "unnamed", s3_key=s3_key, content=None, raw_storage_url=storage_url,
                 metadata_hints=metadata_hints,
             )
             results.append({"filename": f.filename, "job_id": job_id, "status": "accepted"})
@@ -728,7 +703,11 @@ async def folder_scan(request: Request, body: FolderScanRequest, background_task
 
     configured_workers = getattr(getattr(tenant_cfg, "processing", None), "max_workers", 5) or 5
     max_workers = body.max_workers or configured_workers
-    max_workers = max(1, min(int(max_workers), 50))
+    # Tier 2 Step 1 (memory): cap concurrency low. Folder-scan awaits _process per
+    # file under this semaphore, and each large PDF can peak ~300 MB RAM; the old
+    # ceiling of 50 could stack tens of file-sized working sets and OOM the 2g
+    # container. 8 bounds peak memory while leaving the default (5) untouched.
+    max_workers = max(1, min(int(max_workers), 8))
     result_limit = body.return_results_limit or getattr(getattr(tenant_cfg, "processing", None), "folder_scan_return_results_limit", 200) or 200
 
     if body.dry_run:
@@ -853,14 +832,15 @@ async def _process_folder_scan_parallel(
                     skip_duplicate=skip_duplicates,
                     metadata_hints=metadata_hints,
                 )
+                rec = job_store.get(job_id) or {}
                 await _process(
                     job_id=job_id, tenant_cfg=tenant_cfg, client_id=client_id, user_id=user_id,
-                    namespace=namespace, filename=path.name, s3_key=_jobs[job_id]["s3_key"],
-                    content=content, raw_storage_url=_jobs[job_id].get("storage_url", ""),
+                    namespace=namespace, filename=path.name, s3_key=rec.get("s3_key", ""),
+                    content=content, raw_storage_url=rec.get("storage_url", ""),
                     source_relative_path=rel_with_root, source_root=str(root),
                     metadata_hints=metadata_hints,
                 )
-                status = _jobs.get(job_id, {}).get("status")
+                status = (job_store.get(job_id) or {}).get("status")
                 if status == JobStatus.COMPLETED:
                     result_status = "completed"
                 elif status == JobStatus.DUPLICATE:
@@ -949,7 +929,7 @@ async def _create_job_record_and_upload(
         raise HTTPException(500, f"Storage upload failed: {exc}")
 
     now = datetime.utcnow()
-    _jobs[job_id] = {
+    job_store.create(job_id, {
         "job_id": job_id, "tenant_id": tenant_cfg.tenant_id, "client_id": client_id,
         "user_id": user_id, "namespace": namespace, "filename": filename,
         "source_relative_path": safe_rel_path, "source_root": source_root,
@@ -958,7 +938,7 @@ async def _create_job_record_and_upload(
         "created_at": now, "updated_at": now, "completed_at": None, "metadata": {},
         "artifact_urls": {}, "payload_storage_url": "", "studio_job_id": "",
         "validation_report_url": "",
-    }
+    })
     # Non-fatal + off the event loop + size-gated via the shared helper. Folder
     # scans process many (often large) files in parallel, so this MUST NOT block
     # the loop or fail the whole job over a preview hiccup — the raw file is
@@ -985,7 +965,7 @@ async def get_folder_scan(scan_id: str, request: Request, _=Depends(require_role
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job(job_id: str, request: Request):
     tenant_cfg: TenantConfig = get_current_tenant(request)
-    job = _jobs.get(job_id)
+    job = job_store.get(job_id)
     if not job or job["tenant_id"] != tenant_cfg.tenant_id:
         raise HTTPException(404, "Job not found")
     return JobStatusResponse(**job)
@@ -996,17 +976,19 @@ async def list_jobs(request: Request, limit: int = 20, job_status: str = ""):
     tenant_cfg: TenantConfig = get_current_tenant(request)
     user_id = getattr(request.state, "user_id", "")
     role = getattr(request.state, "role", "user")
-    jobs = [j for j in _jobs.values() if j["tenant_id"] == tenant_cfg.tenant_id
-            and (not job_status or j["status"] == job_status)
-            and (role in ("super_admin", "client_admin") or j.get("user_id") == user_id)]
-    return {"jobs": jobs[:limit], "total": len(jobs)}
+    is_admin = role in ("super_admin", "client_admin")
+    # Fetch all matching (capped high), then slice — preserves the original
+    # semantics where `total` is the full match count and `jobs` is the first `limit`.
+    all_jobs = job_store.list(tenant_cfg.tenant_id, status=job_status, user_id=user_id,
+                              is_admin=is_admin, limit=10_000)
+    return {"jobs": all_jobs[:limit], "total": len(all_jobs)}
 
 
 
 @router.get("/jobs/{job_id}/payload")
 async def get_job_payload(job_id: str, request: Request, _=Depends(require_role("client_admin"))):
     tenant_cfg: TenantConfig = get_current_tenant(request)
-    job = _jobs.get(job_id)
+    job = job_store.get(job_id)
     if not job or job["tenant_id"] != tenant_cfg.tenant_id:
         raise HTTPException(404, "Job not found")
     key = f"processed/{job['namespace']}/{get_settings().environment}/{job_id}/studio_payload/payload.json"
@@ -1020,7 +1002,7 @@ async def get_job_payload(job_id: str, request: Request, _=Depends(require_role(
 @router.get("/jobs/{job_id}/validation-report")
 async def get_validation_report(job_id: str, request: Request, _=Depends(require_role("client_admin"))):
     tenant_cfg: TenantConfig = get_current_tenant(request)
-    job = _jobs.get(job_id)
+    job = job_store.get(job_id)
     if not job or job["tenant_id"] != tenant_cfg.tenant_id:
         raise HTTPException(404, "Job not found")
     key = f"processed/{job['namespace']}/{get_settings().environment}/{job_id}/validation/report.json"
@@ -1040,7 +1022,7 @@ async def index_job(job_id: str, request: Request, _=Depends(require_role("clien
     needs retry without re-uploading/re-extracting the file.
     """
     tenant_cfg: TenantConfig = get_current_tenant(request)
-    job = _jobs.get(job_id)
+    job = job_store.get(job_id)
     if not job or job["tenant_id"] != tenant_cfg.tenant_id:
         raise HTTPException(404, "Job not found")
     writer = ArtifactWriter(tenant_cfg)
@@ -1096,7 +1078,7 @@ async def index_job(job_id: str, request: Request, _=Depends(require_role("clien
 @router.get("/jobs/{job_id}/index-status")
 async def get_index_status(job_id: str, request: Request, _=Depends(require_role("client_admin"))):
     tenant_cfg: TenantConfig = get_current_tenant(request)
-    job = _jobs.get(job_id)
+    job = job_store.get(job_id)
     if not job or job["tenant_id"] != tenant_cfg.tenant_id:
         raise HTTPException(404, "Job not found")
     return {
@@ -1133,8 +1115,22 @@ async def _reconcile_source_record(tenant_cfg, client_id, job_id, final_status, 
 
 
 async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, s3_key, content, raw_storage_url="", source_relative_path="", source_root="", metadata_hints=None):
-    _jobs[job_id]["status"] = JobStatus.PROCESSING
-    _jobs[job_id]["updated_at"] = datetime.utcnow()
+    # Tier 2 (memory): bound concurrent pipelines. At most _PROCESS_CONCURRENCY files
+    # parse at once; the rest wait here. The job stays PENDING until a slot frees, so
+    # status reflects reality. This is the real 2 GB guardrail — folder size and file
+    # count don't change peak memory, only how long the queue takes to drain.
+    async with _process_semaphore:
+        await _run_ingestion_pipeline(
+            job_id=job_id, tenant_cfg=tenant_cfg, client_id=client_id, user_id=user_id,
+            namespace=namespace, filename=filename, s3_key=s3_key, content=content,
+            raw_storage_url=raw_storage_url, source_relative_path=source_relative_path,
+            source_root=source_root, metadata_hints=metadata_hints,
+        )
+
+
+async def _run_ingestion_pipeline(job_id, tenant_cfg, client_id, user_id, namespace, filename, s3_key, content, raw_storage_url="", source_relative_path="", source_root="", metadata_hints=None):
+    job_store.update(job_id, status=JobStatus.PROCESSING, updated_at=datetime.utcnow())
+    rec = job_store.get(job_id) or {}   # created by the API before enqueue; carries storage_url / paths
     try:
         if not content:
             provider = get_storage_provider(tenant_cfg)
@@ -1143,8 +1139,8 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
             tenant_cfg=tenant_cfg, job_id=job_id,
             tenant_id=tenant_cfg.tenant_id, client_id=client_id,
             user_id=user_id, namespace=namespace,
-            filename=filename, s3_key=s3_key, raw_bytes=content, raw_storage_url=raw_storage_url or _jobs[job_id].get("storage_url", ""),
-            source_relative_path=source_relative_path or _jobs[job_id].get("source_relative_path", filename), source_root=source_root or _jobs[job_id].get("source_root", ""),
+            filename=filename, s3_key=s3_key, raw_bytes=content, raw_storage_url=raw_storage_url or rec.get("storage_url", ""),
+            source_relative_path=source_relative_path or rec.get("source_relative_path", filename), source_root=source_root or rec.get("source_root", ""),
             metadata_hints=metadata_hints or {},
         )
         fatal_error = result.get("fatal_error") or ""
@@ -1157,7 +1153,7 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
         # status so a deferred record doesn't sit at "processing" forever.
         if final_status in (JobStatus.DUPLICATE, JobStatus.FAILED):
             await _reconcile_source_record(tenant_cfg, client_id, job_id, final_status, result)
-        _jobs[job_id].update({
+        job_store.update(job_id, **{
             "status": final_status, "progress_pct": 100,
             "completed_at": datetime.utcnow(),
             "error_message": fatal_error or None,
@@ -1195,9 +1191,7 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
         # from DIS using /context/sources and /context/retrieve after ingestion completes.
     except Exception as exc:
         log.exception("[%s] Pipeline failed: %s", job_id, exc)
-        _jobs[job_id]["status"] = JobStatus.FAILED
-        _jobs[job_id]["error_message"] = str(exc)
-        _jobs[job_id]["updated_at"] = datetime.utcnow()
+        job_store.update(job_id, status=JobStatus.FAILED, error_message=str(exc), updated_at=datetime.utcnow())
         # Reconcile the persisted record too, so a deferred upload doesn't stay
         # "processing" forever after a pipeline crash (extraction/OOM/etc.).
         await _reconcile_source_record(tenant_cfg, client_id, job_id, JobStatus.FAILED, {"fatal_error": str(exc)})
