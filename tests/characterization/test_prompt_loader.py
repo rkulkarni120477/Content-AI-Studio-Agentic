@@ -121,6 +121,78 @@ class TestDbTier:
         assert tmpl.source == "file"
 
 
+class TestExplicitPromptIdTenantScoping:
+    """A user-selected prompt_id (the "Prompt Template" dropdown) must never
+    apply another tenant's prompt content to this generation — same
+    no-enumeration-oracle contract as every other prompt_id lookup: a miss
+    for tenant reasons falls through exactly like an unknown id would."""
+
+    def test_own_tenants_prompt_is_used(self, db):
+        prompt = make_db_prompt(
+            db, "cdd_generation", system="TENANT SYS", user="TENANT USER",
+            project_id=7,
+        )
+        tmpl = load_template("cdd_generation", db=db, project_id=7, prompt_id=prompt.id)
+        assert tmpl.system_template == "TENANT SYS"
+        assert tmpl.user_template == "TENANT USER"
+
+    def test_shared_prompt_is_usable_by_any_tenant(self, db):
+        prompt = make_db_prompt(
+            db, "cdd_generation", system="SHARED SYS", user="SHARED USER",
+            project_id=None,
+        )
+        tmpl = load_template("cdd_generation", db=db, project_id=99, prompt_id=prompt.id)
+        assert tmpl.system_template == "SHARED SYS"
+
+    def test_another_tenants_prompt_id_falls_through_instead_of_being_applied(self, db):
+        """The actual bug: selecting/guessing another tenant's prompt_id must
+        not inject that tenant's prompt content into this generation."""
+        other_tenants_prompt = make_db_prompt(
+            db, "cdd_generation", system="OTHER TENANT SECRET SYS",
+            user="OTHER TENANT SECRET USER", project_id=7,
+        )
+        tmpl = load_template(
+            "cdd_generation", db=db, project_id=99, prompt_id=other_tenants_prompt.id,
+        )
+        assert tmpl.system_template != "OTHER TENANT SECRET SYS"
+        assert tmpl.user_template != "OTHER TENANT SECRET USER"
+        # Falls through to the file tier (component-keyed resolution is off
+        # by default, and there's no stem-named row here), not an error.
+        assert tmpl.source == "file"
+
+    def test_no_project_id_context_still_refuses_another_tenants_prompt(self, db):
+        """A caller with no tenant context (project_id=None) is not a platform
+        admin bypass — it must not default to "everything is visible"."""
+        other_tenants_prompt = make_db_prompt(
+            db, "cdd_generation", system="OTHER TENANT SYS", user="OTHER TENANT USER",
+            project_id=7,
+        )
+        tmpl = load_template(
+            "cdd_generation", db=db, project_id=None, prompt_id=other_tenants_prompt.id,
+        )
+        assert tmpl.system_template != "OTHER TENANT SYS"
+
+    def test_stem_named_row_from_another_tenant_does_not_apply_globally(self, db):
+        """The legacy secondary key (Prompt.name == stem) had the exact same
+        gap as the explicit-id tier: a stem-named row scoped to one tenant
+        must not silently apply to every other tenant's generation."""
+        make_db_prompt(
+            db, "cdd_generation", system="TENANT 7 STEM SYS", user="TENANT 7 STEM USER",
+            project_id=7,
+        )
+        tmpl = load_template("cdd_generation", db=db, project_id=99)
+        assert tmpl.system_template != "TENANT 7 STEM SYS"
+        assert tmpl.source == "file"
+
+    def test_shared_stem_named_row_still_resolves_for_every_tenant(self, db):
+        make_db_prompt(
+            db, "cdd_generation", system="SHARED STEM SYS", user="SHARED STEM USER",
+            project_id=None,
+        )
+        tmpl = load_template("cdd_generation", db=db, project_id=99)
+        assert tmpl.system_template == "SHARED STEM SYS"
+
+
 PIPELINE_STEMS = ("style_understanding", "cdd_generation",
                   "blueprint_generation", "content_generation")
 

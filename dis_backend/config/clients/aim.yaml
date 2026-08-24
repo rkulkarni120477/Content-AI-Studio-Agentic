@@ -141,6 +141,7 @@ metadata_schemas:
       - ebook_reference
       - instructor_guide
       - student_handout
+      - knowledge_test_report
       - other
     - name: topic
       type: string
@@ -152,6 +153,7 @@ metadata_schemas:
       - project_task
       - quiz_question
       - answer_key_item
+      - knowledge_test_item
       - slide
       - page
       - chunk
@@ -260,11 +262,16 @@ retrieval:
       - course_calendar
       - program_overview
       - learning_objectives
+      # Knowledge-test performance data is course-design input: it is what makes a
+      # CDD's remediation and quick-check decisions evidence-based rather than
+      # guessed.
+      - knowledge_test_report
     blueprint:
       - course_calendar
       - block_schedule
       - syllabus
       - lesson_plan
+      - knowledge_test_report
     course_generation:
       # Pipeline-era classification names (kept for backward compatibility).
       - lesson_plan
@@ -310,6 +317,11 @@ document_processing:
   - ebook_reference
   - instructor_guide
   - student_handout
+  # AKTR (Airman Knowledge Test Report) missed-code rollups: aggregate exam
+  # PERFORMANCE data, not exam content. Deliberately not in
+  # restricted_document_types below — it carries no questions and no answers, and
+  # a Blueprint cannot print real "Targets for Quick Check" without it.
+  - knowledge_test_report
   - other
   document_type_rules:
   - doc_type: syllabus
@@ -335,6 +347,25 @@ document_processing:
     - corresponding assignment
     - topics covered
     priority: 20
+  # Ahead of quiz_answer_key: an AKTR rollup lists missed EXAM CODES, which reads
+  # to a keyword rule (and to the LLM classifier, observed on
+  # ALLCAMPUS_AKTR_MissedCodes_Q12026.xlsx) as answer-key material. That
+  # misclassification put it in a restricted doc-type family, so it could never
+  # reach a CDD or Blueprint. Matching it deterministically here settles the type
+  # before the LLM is consulted.
+  - doc_type: knowledge_test_report
+    filename_keywords:
+    - aktr
+    - missedcodes
+    - missed codes
+    # No bare "knowledge test" here: it scores 8 on a filename, enough to tie
+    # quiz_exam on a file called "Knowledge Test Prep.pdf" and then win on the lower
+    # priority number. The text keywords below carry the real evidence.
+    text_keywords:
+    - most missed acs codes
+    - '% missed'
+    - airman knowledge test
+    priority: 10
   - doc_type: quiz_answer_key
     filename_keywords:
     - answer key
@@ -459,6 +490,7 @@ document_processing:
     ebook_reference: page
     instructor_guide: guide_section
     student_handout: chunk
+    knowledge_test_report: knowledge_test_item
     other: chunk
     lesson_pdf: page
     slide_deck: slide
@@ -519,6 +551,9 @@ aim_content_rules:
   blueprint_source_types:
     - course_calendar
     - syllabus
+    # Knowledge-test performance data is block-wide Blueprint input: it is what makes
+    # "Targets for Quick Check" a measured figure instead of a placeholder.
+    - knowledge_test_report
 
   course_generation_source_types:
     - lesson_pdf

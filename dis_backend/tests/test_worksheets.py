@@ -91,7 +91,8 @@ def test_build_acs_registry_defaults_and_days_active():
     assert registry["AM.I.B.K1"]["quick_check_priority"].startswith("RECALL")
     assert registry["AM.I.B.R1"]["quick_check_priority"].startswith("ANALYZE")
     assert registry["AM.I.B.S1"]["quick_check_priority"].startswith("APPLY")
-    # Never fabricated — AKTR/ACS1.pdf are not ingested anywhere in this system.
+    # Never fabricated. No cursor here, so no knowledge-test report can be read and
+    # ACS1.pdf is not ingested anywhere in this system.
     assert registry["AM.I.B.K1"]["task_description"] == "NOT AVAILABLE — ACS1.pdf not ingested"
     assert registry["AM.I.B.K1"]["high_miss"] == "NO AKTR DATA — not supplied"
 
@@ -188,7 +189,8 @@ def test_build_source_file_inventory_adds_block_wide_reference_docs_not_in_units
                 worksheets.build_source_file_inventory(en, cur=cur, schema="dis")}
 
     assert cur.params[0] == "aim"
-    assert set(cur.params[1]) == {"syllabus", "course_calendar", "ebook_reference"}
+    assert set(cur.params[1]) == {"syllabus", "course_calendar", "ebook_reference",
+                                 "knowledge_test_report"}
     assert re.search(cur.params[2], "Block 02 Syllabus.docx")
     assert re.search(cur.params[2], "Some Block 2 File.pdf")
 
@@ -324,12 +326,19 @@ class _FakeAcs1Cursor:
         self.calls.append((sql, params))
 
     def fetchall(self):
-        if len(self.calls) == 1:
+        # Dispatched on the SQL, not on call COUNT: build_acs_registry issues other
+        # lookups against this same cursor (the knowledge_test_report one), and a
+        # count-based double answered whichever query happened to be third with the
+        # ACS-1 branch's data.
+        sql, params = self.calls[-1]
+        if "knowledge_test_report" in sql:
+            return []
+        if "total_chars" in sql:
             sizes = {}
             for row in self._doc_rows:
                 sizes[row["document_id"]] = sizes.get(row["document_id"], 0) + len(row["text_content"] or "")
             return [{"document_id": doc_id, "total_chars": total} for doc_id, total in sizes.items()]
-        candidate_ids = set(self.calls[1][1][0])
+        candidate_ids = set(params[0])
         return [row for row in self._doc_rows if row["document_id"] in candidate_ids]
 
 
@@ -598,3 +607,69 @@ def test_build_web_resources_strips_leaked_prose_with_no_separator():
     units_by_day = {1: [{"text_content": text}]}
     urls = worksheets.build_web_resources([], units_by_day)
     assert urls == ["https://youtu.be/Z3ZO6oRbptM"]
+
+
+class _AktrCursor:
+    """Mocks only the knowledge_test_report lookup. build_acs_registry also calls
+    _acs1_task_descriptions with the same cursor, so every other query answers empty
+    — which is what a client with no ingested ACS-1 document really looks like."""
+    def __init__(self, rows):
+        self._rows = rows
+        self.calls = []
+
+    def execute(self, sql, params):
+        self.calls.append((sql, params))
+
+    def fetchall(self):
+        sql = self.calls[-1][0]
+        return list(self._rows) if "knowledge_test_report" in sql else []
+
+
+def test_build_acs_registry_reads_real_aktr_miss_rates():
+    """A block with an ingested knowledge_test_report prints measured figures, and
+    still says NO AKTR DATA for the codes that report does not list — per code, not
+    as a blanket claim."""
+    en = _en(
+        days=[{"day_number": 1}],
+        units_by_day={},
+        declared_acs=["AM.II.K.K1", "AM.II.K.K9"],
+        acs_by_day={1: {"AM.II.K.K1", "AM.II.K.K9"}},
+    )
+    cur = _AktrCursor([
+        {"metadata_json": {"missed_codes": [
+            {"acs_code": "AM.II.K.K1", "pct_missed": 0.4816753926701571, "rank": 1},
+        ]}, "text_content": ""},
+    ])
+    registry = {r["acs_code"]: r for r in worksheets.build_acs_registry(en, cur)}
+    assert registry["AM.II.K.K1"]["high_miss"] == "48.2% missed, rank #1"
+    assert "48.2% missed" in registry["AM.II.K.K1"]["quick_check_priority"]
+    assert registry["AM.II.K.K9"]["high_miss"] == "NO AKTR DATA — code not in the ingested report"
+    assert registry["AM.II.K.K9"]["quick_check_priority"].startswith("RECALL")
+
+
+def test_build_acs_registry_reads_aktr_from_unit_text_when_metadata_absent():
+    """Units written before ``missed_codes`` existed on unit metadata are still read,
+    by parsing the composed text the same module emits."""
+    from services.knowledge_test_report import _compose_text
+    text = _compose_text(6, "ALL CAMPUS — Block 6", [
+        {"acs_code": "AM.II.K.K1", "pct_missed": 0.382, "rank": 2,
+         "description": "Voltage regulators."},
+    ])
+    en = _en(days=[{"day_number": 1}], units_by_day={}, declared_acs=["AM.II.K.K1"])
+    cur = _AktrCursor([{"metadata_json": {}, "text_content": text}])
+    registry = {r["acs_code"]: r for r in worksheets.build_acs_registry(en, cur)}
+    assert registry["AM.II.K.K1"]["high_miss"] == "38.2% missed, rank #2"
+
+
+def test_build_acs_registry_survives_a_failing_aktr_lookup():
+    """The lookup is best-effort: its failure must not cost the registry."""
+    class _Boom:
+        def execute(self, *a, **k):
+            raise RuntimeError("no such table")
+
+        def fetchall(self):
+            return []
+
+    en = _en(days=[{"day_number": 1}], units_by_day={}, declared_acs=["AM.II.K.K1"])
+    registry = {r["acs_code"]: r for r in worksheets.build_acs_registry(en, _Boom())}
+    assert registry["AM.II.K.K1"]["high_miss"].startswith("NO AKTR DATA")

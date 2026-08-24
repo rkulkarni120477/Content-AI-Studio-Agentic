@@ -16,7 +16,7 @@ python-multipart>=0.0.9          # file uploads
 
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy>=2.0.0
-alembic>=1.14
+alembic>=1.16  # if_not_exists on create_index/drop_index (used by the prompt-tenant-scope migration) needs 1.16+
 psycopg2-binary>=2.9.9
 psycopg[binary]>=3.2,<4   # DIS structure_store (services/indexing.py) uses psycopg v3
 

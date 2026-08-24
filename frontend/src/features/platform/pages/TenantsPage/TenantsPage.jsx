@@ -26,18 +26,9 @@ import { describeOverrides } from '@config/tenantLabels';
 import styles from './TenantsPage.module.scss';
 
 const EMPTY_FORM = {
-  slug: '', name: '', client_name: '', max_users: 50,
+  slug: '', name: '', max_users: 50,
   admin_username: '', admin_password: '', admin_display_name: '',
 };
-
-// Which client's content the org works on. Drives Source Library access for the
-// org's members, so it is required at creation. Same options as Edit Project.
-const CLIENT_OPTIONS = [
-  { value: 'Cengage', label: 'Cengage' },
-  { value: 'AIM', label: 'AIM' },
-  { value: 'Academian', label: 'Academian' },
-  { value: 'Demo', label: 'Demo' },
-];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]: '#7c3aed',
@@ -101,16 +92,15 @@ export default function TenantsPage() {
 
   async function handleCreate(e) {
     e.preventDefault();
-    if (!form.client_name) {
-      toast.error('Please select a Client — it decides which Source Library content the organization can access.');
-      return;
-    }
     setSaving(true);
     try {
+      const clientName = form.name.trim();
       await platformService.createTenant({
         slug: form.slug.trim().toLowerCase(),
-        name: form.name.trim(),
-        client_name: form.client_name,
+        name: clientName,
+        // The tenant's own name and its DIS client are the same thing here —
+        // one "Client Name *" field on the form drives both.
+        client_name: clientName,
         max_users: Number(form.max_users) || 50,
         admin_username: form.admin_username.trim(),
         admin_password: form.admin_password,
@@ -611,7 +601,7 @@ export default function TenantsPage() {
         size="md"
         footer={null}
       >
-        <p className={styles.modalSub}>Creates the organization and an initial tenant admin account.</p>
+        <p className={styles.modalSub}>Creates the organization, its Source Library client, and an initial tenant admin account.</p>
         <form onSubmit={handleCreate} className={styles.form}>
           <Input
             label="Organization code *"
@@ -621,17 +611,11 @@ export default function TenantsPage() {
             required
           />
           <Input
-            label="Display name *"
+            label="Client Name *"
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
-            placeholder="e.g. AIM 16 Block Development"
-            required
-          />
-          <Select
-            label="Client *"
-            options={[{ value: '', label: 'Select client…' }, ...CLIENT_OPTIONS]}
-            value={form.client_name}
-            onChange={(e) => set('client_name', e.target.value)}
+            placeholder="e.g. Nova Publishing"
+            hint="Also names this tenant's Source Library client — must be distinct from every other tenant's once lowercased and underscored (e.g. 'Nova Publishing' and 'nova_publishing' would collide)."
             required
           />
           <Input

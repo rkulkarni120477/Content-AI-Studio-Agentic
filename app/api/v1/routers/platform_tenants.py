@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
@@ -280,6 +280,7 @@ def list_tenants(
 @router.post("", response_model=TenantCreateResponse, status_code=201, summary="Create a tenant")
 def create_tenant(
     body: TenantCreateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user=Depends(_require_platform_admin),
 ) -> TenantCreateResponse:
@@ -305,6 +306,14 @@ def create_tenant(
         raise HTTPException(status_code=500, detail=f"Failed to create tenant: {exc}")
 
     db.refresh(project)
+
+    # External side effect on an already-committed tenant — never fails the
+    # response over it, see dis_provisioning's own docstring. Backgrounded
+    # (not awaited inline) so a slow/unreachable DIS backend never adds
+    # latency to this response or ties up a worker thread on its HTTP call.
+    from app.services.dis_provisioning import provision_dis_client
+    background_tasks.add_task(provision_dis_client, project.client_name or project.name, project.name)
+
     _log.info("tenant_created  by=%s  slug=%s  admin=%s",
               current_user.username, project.slug, admin_user.username)
     base = _tenant_read(db, project)

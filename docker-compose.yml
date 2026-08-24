@@ -144,6 +144,13 @@ services:
     env_file:
       - ./dis_backend/.env
 
+    # Live-shared with the host (and with CAS's own api container, which
+    # writes new client YAMLs here on tenant creation) — without this, the
+    # image's baked-in COPY of config/ never sees a file written after build,
+    # and /admin/config/reload would have nothing new to pick up.
+    volumes:
+      - ./dis_backend/config:/app/config
+
     ports:
       - "${DIS_PORT}:8000"
 

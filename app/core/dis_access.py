@@ -30,6 +30,7 @@ class DISAccessContext:
 
 
 _ACCESS_CONFIG_CACHE: dict[str, Any] | None = None
+_ACCESS_CONFIG_CACHE_MTIME: float | None = None
 
 
 def _setting(name: str, default: Any = "") -> Any:
@@ -89,12 +90,29 @@ def load_dis_access_config(force_reload: bool = False) -> dict[str, Any]:
 
     Env values override file values where configured. This lets production use
     secure env/secrets while local dev can simply edit config/dis_access.json.
+
+    Cached, but keyed on the file's mtime rather than cached forever: api,
+    celery_worker and any other process reading this each hold their own
+    in-process cache, and force_reload only ever clears the caller's own copy
+    — a provisioning call's force_reload=True (see dis_provisioning.py) never
+    reaches the other containers' caches. The file itself is the one thing
+    every container actually shares (same bind-mounted path), so re-``stat``ing
+    it — a single cheap syscall — and reloading on a changed mtime gets every
+    process caught up on its own next call, with no cross-process signalling.
     """
-    global _ACCESS_CONFIG_CACHE
-    if _ACCESS_CONFIG_CACHE is not None and not force_reload:
+    global _ACCESS_CONFIG_CACHE, _ACCESS_CONFIG_CACHE_MTIME
+    path = _access_config_path()
+    try:
+        current_mtime = path.stat().st_mtime if path.exists() else None
+    except OSError:
+        current_mtime = None
+    if (
+        _ACCESS_CONFIG_CACHE is not None
+        and not force_reload
+        and current_mtime == _ACCESS_CONFIG_CACHE_MTIME
+    ):
         return _ACCESS_CONFIG_CACHE
 
-    path = _access_config_path()
     file_cfg: dict[str, Any] = {}
     if path.exists():
         try:
@@ -132,6 +150,7 @@ def load_dis_access_config(force_reload: bool = False) -> dict[str, Any]:
         "user_client_map": {k.lower(): v for k, v in user_client_map.items()},
     }
     _ACCESS_CONFIG_CACHE = cfg
+    _ACCESS_CONFIG_CACHE_MTIME = current_mtime
     return cfg
 
 

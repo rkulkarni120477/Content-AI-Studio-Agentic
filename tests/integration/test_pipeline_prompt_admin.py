@@ -25,10 +25,11 @@ def reviewer_headers(client, db) -> dict:
 
     db.add(User(username="test_reviewer",
                 password_hash=hash_password("test_password"),
-                role="reviewer", is_active=True))
+                role="reviewer", is_active=True, is_platform_admin=True))
     db.commit()
     resp = client.post("/api/v1/auth/login",
-                       json={"username": "test_reviewer", "password": "test_password"})
+                       json={"username": "test_reviewer", "password": "test_password",
+                             "platform_admin": True})
     assert resp.status_code == 200
     return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 

@@ -296,6 +296,13 @@ _DOC_TYPE_HINTS: tuple[tuple[re.Pattern[str], tuple[str, ...], bool], ...] = (
      ("hangar_activity", "project_activity"), True),
     (re.compile(r"\b(?:slides?|decks?|powerpoints?|ppt|teaching\s+outlines?)\b",
                 re.IGNORECASE), ("slide_deck", "lesson_pdf"), True),
+    # AKTR / knowledge-test performance data. Strong: no worksheet column is named
+    # this, so the phrase can only be asking for the report itself. The `cdd` purpose
+    # already admits the type, so this only matters for an instruction issued against
+    # a tenant whose purpose list has not been widened.
+    (re.compile(r"\baktr\b|\bmissed\s+codes?\b|\bmiss(?:ed)?\s+rates?\b"
+                r"|\bknowledge[\s-]test\b", re.IGNORECASE),
+     ("knowledge_test_report",), True),
     # Weak: also the worksheet's own words. Widen, never trigger.
     (re.compile(r"\bexams?\b", re.IGNORECASE), ("final_exam",), False),
     (re.compile(r"\bprojects?\b", re.IGNORECASE), ("project", "project_activity"), False),

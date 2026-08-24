@@ -16,8 +16,11 @@ UndefinedColumn instead.
 The Phoenix migration since reconciled the ORM to ``trace_id`` — which inverts
 that exposure rather than ending it, because revision 000100000017 creates the
 column AS ``langfuse_trace_id``. A database that ran 17 but not the
-000100000022 rename now has only the name the ORM stopped asking for. Hence the
-boot-time repair below ensures BOTH names.
+000100000022 rename now has only the name the ORM stopped asking for.
+``database._heal_trace_id_column`` is the boot-time repair: unlike a bare
+``_REQUIRED_COLUMNS`` entry (tried and reverted — see its own comment), it
+copies ``langfuse_trace_id``'s data into the new column rather than leaving it
+empty, so migration 22's rename being skipped afterward doesn't orphan it.
 
 These tests pin the property that made the drift catastrophic rather than
 cosmetic — because the next drift, or the next transient database error, must
@@ -93,39 +96,27 @@ def test_the_real_implementation_is_still_reachable():
 
 
 def test_the_drifted_column_is_registered_for_self_heal():
-    """The underlying fix: the boot-time repair adds the column the ORM needs,
-    so the next container start ends the drift rather than surviving it.
+    """The underlying fix: the boot-time repair adds the column the ORM needs
+    (and copies its data across — see _heal_trace_id_column's own tests),
+    so the next container start ends the drift rather than surviving it."""
+    from promptops_app.database import _heal_trace_id_column
 
-    The name tracked here is the ORM's current one, ``trace_id``. It was
-    ``langfuse_trace_id`` until the Phoenix migration reconciled the model, and
-    the old name is deliberately NOT kept alongside it — a column no model
-    declares cannot break a read, so repairing it would be dead DDL taking a lock
-    on every boot.
-    """
-    from promptops_app.database import _REQUIRED_COLUMNS
-
-    statements = " ".join(_REQUIRED_COLUMNS.get("llm_usage_logs", ()))
-    assert "ADD COLUMN IF NOT EXISTS trace_id" in statements
-    # Additive only: the rename that carries the old values across is revision
-    # 000100000022's job, not a boot-time repair's.
-    assert "DROP" not in statements.upper()
-    assert "RENAME" not in statements.upper()
+    assert callable(_heal_trace_id_column)
 
 
-def test_the_failsafe_covers_whatever_the_orm_currently_declares():
+def test_the_failsafe_still_targets_whatever_the_orm_currently_declares():
     """The guard that survives the next rename.
 
-    Read the mapped column off the ORM rather than naming it, so this fails if a
-    future rename lands without extending the boot-time repair — which is exactly
-    what the Phoenix reconciliation did to the previous version of this test.
+    _heal_trace_id_column hardcodes "trace_id" as the column it creates and
+    backfills from langfuse_trace_id. If the ORM's mapped column is ever
+    renamed again without updating that function, this catches it here
+    rather than at boot in production — exactly what happened to the
+    previous version of this test across the Phoenix reconciliation.
     """
-    from promptops_app.database import _REQUIRED_COLUMNS, LLMUsageLog
+    from promptops_app.database import LLMUsageLog
 
     mapped = {c.name for c in LLMUsageLog.__table__.columns if "trace" in c.name}
-    statements = " ".join(_REQUIRED_COLUMNS.get("llm_usage_logs", ()))
-    assert mapped, "LLMUsageLog no longer maps a trace column — update this test"
-    for name in mapped:
-        assert f"ADD COLUMN IF NOT EXISTS {name} " in statements, (
-            f"the ORM declares {name!r} but the boot-time repair does not ensure "
-            f"it; a database without that column fails EVERY read of this table"
-        )
+    assert mapped == {"trace_id"}, (
+        f"LLMUsageLog's trace column(s) are now {mapped!r} — update "
+        "_heal_trace_id_column to match before this drifts silently"
+    )

@@ -569,17 +569,33 @@ def generate_cdd(
         if style_context:
             extra_block = f"**ACTIVE STYLE — Apply throughout:**\n{style_context}\n\n{extra_block}"
 
+        # Duration is optional on the form, so it can be absent here. "unspecified"
+        # rather than a stand-in number: a template that prints
+        # "**Estimated Duration:** {estimated_duration} hours" must not assert a
+        # figure the requester never gave, and an empty string would read as a
+        # rendering bug rather than as an answer.
+        estimated_duration = (
+            str(request_body.estimated_duration_hours)
+            if request_body.estimated_duration_hours is not None else "unspecified"
+        )
+
         variables = {
             "course_title":        request_body.course_title,
             "course_name":         request_body.course_title,
             "target_audience":     request_body.target_audience,
             "expert_domain":       request_body.expert_domain,
             "audience_level":      request_body.audience_category,
-            "estimated_duration":  str(request_body.estimated_duration_hours),
+            "estimated_duration":  estimated_duration,
             "extra_instructions_block": extra_block,
             "extra_instructions":  extra_block,
             "style_guidelines":    style_context,
             "grade_level":         request_body.target_audience,
+            # The block this request is scoped to. Absent until now, which made the
+            # block un-injectable on the very route AIM's Block Blueprint prompts run
+            # on (all four are component_type="cdd"), so such a prompt had to hardcode
+            # "Block 2" in its text or name a blueprint-route variable and fail
+            # render's strict check outright.
+            "block":               getattr(request_body, "block", None) or "",
         }
 
         try:
@@ -614,10 +630,30 @@ def generate_cdd(
                 target_audience=request_body.target_audience,
                 expert_domain=request_body.expert_domain,
                 audience_level=request_body.audience_category,
-                estimated_duration=str(request_body.estimated_duration_hours),
+                estimated_duration=estimated_duration,
                 extra_instructions_block=extra_block,
             )
             prompt_provenance = {"prompt_source": "builtin_fallback"}
+
+    # ── Step 1b: Refuse a prompt this path structurally cannot honour ─────────
+    # Reached both by a direct single-call request and by the block-wide branch above
+    # falling through after a DIS/reduce failure — the fallback is where an
+    # xlsx-and-download-link prompt would otherwise persist a one-line CDD.
+    from promptops_app.services.prompt_capability import (
+        context_was_dropped, reject_if_unsatisfiable,
+    )
+    reject_if_unsatisfiable(system_prompt, user_prompt, what="generating this CDD")
+    # Not fatal (see context_was_dropped), but it decides whether the flags in the
+    # finished document mean "the source really lacks this" or "the prompt never
+    # received the source", so it must be on the row rather than inferred later.
+    if context_was_dropped(dis_context_block, system_prompt, user_prompt):
+        _log.warning(
+            "cdd_source_context_dropped  user=%s  course=%d  context_chars=%d  "
+            "prompt_source=%s — the selected prompt has no slot for it",
+            current_user.username, request_body.course_id, len(dis_context_block),
+            prompt_provenance.get("prompt_source"),
+        )
+        prompt_provenance["source_context_dropped"] = True
 
     # ── Step 2: Call the LLM ───────────────────────────────────────────────────
     usage_context = UsageLogContext(

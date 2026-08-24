@@ -95,10 +95,26 @@ _CACHE: "OrderedDict[str, str]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 
 
+def distiller_version() -> str:
+    """Content fingerprint of the distiller's OWN instructions.
+
+    Same device as the MAP template's ``current_prompt_version()`` and
+    ``reduce_prompts.content_hash``, and needed for the same reason: the extraction
+    wording below is what turns a prompt into guidance, so editing it changes every
+    distillation it would produce. Without it in the memo key, a warm process keeps
+    serving guidance built by the PREVIOUS wording — and because that guidance is
+    itself folded into the per-day digest cache key, the stale text would then be
+    baked into digests that report as current. Derived, not hand-bumped, so an edit
+    cannot forget to move it.
+    """
+    return hashlib.sha256(_DIGEST_SYSTEM_TEMPLATE.encode("utf-8")).hexdigest()[:12]
+
+
 def _cache_key(prompt_text: str, model_choice: str, max_items: int, max_chars: int) -> str:
     """Hash every input that changes the distillation output, so a change to any
-    of them (including the caps) misses rather than serving a stale digest."""
-    raw = f"{model_choice}|{max_items}|{max_chars}|{prompt_text}"
+    of them (including the caps and the distiller's own wording) misses rather than
+    serving a stale digest."""
+    raw = f"{distiller_version()}|{model_choice}|{max_items}|{max_chars}|{prompt_text}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
