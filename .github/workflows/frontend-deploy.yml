@@ -3,7 +3,7 @@ name: Deploy Content AI Frontend
 on:
   push:
     branches:
-      - dev
+      - prod
     paths:
       - 'frontend/**'
       - '.github/workflows/frontend-deploy.yml'

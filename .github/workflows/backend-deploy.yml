@@ -3,7 +3,7 @@ name: Deploy Content AI Backend
 on:
   push:
     branches:
-      - dev
+      - prod
     paths:
       - "app/**"
       - "api_server.py"
@@ -49,10 +49,10 @@ jobs:
             git fetch origin
 
             echo "Switching to dev branch..."
-            git checkout dev
+            git checkout prod
 
             echo "Syncing with remote..."
-            git reset --hard origin/dev
+            git reset --hard origin/prod
 
             echo "Building and starting all backend services..."
             docker compose up -d --build --remove-orphans
