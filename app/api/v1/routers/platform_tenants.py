@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
@@ -30,6 +30,7 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.core.permission_catalog import PERMISSION_CATEGORIES
 from app.core.permissions import role_label
 from app.core.security import hash_password
+from app.schemas.budget import BudgetPolicyRead, BudgetPolicyUpsertRequest
 from app.schemas.tenant import (
     TenantCreateRequest,
     TenantCreateResponse,
@@ -121,6 +122,147 @@ def _get_membership_or_404(db: Session, project_id: int, user_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Budget policies (P3.1 of claude_plan_platform_hardening)
+#
+# Registered BEFORE the /{project_id}... routes below on purpose: FastAPI/
+# Starlette matches routes in registration order, and a plain PUT /{project_id}
+# (the tenant-update route) would otherwise swallow PUT /budgets, matching
+# "budgets" as a literal project_id value and 422ing on int conversion instead
+# of ever reaching this handler. Confirmed live — this is the fix for that,
+# not a defensive guess.
+#
+# Platform-admin-only for v1 (P3.3) — same _require_platform_admin gate as
+# every other endpoint in this file, not a new permission key. Widening to a
+# tenant-admin self-manage boundary is a narrower follow-up, not this pass.
+# ---------------------------------------------------------------------------
+
+def _as_int(value: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"scope_id must be a numeric id for this scope: {value!r}")
+
+
+def _validate_budget_scope_id(db: Session, scope: str, scope_id: str) -> None:
+    """BudgetPolicy has no DB-level FK (scope_id is polymorphic, matching
+    LLMUsageLog's own no-FK convention) — validate it here instead."""
+    from promptops_app.database import Course, Project, User
+
+    if scope == "project":
+        if db.query(Project).filter(Project.id == _as_int(scope_id)).first() is None:
+            raise NotFoundError("Project", scope_id)
+    elif scope == "course":
+        if db.query(Course).filter(Course.id == _as_int(scope_id)).first() is None:
+            raise NotFoundError("Course", scope_id)
+    elif scope == "user":
+        # A username, not a numeric id — matches LLMUsageLog.user_id/UsageLogContext.user_name.
+        if db.query(User).filter(User.username == scope_id).first() is None:
+            raise NotFoundError("User", scope_id)
+
+
+def _assert_can_view_budget_scope(db: Session, current_user, scope: str | None, scope_id: str | None) -> None:
+    """Platform admins may list/filter freely. Everyone else must name exactly
+    the one scope they themselves belong to (P3.3: managing stays
+    platform-admin-only, but viewing your own spend does not)."""
+    from promptops_app.database import Course
+
+    if getattr(current_user, "_is_platform_admin", False):
+        return
+    if not scope or not scope_id:
+        raise HTTPException(status_code=403, detail="Platform admin access required to list all budget policies.")
+
+    own_project_id = getattr(current_user, "_project_id", None)
+    if scope == "project":
+        if own_project_id is None or scope_id != str(own_project_id):
+            raise HTTPException(status_code=403, detail="You may only view your own project's budget.")
+    elif scope == "course":
+        course = db.query(Course).filter(Course.id == _as_int(scope_id)).first()
+        if course is None or own_project_id is None or course.project_id != own_project_id:
+            raise NotFoundError("Course", scope_id)
+    elif scope == "user":
+        if scope_id != current_user.username:
+            raise HTTPException(status_code=403, detail="You may only view your own budget.")
+    else:
+        raise HTTPException(status_code=403, detail="Platform admin access required to list all budget policies.")
+
+
+@router.get("/budgets", response_model=list[BudgetPolicyRead], summary="List budget policies")
+def list_budgets(
+    scope: str | None = None,
+    scope_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[BudgetPolicyRead]:
+    from promptops_app.database import BudgetPolicy
+    from promptops_app.services.budget_service import current_period_usage
+
+    _assert_can_view_budget_scope(db, current_user, scope, scope_id)
+
+    q = db.query(BudgetPolicy)
+    if scope:
+        q = q.filter(BudgetPolicy.scope == scope)
+    if scope_id:
+        q = q.filter(BudgetPolicy.scope_id == scope_id)
+
+    out = []
+    for policy in q.order_by(BudgetPolicy.scope, BudgetPolicy.scope_id).all():
+        read = BudgetPolicyRead.model_validate(policy)
+        spend, tokens = current_period_usage(db, policy.scope, policy.scope_id, policy.period)
+        read.current_spend_usd = round(spend, 4)
+        read.current_tokens = tokens
+        out.append(read)
+    return out
+
+
+@router.put("/budgets/policy", response_model=BudgetPolicyRead, summary="Set (create or update) a budget policy")
+def upsert_budget(
+    body: BudgetPolicyUpsertRequest,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> BudgetPolicyRead:
+    from promptops_app.database import BudgetPolicy
+    from promptops_app.services.budget_service import current_period_usage
+
+    _validate_budget_scope_id(db, body.scope, body.scope_id)
+
+    policy = db.query(BudgetPolicy).filter(
+        BudgetPolicy.scope == body.scope, BudgetPolicy.scope_id == body.scope_id,
+    ).first()
+    if policy is None:
+        policy = BudgetPolicy(scope=body.scope, scope_id=body.scope_id)
+        db.add(policy)
+
+    policy.period = body.period
+    policy.limit_type = body.limit_type
+    policy.limit_usd = body.limit_usd
+    policy.limit_tokens = body.limit_tokens
+    policy.warn_threshold_pct = body.warn_threshold_pct
+    db.commit()
+    db.refresh(policy)
+
+    read = BudgetPolicyRead.model_validate(policy)
+    spend, tokens = current_period_usage(db, policy.scope, policy.scope_id, policy.period)
+    read.current_spend_usd = round(spend, 4)
+    read.current_tokens = tokens
+    return read
+
+
+@router.delete("/budgets/{policy_id}", status_code=204, summary="Delete a budget policy")
+def delete_budget(
+    policy_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(_require_platform_admin),
+) -> None:
+    from promptops_app.database import BudgetPolicy
+
+    policy = db.query(BudgetPolicy).filter(BudgetPolicy.id == policy_id).first()
+    if policy is None:
+        raise NotFoundError("BudgetPolicy", policy_id)
+    db.delete(policy)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
 # Tenant CRUD
 # ---------------------------------------------------------------------------
 
@@ -138,6 +280,7 @@ def list_tenants(
 @router.post("", response_model=TenantCreateResponse, status_code=201, summary="Create a tenant")
 def create_tenant(
     body: TenantCreateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user=Depends(_require_platform_admin),
 ) -> TenantCreateResponse:
@@ -163,6 +306,14 @@ def create_tenant(
         raise HTTPException(status_code=500, detail=f"Failed to create tenant: {exc}")
 
     db.refresh(project)
+
+    # External side effect on an already-committed tenant — never fails the
+    # response over it, see dis_provisioning's own docstring. Backgrounded
+    # (not awaited inline) so a slow/unreachable DIS backend never adds
+    # latency to this response or ties up a worker thread on its HTTP call.
+    from app.services.dis_provisioning import provision_dis_client
+    background_tasks.add_task(provision_dis_client, project.client_name or project.name, project.name)
+
     _log.info("tenant_created  by=%s  slug=%s  admin=%s",
               current_user.username, project.slug, admin_user.username)
     base = _tenant_read(db, project)
@@ -213,6 +364,42 @@ def update_tenant(
     db.refresh(project)
     _log.info("tenant_updated  project_id=%d", project_id)
     return _tenant_read(db, project)
+
+
+@router.delete("/{project_id}", status_code=204, summary="Permanently delete a tenant")
+def delete_tenant(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(_require_platform_admin),
+) -> None:
+    """Hard delete — the tenant and every course/block/generation/etc. under
+    it are gone, irreversibly. See tenant_service.hard_delete_tenant for
+    exactly what is and isn't touched (LLM usage/audit/budget history is
+    deliberately retained).
+
+    Not fully atomic — purge_course commits per course — so a failure
+    partway through can leave the tenant partially deleted. Re-running this
+    delete is safe: purge_course no-ops on an already-gone course, and every
+    other step here is a plain filtered delete that no-ops once its rows are
+    already gone.
+    """
+    project = _get_tenant_or_404(db, project_id)
+    name = project.name
+    try:
+        tenant_service.hard_delete_tenant(db, project, deleted_by=current_user.username)
+        db.commit()
+    except Exception:
+        db.rollback()
+        _log.exception("tenant_delete_failed  project_id=%d", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Tenant deletion failed partway through — some of its courses may "
+                "already be permanently gone. Safe to retry: already-deleted content "
+                "is simply skipped. See server logs for the underlying error."
+            ),
+        )
+    _log.info("tenant_deleted  project_id=%d  name=%r  by=%s", project_id, name, current_user.username)
 
 
 @router.get("/{project_id}/usage", response_model=TenantUsageResponse, summary="Tenant license usage")

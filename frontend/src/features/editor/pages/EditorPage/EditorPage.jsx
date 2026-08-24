@@ -275,9 +275,9 @@ export default function EditorPage() {
   }
 
   const scopeLabel = activeBlueprint
-    ? `🧩 Generate tab is pinned to: ${activeBlueprint.title || 'Active Blueprint'}`
+    ? `🧩 Generate tab is pinned to: ${activeBlueprint.title || `Active ${L.blueprint}`}`
     : activeCdd
-      ? `📘 Generate tab is pinned to: ${activeCdd.title || activeCdd.course_title || 'Active CDD'}`
+      ? `📘 Generate tab is pinned to: ${activeCdd.title || activeCdd.course_title || `Active ${L.cdd}`}`
       : null;
 
   // Course-scoped blueprints, keyed by id. A generation's blueprint_id can also
@@ -626,7 +626,7 @@ export default function EditorPage() {
         {scopeLabel && (
           <div className={styles.scopeBanner}>
             <strong>{scopeLabel}</strong>
-            <span> — the file list below includes lessons from every module in this title.</span>
+            <span> — the file list below includes lessons from every module in this {L.titleLower}.</span>
           </div>
         )}
 

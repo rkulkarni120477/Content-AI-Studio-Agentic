@@ -60,6 +60,7 @@ AUDIT_EVENTS: dict[str, dict] = {
     "user.reactivated":        {"level": "info",    "entity": "user",       "icon": "✅", "label": "User account reactivated"},
     "project.user_assigned":   {"level": "info",    "entity": "project",    "icon": "➕", "label": "User added to project"},
     "project.user_removed":    {"level": "info",    "entity": "project",    "icon": "➖", "label": "User removed from project"},
+    "project.deleted":         {"level": "critical", "entity": "project",   "icon": "🗑️", "label": "Tenant permanently deleted"},
 
     # ── Style ────────────────────────────────────────────────────────────────
     "style.uploaded":          {"level": "info",    "entity": "style",      "icon": "🎨", "label": "Style uploaded"},
@@ -74,6 +75,9 @@ AUDIT_EVENTS: dict[str, dict] = {
     "cdd.version_committed":   {"level": "info",    "entity": "cdd",        "icon": "💾", "label": "CDD version committed"},
     "cdd.version_activated":   {"level": "info",    "entity": "cdd",        "icon": "✅", "label": "CDD active version changed"},
     "cdd.pinned":              {"level": "info",    "entity": "cdd",        "icon": "📌", "label": "CDD pinned for generation"},
+    "cdd.archived":            {"level": "warning", "entity": "cdd",        "icon": "🗄️", "label": "CDD archived"},
+    "cdd.restored":            {"level": "info",    "entity": "cdd",        "icon": "♻️", "label": "CDD restored from archive"},
+    "cdd.purged":              {"level": "critical","entity": "cdd",        "icon": "🗑️", "label": "CDD permanently deleted"},
 
     # ── Blueprint ─────────────────────────────────────────────────────────────
     "blueprint.generated":     {"level": "info",    "entity": "blueprint",  "icon": "🗂️", "label": "Blueprint generated"},
@@ -81,6 +85,9 @@ AUDIT_EVENTS: dict[str, dict] = {
     "blueprint.version_committed": {"level": "info","entity": "blueprint",  "icon": "💾", "label": "Blueprint version committed"},
     "blueprint.version_activated": {"level": "info","entity": "blueprint",  "icon": "✅", "label": "Blueprint active version changed"},
     "blueprint.pinned":        {"level": "info",    "entity": "blueprint",  "icon": "📌", "label": "Blueprint pinned for generation"},
+    "blueprint.archived":      {"level": "warning", "entity": "blueprint",  "icon": "🗄️", "label": "Blueprint archived"},
+    "blueprint.restored":      {"level": "info",    "entity": "blueprint",  "icon": "♻️", "label": "Blueprint restored from archive"},
+    "blueprint.purged":        {"level": "critical","entity": "blueprint",  "icon": "🗑️", "label": "Blueprint permanently deleted"},
 
     # ── Block-wide generation (digest pipeline) ───────────────────────────────
     # The legacy paths are synchronous, so "requested" and "created" coincide and one
@@ -91,11 +98,14 @@ AUDIT_EVENTS: dict[str, dict] = {
     # `blueprint.created`, which still record the successful outcome.
     "cdd.block_requested":       {"level": "info",    "entity": "cdd",       "icon": "🧩", "label": "Block-wide CDD generation requested"},
     "cdd.block_failed":          {"level": "warning", "entity": "cdd",       "icon": "⚠️", "label": "Block-wide CDD generation failed"},
+    "cdd.block_refused":         {"level": "warning", "entity": "cdd",       "icon": "🚫", "label": "Block-wide CDD generation refused (client not enabled)"},
     "blueprint.block_requested": {"level": "info",    "entity": "blueprint", "icon": "🧩", "label": "Block-wide Blueprint generation requested"},
     "blueprint.block_failed":    {"level": "warning", "entity": "blueprint", "icon": "⚠️", "label": "Block-wide Blueprint generation failed"},
+    "blueprint.block_refused":   {"level": "warning", "entity": "blueprint", "icon": "🚫", "label": "Block-wide Blueprint generation refused (client not enabled)"},
 
     # ── Content Generation ────────────────────────────────────────────────────
     "generation.launched":     {"level": "info",    "entity": "generation", "icon": "🚀", "label": "Generation launched"},
+    "generation.trace_viewed": {"level": "info",    "entity": "generation", "icon": "🔍", "label": "Generation trace viewed"},
     "content.generated":       {"level": "info",    "entity": "generation", "icon": "⚡", "label": "Content generated"},
     "content.edited":          {"level": "info",    "entity": "block",      "icon": "✏️", "label": "Content block edited"},
     "content.regenerated":     {"level": "info",    "entity": "block",      "icon": "🔄", "label": "Content block regenerated"},

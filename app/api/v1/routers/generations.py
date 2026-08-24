@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_permission
+from app.core.dependencies import get_current_user, get_db, get_tenant_context, require_permission
 from app.core.http import content_disposition
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import JobAcceptedResponse, PaginatedResponse
@@ -396,6 +396,115 @@ def get_generation(
     blocks = generation_repository.list_blocks_for_generation(db, generation_id)
     result.blocks = [GenerationBlockSummary.model_validate(b) for b in blocks]
     return result
+
+
+@router.get(
+    "/{generation_id}/trace",
+    summary="Get this generation's full prompt/response trace from Phoenix",
+    description=(
+        "Proxies trace detail (prompt, response, model, token usage) from Phoenix "
+        "through CAS's own resource scoping — nobody needs a separate Phoenix login "
+        "or deep-link. Every tenant admin who can already see this generation can see "
+        "its trace."
+    ),
+)
+def get_generation_trace(
+    generation_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
+) -> dict:
+    """Look up the Phoenix trace_id for this generation's LLM call and fetch it.
+
+    Scoping is the whole security property here: get_scoped_or_404 is the exact
+    same tenant-filtered lookup every other scoped resource endpoint uses (see
+    feedback.py) — a generation belonging to another tenant 404s before this
+    function ever learns whether a trace exists for it. P1.5's isolation tests
+    prove this holds; do not change this lookup to anything that skips it.
+    """
+    from promptops_app.database import Generation, GenerationJob, LLMUsageLog, ModuleBlueprint
+    from app.core.tenant_context import get_scoped_or_404
+    from app.core.phoenix_client import get_trace_observations
+    from promptops_app.services.audit_service import log_audit_event
+
+    tenant_id, is_platform_admin = tenant
+    generation = get_scoped_or_404(db, Generation, generation_id, tenant_id, is_platform_admin)
+
+    # The LLM call that produced this generation was logged (P0) and traced (P1.2)
+    # under its GenerationJob's job_id, not the Generation row's own id — the
+    # Generation doesn't exist yet at the moment the call is logged. Join through
+    # GenerationJob.result_entity_id (set on job completion) to find it.
+    # job_type filter matters: result_entity_id is just an int/string column,
+    # not unique across job types (a regenerate_item job's result_entity_id is
+    # a block_id, a block-wide job's is a cdd/blueprint id) — without it,
+    # .first() with no ordering can match an unrelated job whose entity id
+    # happens to collide numerically. Ordered so a retried/duplicate job row
+    # resolves to the most recent one.
+    job = (
+        db.query(GenerationJob)
+        .filter(GenerationJob.result_entity_id == generation.id, GenerationJob.job_type == "generation")
+        .order_by(GenerationJob.id.desc())
+        .first()
+    )
+    usage_row = None
+    if job is not None:
+        usage_row = (
+            db.query(LLMUsageLog)
+            .filter(LLMUsageLog.entity_type == "generation", LLMUsageLog.entity_id == job.id)
+            .order_by(LLMUsageLog.id.desc())
+            .first()
+        )
+
+    # Imported items (prompt_name/version="import", editor_builder.py) have no
+    # GenerationJob at all — their content came from the uploaded package, not
+    # an LLM call, so the lookup above always misses for them. But the import
+    # DOES make one real, traced LLM call per module to reconstruct its
+    # Blueprint (reverse_blueprint.py), and every item in that module is linked
+    # to it via Generation.blueprint_id once that stage runs. Falling back to
+    # that module-level trace is honest, not exact: several lessons in the same
+    # module share one trace, since the call reconstructed the whole module,
+    # not any single lesson. scope in the response tells the frontend which
+    # case it got so it can label the trace accordingly.
+    #
+    # Gated on prompt_name == "import", not just "has a blueprint_id and its
+    # own trace missed" — a forward-generated lesson (real job, but its trace
+    # went missing for some other reason: Phoenix down, job row reaped) can
+    # also carry a blueprint_id, and must not be relabeled as imported.
+    scope = "generation"
+    is_imported = generation.prompt_name == "import"
+    if is_imported and (usage_row is None or not usage_row.trace_id) and generation.blueprint_id:
+        blueprint = db.get(ModuleBlueprint, generation.blueprint_id)
+        if blueprint is not None:
+            fallback_row = (
+                db.query(LLMUsageLog)
+                .filter(LLMUsageLog.entity_type == "reverse_blueprint",
+                        LLMUsageLog.entity_id == str(blueprint.module_number),
+                        LLMUsageLog.course_id == blueprint.course_id,
+                        LLMUsageLog.project_id == blueprint.project_id)
+                .order_by(LLMUsageLog.id.desc())
+                .first()
+            )
+            if fallback_row is not None:
+                usage_row = fallback_row
+                scope = "module_reconstruction"
+
+    if usage_row is None or not usage_row.trace_id:
+        raise NotFoundError("Trace for generation", generation_id)
+
+    observations = get_trace_observations(usage_row.trace_id)
+
+    log_audit_event(
+        db, current_user.username, "generation.trace_viewed",
+        entity_type="generation", entity_id=str(generation_id),
+        project_id=generation.project_id, course_id=generation.course_id,
+    )
+
+    return {
+        "generation_id": generation_id,
+        "trace_id": usage_row.trace_id,
+        "observations": observations,
+        "scope": scope,
+    }
 
 
 @router.get(

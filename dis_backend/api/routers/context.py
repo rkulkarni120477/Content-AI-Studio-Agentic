@@ -5,21 +5,28 @@ comes from the JWT. Super admins can still use different tenant config by
 getting a token for that tenant.
 """
 from __future__ import annotations
+import functools
+import logging
+import threading
 from typing import Any, Dict
 
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from api.middleware.auth import get_current_tenant
 from services.context_retrieval import ContextRetrievalService
+from services.digests import progress as digest_progress
 from services.digests.enumerate import enumerate_block
-from services.digests.build import build_digests, digest_status, context_bundle
+from services.digests.build import digest_status, context_bundle, run_tracked_build
 from services.digests.day_scoped import day_context, DEFAULT_SUPPLEMENT_K
 from services.source_library import delete_source_document
 from config.settings import get_tenant_config
 from storage.provider import get_storage_provider
 
 router = APIRouter(prefix="/context", tags=["Studio Context"])
+
+log = logging.getLogger(__name__)
 
 
 @router.get("/ui-config")
@@ -336,10 +343,28 @@ class DigestBuildRequest(BaseModel):
                     "false = sequential. None ⇒ tenant/global config default (D4).",
     )
     map_guidance: str = Field(
-        "", description="Optional judgment/emphasis guidance distilled from the course's "
-                        "selected CDD/Blueprint prompt (see the CAS-side prompt_guidance "
-                        "service) — appended to every day's MAP extraction call and folded "
-                        "into the cache key. Empty string reproduces today's behavior exactly.",
+        "", description="Optional generation guidance appended to every day's MAP "
+                        "extraction call and folded into the digest cache key. CAS "
+                        "composes two layers into this one field: judgment/emphasis "
+                        "distilled from the course's selected CDD/Blueprint prompt "
+                        "(prompt_guidance) and the requester's own directives for this "
+                        "run — style and additional instructions (user_directives). "
+                        "Composed caller-side rather than split into two fields on "
+                        "purpose: this field is already part of the cache key, so an "
+                        "older DIS still invalidates the right digests, whereas a new "
+                        "field it did not know would be ignored AND leave stale digests "
+                        "looking valid. Empty string reproduces the original behavior "
+                        "exactly.",
+    )
+    wait: bool = Field(
+        True,
+        description="True (default) = hold this request until the build finishes and "
+                    "return the report. False = start the build in the background and "
+                    "return immediately; poll GET /context/digests/progress for state "
+                    "and collect the report with include_result=true. Prefer False for "
+                    "a cold block: a 5-20 minute request is at the mercy of every "
+                    "timeout between caller and here, and losing it discards a build "
+                    "that already ran and was billed.",
     )
 
 
@@ -369,17 +394,98 @@ async def build_block_digests(request: Request, body: DigestBuildRequest):
     if use_graph:
         from services.digests.graph import make_checkpointer
         checkpointer = make_checkpointer(getattr(pipe, "digest_fanout_checkpoint_dsn", ""))
-    try:
-        return build_digests(
-            tenant, body.block, client_id=client_id, force=body.force,
-            use_graph=use_graph, checkpointer=checkpointer,
-            max_concurrency=getattr(pipe, "digest_fanout_max_concurrency", 5),
-            map_guidance=body.map_guidance,
+
+    # Single-flight, before any work. Two users pressing Generate on the same block —
+    # or a poller re-issuing a build whose original is still alive — would otherwise
+    # run concurrent MAP passes over the same days: double the Bedrock spend for one
+    # result, and racing writers on the same digest documents.
+    if not digest_progress.reserve(client_id, body.block):
+        if not body.wait:
+            # Not an error on the async path: the caller wants the build to happen, and
+            # it is happening. It polls for the same registry entry either way.
+            return {"started": False, "already_running": True, "block": body.block}
+        raise HTTPException(
+            409, f"A digest build for '{body.block}' is already running. Poll "
+                 f"GET /context/digests/progress?block={body.block} for its state.",
         )
+
+    runner = functools.partial(
+        run_tracked_build,
+        tenant, body.block, client_id=client_id, force=body.force,
+        use_graph=use_graph, checkpointer=checkpointer,
+        max_concurrency=getattr(pipe, "digest_fanout_max_concurrency", 5),
+        map_guidance=body.map_guidance,
+    )
+
+    if not body.wait:
+        # A plain thread rather than a task/queue: the build is IO-bound (Bedrock +
+        # OpenSearch), one runs at a time per block by the guard above, and the
+        # registry already carries the state a queue would exist to provide. daemon so
+        # it cannot wedge shutdown — an interrupted build leaves a terminal registry
+        # entry (see run_tracked_build) and its days are cached, so a retry resumes.
+        threading.Thread(
+            target=_run_build_in_background, args=(runner, client_id, body.block),
+            name=f"digest-build:{client_id}:{body.block}", daemon=True,
+        ).start()
+        return {"started": True, "block": body.block, "client_id": client_id}
+
+    try:
+        # to_thread, NOT a direct call: this coroutine runs on the single uvicorn event
+        # loop, and calling the blocking build here froze that loop for the whole build
+        # — starving health checks, every other tenant's requests, and above all the
+        # progress endpoint below, which is the one thing able to report that the build
+        # was alive. That is why a 10-minute cold build showed no day counter at all.
+        return await anyio.to_thread.run_sync(runner)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     except RuntimeError as exc:
         raise HTTPException(400, str(exc))
+
+
+def _run_build_in_background(runner: Any, client_id: str, block: str) -> None:
+    """Thread body for a non-blocking build.
+
+    ``run_tracked_build`` has already recorded the failure in the registry by the time
+    anything reaches here, so this only has to keep the exception from being lost to a
+    dead thread's stack and make it greppable in the logs.
+    """
+    try:
+        runner()
+    except BaseException:
+        log.exception("background digest build failed: client=%s block=%s", client_id, block)
+
+
+@router.get("/digests/progress")
+async def get_block_digest_progress(
+    request: Request,
+    block: str = Query(..., description="Block label, e.g. 'Block 2'."),
+    client_id: str = Query("", description="Super admin only. Inspect another client/workspace."),
+    include_result: bool = Query(
+        False,
+        description="Include the finished build's report. For the server-to-server "
+                    "poller that collects it once at the end — the browser polls this "
+                    "every 2 seconds and has no use for the report.",
+    ),
+):
+    """State, per-day progress, and (optionally) the result of a block's digest build.
+
+    This is both the liveness channel and the delivery channel for the report, which
+    is what lets ``POST /digests/build?wait=false`` return immediately. A caller that
+    loses its connection re-reads state here instead of losing the build.
+
+    Progress is reported BY the build (see services/digests/progress.py), never
+    inferred from the digest store: digests persist between attempts, so counting them
+    would report a retry as complete before it began.
+
+    Returns ``{"progress": null}`` when no build has been tracked for this block — an
+    ordinary answer, not an error, since the usual case is that nothing is running. A
+    poller that has already seen an entry must read ``null`` as "DIS restarted" rather
+    than "finished", and re-issue the build; per-day digests are cached, so that is
+    cheap and converges.
+    """
+    _tenant, resolved_client_id, _role = _resolve_block_scope(request, client_id or None)
+    return {"progress": digest_progress.snapshot(resolved_client_id, block,
+                                                 include_result=include_result)}
 
 
 @router.get("/digests")

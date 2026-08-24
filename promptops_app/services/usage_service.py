@@ -55,6 +55,14 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-opus":     {"input": 15.00,  "output": 75.00},
     "claude-sonnet":   {"input":  3.00,  "output": 15.00},
     "claude-haiku":    {"input":  0.80,  "output":  4.00},
+    # Embeddings (AWS Bedrock). Output is 0 by definition — an embedding call
+    # returns a vector, not generated tokens — so only the input side is charged.
+    # These matter because the fallback below is ~250x Titan's real price: DIS
+    # embeds every ingested chunk, so pricing an embedding run at $5/1M would
+    # report a few cents of real spend as tens of dollars and could trip a budget
+    # that was never actually approached.
+    "titan-embed":     {"input":  0.02,  "output":  0.00},
+    "cohere.embed":    {"input":  0.10,  "output":  0.00},
     # Fallback for unknown models
     "_default":        {"input":  5.00,  "output": 15.00},
 }
@@ -70,6 +78,12 @@ if _cfg.model_pricing_override:
 def _find_pricing(model_name: str) -> dict[str, float]:
     """Return pricing dict for *model_name* using substring matching."""
     lc = (model_name or "").lower()
+    # Embeddings first: "amazon.titan-embed-text-v2" contains none of the chat
+    # markers below, so without these it fell through to _default at $5/1M — ~250x
+    # Titan's real price. Checked before the chat families because an embedding id
+    # could otherwise be caught by a broad vendor match.
+    if "embed" in lc and "titan"  in lc: return MODEL_PRICING["titan-embed"]
+    if "embed" in lc and "cohere" in lc: return MODEL_PRICING["cohere.embed"]
     if "gpt-4o-mini"  in lc: return MODEL_PRICING["gpt-4o-mini"]
     if "gpt-4o"       in lc: return MODEL_PRICING["gpt-4o"]
     if "gpt-4-turbo"  in lc: return MODEL_PRICING["gpt-4-turbo"]
@@ -144,6 +158,7 @@ def log_llm_usage(db, result: "LLMResult", ctx: UsageLogContext) -> None:
             duration_ms     = dur_ms,
             status          = result.status,
             error_message   = result.text if result.is_error else None,
+            trace_id        = getattr(result, "trace_id", None),
             created_at      = datetime.now(timezone.utc),
         )
         db.add(row)

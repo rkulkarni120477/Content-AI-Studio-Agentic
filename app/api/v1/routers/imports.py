@@ -30,6 +30,15 @@ from app.schemas.import_ import (
 
 _log = logging.getLogger(__name__)
 
+# Staged packages must be readable by whichever process runs the import job —
+# when PROMPTOPS_USE_CELERY is on, that's the celery_worker container, not the
+# api container that received the upload. tempfile.mkstemp()'s default dir
+# (/tmp) is each container's own local overlay, invisible across containers;
+# this repo root is the one path both bind-mount to the same host directory
+# (see docker-compose.yml's `volumes: .:/app` on both services).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+_IMPORT_STAGING_DIR = os.environ.get("IMPORT_STAGING_DIR") or os.path.join(_REPO_ROOT, "import_uploads")
+
 # Imports-scoped routes (mounted under the "/imports" prefix in router.py).
 router = APIRouter()
 
@@ -159,8 +168,11 @@ async def start_import(
     db.commit()
 
     # Stage the package to a temp file — the background job reads it by path
-    # (job payloads must be JSON-serialisable) and deletes it when done.
-    fd, package_path = tempfile.mkstemp(prefix="import_pkg_", suffix=suffix)
+    # (job payloads must be JSON-serialisable) and deletes it when done. Staged
+    # under the repo root, not the OS tempdir, so it's visible to the Celery
+    # worker container too (see _IMPORT_STAGING_DIR above).
+    os.makedirs(_IMPORT_STAGING_DIR, exist_ok=True)
+    fd, package_path = tempfile.mkstemp(prefix="import_pkg_", suffix=suffix, dir=_IMPORT_STAGING_DIR)
     with os.fdopen(fd, "wb") as handle:
         handle.write(raw_bytes)
 
@@ -274,7 +286,10 @@ def retry_import(
         course_id=record.course_id,
         job_type="import_reverse",
     )
-    job_runner.submit(import_jobs.run_reverse_gen_job, job_id)
+    # dispatch, not job_runner — this route already imports dispatch and its task
+    # is registered in TASK_FOR_FUNC; calling job_runner directly silently pinned
+    # the job to the in-process threadpool even with Celery enabled.
+    dispatch.submit(import_jobs.run_reverse_gen_job, job_id)
 
     _log.info("import_retry_started  user=%s  import_id=%d  course_id=%s  job=%s",
               current_user.username, record.id, record.course_id, job_id)

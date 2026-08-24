@@ -28,6 +28,12 @@ from typing import Optional
 import json_repair
 from promptops_app.database import settings
 from promptops_app.core.config import settings as _cfg
+from promptops_app.services.usage_service import UsageLogContext, log_llm_usage_autocommit, estimate_cost
+from promptops_app.services.budget_service import (
+    BudgetExceededError,
+    check_budget_autocommit,
+    reconcile_budget_autocommit,
+)
 
 # Resolved once at import time from the central AppSettings.
 PROMPTOPS_API_TIMEOUT_SECONDS = _cfg.llm_timeout_seconds
@@ -35,6 +41,11 @@ PROMPTOPS_API_TIMEOUT_SECONDS = _cfg.llm_timeout_seconds
 # Default output-token cap when a caller does not request model-aware headroom.
 # Preserves the historical flat value so every existing call is unchanged.
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
+
+#: Provider values that mean "the output cap ran out", not "the model finished".
+#: OpenAI reports ``finish_reason="length"``; Bedrock/Anthropic report
+#: ``stop_reason="max_tokens"``. Both are collected into LLMResponse.stop_reason.
+_TRUNCATED_STOP_REASONS = frozenset({"length", "max_tokens"})
 
 _log = logging.getLogger(__name__)
 
@@ -50,6 +61,151 @@ class LLMResponse:
     model: str
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
+    #: Why the provider stopped generating, verbatim ("stop", "length",
+    #: "max_tokens", ...). Recorded rather than interpreted, so a value neither
+    #: provider documents today still reaches a log.
+    stop_reason: Optional[str] = None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the reply was cut off by the output cap rather than finished.
+
+        The model's own limit is the one bound content is allowed to hit — but a
+        reply that hit it is a FRAGMENT, and nothing about a fragment says so.
+        Before this was read, a cut-off reply was returned as if complete: the
+        tail was lost, and the last markdown construct on the line was left
+        unclosed, which is how a regenerated item ends up rendering as
+        ``*Label:**``. Callers that overwrite stored content with a reply must
+        check this before committing it.
+        """
+        return (self.stop_reason or "") in _TRUNCATED_STOP_REASONS
+
+
+@dataclass
+class LLMResult:
+    """Observability record for one logical LLM call (may cover multiple attempts).
+
+    Lives here (not llm_service.py) because this module's raw call functions are
+    the ones that construct and log it — llm_service.py imports it back for its
+    own return type instead of redefining it, to avoid a two-way circular import.
+    """
+    text: str
+    model: str = ""
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_duration_s: float = 0.0
+    status: str = "success"           # success | retry_success | fallback_success | error
+    error_type: Optional[str] = None  # timeout | rate_limit | auth | provider | unknown
+    trace_id: Optional[str] = None    # set by _emit_phoenix_trace before logging
+    stop_reason: Optional[str] = None  # provider's own value; see LLMResponse.stop_reason
+
+    @property
+    def is_error(self) -> bool:
+        return self.status == "error"
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the output cap cut this reply short. See LLMResponse.truncated."""
+        return (self.stop_reason or "") in _TRUNCATED_STOP_REASONS
+
+
+def _log_usage(result: "LLMResult", usage_ctx: Optional["UsageLogContext"]) -> None:
+    """Write one LLMUsageLog row for this call. log_llm_usage_autocommit never raises.
+
+    A call with no usage_ctx still gets logged, tagged unattributed rather than
+    silently dropped — P0.2 replaces this default with real scope at each call site.
+    """
+    ctx = usage_ctx or UsageLogContext(entity_type="unattributed", entity_id="direct_call")
+    log_llm_usage_autocommit(result, ctx)
+
+
+_phoenix_provider = None
+_phoenix_tracer = None
+_phoenix_tracer_lock = threading.Lock()
+
+
+def _get_phoenix_tracer():
+    """Return the shared Phoenix OTel tracer, registering it on first use."""
+    global _phoenix_provider, _phoenix_tracer
+    if _phoenix_tracer is None:
+        with _phoenix_tracer_lock:
+            if _phoenix_tracer is None:
+                from phoenix.otel import register
+
+                _phoenix_provider = register(
+                    endpoint=_cfg.phoenix_collector_endpoint,
+                    project_name=_cfg.phoenix_project_name,
+                    batch=True,
+                    set_global_tracer_provider=False,
+                    verbose=False,
+                    api_key=_cfg.phoenix_api_key or None,
+                )
+                _phoenix_tracer = _phoenix_provider.get_tracer(__name__)
+    return _phoenix_tracer
+
+
+def flush_phoenix_traces() -> None:
+    """Flush the batched span exporter on shutdown. No-op if never registered."""
+    if _phoenix_provider is not None:
+        _phoenix_provider.force_flush()
+
+
+def _emit_phoenix_trace(
+    system_prompt: str,
+    user_prompt: str,
+    result: "LLMResult",
+    usage_ctx: Optional["UsageLogContext"],
+) -> Optional[str]:
+    """Create one Phoenix span for this call. Returns its trace_id (hex), or None.
+
+    Same choke point as _log_usage, same scope tags as the LLMUsageLog row — this
+    is what the persisted trace_id then links back to. Never raises: Phoenix being
+    unreachable/unconfigured must never break a real LLM call, only silently skip
+    tracing for it (DB logging is unaffected either way).
+    """
+    try:
+        from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+        from opentelemetry.trace import Status, StatusCode
+
+        tracer = _get_phoenix_tracer()
+        ctx = usage_ctx or UsageLogContext(entity_type="unattributed", entity_id="direct_call")
+        with tracer.start_as_current_span(f"llm_call:{ctx.entity_type or 'unknown'}") as span:
+            span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
+            span.set_attribute(SpanAttributes.LLM_MODEL_NAME, result.model)
+            span.set_attribute(SpanAttributes.INPUT_VALUE, f"{system_prompt}\n\n{user_prompt}")
+            if not result.is_error:
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.text)
+            if result.prompt_tokens is not None:
+                span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, result.prompt_tokens)
+            if result.completion_tokens is not None:
+                span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, result.completion_tokens)
+            span.set_attribute("user.id", ctx.user_name or "")
+            span.set_attribute("tenant.project_id", ctx.project_id or 0)
+            span.set_attribute("tenant.course_id", ctx.course_id or 0)
+            span.set_attribute("entity.type", ctx.entity_type or "")
+            span.set_attribute("entity.id", ctx.entity_id or "")
+            if result.is_error:
+                span.set_status(Status(StatusCode.ERROR, result.text))
+            trace_id = format(span.get_span_context().trace_id, "032x")
+        return trace_id
+    except Exception as exc:
+        _log.debug("Phoenix trace emission skipped: %s", exc)
+        return None
+
+
+def _log_and_trace(
+    system_prompt: str,
+    user_prompt: str,
+    result: "LLMResult",
+    usage_ctx: Optional["UsageLogContext"],
+) -> None:
+    """Universal choke point for both usage logging and Phoenix tracing.
+
+    Trace first so its id is on `result` before the DB row is written — persists
+    the mapping the trace-detail endpoint looks up by.
+    """
+    result.trace_id = _emit_phoenix_trace(system_prompt, user_prompt, result, usage_ctx)
+    _log_usage(result, usage_ctx)
 
 
 class LLMTimeoutError(Exception):
@@ -95,48 +251,25 @@ def _get_openai_session() -> requests.Session:
     return _openai_session
 
 
-def call_openai(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> str:
-    """Send a prompt to OpenAI and return the response text. No truncation applied."""
+def call_openai(system_prompt: str, user_prompt: str, usage_ctx: Optional["UsageLogContext"] = None,
+                max_tokens: Optional[int] = None) -> str:
+    """Send a prompt to OpenAI and return the response text. No truncation applied.
+
+    Thin wrapper — delegates to _call_openai_raw (which does the real HTTP call,
+    logging, and usage-tracking) and converts its raised LLM*Error back to this
+    function's existing "ERROR: ..." string-return contract, so callers using
+    output.startswith("ERROR") keep working unchanged. Pass usage_ctx to attribute
+    this call's cost to a project/course/user in llm_usage_logs.
+    """
     if not settings.openai_api_key:
         return "ERROR: OpenAI API Key not configured."
-    url     = "https://api.openai.com/v1/chat/completions"
-    # Use the config's openai_model (defaults to "gpt-4o"); display names like
-    # "GPT-5.4" should never reach this legacy function — route through
-    # generate_text() → _invoke_primary() → _call_openai_raw() instead.
+    # display names like "GPT-5.4" should never reach this legacy function —
+    # route through generate_text() → _invoke_primary() → _call_openai_raw() instead.
     target_model = settings.openai_model
-    data = {
-        "model": target_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
-    }
-    _log.info("llm_call_started", extra={
-        "event": "llm_call_started", "provider": "openai", "model": target_model,
-        "system_prompt": system_prompt, "user_prompt": user_prompt,
-    })
-    start = time.monotonic()
     try:
-        resp = _get_openai_session().post(
-            url,
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json=data,
-            timeout=(10, PROMPTOPS_API_TIMEOUT_SECONDS),
-        )
-        resp.raise_for_status()
-        text = resp.json()["choices"][0]["message"]["content"]
-        _log.info("llm_call_completed", extra={
-            "event": "llm_call_completed", "provider": "openai", "model": target_model,
-            "duration_ms": int((time.monotonic() - start) * 1000), "output": text,
-        })
-        return text
+        return _call_openai_raw(system_prompt, user_prompt, model=target_model, usage_ctx=usage_ctx,
+                                max_tokens=max_tokens).text
     except Exception as e:
-        _log.error("llm_call_failed", extra={
-            "event": "llm_call_failed", "provider": "openai", "model": target_model,
-            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(e),
-        })
         return f"ERROR (OpenAI - {target_model}): {e}"
 
 
@@ -144,6 +277,7 @@ def _call_openai_raw(
     system_prompt: str,
     user_prompt: str,
     model: Optional[str] = None,
+    usage_ctx: Optional["UsageLogContext"] = None,
     max_tokens: Optional[int] = None,
 ) -> LLMResponse:
     """Call OpenAI and return LLMResponse. Raises LLM*Error on failure.
@@ -151,6 +285,9 @@ def _call_openai_raw(
     Used by llm_service for the retry/fallback reliability layer.
     ``model`` should be the actual OpenAI API model ID (e.g. "gpt-4o"),
     resolved by the model catalog before this call is made.
+
+    This is the universal usage-logging choke point: every attempt writes one
+    LLMUsageLog row (success or error), tagged from ``usage_ctx`` when given.
     ``max_tokens`` overrides the default output cap (block-wide reduce headroom).
     """
     if not settings.openai_api_key:
@@ -159,6 +296,15 @@ def _call_openai_raw(
     # Use the provided model ID directly; the catalog maps display names to
     # real API IDs before reaching this function — no silent redirect needed.
     target_model = model or settings.openai_model
+
+    # P2.3: pre-flight quota check, same choke point as P0/P1.2's logging/tracing.
+    # Raises BudgetExceededError on a confirmed breach — deliberately OUTSIDE the
+    # try/except below, so it propagates as itself rather than being logged and
+    # re-raised as a provider failure (no provider call was ever attempted).
+    check_result = check_budget_autocommit(
+        usage_ctx, system_prompt=system_prompt, user_prompt=user_prompt, model=target_model,
+        max_tokens=max_tokens,
+    )
 
     url = "https://api.openai.com/v1/chat/completions"
     data = {
@@ -201,24 +347,59 @@ def _call_openai_raw(
 
         body = resp.json()
         usage = body.get("usage", {})
+        choice = body["choices"][0]
         result = LLMResponse(
-            text=body["choices"][0]["message"]["content"],
+            text=choice["message"]["content"],
             model=target_model,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
+            stop_reason=choice.get("finish_reason"),
         )
+        if result.truncated:
+            # Loud, because the reply itself gives no sign of it: the text reads
+            # as finished, so a caller that stores it stores a fragment and the
+            # missing tail is indistinguishable from content the model chose not
+            # to write.
+            _log.warning(
+                "llm_output_truncated", extra={
+                    "event": "llm_output_truncated", "provider": "openai",
+                    "model": target_model, "finish_reason": result.stop_reason,
+                    "max_tokens": data["max_tokens"],
+                    "completion_tokens": result.completion_tokens,
+                })
+        duration_s = time.monotonic() - start
         _log.info("llm_call_completed", extra={
             "event": "llm_call_completed", "provider": "openai", "model": target_model,
-            "duration_ms": int((time.monotonic() - start) * 1000),
+            "duration_ms": int(duration_s * 1000),
             "prompt_tokens": result.prompt_tokens, "completion_tokens": result.completion_tokens,
             "output": result.text,
         })
+        _log_and_trace(system_prompt, user_prompt, LLMResult(
+            text=result.text, model=target_model,
+            prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens,
+            total_duration_s=duration_s, status="success",
+        ), usage_ctx)
+        # P2.9: true up the worst-case reservation to the real cost/tokens now
+        # that actual counts are known.
+        reconcile_budget_autocommit(
+            check_result.reservations,
+            estimate_cost(target_model, result.prompt_tokens or 0, result.completion_tokens or 0),
+            (result.prompt_tokens or 0) + (result.completion_tokens or 0),
+        )
         return result
     except Exception as exc:
+        duration_s = time.monotonic() - start
         _log.error("llm_call_failed", extra={
             "event": "llm_call_failed", "provider": "openai", "model": target_model,
-            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(exc),
+            "duration_ms": int(duration_s * 1000), "error": str(exc),
         })
+        _log_and_trace(system_prompt, user_prompt, LLMResult(
+            text=str(exc), model=target_model, total_duration_s=duration_s, status="error",
+        ), usage_ctx)
+        # Release the worst-case reservation — a failed call cost nothing (or
+        # near enough); without this every provider error permanently leaks
+        # reserved budget until the period rolls over.
+        reconcile_budget_autocommit(check_result.reservations, 0.0)
         raise
 
 
@@ -241,6 +422,33 @@ def _get_bedrock_client():
                     config=boto_config,
                 )
     return _bedrock_client
+
+
+def bedrock_text(response_body: dict) -> str:
+    """Join the text of every ``text`` block in an Anthropic Bedrock response.
+
+    Deliberately NOT ``content[0]["text"]``. Reasoning models emit a ``thinking``
+    block first, so index 0 carries no ``text`` key and the old read returned ""
+    — indistinguishable here from a genuinely empty completion, which then raised
+    "Bedrock returned an empty response body."
+
+    That is not theoretical. Sonnet 5 and Opus 5 emit a leading thinking block
+    only SOMETIMES for the same prompt, so the old read failed at random and read
+    as a flaky endpoint rather than a parse bug. Measured 2026-08-14: every REDUCE
+    call of the block-wide digest pipeline lost its primary model this way, burned
+    ~40s per discarded response, silently fell back to Sonnet 4.5, and still
+    recorded the primary in the audit row. The same misreading is what put
+    "sonnet-5 0/3, opus-5 0/3, sonnet-4-6 0/3" in dis_backend/config/clients/
+    aim.yaml — a live re-probe with this function returns 3/3 for all three.
+
+    Joins rather than taking the first text block: a response may interleave
+    several, and dropping the tail would silently truncate an answer.
+    """
+    return "".join(
+        block.get("text") or ""
+        for block in (response_body.get("content") or [])
+        if isinstance(block, dict) and block.get("type", "text") == "text"
+    )
 
 
 def _bedrock_body(system_prompt: str, user_prompt: str, max_tokens: Optional[int],
@@ -278,34 +486,32 @@ def _invoke_bedrock_with_retry(client, target_model_id: str, system_prompt: str,
 
 
 def call_bedrock(system_prompt: str, user_prompt: str, model_id: Optional[str] = None,
+                 usage_ctx: Optional["UsageLogContext"] = None,
                  max_tokens: Optional[int] = None) -> str:
     """Send a prompt to AWS Bedrock and return the response text.
 
     ``model_id`` should be the actual Bedrock model ID (e.g.
     "global.anthropic.claude-sonnet-4-6-20250929-v1:0"), resolved by the
     model catalog.  Falls back to ``settings.bedrock_model_id`` when omitted.
+
+    Thin wrapper — delegates to _call_bedrock_raw (real boto3 call, logging,
+    usage-tracking) and converts its raised LLM*Error back to this function's
+    existing "ERROR: ..." string-return contract. Pass usage_ctx to attribute
+    this call's cost to a project/course/user in llm_usage_logs.
+
+    Note: the legacy empty-response case returned the bare string
+    "ERROR: Empty response from Bedrock"; _call_bedrock_raw raises
+    LLMProviderError for that case instead, so this now returns
+    "ERROR (Bedrock - <model>): Bedrock returned an empty response body.
+    (stop_reason=..., blocks=[...])" — the suffix names why it was empty.
+    Both satisfy every real caller's .startswith("ERROR") check; only the
+    exact wording differs for this one edge case.
     """
     target_model_id = model_id or settings.bedrock_model_id
-    _log.info("llm_call_started", extra={
-        "event": "llm_call_started", "provider": "bedrock", "model": target_model_id,
-        "system_prompt": system_prompt, "user_prompt": user_prompt,
-    })
-    start = time.monotonic()
     try:
-        client = _get_bedrock_client()
-        response = _invoke_bedrock_with_retry(client, target_model_id, system_prompt, user_prompt, max_tokens)
-        response_body = json.loads(response.get("body").read())
-        text = response_body.get("content", [{}])[0].get("text", "ERROR: Empty response from Bedrock")
-        _log.info("llm_call_completed", extra={
-            "event": "llm_call_completed", "provider": "bedrock", "model": target_model_id,
-            "duration_ms": int((time.monotonic() - start) * 1000), "output": text,
-        })
-        return text
+        return _call_bedrock_raw(system_prompt, user_prompt, model_id=target_model_id, usage_ctx=usage_ctx,
+                                 max_tokens=max_tokens).text
     except Exception as e:
-        _log.error("llm_call_failed", extra={
-            "event": "llm_call_failed", "provider": "bedrock", "model": target_model_id,
-            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(e),
-        })
         return f"ERROR (Bedrock - {target_model_id}): {e}"
 
 
@@ -313,6 +519,7 @@ def _call_bedrock_raw(
     system_prompt: str,
     user_prompt: str,
     model_id: Optional[str] = None,
+    usage_ctx: Optional["UsageLogContext"] = None,
     max_tokens: Optional[int] = None,
 ) -> LLMResponse:
     """Call AWS Bedrock and return LLMResponse. Raises LLM*Error on failure.
@@ -320,9 +527,19 @@ def _call_bedrock_raw(
     Used by llm_service for the retry/fallback reliability layer.
     ``model_id`` should be the actual Bedrock model ID resolved by the catalog;
     falls back to ``settings.bedrock_model_id`` when omitted.
+
+    This is the universal usage-logging choke point: every attempt writes one
+    LLMUsageLog row (success or error), tagged from ``usage_ctx`` when given.
     ``max_tokens`` overrides the default output cap (block-wide reduce headroom).
     """
     target_model_id = model_id or settings.bedrock_model_id
+
+    # P2.3: pre-flight quota check — see _call_openai_raw's identical comment.
+    check_result = check_budget_autocommit(
+        usage_ctx, system_prompt=system_prompt, user_prompt=user_prompt, model=target_model_id,
+        max_tokens=max_tokens,
+    )
+
     _log.info("llm_call_started", extra={
         "event": "llm_call_started", "provider": "bedrock", "model": target_model_id,
         "system_prompt": system_prompt, "user_prompt": user_prompt,
@@ -347,9 +564,20 @@ def _call_bedrock_raw(
             raise LLMProviderError(f"Bedrock invoke error: {exc}") from exc
 
         response_body = json.loads(response.get("body").read())
-        text = response_body.get("content", [{}])[0].get("text", "")
+        text = bedrock_text(response_body)
         if not text:
-            raise LLMProviderError("Bedrock returned an empty response body.")
+            # Say WHY it was empty. The bare old message sent a reader looking for a
+            # provider outage when the actual causes are diagnosable and different:
+            # stop_reason="max_tokens" with no text means the model spent the whole
+            # budget thinking (raise max_tokens), while block types tell a
+            # thinking-only or tool-use reply from a genuinely silent one.
+            stop = response_body.get("stop_reason")
+            kinds = [b.get("type", "text") for b in (response_body.get("content") or [])
+                     if isinstance(b, dict)]
+            detail = f" (stop_reason={stop}, blocks={kinds or 'none'})"
+            if stop == "max_tokens":
+                detail += " — the output cap was consumed before any text; raise max_tokens"
+            raise LLMProviderError(f"Bedrock returned an empty response body.{detail}")
 
         usage = response_body.get("usage", {})
         result = LLMResponse(
@@ -357,19 +585,48 @@ def _call_bedrock_raw(
             model=target_model_id,
             prompt_tokens=usage.get("input_tokens"),
             completion_tokens=usage.get("output_tokens"),
+            stop_reason=response_body.get("stop_reason"),
         )
+        if result.truncated:
+            # stop_reason was already inspected above, but only to explain an
+            # EMPTY reply. A non-empty reply that hit the same cap was returned
+            # as if it were complete — the more damaging of the two cases,
+            # because it looks like a success.
+            _log.warning(
+                "llm_output_truncated", extra={
+                    "event": "llm_output_truncated", "provider": "bedrock",
+                    "model": target_model_id, "stop_reason": result.stop_reason,
+                    "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+                    "completion_tokens": result.completion_tokens,
+                })
+        duration_s = time.monotonic() - start
         _log.info("llm_call_completed", extra={
             "event": "llm_call_completed", "provider": "bedrock", "model": target_model_id,
-            "duration_ms": int((time.monotonic() - start) * 1000),
+            "duration_ms": int(duration_s * 1000),
             "prompt_tokens": result.prompt_tokens, "completion_tokens": result.completion_tokens,
             "output": result.text,
         })
+        _log_and_trace(system_prompt, user_prompt, LLMResult(
+            text=result.text, model=target_model_id,
+            prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens,
+            total_duration_s=duration_s, status="success",
+        ), usage_ctx)
+        reconcile_budget_autocommit(
+            check_result.reservations,
+            estimate_cost(target_model_id, result.prompt_tokens or 0, result.completion_tokens or 0),
+            (result.prompt_tokens or 0) + (result.completion_tokens or 0),
+        )
         return result
     except Exception as exc:
+        duration_s = time.monotonic() - start
         _log.error("llm_call_failed", extra={
             "event": "llm_call_failed", "provider": "bedrock", "model": target_model_id,
-            "duration_ms": int((time.monotonic() - start) * 1000), "error": str(exc),
+            "duration_ms": int(duration_s * 1000), "error": str(exc),
         })
+        _log_and_trace(system_prompt, user_prompt, LLMResult(
+            text=str(exc), model=target_model_id, total_duration_s=duration_s, status="error",
+        ), usage_ctx)
+        reconcile_budget_autocommit(check_result.reservations, 0.0)
         raise
 
 
@@ -377,7 +634,7 @@ def _call_bedrock_raw(
 # Multi-Model Router
 # =============================================================================
 
-def call_llm(model_choice: str, system_prompt: str, user_prompt: str) -> str:
+def call_llm(model_choice: str, system_prompt: str, user_prompt: str, usage_ctx: Optional["UsageLogContext"] = None) -> str:
     """Route the LLM call to the appropriate provider based on model_choice.
 
     Uses the model catalog for routing; falls back to OpenAI for unrecognised
@@ -386,8 +643,8 @@ def call_llm(model_choice: str, system_prompt: str, user_prompt: str) -> str:
     from promptops_app.core.models import resolve_model
     m = resolve_model(model_choice)
     if m.provider == "bedrock":
-        return call_bedrock(system_prompt, user_prompt, model_id=m.api_model_id)
-    return call_openai(system_prompt, user_prompt)
+        return call_bedrock(system_prompt, user_prompt, model_id=m.api_model_id, usage_ctx=usage_ctx)
+    return call_openai(system_prompt, user_prompt, usage_ctx=usage_ctx)
 
 
 def safe_json_loads(text: str) -> dict:

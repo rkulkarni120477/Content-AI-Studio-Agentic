@@ -101,3 +101,55 @@ def test_falls_back_when_no_task_mapped(monkeypatch):
 
     assert result == "threadpool-future"
     assert fell_back == {"fn": _noop_job, "job_id": "job-unmapped"}
+
+
+# --------------------------------------------------------------------------- #
+# Every enqueue site must route through dispatch, and every job function it can
+# be handed must be mappable to a Celery task.
+# --------------------------------------------------------------------------- #
+def test_block_wide_job_is_mapped_to_a_celery_task():
+    """Block-wide CDD/Blueprint is the longest, most memory-hungry job in the
+    product (a cold 20-day build: ENUMERATE + one MAP per day + REDUCE). It was
+    absent from TASK_FOR_FUNC, so even with Celery enabled it silently ran in the
+    API container's threadpool — where a restart or OOM killed it mid-run with no
+    handler, stranding the job row at status=running forever."""
+    from promptops_app.jobs import block_wide_jobs
+    from promptops_app.jobs.celery_tasks import TASK_FOR_FUNC
+
+    assert block_wide_jobs.run_block_wide_job in TASK_FOR_FUNC
+
+
+def test_no_router_enqueues_a_job_bypassing_dispatch():
+    """Calling job_runner.submit directly pins a job to the in-process pool and
+    silently defeats the use_celery flag — the exact defect that left block-wide
+    generation (and import reverse-gen) running in the web container. Guard the
+    whole router package rather than the two files that happened to be wrong."""
+    import pathlib
+
+    routers = pathlib.Path("app/api/v1/routers")
+    offenders = [
+        f"{path.name}:{i}"
+        for path in sorted(routers.glob("*.py"))
+        for i, line in enumerate(path.read_text().splitlines(), 1)
+        if "job_runner.submit(" in line and not line.lstrip().startswith("#")
+    ]
+    assert offenders == [], (
+        "these routers enqueue via job_runner.submit instead of dispatch.submit, "
+        f"so Celery can never run them: {offenders}"
+    )
+
+
+def test_every_mapped_task_delegates_to_its_plain_function(monkeypatch):
+    """The wrappers must stay thin: each Celery task calls the same run_* function
+    the threadpool path calls, so behaviour cannot drift between backends."""
+    from promptops_app.jobs.celery_tasks import TASK_FOR_FUNC
+
+    for plain_fn, task in TASK_FOR_FUNC.items():
+        module = __import__(plain_fn.__module__, fromlist=["x"])
+        seen = {}
+        monkeypatch.setattr(module, plain_fn.__name__,
+                            lambda job_id, _n=plain_fn.__name__: seen.setdefault(_n, job_id))
+        task.run("job-xyz")
+        assert seen == {plain_fn.__name__: "job-xyz"}, (
+            f"{task.name} did not delegate to {plain_fn.__module__}.{plain_fn.__name__}"
+        )

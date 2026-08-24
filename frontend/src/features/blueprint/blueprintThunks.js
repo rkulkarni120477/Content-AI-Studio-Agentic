@@ -1,9 +1,10 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { blueprintService } from './services/blueprintService';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { resolveProjectId } from '@utils/workspaceContext';
 import { createBlockJobThunks } from '@features/shared/blockJob';
+import { createArchiveThunks } from '@features/shared/documentArchive';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -61,12 +62,21 @@ export const generateBlueprintThunk = createAsyncThunk(
  * the shared factory (same robust polling lifecycle as CDD; see
  * @features/shared/blockJob). Server persists AND pins on completion.
  */
-export const { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk } =
+export const {
+  generateThunk: generateBlueprintBlockThunk,
+  pollThunk: pollBlueprintJobThunk,
+  resumeThunk: resumeBlueprintJobThunk,
+} =
   createBlockJobThunks({
     prefix: 'blueprint',
     deliverable: 'blueprint',
     enqueue: (payload) => blueprintService.generateBlueprintBlock(payload),
     getJobStatus: (jobId) => blueprintService.getJobStatus(jobId),
+    getActiveJob: (courseId) => blueprintService.getActiveBlockJob(courseId),
+    getProgress: (jobId) => blueprintService.getBlockJobProgress(jobId),
+    // Lets resumeThunk refuse to start a duplicate poll chain for a job it is
+    // already polling (one per remount would mean one success toast per remount).
+    selectBlockJob: (state) => state.blueprint?.blockJob,
     completedMessage: 'Block Blueprint generated and set as active.',
     failedMessage: 'Blueprint generation failed.',
     onComplete: (dispatch, courseId) => {
@@ -128,9 +138,15 @@ export const regenerateBlueprintItemThunk = createAsyncThunk(
   'blueprint/regenerateItem',
   async ({ blueprintId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
     try {
-      return await blueprintService.regenerateItem(blueprintId, {
+      const result = await blueprintService.regenerateItem(blueprintId, {
         sectionKey, sectionContent, itemIndex, feedback, modelChoice,
       });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
+        else toast.success(`Item regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -139,9 +155,15 @@ export const regenerateBlueprintSectionThunk = createAsyncThunk(
   'blueprint/regenerateSection',
   async ({ blueprintId, sectionKey, feedback, modelChoice, teacherMode }, { rejectWithValue }) => {
     try {
-      return await blueprintService.regenerateSection(blueprintId, {
+      const result = await blueprintService.regenerateSection(blueprintId, {
         sectionKey, feedback, modelChoice, teacherMode,
       });
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      if (usageMsg) {
+        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
+        else toast.success(`Section regenerated. ${usageMsg}`);
+      }
+      return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -167,3 +189,51 @@ export const fetchBlueprintComponentsThunk = createAsyncThunk(
     }
   },
 );
+
+/**
+ * The archived blueprints for a course, kept apart from the live ones.
+ *
+ * Deliberately not merged into `blueprints` behind a flag: that array feeds the
+ * module picker and the generation flow, and one missed filter there would put
+ * a retired document back into a prompt.
+ */
+export const fetchArchivedBlueprintsThunk = createAsyncThunk(
+  'blueprint/fetchArchived',
+  async (courseId, { getState, rejectWithValue }) => {
+    try {
+      const items = await blueprintService.listBlueprints({
+        courseId: Number(courseId),
+        projectId: resolveProjectId(getState) ?? undefined,
+        includeArchived: true,
+      });
+      return items.filter((b) => b.is_archived);
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+/**
+ * Archive / restore / permanently delete. Same rules and refusal handling as
+ * CDDs — see features/shared/documentArchive.js.
+ */
+const blueprintArchiveThunks = createArchiveThunks({
+  name: 'blueprint',
+  label: 'Blueprint',
+  api: {
+    archive: blueprintService.archiveBlueprint,
+    restore: blueprintService.restoreBlueprint,
+    purge: blueprintService.purgeBlueprint,
+    bulkArchive: blueprintService.bulkArchiveBlueprints,
+  },
+  refetch: (courseId) => async (dispatch) => {
+    await Promise.all([
+      dispatch(fetchBlueprintsThunk(courseId)),
+      dispatch(fetchArchivedBlueprintsThunk(courseId)),
+    ]);
+  },
+});
+
+export const archiveBlueprintThunk = blueprintArchiveThunks.archiveThunk;
+export const restoreBlueprintThunk = blueprintArchiveThunks.restoreThunk;
+export const purgeBlueprintThunk = blueprintArchiveThunks.purgeThunk;
+export const bulkArchiveBlueprintsThunk = blueprintArchiveThunks.bulkArchiveThunk;
+export { blueprintArchiveThunks };

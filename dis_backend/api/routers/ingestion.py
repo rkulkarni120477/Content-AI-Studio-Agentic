@@ -188,7 +188,12 @@ def _extract_text_for_source_library(filename: str, content: bytes) -> str:
         return _clean_reading_text(content.decode("utf-8", errors="ignore"))
     except Exception as exc:
         log.warning("Source Library extraction failed for %s: %s", filename, exc)
-        return _clean_reading_text(content[:200000].decode("utf-8", errors="ignore"))
+        # Whole bytes. The `[:200000]` here silently cut the salvage attempt at 200KB
+        # — and this branch runs precisely when the typed extractor already failed,
+        # i.e. when the salvaged text is the ONLY text this document will ever have.
+        # Losing its tail is not a cheaper fallback, it is a permanently incomplete
+        # document that reads as complete everywhere downstream.
+        return _clean_reading_text(content.decode("utf-8", errors="ignore"))
 
 
 def _preview_text_for_source_library(filename: str, content: bytes, max_chars: int = _DEFERRED_PREVIEW_MAX_CHARS) -> str:
@@ -520,7 +525,7 @@ async def _create_ingestion_job(
 async def upload_file(
     request: Request,
     background_tasks: BackgroundTasks,
-    _=Depends(require_role("client_admin")),
+    _=Depends(require_role("uploader")),
     file: UploadFile = File(...),
     client_id: str = Form(""),
     source_relative_path: str = Form(""),
@@ -632,7 +637,7 @@ async def upload_file(
 @router.post("/batch", status_code=202)
 async def batch_upload(
     request: Request, background_tasks: BackgroundTasks,
-    _=Depends(require_role("client_admin")),
+    _=Depends(require_role("uploader")),
     files: List[UploadFile] = File(...), client_id: str = Form(""),
     course_id: str = Form(""), course_name: str = Form(""),
 ):
@@ -695,7 +700,7 @@ async def batch_upload(
 
 
 @router.post("/folder-scan", status_code=202)
-async def folder_scan(request: Request, body: FolderScanRequest, background_tasks: BackgroundTasks, _=Depends(require_role("client_admin"))):
+async def folder_scan(request: Request, body: FolderScanRequest, background_tasks: BackgroundTasks, _=Depends(require_role("uploader"))):
     """Scan a server-side folder recursively and ingest all supported files.
 
     v7 behavior:
@@ -1175,6 +1180,12 @@ async def _process(job_id, tenant_cfg, client_id, user_id, namespace, filename, 
                 "structure_store_upsert": result.get("structure_store_upsert_result", {}),
                 "embedding_generation": result.get("embedding_generation_result", {}),
                 "vector_store_upsert": result.get("vector_store_upsert_result", {}),
+                # LLM spend for this file's ingestion (classification, metadata,
+                # structure and quality-check steps). DIS calls Bedrock on its own
+                # client, so this is the only route by which that spend can reach
+                # CAS's llm_usage_logs and budget accounting — Studio owns those
+                # controls (see services/token_guard.py).
+                "llm_usage": result.get("llm_usage", {}),
             },
             "artifact_urls": result.get("artifact_urls", {}),
             "payload_storage_url": result.get("artifact_urls", {}).get("studio_payload", ""),

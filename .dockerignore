@@ -1,5 +1,22 @@
 .git
 .gitignore
+# Real secrets — never bake these into an image layer. Both services that
+# read it (api, celery_worker) bind-mount the repo root at runtime, so they
+# see the live host file regardless; this only stops it from being copied in
+# at build time.
+.env
+# NOTE: this rule protects the CAS images only. DIS builds from
+# `context: ./dis_backend` (docker-compose.yml), which this file does not reach —
+# see dis_backend/.dockerignore, which exists because that gap baked
+# dis_backend/.env into the DIS image.
+
+# Tests are source and belong in git, but nothing in the image runs them: no build
+# stage invokes pytest, and the production stage does not even install it. Keeping
+# ~3MB of test code out of a running container costs nothing — the api and
+# celery_worker services bind-mount the repo at `.:/app` anyway, so tests are still
+# right there when you shell in to run them.
+tests/
+
 __pycache__/
 *.pyc
 *.pyo
@@ -24,3 +41,6 @@ frontend/dist/
 frontend/.vite/
 dist/
 
+# WSL/NTFS alternate-data-stream artifacts — 37 of these sit beside real files in
+# this tree. Untracked, meaningless to Linux, and pure build-context weight.
+*:Zone.Identifier

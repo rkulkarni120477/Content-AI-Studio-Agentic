@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.archive import DocumentReferences
+from app.schemas.budget import UsageSummary
 from app.schemas.json_fields import parse_optional_json_dict
 
 
@@ -121,6 +123,7 @@ class BlueprintRegenerateItemResponse(BaseModel):
 
     updated_content: str
     patched_item: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class BlueprintRegenerateSectionRequest(BaseModel):
@@ -136,6 +139,7 @@ class BlueprintRegenerateSectionResponse(BaseModel):
     """Freshly generated content for the section."""
 
     updated_content: str
+    usage_summary: Optional[UsageSummary] = None
 
 
 class BlueprintPinRequest(BaseModel):
@@ -208,11 +212,27 @@ class BlueprintRead(BaseModel):
 
 
 class BlueprintListItem(BaseModel):
+    """One row of the blueprint picker.
+
+    ``created_by`` and ``references.version_count`` are here for the same reason
+    as on ``CDDListItem``: titles alone do not identify a row when a course holds
+    twenty blueprints generated from the same module.
+    """
+
     id: int
     title: str
     module_number: Optional[int] = None
     active_version: Optional[str] = None
+    created_by: Optional[str] = None
     created_at: Optional[datetime] = None
+
+    # ── Archive state ────────────────────────────────────────────────────────
+    is_archived: bool = False
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
+
+    # What points at this blueprint — populated in one batched pass per page.
+    references: DocumentReferences = Field(default_factory=DocumentReferences)
 
     model_config = ConfigDict(from_attributes=True)
 

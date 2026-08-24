@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { useAppDispatch } from '@app/hooks';
-import { setSelectedProject, setSelectedCluster, setSelectedCourse } from '@features/dashboard/dashboardSlice';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useAppDispatch, useAppSelector } from '@app/hooks';
+import { setSelectedProject, setSelectedCluster, setSelectedCourse, selectSelectedProject } from '@features/dashboard/dashboardSlice';
 import { useAuth } from '@hooks/useAuth';
 import { useLabels } from '@hooks/useLabels';
 // ROLE_LABELS/ROLES were only used by the sidebar identity chip, now moved to the top header.
@@ -55,16 +55,26 @@ export default function SelectionSidebar({
   createLoading,
 }) {
   const dispatch = useAppDispatch();
-  const { role, logout, isAdmin, hasPermission } = useAuth();
+  const { role, logout, isAdmin, hasPermission, isPlatformAdmin, projectId: authProjectId } = useAuth();
   const L = useLabels();
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { projectId: routeProjectId } = useParams();
+  const selectedProject = useAppSelector(selectSelectedProject);
 
   function goDashboard() {
-    dispatch(setSelectedProject(null));
+    if (isPlatformAdmin) {
+      dispatch(setSelectedProject(null));
+      dispatch(setSelectedCluster(null));
+      dispatch(setSelectedCourse(null));
+      navigate(ROUTES.DASHBOARD);
+      return;
+    }
+    const pid = Number(projectId) || Number(routeProjectId) || selectedProject?.id || authProjectId;
+    if (!pid) return;
     dispatch(setSelectedCluster(null));
     dispatch(setSelectedCourse(null));
-    navigate(ROUTES.DASHBOARD);
+    navigate(ROUTES.PROJECT_CLUSTERS(pid));
   }
 
   function goClusters() {

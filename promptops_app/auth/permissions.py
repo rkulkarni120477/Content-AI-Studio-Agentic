@@ -75,6 +75,10 @@ _PERMISSIONS: dict[str, list[str]] = {
     "cdd.review":            [_A, _L],
     "cdd.pin":               [_A, _L, _ID],
     "cdd.version":           [_A, _L, _ID],
+    # Archiving is reversible, so authors clean up after themselves — they are
+    # the ones who create the duplicates. Purging is not reversible: admin only.
+    "cdd.archive":           [_A, _L, _ID],
+    "cdd.purge":             [_A],
 
     # ── Blueprint ────────────────────────────────────────────────────────────
     "blueprint.generate":    [_A, _L, _ID],
@@ -82,6 +86,8 @@ _PERMISSIONS: dict[str, list[str]] = {
     "blueprint.review":      [_A, _L],
     "blueprint.pin":         [_A, _L, _ID],
     "blueprint.version":     [_A, _L, _ID],
+    "blueprint.archive":     [_A, _L, _ID],
+    "blueprint.purge":       [_A],
 
     # ── Generate / Editor ────────────────────────────────────────────────────
     "generate.run":          [_A, _L, _ID],
@@ -153,6 +159,8 @@ _LEAD_BLOCKED: frozenset[str] = frozenset({
     "project.create",
     "project.delete",
     "course.delete",
+    "cdd.purge",
+    "blueprint.purge",
     "workflow.bulk_approve",
     "system.clear_db",
     "analytics.view_all",

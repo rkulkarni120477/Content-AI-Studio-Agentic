@@ -6,6 +6,7 @@
 import os
 from dotenv import load_dotenv
 import json
+import logging
 import re
 import hashlib
 import binascii
@@ -14,7 +15,7 @@ from typing import Optional, List, Any
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
-    Boolean, Float, ForeignKey, JSON, text,
+    Boolean, Float, ForeignKey, JSON, text, or_,
     BigInteger, SmallInteger, UniqueConstraint,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
@@ -89,6 +90,8 @@ engine = create_engine(settings.db_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
+_log = logging.getLogger(__name__)
+
 # =============================================================================
 # Database Models
 # =============================================================================
@@ -146,6 +149,12 @@ class Style(Base):
     generated_summary   = Column(Text)                                          # LLM understanding output (mirror of active StyleVersion)
     understanding_status = Column(String(20), default="fresh")                  # "fresh" | "stale"
     is_active           = Column(Boolean, default=False)
+    # Workspace ownership (v21) — which project/course generated this style.
+    # Nullable: legacy rows and unscoped/global styles keep NULL. Used by
+    # get_styles() to show a course ALL the styles it created, not only its
+    # active one, while still hiding sibling courses' styles.
+    project_id          = Column(Integer, nullable=True)
+    course_id           = Column(Integer, nullable=True)
     created_by          = Column(String(100))
     created_at          = Column(DateTime, default=datetime.utcnow)
     updated_at          = Column(DateTime, default=datetime.utcnow)
@@ -217,6 +226,14 @@ class Prompt(Base):
     category       = Column(String(100), nullable=True)  # library category (freeform)
     visibility     = Column(String(20), nullable=False, default="draft",
                             server_default="draft")      # global|team|draft (library only)
+    # Tenant ownership — see prompt_library_service's tenant_scope_condition.
+    # NULL means shared/global, visible to every tenant (system-seeded
+    # defaults, and any prompt whose owner doesn't resolve to one tenant),
+    # same convention as Style.project_id. Applies to both prompt_kind
+    # values: pipeline-kind rows aren't always shared system templates — a
+    # tenant can have its own customized generation prompt, which needs the
+    # same isolation as a library row.
+    project_id     = Column(Integer, nullable=True, index=True)
     variant        = Column(String(50), nullable=True)   # pipeline: student|teacher|lesson|assessment|interactive
     parent_id      = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"),
                             nullable=True, index=True)   # library follow-up hierarchy
@@ -877,7 +894,7 @@ class LLMUsageLog(Base):
     id              = Column(Integer,     primary_key=True)
     user_id         = Column(String(100), nullable=True,  index=True)   # username
     project_id      = Column(Integer,     nullable=True,  index=True)
-    course_id       = Column(Integer,     nullable=True)
+    course_id       = Column(Integer,     nullable=True,  index=True)  # P2: was missing an index despite project_id/user_id both having one
     entity_type     = Column(String(60),  nullable=True)   # generation | cdd | blueprint | evaluation | style
     entity_id       = Column(String(64),  nullable=True)
     prompt_template = Column(String(150), nullable=True)
@@ -890,7 +907,71 @@ class LLMUsageLog(Base):
     duration_ms     = Column(Integer,     nullable=True)
     status          = Column(String(30),  nullable=False)  # success|retry_success|fallback_success|error
     error_message   = Column(Text,        nullable=True)
+    trace_id        = Column(String(64), nullable=True, index=True)  # looked up by the trace-detail endpoint
     created_at      = Column(DateTime,    default=datetime.utcnow, index=True)
+
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class BudgetPolicy(Base):
+    """An admin-configured spend limit for one project, course, or user (P2).
+
+    scope_id is a string for all three scope types on purpose: a project/course
+    id stored as text, or a username for scope="user" — LLMUsageLog.user_id is
+    itself a username string, not a numeric FK, so this mirrors that instead of
+    inventing a polymorphic int/string split. No DB-level FK to Project/Course/
+    User (LLMUsageLog already has none) — scope_id existence is validated at the
+    service layer, not enforced by the schema.
+    """
+    __tablename__ = "budget_policies"
+    __table_args__ = (
+        UniqueConstraint("scope", "scope_id", name="uq_budget_policy_scope"),
+    )
+
+    id                 = Column(Integer, primary_key=True)
+    scope              = Column(String(20), nullable=False)   # project | course | user
+    scope_id           = Column(String(100), nullable=False)
+    period             = Column(String(20), nullable=False, default="monthly")  # monthly | rolling
+    # limit_type picks which of the two limit columns is active — exactly one
+    # is set, matching the admin UI's either/or "Cap type" choice. Both stay
+    # nullable so a token-capped row doesn't need a meaningless $ ceiling.
+    limit_type         = Column(String(10), nullable=False, default="usd")  # usd | tokens
+    limit_usd          = Column(Float, nullable=True)
+    limit_tokens       = Column(Integer, nullable=True)
+    warn_threshold_pct = Column(Float, nullable=False, default=80.0)
+    # Which period_key (see budget_service.period_key()) last triggered a warn
+    # notification — prevents re-warning on every call once past threshold.
+    last_warned_period = Column(String(20), nullable=True)
+    created_at         = Column(DateTime, default=datetime.utcnow)
+    updated_at         = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class BudgetPeriodSpend(Base):
+    """Running spend total per (scope, scope_id, period) — P2.9's race-safe reserve.
+
+    This table, not a SUM() over LLMUsageLog, is what check_budget's
+    atomic UPDATE ... WHERE spent + :cost <= limit reserves against. Concurrent
+    calls for the same scope serialize through this single row's UPDATE instead
+    of racing on independent reads.
+    """
+    __tablename__ = "budget_period_spend"
+    __table_args__ = (
+        UniqueConstraint("scope", "scope_id", "period_key", name="uq_budget_period_spend"),
+    )
+
+    id           = Column(Integer, primary_key=True)
+    scope        = Column(String(20), nullable=False)
+    scope_id     = Column(String(100), nullable=False)
+    period_key   = Column(String(20), nullable=False)  # e.g. "2026-08" (monthly) or a rolling-window key
+    spent_usd    = Column(Float, nullable=False, default=0.0)
+    # Tracked unconditionally alongside spent_usd regardless of which limit
+    # type a scope's policy actually enforces — the dashboard/meter always
+    # wants both numbers, and a scope can flip cap type later without losing
+    # its running token count.
+    spent_tokens = Column(Integer, nullable=False, default=0)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -909,7 +990,14 @@ class CourseDesignDocument(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     project_id = Column(Integer, nullable=True)   # FK to projects.id (nullable for backward compat)
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    # Archive (soft delete). NULL = live. Indexed because every list query filters on it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(100), nullable=True)
     versions = relationship("CDDVersion", back_populates="cdd", cascade="all, delete-orphan")
+    # NOTE: this cascade means ``db.delete(cdd)`` also deletes every blueprint
+    # derived from it, and (through ModuleBlueprint.versions) their whole version
+    # history. Never hard-delete a CDD without first checking for referencing
+    # blueprints — app/services/design_doc_archive.py enforces that.
     blueprints = relationship("ModuleBlueprint", back_populates="cdd", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -948,6 +1036,9 @@ class ModuleBlueprint(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     project_id = Column(Integer, nullable=True)   # FK to projects.id
     course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    # Archive (soft delete). NULL = live. Indexed because every list query filters on it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(100), nullable=True)
     cdd = relationship("CourseDesignDocument", back_populates="blueprints")
     versions = relationship("BlueprintVersion", back_populates="blueprint", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
@@ -1327,6 +1418,67 @@ class FeedbackItem(Base):
 # Database Initialization & Migrations
 # =============================================================================
 
+def ensure_phoenix_database() -> None:
+    """Create Phoenix's own database on this same Postgres server if it
+    doesn't exist yet — local, RDS, wherever DATABASE_URL points.
+
+    Phoenix's own container can't do this itself: CREATE DATABASE requires an
+    existing connection to a *different* database on the same server, and
+    can't run inside a transaction. This reuses our own DB's connection
+    details (same host/user/password engine already resolved from
+    DATABASE_URL) purely to issue that one statement — no new config, no
+    manual `psql` step, on any environment.
+
+    The target database name is read from PHOENIX_SQL_DATABASE_URL itself
+    (falling back to "phoenix" if that's unset/unparseable) — hardcoding the
+    name here independently of that URL would let the two silently drift:
+    this ensures a database Phoenix was never actually configured to use.
+
+    Best-effort and idempotent: a missing psycopg2 driver (e.g. under
+    SQLite in tests), no permission to list/create databases, or a
+    concurrent duplicate-create from another worker are all swallowed. If
+    this silently fails, the phoenix container simply keeps restarting
+    (its own `restart: unless-stopped` policy) until it's created — never a
+    reason to fail our own app's startup.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        import psycopg2
+        from sqlalchemy.engine import make_url
+
+        target_db = "phoenix"
+        phoenix_url = os.getenv("PHOENIX_SQL_DATABASE_URL", "").strip()
+        if phoenix_url:
+            try:
+                target_db = make_url(phoenix_url).database or target_db
+            except Exception:
+                pass
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "PHOENIX_SQL_DATABASE_URL is not set — Phoenix will silently fall back to a "
+                "local SQLite file inside its own container, which is wiped on every redeploy."
+            )
+
+        url = engine.url
+        conn = psycopg2.connect(
+            host=url.host, port=url.port or 5432, dbname=url.database,
+            user=url.username, password=url.password, connect_timeout=10,
+        )
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
+                if cur.fetchone() is None:
+                    cur.execute(f'CREATE DATABASE "{target_db}"')
+        finally:
+            conn.close()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("ensure_phoenix_database skipped: %s", exc)
+
+
 def init_db():
     # ── Schema DDL is Alembic-owned ────────────────────────────────────────
     # As of the 000100000001 baseline revision, the schema is managed by
@@ -1345,7 +1497,123 @@ def init_db():
     # Skipped on SQLite (the test suite) which has no legacy data and does
     # not support the PostgreSQL syntax used.
     if engine.dialect.name == "postgresql":
+        _ensure_required_columns()
+        _heal_trace_id_column()
         _run_data_backfills()
+
+
+# Columns the ORM declares that the application cannot read a table without.
+#
+# Everything else the ORM adds is optional in practice — a missing column only
+# breaks the feature that uses it. These are different: SQLAlchemy names every
+# mapped column in its SELECT, so a missing one makes EVERY query against that
+# table raise UndefinedColumn, including queries that never touch the new field.
+#
+# table -> (DDL statement, ...)
+_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    # Design-document archive (v22). Without these, listing or opening any CDD
+    # or Blueprint fails outright — the whole CDD and Blueprint UI goes down.
+    "course_design_documents": (
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+    ),
+    "module_blueprints": (
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+    ),
+    # llm_usage_logs.trace_id is NOT listed here — see _heal_trace_id_column.
+    # This dict only ever runs a bare ADD COLUMN IF NOT EXISTS with no data
+    # movement, which isn't safe for that column: a database that ran
+    # revision 17 (creates langfuse_trace_id) but not 22 (renames it to
+    # trace_id) needs the historical values carried across, not just an
+    # empty trace_id column that then makes 22's own rename guard skip it
+    # forever. See _heal_trace_id_column's docstring for the full history —
+    # this exact bare-ADD-COLUMN version was tried and reverted once already.
+}
+
+
+def _ensure_required_columns() -> None:
+    """Add ORM-required columns that the live schema is missing.
+
+    Deliberately NOT behind the DB_AUTO_DDL gate, unlike ``_run_legacy_ddl``.
+    That gate exists to stop optional legacy DDL from desyncing alembic_version,
+    and the trade it makes — schema drift is better than a confused migration
+    state — is the right one for columns whose absence merely disables a feature.
+
+    It is the wrong trade here. The deploy pipeline runs no ``alembic upgrade``
+    (backend-deploy.yml goes straight from ``git reset --hard`` to
+    ``docker compose up --build``), so new code reliably reaches a database that
+    the matching migration has not touched yet. For a column the ORM declares,
+    that window is not degraded service — it is every read of the table raising
+    UndefinedColumn. Verified 2026-08-14: with alembic_version at 000100000020
+    and the archive columns absent, listing the CDDs of any course failed with
+    "column course_design_documents.deleted_at does not exist".
+
+    Every statement is additive, nullable and IF NOT EXISTS, so this is a no-op
+    once the migration has run and safe to run before it. It never drops or
+    rewrites anything, and it does not touch alembic_version — the migration
+    stays the source of truth and is itself guarded to be a no-op here.
+
+    Failures are logged, not raised: a database that refuses DDL (a read-only
+    replica, a least-privilege role) should still serve every request that does
+    not need the new column.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+
+    inspector = _sa_inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table, statements in _REQUIRED_COLUMNS.items():
+        if table not in existing_tables:
+            continue  # fresh database — create_all/migrations will build it complete
+        present = {c["name"] for c in inspector.get_columns(table)}
+        # The column name is the token right after "IF NOT EXISTS".
+        missing = [
+            s for s in statements
+            if s.split("IF NOT EXISTS", 1)[1].strip().split()[0] not in present
+        ]
+        for statement in missing:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(statement))
+                _log.warning("schema_self_heal  added missing column via: %s", statement)
+            except Exception:  # noqa: BLE001 — a boot must not die on schema repair
+                _log.exception("schema_self_heal_failed  statement=%s", statement)
+
+
+def _heal_trace_id_column() -> None:
+    """Copy llm_usage_logs.langfuse_trace_id into trace_id when a deploy
+    reaches this table before migration 000100000022's rename has run.
+
+    Same race as ``_ensure_required_columns`` guards against, but that helper
+    can't cover this column: it only ever runs a bare ``ADD COLUMN IF NOT
+    EXISTS`` with no data movement. An empty ``trace_id`` would make
+    migration 22's own ``not _has_column(..., "trace_id")`` guard permanently
+    False, skipping the rename forever and orphaning every historical
+    ``langfuse_trace_id`` value in a column the ORM no longer reads. Copying
+    the data here means the end state is correct whether or not the
+    migration ever gets to run its (by then redundant) rename.
+
+    Failures are logged, not raised — same boot-must-not-die contract as
+    ``_ensure_required_columns``.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+
+    inspector = _sa_inspect(engine)
+    if "llm_usage_logs" not in inspector.get_table_names():
+        return  # fresh database — migrations will build it complete
+    columns = {c["name"] for c in inspector.get_columns("llm_usage_logs")}
+    if "trace_id" in columns or "langfuse_trace_id" not in columns:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64)"))
+            conn.execute(text(
+                "UPDATE llm_usage_logs SET trace_id = langfuse_trace_id WHERE langfuse_trace_id IS NOT NULL"
+            ))
+        _log.warning("schema_self_heal  copied llm_usage_logs.langfuse_trace_id into trace_id")
+    except Exception:  # noqa: BLE001 — a boot must not die on schema repair
+        _log.exception("schema_self_heal_failed  table=llm_usage_logs  column=trace_id")
 
 
 def _run_legacy_ddl():
@@ -1383,6 +1651,11 @@ def _run_legacy_ddl():
         # module_blueprints (v18)
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS course_id INTEGER",
+        # course_design_documents / module_blueprints — archive (soft delete) (v22)
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE course_design_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE module_blueprints ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100)",
         # generations (v18)
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS project_id INTEGER",
         "ALTER TABLE generations ADD COLUMN IF NOT EXISTS course_id INTEGER",
@@ -1404,6 +1677,9 @@ def _run_legacy_ddl():
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
         # styles — understanding status (v20)
         "ALTER TABLE styles ADD COLUMN IF NOT EXISTS understanding_status VARCHAR(20) DEFAULT 'fresh'",
+        # styles — workspace ownership scoping (v21)
+        "ALTER TABLE styles ADD COLUMN IF NOT EXISTS project_id INTEGER",
+        "ALTER TABLE styles ADD COLUMN IF NOT EXISTS course_id INTEGER",
         # blocks — enterprise approval & versioning (Phase 2)
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS version_num INTEGER DEFAULT 1",
         "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS assigned_reviewer VARCHAR(100)",
@@ -1514,6 +1790,11 @@ def _run_legacy_ddl():
         # feedback — module (blueprint) scope
         "ALTER TABLE feedback_documents ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
         "ALTER TABLE feedback_items ADD COLUMN IF NOT EXISTS blueprint_id INTEGER",
+        # budget_policies — token cap as an alternative to the USD cap
+        "ALTER TABLE budget_policies ADD COLUMN IF NOT EXISTS limit_type VARCHAR(10) DEFAULT 'usd' NOT NULL",
+        "ALTER TABLE budget_policies ALTER COLUMN limit_usd DROP NOT NULL",
+        "ALTER TABLE budget_policies ADD COLUMN IF NOT EXISTS limit_tokens INTEGER",
+        "ALTER TABLE budget_period_spend ADD COLUMN IF NOT EXISTS spent_tokens INTEGER DEFAULT 0 NOT NULL",
     ]
 
     # Each migration runs in its own transaction so AccessExclusiveLock is held
@@ -1541,6 +1822,13 @@ def _run_legacy_ddl():
             "CREATE INDEX IF NOT EXISTS idx_generation_jobs_created_by ON generation_jobs(created_by, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_style_versions_style_id ON style_versions(style_id, version_number DESC)",
             "CREATE INDEX IF NOT EXISTS idx_style_versions_active ON style_versions(style_id, is_active)",
+            # styles — workspace ownership scoping (v21)
+            "CREATE INDEX IF NOT EXISTS idx_styles_course_id ON styles(course_id)",
+            "CREATE INDEX IF NOT EXISTS idx_styles_project_id ON styles(project_id)",
+            # Archive (v22) — partial indexes: every list query asks for the live
+            # rows, so indexing only those keeps the index small as the archive grows.
+            "CREATE INDEX IF NOT EXISTS idx_cdd_live ON course_design_documents(course_id) WHERE deleted_at IS NULL",
+            "CREATE INDEX IF NOT EXISTS idx_blueprint_live ON module_blueprints(course_id) WHERE deleted_at IS NULL",
             "CREATE INDEX IF NOT EXISTS idx_cdd_versions_version_number ON cdd_versions(cdd_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_blueprint_versions_version_number ON blueprint_versions(blueprint_id, version_number)",
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC)",
@@ -1613,6 +1901,36 @@ def _run_data_backfills():
             )
             WHERE cluster_id IS NULL
         """))
+
+    # ── Style workspace ownership backfill (v21, idempotent) ──────────────────
+    # Older styles have no owning project/course. Recover ownership from the
+    # activation pointers: a style a course has activated is owned by that course
+    # (and its project); a style a project has set as default is owned by that
+    # project. Only fills NULLs, so re-runs and correctly-owned rows are no-ops.
+    #
+    # Guarded on the columns existing: this repair runs unconditionally on every
+    # Postgres boot, but the columns are created by the v21 Alembic migration (or
+    # the DB_AUTO_DDL path). If code is deployed before the migration runs, skip
+    # rather than crash startup — the migration carries the same backfill.
+    from sqlalchemy import inspect as _sa_inspect
+    _style_cols = {c["name"] for c in _sa_inspect(engine).get_columns("styles")}
+    if {"project_id", "course_id"} <= _style_cols:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE styles
+                SET course_id  = c.id,
+                    project_id = COALESCE(styles.project_id, c.project_id)
+                FROM courses c
+                WHERE c.active_style_id = styles.id
+                  AND styles.course_id IS NULL
+            """))
+            conn.execute(text("""
+                UPDATE styles
+                SET project_id = p.id
+                FROM projects p
+                WHERE p.active_style_id = styles.id
+                  AND styles.project_id IS NULL
+            """))
 
     # ── Tenant (organization) backfill (idempotent) ───────────────────────────
     # Give every project a slug + tenant defaults so it can act as a tenant.
@@ -1759,8 +2077,14 @@ def _slugify(name: str) -> str:
 
 
 def create_style(db, name: str, description: str, custom_instructions: str,
-                 document_ids: list, created_by: str) -> "Style":
-    """Create and persist a new Style."""
+                 document_ids: list, created_by: str,
+                 project_id: int | None = None, course_id: int | None = None) -> "Style":
+    """Create and persist a new Style.
+
+    ``project_id``/``course_id`` stamp the workspace that generated this style so
+    it later shows up in that course's Generated Styles list (see get_styles).
+    Both are optional — a style created outside any workspace stays unscoped.
+    """
     slug = _slugify(name)
     # Ensure uniqueness
     existing = db.query(Style).filter(Style.style_id == slug).first()
@@ -1770,6 +2094,7 @@ def create_style(db, name: str, description: str, custom_instructions: str,
         style_id=slug, name=name, description=description,
         custom_instructions=custom_instructions,
         created_by=created_by, is_active=False,
+        project_id=project_id, course_id=course_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -1798,57 +2123,70 @@ def add_files_to_style(db, style: "Style", new_doc_ids: list):
 def get_styles(db, project_id: int | None = None, course_id: int | None = None) -> list:
     """Return styles ordered by most recently updated.
 
-    When ``course_id`` is given, restrict strictly to that course's own workspace:
-      * the course's ``active_style_id``
-      * the project's ``active_style_id`` (fallback default only)
+    Scoping is ownership-based (``styles.project_id`` / ``styles.course_id``,
+    stamped at creation time — see create_style), so a workspace sees every
+    style it generated, not only the one it currently has activated.
 
-    Sibling courses' active styles are never included here — a course must only
-    ever see its own style plus the project-wide default, not what other courses
-    in the same project have activated.
+    When ``course_id`` is given, return that course's own workspace:
+      * every style owned by the course (``styles.course_id == course_id``)
+      * the course's ``active_style_id`` (safety net for legacy/unowned rows)
+      * the project's ``active_style_id`` (the project-wide default fallback)
 
-    When only ``project_id`` is given (no course_id — a project-wide view, not a
-    course-scoped one), the legacy behaviour of surfacing every course's active
-    style in that project is preserved.
+    Sibling courses' styles are never included — a course only ever sees its own
+    styles plus the project-wide default, not what other courses in the same
+    project generated or activated.
 
-    Styles are activation-scoped (no ownership columns on ``styles``), so this is
-    the only reliable tenant filter without a schema change. Unscoped calls keep
-    the legacy global catalogue behaviour.
+    When only ``project_id`` is given (a project-wide view, not course-scoped),
+    return every style owned by the project plus every course's active style in
+    that project — the legacy project-wide behaviour, now widened to owned rows.
+
+    Unscoped calls (no project_id, no course_id) keep the global catalogue.
     """
     q = db.query(Style).order_by(Style.updated_at.desc())
     if project_id is None and course_id is None:
         return q.all()
 
-    style_ids: set[int] = set()
+    # Ids to include on top of the ownership match (active pointers). Kept even
+    # when the owning columns are still NULL (e.g. an unowned legacy row that is
+    # currently active) so behaviour never regresses below the activation view.
+    extra_ids: set[int] = set()
 
     if course_id:
         course = db.query(Course).filter(Course.id == course_id).first()
         if course and course.active_style_id:
-            style_ids.add(course.active_style_id)
-        # Fall back to the project default even if the course row is missing/stale
-        # (e.g. a deleted course_id) as long as a project_id was actually given.
+            extra_ids.add(course.active_style_id)
+        # Project default fallback — resolve project even if the course row is
+        # missing/stale (e.g. a deleted course_id) as long as we can find one.
         resolved_project_id = project_id or (course.project_id if course else None)
         if resolved_project_id:
             proj = db.query(Project).filter(Project.id == resolved_project_id).first()
             if proj and proj.active_style_id:
-                style_ids.add(proj.active_style_id)
-    elif project_id:
-        proj = db.query(Project).filter(Project.id == project_id).first()
-        if proj and proj.active_style_id:
-            style_ids.add(proj.active_style_id)
-        for sid in (
-            db.query(Course.active_style_id)
-            .filter(
-                Course.project_id == project_id,
-                Course.active_style_id.isnot(None),
-            )
-            .all()
-        ):
-            if sid[0]:
-                style_ids.add(sid[0])
+                extra_ids.add(proj.active_style_id)
 
-    if not style_ids:
-        return []
-    return q.filter(Style.id.in_(style_ids)).all()
+        conditions = [Style.course_id == course_id]
+        if extra_ids:
+            conditions.append(Style.id.in_(extra_ids))
+        return q.filter(or_(*conditions)).all()
+
+    # project_id only — project-wide view.
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if proj and proj.active_style_id:
+        extra_ids.add(proj.active_style_id)
+    for sid in (
+        db.query(Course.active_style_id)
+        .filter(
+            Course.project_id == project_id,
+            Course.active_style_id.isnot(None),
+        )
+        .all()
+    ):
+        if sid[0]:
+            extra_ids.add(sid[0])
+
+    conditions = [Style.project_id == project_id]
+    if extra_ids:
+        conditions.append(Style.id.in_(extra_ids))
+    return q.filter(or_(*conditions)).all()
 
 
 def get_active_style(db, project_id=None, course_id=None) -> "Style | None":

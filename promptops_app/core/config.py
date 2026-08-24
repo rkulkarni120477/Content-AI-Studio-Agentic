@@ -228,14 +228,17 @@ class AppSettings(BaseSettings):
     )
 
     # ── Cost tracking ─────────────────────────────────────────────────────────
-    enable_cost_tracking: bool = Field(
-        default=True,
-        alias="PROMPTOPS_ENABLE_COST_TRACKING",
-    )
     model_pricing_override: Optional[str] = Field(
         default=None,
         alias="PROMPTOPS_MODEL_PRICING",
     )
+
+    # ── Phoenix observability (self-hosted LLM tracing) ───────────────────────
+    phoenix_collector_endpoint: str = Field(
+        default="http://localhost:6006/v1/traces", alias="PHOENIX_COLLECTOR_ENDPOINT",
+    )
+    phoenix_project_name: str = Field(default="content-ai-studio", alias="PHOENIX_PROJECT_NAME")
+    phoenix_api_key: str = Field(default="", alias="PHOENIX_API_KEY")
 
     # ── Validators ────────────────────────────────────────────────────────────
 
@@ -377,9 +380,16 @@ def clip_tokens(
 
     Behaviour is governed by ``PROMPTOPS_TOKEN_LIMIT_ENABLED``:
 
-    * **enabled (default)** — truncate to *max_tokens* tokens.
-    * **false** — no truncation at all; the full text is returned (the caller
-      accepts the cost / context-overflow tradeoff).
+    * **enabled** — truncate to *max_tokens* tokens.
+    * **false (the field default, and unset in this deployment)** — no truncation
+      at all; the full text is returned (the caller accepts the cost /
+      context-overflow tradeoff).
+
+    Note the default carefully: with the flag off — which is the current state
+    everywhere — this function is a NO-OP and every budget expressed through it
+    is advisory. That is correct for a cost/quality preference and wrong for a
+    safety bound. When the cap exists to stop something unbounded reaching a
+    prompt, use :func:`clip_tokens_strict`, which cannot be switched off.
 
     ``max_tokens <= 0`` means no cap. If tiktoken (or the configured encoding)
     is unavailable, or token encoding/decoding raises, this degrades to
@@ -404,6 +414,68 @@ def clip_tokens(
     except Exception:
         _log.warning("Token truncation failed; using char fallback.", exc_info=True)
         return clip_text(text, int(max_tokens * settings.chars_per_token), suffix)
+
+
+def count_tokens(text: str) -> int:
+    """Return the token count of *text*, or a character-based estimate.
+
+    Counterpart to :func:`clip_tokens`, which trims to a token budget — this
+    only measures, for callers that must decide whether a piece of text can be
+    produced at all (see app.services.cdd_regen_context.assert_can_emit).
+
+    Uses the same encoder and the same ``chars_per_token`` fallback as
+    clip_tokens, so a measurement here and a trim there agree. Unlike
+    clip_tokens this deliberately ignores ``token_limit_enabled``: that flag
+    opts out of *truncating* input, not out of knowing how big something is,
+    and a caller guarding against silent output truncation still needs a real
+    number when it is off.
+    """
+    text = text or ""
+    if not text:
+        return 0
+    enc = _get_token_encoder(settings.token_encoding)
+    if enc is None:
+        return int(len(text) / max(settings.chars_per_token, 1))
+    try:
+        return len(enc.encode(text))
+    except Exception:
+        _log.warning("Token counting failed; using char estimate.", exc_info=True)
+        return int(len(text) / max(settings.chars_per_token, 1))
+
+
+def clip_tokens_strict(text: str, max_tokens: int) -> str:
+    """Trim *text* to *max_tokens*, whatever ``token_limit_enabled`` says.
+
+    The counterpart to :func:`clip_tokens` for caps that are SAFETY bounds rather
+    than cost preferences. ``token_limit_enabled`` defaults to False and is unset
+    in this deployment, which makes clip_tokens a no-op — fine for "send the full
+    source, accept the cost", and not fine for "this document must not be allowed
+    to consume the whole prompt". A mis-tagged reference PDF in the AIM corpus
+    runs to 646 units and ~79,000 tokens; a bound that an unrelated flag can
+    switch off is not a bound.
+
+    Same encoder and same character-based fallback as clip_tokens, so a strict
+    trim and a soft one agree on what a token is.
+    """
+    text = text or ""
+    if not text or max_tokens <= 0:
+        return text
+    # int(), because chars_per_token is a float (4.0) and a float is not a valid
+    # slice index. Without it this raised TypeError on exactly the path that has
+    # to work when the tokenizer does not — a safety net that fails when the
+    # thing it backs up fails is not a safety net.
+    char_cap = int(max_tokens * max(settings.chars_per_token, 1))
+    enc = _get_token_encoder(settings.token_encoding)
+    if enc is None:
+        return text[:char_cap]
+    try:
+        tokens = enc.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return enc.decode(tokens[:max_tokens])
+    except Exception:
+        _log.warning("Strict token clip failed; using char estimate.", exc_info=True)
+        return text[:char_cap]
 
 
 # ---------------------------------------------------------------------------

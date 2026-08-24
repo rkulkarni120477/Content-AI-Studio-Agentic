@@ -27,6 +27,7 @@ from promptops_app.prompts.prompt_builder import build_prompt
 from promptops_app.repositories.blueprint_repository import create_blueprint_version
 from promptops_app.repositories.course_repository import set_active_blueprint
 from promptops_app.services import llm_service
+from promptops_app.services.usage_service import UsageLogContext
 
 _log = logging.getLogger(__name__)
 
@@ -88,7 +89,12 @@ def _build_one(db, course, mc: ModuleContent, module_number: int, model_choice: 
         project_id=course.project_id, course_id=course.id,
     )
 
-    llm = llm_service.generate_with_metadata(model_choice, system_prompt, user_prompt)
+    usage_ctx = UsageLogContext(
+        user_name=user_name, project_id=course.project_id, course_id=course.id,
+        entity_type="reverse_blueprint", entity_id=str(module_number),
+        prompt_template=tpl_name, prompt_version=tpl_version,
+    )
+    llm = llm_service.generate_with_metadata(model_choice, system_prompt, user_prompt, usage_ctx)
     if llm.status == "error":
         raise RuntimeError(llm.text or "LLM error")
 

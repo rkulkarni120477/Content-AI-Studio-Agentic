@@ -17,7 +17,7 @@ import {
 import {
   WORKFLOW_STATES, WORKFLOW_STATE_LABELS, WORKFLOW_KANBAN_COLORS,
 } from '@utils/constants';
-import { truncate } from '@utils/helpers';
+import { truncate, formatDateTime } from '@utils/helpers';
 import { useAuth } from '@hooks/useAuth';
 import toast from 'react-hot-toast';
 import { api } from '@services/apiClient';
@@ -79,14 +79,6 @@ function normalizeList(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.items)) return data.items;
   return [];
-}
-
-function formatDt(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  });
 }
 
 function filterBlocks(blocks, filters) {
@@ -455,7 +447,7 @@ export default function WorkflowPage() {
               onChange={(e) => handleFilter('courseId', e.target.value ? Number(e.target.value) : null)}
             />
           ) : scopeProjId ? (
-            <p className={styles.filters__noCourses}>No titles in this project.</p>
+            <p className={styles.filters__noCourses}>No {L.titlesLower} in this project.</p>
           ) : null}
         </div>
 
@@ -628,14 +620,14 @@ export default function WorkflowPage() {
                     <p className={styles.metaLine}>{approvalBlock.sla.label}</p>
                   )}
                   {approvalBlock.review_requested_at && (
-                    <p className={styles.metaLine}>🕐 Submitted: {formatDt(approvalBlock.review_requested_at)}</p>
+                    <p className={styles.metaLine}>🕐 Submitted: {formatDateTime(approvalBlock.review_requested_at)}</p>
                   )}
                   {events.length > 0 && (
                     <details className={styles.history}>
                       <summary>📜 Transition History</summary>
                       {events.map((ev, i) => (
                         <p key={i} className={styles.history__item}>
-                          {formatDt(ev.created_at)} <strong>{ev.actor}</strong> — {ev.from_state} → {ev.to_state} ({ev.action})
+                          {formatDateTime(ev.created_at)} <strong>{ev.actor}</strong> — {ev.from_state} → {ev.to_state} ({ev.action})
                           {ev.comment ? <> · <em>{ev.comment.slice(0, 60)}</em></> : null}
                         </p>
                       ))}

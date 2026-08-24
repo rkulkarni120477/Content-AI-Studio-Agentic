@@ -3,7 +3,7 @@ name: Deploy Content AI Backend
 on:
   push:
     branches:
-      - dev
+      - prod
     paths:
       - "app/**"
       - "api_server.py"
@@ -13,6 +13,16 @@ on:
       - "docker-compose.yml"
       - "requirements.txt"
       - ".github/workflows/backend-deploy.yml"
+      # This job now runs `alembic upgrade head`, so a migration-only change
+      # is a deployable change — without these two, adding a migration
+      # silently never reaches the host and the schema drifts behind the code
+      # that expects it.
+      - "migrations/**"
+      - "alembic.ini"
+
+  # Lets a deploy be re-run by hand after a failure that needed an out-of-band
+  # fix on the host (e.g. stamping alembic_version), without an empty commit.
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -39,13 +49,22 @@ jobs:
             git fetch origin
 
             echo "Switching to dev branch..."
-            git checkout dev
+            git checkout prod
 
             echo "Syncing with remote..."
-            git reset --hard origin/dev
+            git reset --hard origin/prod
 
             echo "Building and starting all backend services..."
             docker compose up -d --build --remove-orphans
+
+            echo "Applying database migrations..."
+            # Nothing else in this deploy path runs Alembic — Dockerfile CMD is
+            # just uvicorn, and init_db() only handles the legacy DB_AUTO_DDL
+            # escape hatch, not real migrations. Earlier migrations were all
+            # additive/nullable so a missed one was harmless; a rename (like
+            # llm_usage_logs.langfuse_trace_id -> trace_id) is not — every LLM
+            # call's usage/cost row silently stops being written until this runs.
+            docker compose exec -T api alembic upgrade head
 
             echo "Cleaning unused Docker images..."
             docker image prune -f

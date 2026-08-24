@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import { platformService } from '@features/platform/services/platformService';
 import { analyticsService } from '@features/analytics/services/analyticsService';
+import { buildAuditTrailParams } from '@features/analytics/utils/auditTrailParams';
 import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
-import { extractErrorMessage, formatTimestamp } from '@utils/helpers';
+import { downloadBlob, extractErrorMessage, formatTimestamp } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Modal from '@components/common/Modal/Modal';
@@ -18,23 +19,16 @@ import IdentityBar from '@components/common/HeaderUser/IdentityBar';
 import SelectionPageHeader from '@components/streamlit/SelectionPageHeader/SelectionPageHeader';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
+import Pagination from '@components/common/Pagination/Pagination';
 import TenantLabelsPanel from '@features/platform/components/TenantLabelsPanel/TenantLabelsPanel';
+import AnalyticsPage from '@features/analytics/pages/AnalyticsPage/AnalyticsPage';
 import { describeOverrides } from '@config/tenantLabels';
 import styles from './TenantsPage.module.scss';
 
 const EMPTY_FORM = {
-  slug: '', name: '', client_name: '', max_users: 50,
+  slug: '', name: '', max_users: 50,
   admin_username: '', admin_password: '', admin_display_name: '',
 };
-
-// Which client's content the org works on. Drives Source Library access for the
-// org's members, so it is required at creation. Same options as Edit Project.
-const CLIENT_OPTIONS = [
-  { value: 'Cengage', label: 'Cengage' },
-  { value: 'AIM', label: 'AIM' },
-  { value: 'Academian', label: 'Academian' },
-  { value: 'Demo', label: 'Demo' },
-];
 
 const ROLE_COLORS = {
   [ROLES.ADMIN]: '#7c3aed',
@@ -48,7 +42,7 @@ const CONTENT_KEYS = ['system_prompt', 'user_prompt', 'output'];
 
 export default function TenantsPage() {
   const navigate = useNavigate();
-  const { logout, user, role } = useAuth();
+  const { logout, user, role, isPlatformAdmin } = useAuth();
 
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -56,18 +50,32 @@ export default function TenantsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  const [view, setView] = useState('tenants'); // 'tenants' | 'audit' | 'config'
+  const [view, setView] = useState('tenants'); // 'tenants' | 'audit' | 'config' | 'analytics'
   const [auditItems, setAuditItems] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPageSize, setAuditPageSize] = useState(25);
+  const [auditFilters, setAuditFilters] = useState({
+    actor: '', action: '', entityType: '', projectId: '', dateFrom: '', dateTo: '',
+  });
+  const [auditFilterOptions, setAuditFilterOptions] = useState(null);
+  const [auditExporting, setAuditExporting] = useState(false);
   const [expandedAuditId, setExpandedAuditId] = useState(null);
   const [viewContentEvent, setViewContentEvent] = useState(null);
   // Which tenant's labels are being edited; null shows the organization list.
   const [configTenantId, setConfigTenantId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const roleColor = ROLE_COLORS[role] ?? '#7c3aed';
   const roleLabel = ROLE_LABELS[role] ?? role ?? 'Admin';
   // Read from the loaded list so a save + reload refreshes the editor in place.
   const configTenant = tenants.find((t) => t.id === configTenantId) || null;
+  // slug can be null/empty (TenantRead.slug is Optional) — falsy either way,
+  // so the confirm button stays disabled rather than accepting an empty match.
+  const targetSlug = (deleteTarget?.slug || '').trim().toLowerCase();
 
   useEffect(() => { load(); }, []);
 
@@ -84,16 +92,15 @@ export default function TenantsPage() {
 
   async function handleCreate(e) {
     e.preventDefault();
-    if (!form.client_name) {
-      toast.error('Please select a Client — it decides which Source Library content the organization can access.');
-      return;
-    }
     setSaving(true);
     try {
+      const clientName = form.name.trim();
       await platformService.createTenant({
         slug: form.slug.trim().toLowerCase(),
-        name: form.name.trim(),
-        client_name: form.client_name,
+        name: clientName,
+        // The tenant's own name and its DIS client are the same thing here —
+        // one "Client Name *" field on the form drives both.
+        client_name: clientName,
         max_users: Number(form.max_users) || 50,
         admin_username: form.admin_username.trim(),
         admin_password: form.admin_password,
@@ -121,14 +128,41 @@ export default function TenantsPage() {
     }
   }
 
+  function openDeleteConfirm(t) {
+    setDeleteTarget(t);
+    setDeleteConfirmText('');
+  }
+
+  async function handleDeleteTenant() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await platformService.deleteTenant(deleteTarget.id);
+      toast.success(`${deleteTarget.name} deleted`);
+      setDeleteTarget(null);
+      load();
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
-  async function openAuditLog() {
+  function openAuditLog() {
     setView('audit');
+  }
+
+  async function loadAuditTrail(page = 1) {
     setAuditLoading(true);
     try {
-      const res = await analyticsService.getAuditTrail({ page: 1, page_size: 25 });
+      const res = await analyticsService.getAuditTrail(
+        buildAuditTrailParams({ page, pageSize: auditPageSize, filters: auditFilters }),
+      );
       setAuditItems(res?.items || []);
+      setAuditPage(page);
+      setAuditTotal(res?.total ?? 0);
     } catch (e) {
       toast.error(extractErrorMessage(e));
     } finally {
@@ -136,9 +170,45 @@ export default function TenantsPage() {
     }
   }
 
+  function updateAuditFilter(patch) {
+    setAuditFilters((f) => ({ ...f, ...patch }));
+    setAuditPage(1);
+  }
+
+  useEffect(() => {
+    if (view !== 'audit') return;
+    loadAuditTrail(auditPage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, auditFilters, auditPageSize, auditPage]);
+
+  useEffect(() => {
+    if (view !== 'audit' || auditFilterOptions) return;
+    analyticsService.getAuditTrailFilters().then(setAuditFilterOptions).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
+  async function handleExportAudit() {
+    setAuditExporting(true);
+    try {
+      const response = await analyticsService.exportAudit(
+        buildAuditTrailParams({ page: 1, pageSize: 5000, filters: auditFilters }),
+      );
+      downloadBlob(response.data, 'audit-trail.csv');
+      toast.success('Audit trail exported.');
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setAuditExporting(false);
+    }
+  }
+
   function openConfiguration() {
     setView('config');
     setConfigTenantId(null);
+  }
+
+  function openAnalytics() {
+    setView('analytics');
   }
 
   function toggleAuditDetail(id) {
@@ -173,7 +243,7 @@ export default function TenantsPage() {
         <button
           type="button"
           className={`${styles.navBtn} ${view === 'audit' ? styles.navBtnActive : ''}`}
-          onClick={openAuditLog}
+          onClick={() => openAuditLog()}
         >
           📜 Audit Log
         </button>
@@ -184,6 +254,15 @@ export default function TenantsPage() {
         >
           ⚙️ Configuration
         </button>
+        {isPlatformAdmin && (
+          <button
+            type="button"
+            className={`${styles.navBtn} ${view === 'analytics' ? styles.navBtnActive : ''}`}
+            onClick={openAnalytics}
+          >
+            📊 Analytics
+          </button>
+        )}
         <div className={styles.sidebarSpacer} />
         <button type="button" className={styles.signOut} onClick={handleSignOut}>
           🚪 Sign Out
@@ -257,6 +336,15 @@ export default function TenantsPage() {
                           </Button>
                           <Button variant="secondary" size="xs" onClick={() => toggleStatus(t)}>
                             {t.status === 'active' ? 'Suspend' : 'Activate'}
+                          </Button>
+                          <Button
+                            variant="danger-ghost"
+                            size="xs"
+                            aria-label={`Delete ${t.name}`}
+                            title="Delete tenant"
+                            onClick={() => openDeleteConfirm(t)}
+                          >
+                            🗑️
                           </Button>
                         </td>
                       </tr>
@@ -348,6 +436,8 @@ export default function TenantsPage() {
               )}
             </>
           )
+        ) : view === 'analytics' ? (
+          <AnalyticsPage embedded />
         ) : (
           <>
             <div className={styles.headerRow}>
@@ -364,12 +454,80 @@ export default function TenantsPage() {
               subtitle="Who did what, when — including exactly what went into each generation."
             />
 
-            {auditLoading ? (
-              <div className={styles.center}><Loader size="lg" /></div>
-            ) : auditItems.length === 0 ? (
-              <EmptyState icon="📜" title="No audit events yet" message="Audit events appear here as users work in the platform." />
-            ) : (
-              <div className={styles.card}>
+            <div className={styles.card}>
+              <div className={styles.card__header}>
+                <h3 className={styles.card__title}>Audit events</h3>
+                <Button variant="ghost" size="sm" loading={auditExporting} onClick={handleExportAudit}>
+                  ⬇️ Export to CSV
+                </Button>
+              </div>
+
+              <div className={styles.auditFilters}>
+                <Select
+                  label="User"
+                  options={[
+                    { value: '', label: 'All users' },
+                    ...(auditFilterOptions?.actors || []).map((a) => ({ value: a, label: a })),
+                  ]}
+                  value={auditFilters.actor}
+                  onChange={(e) => updateAuditFilter({ actor: e.target.value })}
+                />
+                <Select
+                  label="Action"
+                  options={[
+                    { value: '', label: 'All actions' },
+                    ...(auditFilterOptions?.actions || []).map((a) => ({ value: a, label: a })),
+                  ]}
+                  value={auditFilters.action}
+                  onChange={(e) => updateAuditFilter({ action: e.target.value })}
+                />
+                <Select
+                  label="Entity type"
+                  options={[
+                    { value: '', label: 'All entities' },
+                    ...(auditFilterOptions?.entity_types || []).map((e) => ({ value: e, label: e })),
+                  ]}
+                  value={auditFilters.entityType}
+                  onChange={(e) => updateAuditFilter({ entityType: e.target.value })}
+                />
+                <Select
+                  label="Project"
+                  options={[
+                    { value: '', label: 'All projects' },
+                    ...(auditFilterOptions?.projects || []).map((p) => ({ value: String(p.id), label: p.name })),
+                  ]}
+                  value={auditFilters.projectId}
+                  onChange={(e) => updateAuditFilter({ projectId: e.target.value })}
+                />
+                <Input
+                  label="Date from"
+                  type="date"
+                  value={auditFilters.dateFrom}
+                  onChange={(e) => updateAuditFilter({ dateFrom: e.target.value })}
+                />
+                <Input
+                  label="Date to"
+                  type="date"
+                  value={auditFilters.dateTo}
+                  onChange={(e) => updateAuditFilter({ dateTo: e.target.value })}
+                />
+                <Select
+                  label="Rows per page"
+                  options={[25, 50, 100].map((n) => ({ value: String(n), label: String(n) }))}
+                  value={String(auditPageSize)}
+                  onChange={(e) => { setAuditPageSize(Number(e.target.value)); setAuditPage(1); }}
+                />
+              </div>
+
+              {auditLoading ? (
+                <div className={styles.center}><Loader size="lg" /></div>
+              ) : auditItems.length === 0 ? (
+                <EmptyState
+                  icon="📜"
+                  title={Object.values(auditFilters).some(Boolean) ? 'No audit events match your filters' : 'No audit events yet'}
+                  message="Audit events appear here as users work in the platform."
+                />
+              ) : (
                 <table className={styles.table}>
                   <thead>
                     <tr>
@@ -419,8 +577,18 @@ export default function TenantsPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
-            )}
+              )}
+              {!auditLoading && auditTotal > auditPageSize && (
+                <div className={styles.auditPagination}>
+                  <span className={styles.auditPagination__count}>{auditTotal} result{auditTotal !== 1 ? 's' : ''}</span>
+                  <Pagination
+                    current={auditPage}
+                    total={Math.ceil(auditTotal / auditPageSize)}
+                    onChange={(p) => setAuditPage(p)}
+                  />
+                </div>
+              )}
+            </div>
           </>
         )}
         </div>
@@ -433,7 +601,7 @@ export default function TenantsPage() {
         size="md"
         footer={null}
       >
-        <p className={styles.modalSub}>Creates the organization and an initial tenant admin account.</p>
+        <p className={styles.modalSub}>Creates the organization, its Source Library client, and an initial tenant admin account.</p>
         <form onSubmit={handleCreate} className={styles.form}>
           <Input
             label="Organization code *"
@@ -443,17 +611,11 @@ export default function TenantsPage() {
             required
           />
           <Input
-            label="Display name *"
+            label="Client Name *"
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
-            placeholder="e.g. AIM 16 Block Development"
-            required
-          />
-          <Select
-            label="Client *"
-            options={[{ value: '', label: 'Select client…' }, ...CLIENT_OPTIONS]}
-            value={form.client_name}
-            onChange={(e) => set('client_name', e.target.value)}
+            placeholder="e.g. Nova Publishing"
+            hint="Also names this tenant's Source Library client — must be distinct from every other tenant's once lowercased and underscored (e.g. 'Nova Publishing' and 'nova_publishing' would collide)."
             required
           />
           <Input
@@ -529,6 +691,48 @@ export default function TenantsPage() {
                 <div className={styles.contentBlock__label}>Output</div>
                 <pre className={styles.contentBlock__body}>{viewContentEvent.metadata.output}</pre>
               </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Delete tenant"
+        size="sm"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</Button>
+            <Button
+              variant="danger"
+              onClick={handleDeleteTenant}
+              loading={deleting}
+              disabled={!targetSlug || deleteConfirmText.trim().toLowerCase() !== targetSlug}
+            >
+              Delete permanently
+            </Button>
+          </>
+        )}
+      >
+        {deleteTarget && (
+          <div className={styles.form}>
+            <p>
+              This permanently deletes <strong>{deleteTarget.name}</strong> and every course, block,
+              generation, and document under it. This cannot be undone.
+            </p>
+            {targetSlug ? (
+              <Input
+                label={`Type "${targetSlug}" to confirm`}
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                autoFocus
+              />
+            ) : (
+              <p className={styles.modalSub}>
+                This tenant has no organization code on record, so it can't be safely
+                confirmed — delete it from the database directly if this is intentional.
+              </p>
             )}
           </div>
         )}

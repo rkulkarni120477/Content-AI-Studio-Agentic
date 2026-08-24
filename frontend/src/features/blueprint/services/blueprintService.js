@@ -1,12 +1,16 @@
 import { api } from '@services/apiClient';
 import { BLUEPRINT, GENERATE } from '@services/endpoints';
+// Poll requests carry their own short timeout instead of the app-wide 120s one —
+// see blockJob.POLL_REQUEST_TIMEOUT_MS for why that default was the wrong tool here.
+import { POLL_REQUEST_CONFIG } from '@features/shared/blockJob';
 
 export const blueprintService = {
-  listBlueprints: async ({ courseId, projectId } = {}) => {
+  listBlueprints: async ({ courseId, projectId, includeArchived = false } = {}) => {
     const res = await api.get(BLUEPRINT.LIST, {
       params: {
         course_id: courseId,
         project_id: projectId,
+        include_archived: includeArchived || undefined,
         page: 1,
         page_size: 100,
       },
@@ -33,6 +37,24 @@ export const blueprintService = {
   },
 
   getBlueprint: (id) => api.get(BLUEPRINT.GET(id)),
+
+  /**
+   * Archive a blueprint — reversible, nothing is deleted. See
+   * cddService.archiveCdd for why `unpin` is a separate, deliberate step.
+   */
+  archiveBlueprint: (id, { unpin = false } = {}) =>
+    api.delete(BLUEPRINT.ARCHIVE(id), { params: { unpin } }),
+  restoreBlueprint: (id) => api.post(BLUEPRINT.RESTORE(id)),
+  /** Irreversible, admin-only, and refused by the server if anything references it. */
+  purgeBlueprint: (id) => api.delete(BLUEPRINT.PURGE(id)),
+  bulkArchiveBlueprints: ({ ids, unpin = false, courseId, projectId }) =>
+    api.post(BLUEPRINT.BULK_ARCHIVE, {
+      ids,
+      unpin,
+      course_id: courseId ?? undefined,
+      project_id: projectId ?? undefined,
+    }),
+  getBlueprintReferences: (id) => api.get(BLUEPRINT.REFERENCES(id)),
 
   generateBlueprint: async (data) => {
     const body = {
@@ -77,7 +99,14 @@ export const blueprintService = {
     estimated_duration_hours: data.estimated_duration_hours ?? undefined,
   }),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
-  getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId)),
+  getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId), POLL_REQUEST_CONFIG),
+  /**
+   * The caller's in-flight block-wide Blueprint job for this course, or null.
+   * Lets a reloaded page reattach instead of orphaning a running build.
+   */
+  getActiveBlockJob: (courseId) => api.get(GENERATE.JOB_ACTIVE(courseId, 'blueprint_block')),
+  /** Day-level progress of an in-flight block build. */
+  getBlockJobProgress: (jobId) => api.get(GENERATE.JOB_PROGRESS(jobId), POLL_REQUEST_CONFIG),
 
   getVersions: (id) => api.get(BLUEPRINT.VERSIONS(id)),
   getVersion: (id, v) => api.get(BLUEPRINT.GET_VERSION(id, v)),

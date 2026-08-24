@@ -22,7 +22,7 @@ import Loader from '@components/common/Loader/Loader';
 import Button from '@components/common/Button/Button';
 import { useAuth } from '@hooks/useAuth';
 import { useLabels } from '@hooks/useLabels';
-import { ROUTES, ROLES } from '@utils/constants';
+import { ROUTES, ROLES, projectHomeRoute } from '@utils/constants';
 import { extractErrorMessage } from '@utils/helpers';
 import gridStyles from '@features/dashboard/styles/selectionGrid.module.scss';
 
@@ -30,7 +30,7 @@ export default function CoursesPage() {
   const { projectId, clusterId } = useParams();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const { hasPermission, isAdmin, role } = useAuth();
+  const { hasPermission, isAdmin, role, isPlatformAdmin, projectId: authProjectId } = useAuth();
   const L = useLabels();
   const courses = useAppSelector(selectCourses);
   const selProj = useAppSelector(selectSelectedProject);
@@ -56,7 +56,7 @@ export default function CoursesPage() {
 
   useEffect(() => {
     if (!pid || !cid) {
-      navigate(ROUTES.DASHBOARD, { replace: true });
+      navigate(projectHomeRoute(isPlatformAdmin, authProjectId), { replace: true });
       return;
     }
     async function sync() {
@@ -65,7 +65,7 @@ export default function CoursesPage() {
           const p = await dashboardService.getProject(pid);
           dispatch(setSelectedProject(p));
         } catch {
-          navigate(ROUTES.DASHBOARD, { replace: true });
+          navigate(projectHomeRoute(isPlatformAdmin, authProjectId), { replace: true });
           return;
         }
       }
@@ -81,7 +81,7 @@ export default function CoursesPage() {
       }
     }
     sync();
-  }, [pid, cid, selProj?.id, selCluster?.id, dispatch, navigate]);
+  }, [pid, cid, selProj?.id, selCluster?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
   useEffect(() => {
     if (cid) dispatch(fetchCoursesThunk(cid));
@@ -153,7 +153,7 @@ export default function CoursesPage() {
     return undefined;
   }
 
-  if (!selProj || !selCluster) return null;
+  if (!selProj || !selCluster) return <Loader size="xl" overlay />;
 
   return (
     <SelectionLayout
@@ -188,6 +188,7 @@ export default function CoursesPage() {
                 title={course.name}
                 badge={courseBadge(course)}
                 description={course.description}
+                descriptionPlaceholder="No description provided."
                 onOpen={archived ? undefined : () => handleOpen(course)}
                 openLabel="Enter Workspace →"
                 hideOpen={archived}

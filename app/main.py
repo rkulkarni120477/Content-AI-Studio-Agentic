@@ -36,6 +36,7 @@ from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.middleware import RequestLoggingMiddleware
 from app.core.llm_client import initialise_llm_clients
+from promptops_app.services.budget_service import BudgetExceededError
 
 _log = logging.getLogger(__name__)
 
@@ -57,17 +58,39 @@ async def lifespan(app: FastAPI):
     # Run all DB migrations — creates missing tables AND adds any missing columns.
     # init_db() is idempotent: CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN
     # IF NOT EXISTS are both safe to run on every startup.
-    from promptops_app.database import init_db
+    from promptops_app.database import ensure_phoenix_database, init_db
     init_db()
     _log.info("startup_db_migrations_complete")
+
+    # Phoenix's own container can't create its own database — do it here,
+    # once, idempotently, on every environment (local/dev/prod) without a
+    # manual `CREATE DATABASE` step. Never blocks startup on failure.
+    ensure_phoenix_database()
 
     # Initialise the OpenAI HTTP session and AWS Bedrock client once per
     # process.  This replaces the @st.cache_resource pattern from Streamlit.
     initialise_llm_clients()
 
+    # Fail jobs that a previous process death (OOM kill, restart, redeploy) left
+    # stranded at queued/running. Their run_* handlers never got to record an
+    # error, so without this the row stays "running" forever and the UI shows a
+    # phantom in-flight generation. No-ops when Celery owns the jobs.
+    from promptops_app.jobs.reaper import reap_orphaned_jobs
+    reap_orphaned_jobs()
+
     _log.info("startup_complete  llm_clients=ready")
 
     yield  # Application runs here
+
+    # Phoenix's OTel BatchSpanProcessor batches trace exports asynchronously;
+    # flush on the way out so a restart doesn't silently drop the last few seconds
+    # of in-flight traces. Best-effort — Phoenix being unreachable at shutdown
+    # must not block or fail the shutdown itself.
+    try:
+        from promptops_app.core.llm_client import flush_phoenix_traces
+        flush_phoenix_traces()
+    except Exception as exc:
+        _log.debug("Phoenix flush on shutdown skipped: %s", exc)
 
     # Release reused DIS connection pools (P4.3/F7).
     try:
@@ -138,6 +161,34 @@ def create_application() -> FastAPI:
                     "code": exc.code,
                     "message": exc.message,
                     "detail": exc.detail,
+                }
+            },
+        )
+
+    # P2: a separate handler, not an AppError subclass — BudgetExceededError is
+    # raised from promptops_app/services/budget_service.py, which has no
+    # dependency on this app/ (FastAPI) layer anywhere else; the plain-exception
+    # + dedicated-handler split keeps that boundary intact for this one case too.
+    # 402, not 429 — 429 stays reserved for P5's separate rate limiting.
+    @application.exception_handler(BudgetExceededError)
+    async def budget_exceeded_handler(request: Request, exc: BudgetExceededError) -> JSONResponse:
+        _log.warning(
+            "quota_exceeded  scope=%s  scope_id=%s  path=%s",
+            exc.scope, exc.scope_id, request.url.path,
+        )
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": {
+                    "code": "QUOTA_EXCEEDED",
+                    "message": str(exc),
+                    "detail": {
+                        "scope": exc.scope,
+                        "scope_id": exc.scope_id,
+                        "limit_type": exc.limit_type,
+                        "limit_usd": round(exc.limit_usd, 2),
+                        "current_spend": round(exc.current_spend, 2),
+                    },
                 }
             },
         )

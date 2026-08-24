@@ -13,6 +13,53 @@ from promptops_app.database import (
 )
 
 
+def tenant_scope_condition(project_id: int | None, is_platform_admin: bool):
+    """Boolean SQL condition: does this row belong to the caller's tenant?
+
+    # ponytail: overlaps with app.core.tenant_context.apply_tenant_filter,
+    # which predates Prompt.project_id and is built around a string tenant_id
+    # column (or a bare int project_id FK) rather than this read/write split
+    # (see visible_to_tenant vs writable_by_tenant below — apply_tenant_filter
+    # has no write-side equivalent at all). Kept separate rather than forced
+    # into that shape; unify if a third model needs this exact read/write
+    # distinction and the duplication starts actually costing something.
+
+    True (no restriction) for a platform admin — they may continue seeing
+    every tenant's prompts, per the tenant-isolation ticket's own carve-out.
+    Otherwise: a prompt with project_id NULL is shared/global and visible to
+    everyone; one with project_id set is visible only to that same tenant.
+    Callers AND this into their existing query — it never replaces a role/
+    visibility check, just adds the tenant boundary on top.
+    """
+    if is_platform_admin:
+        return None
+    if project_id is not None:
+        return or_(Prompt.project_id.is_(None), Prompt.project_id == project_id)
+    return Prompt.project_id.is_(None)
+
+
+def visible_to_tenant(row_project_id: int | None, project_id: int | None, is_platform_admin: bool) -> bool:
+    """Boolean twin of ``tenant_scope_condition`` for a single already-fetched
+    row (e.g. a resolved parent/target prompt) instead of a query filter.
+    Same rule, one place — see ``tenant_scope_condition`` for the semantics.
+    """
+    return is_platform_admin or row_project_id is None or row_project_id == project_id
+
+
+def writable_by_tenant(row_project_id: int | None, project_id: int | None, is_platform_admin: bool) -> bool:
+    """Stricter than ``visible_to_tenant`` — the gate for content-mutating
+    actions (edit, delete, new version, promote, attachment add/remove).
+
+    A NULL ``project_id`` means "no single tenant owns this, everyone may
+    read it" — it does not mean "everyone may edit or delete it". Only a
+    platform admin or the row's own tenant may write; a shared/global row is
+    otherwise read-only to tenant callers.
+    """
+    if is_platform_admin:
+        return True
+    return row_project_id is not None and row_project_id == project_id
+
+
 # ---------------------------------------------------------------------------
 # Tags
 #
@@ -51,10 +98,12 @@ def set_prompt_tags(db, prompt: Prompt, tags: list[str] | str | None) -> None:
 # Basic lookups
 # ---------------------------------------------------------------------------
 
-def list_all_prompts(db):
+def list_all_prompts(db, *, project_id: int | None = None, is_platform_admin: bool = False):
     # Soft-deleted rows are archived — never listed (doc §9).
-    return (db.query(Prompt).filter(Prompt.deleted_at.is_(None))
-            .order_by(Prompt.name.asc()).all())
+    q = db.query(Prompt).filter(Prompt.deleted_at.is_(None))
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    return q.order_by(Prompt.name.asc()).all()
 
 
 def get_prompt_by_name(db, name: str):
@@ -107,19 +156,19 @@ def get_default_prompt(
     return base.filter(Prompt.variant.is_(None)).first()
 
 
-def list_prompts_by_component(db, component_type: str) -> list[Prompt]:
+def list_prompts_by_component(
+    db, component_type: str, *, project_id: int | None = None, is_platform_admin: bool = False,
+) -> list[Prompt]:
     """Return all live prompts whose component_type matches, default first then alpha.
 
     Soft-deleted rows are excluded — this feeds CAS selection dropdowns
     (doc §9: archived prompts never appear in selection).
     """
-    return (
-        db.query(Prompt)
-        .filter(Prompt.component_type == component_type,
-                Prompt.deleted_at.is_(None))
-        .order_by(Prompt.is_default.desc(), Prompt.name.asc())
-        .all()
-    )
+    q = db.query(Prompt).filter(Prompt.component_type == component_type,
+                                Prompt.deleted_at.is_(None))
+    if (cond := tenant_scope_condition(project_id, is_platform_admin)) is not None:
+        q = q.filter(cond)
+    return q.order_by(Prompt.is_default.desc(), Prompt.name.asc()).all()
 
 
 def list_prompts_tagged(db, tag: str) -> list[Prompt]:
@@ -293,6 +342,13 @@ def resolve_fixed_prompt(
     project or cluster the course belongs to.  This keeps lookup correct
     even when the caller only knows some of the hierarchy IDs (e.g. cluster_id=None).
 
+    Only locks that can actually be honoured are returned: the bound prompt
+    must still exist and be live. A lock whose prompt was archived (or whose
+    ``prompt_id`` was nulled by the FK's ON DELETE SET NULL) is skipped and the
+    next, broader scope is consulted — matching what the loader does when it
+    re-checks the row it was handed, so a dead course lock can no longer mask
+    a live cluster lock.
+
     acceptable_variants:
         ``None`` (default) — legacy behavior: no variant/kind filtering.
         Otherwise a sequence of acceptable ``Prompt.variant`` values (``None``
@@ -313,11 +369,16 @@ def resolve_fixed_prompt(
     checks.append(("global", None, None))   # always check global as final fallback
 
     for scope, id_col, id_val in checks:
+        # Inner join on the bound row: a lock only wins when its prompt exists
+        # and is live, so NULL/archived targets fall through to broader scopes
+        # instead of short-circuiting resolution to "no lock at all".
         q = (
             db.query(PromptFixing)
+            .join(Prompt, PromptFixing.prompt_id == Prompt.id)
             .filter(
                 PromptFixing.component   == component,
                 PromptFixing.scope_level == scope,
+                Prompt.deleted_at.is_(None),
             )
         )
         if id_col is not None:
@@ -327,12 +388,12 @@ def resolve_fixed_prompt(
                 Prompt.variant.is_(None) if v is None else Prompt.variant == v
                 for v in acceptable_variants
             ]
-            q = q.join(Prompt, PromptFixing.prompt_id == Prompt.id).filter(
+            q = q.filter(
                 Prompt.prompt_kind == "pipeline",
                 or_(*variant_conds) if variant_conds else False,
             )
         fixing = q.first()
-        if fixing and fixing.prompt_id:
+        if fixing is not None:
             return fixing
     return None
 

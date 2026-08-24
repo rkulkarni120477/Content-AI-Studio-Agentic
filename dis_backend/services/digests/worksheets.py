@@ -6,8 +6,13 @@ to ``to_summary()``) so ``units_by_day``/``unattributed``/``acs_by_day`` are sti
 available. Pure, read-only, no LLM — the same "never invent a fact" discipline as
 ENUMERATE/mapper: any field this repo can't source honestly renders as an explicit
 ``NOT AVAILABLE``/``NO AKTR DATA`` placeholder rather than a fabricated value (ACS1.pdf
-task-description text and AKTR miss-rate analytics are not ingested anywhere in this
-system — see CDD_CONTEXT_REDESIGN_PLAN.md).
+task-description text is not ingested anywhere in this system — see
+CDD_CONTEXT_REDESIGN_PLAN.md).
+
+AKTR miss-rate analytics ARE read, when a ``knowledge_test_report`` document has been
+ingested for the block (``services/knowledge_test_report.py``). The placeholder stands
+for exactly the codes that report does not cover, per code — never as a blanket claim
+that no data exists.
 """
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ import bisect
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from services.aim_calendar import parse_handbook
 from services.digests import attribution
@@ -305,8 +310,91 @@ def _acs1_task_descriptions(en, cur, schema: str) -> Dict[str, str]:
     return _parse_acs1_task_descriptions(best_doc_text)
 
 
+def _aktr_missed_codes(en, cur, schema: str) -> Dict[str, Dict[str, Any]]:
+    """Real knowledge-test miss rates for THIS block, keyed by ACS code.
+
+    Reads the ``knowledge_test_report`` units ingestion wrote for the block (one unit
+    per block sheet of an AKTR rollup). ``metadata_json.missed_codes`` holds the
+    parsed rows, so the numbers are read structurally; a unit written before that
+    field existed falls back to parsing its composed text, which is the same format
+    ``knowledge_test_report._compose_text`` emits.
+
+    Matched on ``block`` OR ``block_number`` because this system carries the block tag
+    in more than one written form ("Block 6", "Block 06", "6"); a rollup whose sheet
+    named the block differently from the calendar must still be found.
+
+    Returns {} (never raises) when there is no cursor or no such document — the same
+    best-effort contract as ``_acs1_task_descriptions``, and for the same reason: this
+    lookup's failure must not discard the other worksheets built beside it.
+    """
+    if cur is None:
+        return {}
+    block_number = ""
+    m = re.search(r"(\d+)", str(en.block or ""))
+    if m:
+        block_number = str(int(m.group(1)))
+    try:
+        cur.execute(
+            f"""SELECT cu.metadata_json, cu.text_content
+                 FROM {schema}.dis_content_units cu
+                 JOIN {schema}.dis_documents doc ON doc.document_id = cu.document_id
+                WHERE cu.client_id = %s
+                  AND doc.document_type = 'knowledge_test_report'
+                  AND (cu.metadata_json->>'block' = %s
+                       OR (%s <> '' AND cu.metadata_json->>'block_number' = %s))""",
+            (en.client_id, en.block, block_number, block_number),
+        )
+        rows = cur.fetchall()
+    except Exception as exc:  # best-effort; a failed lookup must never sink the caller
+        log.warning("aktr missed-code lookup failed for client=%s block=%s: %s",
+                    en.client_id, en.block, exc)
+        return {}
+
+    from services.knowledge_test_report import parse_missed_codes
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        md = row["metadata_json"] or {}
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except ValueError:
+                md = {}
+        entries = md.get("missed_codes") or []
+        if entries:
+            for entry in entries:
+                code = str(entry.get("acs_code") or "").strip()
+                if code:
+                    out.setdefault(code, entry)
+            continue
+        for code, entry in parse_missed_codes(row["text_content"] or "").items():
+            out.setdefault(code, entry)
+    return out
+
+
+def _high_miss_cell(entry: Dict[str, Any]) -> str:
+    """One code's miss rate, as a figure the Blueprint can print verbatim.
+
+    A rollup row missing its percentage still says what it does know (the rank) —
+    reporting "NO AKTR DATA" for a code the report actually lists would be as wrong
+    as inventing a number for one it does not. A row carrying neither figure says
+    precisely that, rather than borrowing the wording for a code the report omits.
+    """
+    pct = entry.get("pct_missed")
+    rank = entry.get("rank")
+    if pct is None and rank is None:
+        return "NO FIGURE — listed in the report without a miss rate or rank"
+    parts = []
+    if pct is not None:
+        parts.append(f"{float(pct) * 100:.1f}% missed")
+    if rank is not None:
+        parts.append(f"rank #{rank}")
+    return ", ".join(parts)
+
+
 def build_acs_registry(en, cur=None, schema: str = "dis") -> List[Dict[str, Any]]:
-    """Per-code registry: days active, type, and an honest task-description /
+    """Per-code registry: days active, type, real AKTR miss rates where the block's
+    knowledge-test report covers the code, and an honest task-description /
     quick-check-priority / high-miss placeholder wherever we lack real source data."""
     by_code_days: Dict[str, set] = {}
     for dn, codes in en.acs_by_day.items():
@@ -314,22 +402,43 @@ def build_acs_registry(en, cur=None, schema: str = "dis") -> List[Dict[str, Any]
             by_code_days.setdefault(c, set()).add(dn)
 
     task_descriptions = _acs1_task_descriptions(en, cur, schema)
+    missed = _aktr_missed_codes(en, cur, schema)
 
     out = []
     for code in sorted(en.declared_acs, key=attribution.acs_sort_key):
         letter = _acs_type(code)
+        entry = missed.get(code)
         out.append({
             "acs_code": code,
             "acs_type": _acs_type_label(letter),
             "task_description": task_descriptions.get(code, "NOT AVAILABLE — ACS1.pdf not ingested"),
             "days_active": sorted(by_code_days.get(code, [])),
-            "high_miss": "NO AKTR DATA — not supplied",
-            "quick_check_priority": _DEFAULT_PRIORITY.get(letter, "RECALL (default)"),
+            "high_miss": _high_miss_cell(entry) if entry
+                         else ("NO AKTR DATA — code not in the ingested report" if missed
+                               else "NO AKTR DATA — not supplied"),
+            # A measured miss rate outranks the element-type default: the whole point
+            # of the report is that it says which codes cohorts actually fail.
+            "quick_check_priority": (
+                f"PRIORITY — {_high_miss_cell(entry)} on the knowledge test"
+                if entry and entry.get("pct_missed") is not None
+                else _DEFAULT_PRIORITY.get(letter, "RECALL (default)")),
         })
     return out
 
 
-_DEFAULT_RESTRICTED_DOC_TYPES = {"quiz_answer_key", "project_key"}
+#: Fallback used only when no tenant config is supplied. This drives the
+#: ``production_action`` a delivered worksheet prints next to a document type, so an
+#: under-inclusive list does not merely lose a label — it tells a production team
+#: "Include in input bundle" for instructor guides and answer keys. It previously
+#: held two of the seven types the retrieval gate treats as restricted by
+#: construction, so five families could be advised INTO a student-facing bundle
+#: whenever tenant_cfg was absent. Mirrors the built-in floor in
+#: ContextRetrievalService._restricted_doc_types (see also the conformance test in
+#: tests/unit/test_restricted_policy_conformance.py, which fails if the two drift).
+_DEFAULT_RESTRICTED_DOC_TYPES = {
+    "answer_key", "quiz_answer_key", "final_exam_answer_key", "exam_answer_key",
+    "instructor_guide", "project_instructor_guide", "project_key",
+}
 
 
 # Block-wide reference document types (§ enabled_document_types) that describe
@@ -408,8 +517,9 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
         md = u.get("metadata_json") or {}
         doc_type = md.get("document_type") or "other"
         fname = md.get("source_file_name") or u.get("title") or "(untitled)"
-        entry = by_type.setdefault(doc_type, {"files": set(), "days": set()})
+        entry = by_type.setdefault(doc_type, {"files": set(), "days": set(), "visibility": set()})
         entry["files"].add(fname)
+        entry["visibility"].add(str(md.get("visibility") or "").strip().lower())
         if day_number is not None:
             entry["days"].add(day_number)
 
@@ -428,11 +538,34 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
     for doc_type, files in _block_wide_reference_files(en, cur, schema).items():
         if doc_type in by_type:
             continue
-        by_type[doc_type] = {"files": files, "days": set()}
+        by_type[doc_type] = {"files": files, "days": set(), "visibility": set()}
         block_wide_types.add(doc_type)
 
-    restricted_types = (set(getattr(tenant_cfg.document_processing, "restricted_document_types", []) or [])
-                        if tenant_cfg is not None else _DEFAULT_RESTRICTED_DOC_TYPES)
+    # A type that IS block-wide by construction but reached the inventory through the
+    # units pass instead (its units carry the block tag, so the filename-regex query
+    # above never looks at it) had no day evidence to print and fell to
+    # "Unattributed" / "day not resolved" — which reads as a tagging failure rather
+    # than the truth, that the document applies to the whole block. Only when there is
+    # genuinely no day evidence: a type with resolved days keeps them.
+    for doc_type, entry in by_type.items():
+        if not entry["days"] and doc_type in attribution.BLOCK_WIDE_REFERENCE_DOC_TYPES:
+            block_wide_types.add(doc_type)
+
+    # Config UNION the built-in floor, never config alone. A tenant's
+    # restricted_document_types list is an ADDITION to the families that are
+    # restricted by construction, not a replacement for them — the retrieval gate
+    # composes them exactly this way (ContextRetrievalService._restricted_doc_types),
+    # and taking the config verbatim here made this worksheet disagree with it.
+    # Measured on aim.yaml, whose list is [quiz_answer_key, project_key]: five
+    # families including instructor_guide and project_instructor_guide were printed
+    # as "Include in input bundle" while retrieval was blocking them outright.
+    restricted_types = set(_DEFAULT_RESTRICTED_DOC_TYPES)
+    if tenant_cfg is not None:
+        restricted_types |= {
+            str(t).strip().lower()
+            for t in (getattr(tenant_cfg.document_processing, "restricted_document_types", None) or [])
+            if str(t).strip()
+        }
 
     out = []
     for doc_type, entry in sorted(by_type.items()):
@@ -459,11 +592,32 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
             "days_applicable": (["All"] if doc_type in block_wide_types
                                else days if days else ["Unattributed"]),
             "status": "EXISTS",
+            # Case-folded on both sides, like the retrieval gate: doc_type is whatever
+            # the classifier wrote onto the unit's metadata, and a stray "Instructor_Guide"
+            # matching nothing would print the permissive label for restricted material.
             "production_action": ("Instructor-only — exclude from student-facing use"
-                                  if doc_type in restricted_types else "Include in input bundle"),
+                                  if (str(doc_type).strip().lower() in restricted_types
+                                      or _instructor_only(entry))
+                                  else "Include in input bundle"),
             "status_notes": status_notes,
         })
     return out
+
+
+def _instructor_only(entry: Dict[str, Any]) -> bool:
+    """Whether every file of this type was ingested as instructor/internal-only.
+
+    Restricted doc types are caught by the type list; visibility catches the types
+    that are legitimate design input yet still not student-facing (a knowledge-test
+    performance report is the case in hand — cohort analytics, no exam content). Read
+    from the units' own metadata, and only when EVERY occurrence agrees, so a mixed
+    type is never labelled instructor-only on the strength of one file.
+    """
+    seen = {v for v in (entry.get("visibility") or set()) if v}
+    if not seen or len(seen) != len(entry.get("visibility") or set()):
+        return False  # some unit carried no visibility at all — do not assume
+    return seen <= {"instructor", "instructor_only", "internal", "internal_only",
+                    "admin_only", "restricted_admin"}
 
 
 def _subject_letter(code: str) -> str:
@@ -503,12 +657,19 @@ def _primary_handbooks(days: List[Dict[str, Any]]) -> List[str]:
     return sorted(out)
 
 
-def _syllabus_text(en, cur, schema: str) -> str:
+def _syllabus_text(en, cur, schema: str) -> Optional[str]:
     """Best-effort verbatim syllabus lookup. dis_syllabus (the structured table) is
     dead schema — nothing writes to it — so this reads the raw syllabus_section
     content unit directly, matched by filename rather than metadata_json.block
     (that field is inconsistently normalized, e.g. 'Block 02' vs 'Block 2' —
-    a known gap, see stale-code-schema-audit). Returns '' if none found.
+    a known gap, see stale-code-schema-audit).
+
+    Returns ``''`` when the query RAN and matched nothing, and ``None`` when no
+    query could be built at all — the filename match is anchored on a block NUMBER,
+    so a block label carrying no digits ("Block T", "Foundations") is unsearchable
+    by this method. The two used to be the same empty string, which rendered as
+    "syllabus not ingested" for a course whose syllabus was sitting in the library
+    under a name this function simply cannot address. Caller distinguishes them.
 
     ``schema`` MUST come from the tenant's own structure_store config (e.g.
     ``tenant_cfg.structure_store.schema_name``) — every other query in this
@@ -525,7 +686,7 @@ def _syllabus_text(en, cur, schema: str) -> str:
     m = re.search(r"\d+", en.block or "")
     block_num = m.group(0).lstrip("0") or "0" if m else None
     if block_num is None:
-        return ""
+        return None
     cur.execute(
         f"""SELECT cu.text_content
              FROM {schema}.dis_content_units cu
@@ -545,6 +706,35 @@ _SYLLABUS_KEY_BY_MARKER = {"Course Description": "course_description",
                            "Course Objectives": "course_objectives",
                            "Grading and Evaluation": "grading_policy"}
 
+#: Every field the syllabus lookup is responsible for. `supplemental_references` is
+#: derived rather than marker-anchored, so it is not a value in the map above — which
+#: is exactly why it needs naming here: two call sites previously restated the field
+#: list by hand and had to remember to append it separately, and one placeholder set
+#: that forgets it renders as an empty worksheet cell rather than an honest gap.
+_SYLLABUS_FIELD_KEYS = (*_SYLLABUS_KEY_BY_MARKER.values(), "supplemental_references")
+
+
+def _syllabus_unavailable(reason: str) -> Dict[str, str]:
+    """Placeholders for every syllabus field, stating WHY it is absent.
+
+    "Not ingested" is a claim about the source library, and it must only be made
+    when the lookup actually ran and found nothing. A lookup that could not run —
+    no cursor, or a query that raised — knows nothing about whether the syllabus
+    exists, and saying "not ingested" there sends a reader to re-upload a document
+    that is already there. Same discipline as the regeneration no-op note: name the
+    thing that actually happened, not the most likely-sounding cause.
+    """
+    return {k: f"NOT AVAILABLE — {reason}" for k in _SYLLABUS_FIELD_KEYS}
+
+
+#: Four distinct reasons a syllabus field can be absent, deliberately distinguishable
+#: in the rendered worksheet. Only the first is a claim about the source library.
+SYLLABUS_NOT_INGESTED = "syllabus not ingested"
+SYLLABUS_NOT_READ = "syllabus not read (structure store unavailable for this build)"
+SYLLABUS_LOOKUP_FAILED = "syllabus lookup failed (not a statement that it is missing)"
+SYLLABUS_NOT_SEARCHABLE = ("syllabus not searchable for this block — the lookup matches on a "
+                           "block number and this block's label has none")
+
 
 def _extract_syllabus_fields(text: str) -> Dict[str, str]:
     """Verbatim marker-anchored slicing (mirrors cdd_parser.parse_cdd_flat's
@@ -555,9 +745,9 @@ def _extract_syllabus_fields(text: str) -> Dict[str, str]:
     directions."""
     keys = tuple(_SYLLABUS_KEY_BY_MARKER.values())
     if not text:
-        out = {k: "NOT AVAILABLE — syllabus not ingested" for k in keys}
-        out["supplemental_references"] = "NOT AVAILABLE — syllabus not ingested"
-        return out
+        # The lookup ran and returned nothing — the one case where blaming ingestion
+        # is the honest answer.
+        return _syllabus_unavailable(SYLLABUS_NOT_INGESTED)
     out: Dict[str, str] = {}
     for marker, key in _SYLLABUS_KEY_BY_MARKER.items():
         m = re.search(re.escape(marker) + r"\s*:\s*", text)
@@ -631,26 +821,59 @@ def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[s
     }
 
 
-def build_block_overview(en, cur=None, schema: str = "dis") -> Dict[str, Any]:
+def build_block_overview(en, cur=None, schema: str = "dis",
+                         flags: Optional[List[str]] = None) -> Dict[str, Any]:
     """Block-level summary: totals, ACS subjects, handbook/supplemental-reference
     citations, web resources, and verbatim syllabus fields where the source is
     available. ``schema`` must be the tenant's own structure_store.schema_name —
     passing the default only ever gives the right answer by coincidence for
-    tenants that happen to also use "dis"."""
+    tenants that happen to also use "dis".
+
+    ``flags`` (optional) is appended to in place when a syllabus field is absent for
+    a reason the *reader of a rendered worksheet* cannot be expected to diagnose. The
+    cell text already says what happened, but a cell is not a channel a reviewer
+    watches; the flag is, and it is what reaches CoverageReport.enumerate_flags.
+    Best-effort stays best-effort — this function still never raises — but it no
+    longer degrades silently, which is the half of "best-effort" that was missing.
+    """
     total_projects, total_quizzes = _project_quiz_counts(en.days)
     subjects = sorted({_subject_letter(c) for c in en.declared_acs if _subject_letter(c) != "?"})
     primary_handbooks = _primary_handbooks(en.days)
     web_resources = build_web_resources(en.days, en.units_by_day)
 
-    syllabus_fields = {k: "NOT AVAILABLE — syllabus not ingested" for k in
-                       ("course_description", "course_objectives", "grading_policy",
-                        "supplemental_references")}
-    if cur is not None:
+    if cur is None:
+        # No cursor means the caller could not open the structure store (see
+        # build.context_bundle's fallback). That is a statement about THIS build,
+        # not about the source library, and it used to render as "not ingested".
+        syllabus_fields = _syllabus_unavailable(SYLLABUS_NOT_READ)
+        if flags is not None:
+            flags.append("SYLLABUS_NOT_READ — no structure-store cursor for this build; "
+                         "the syllabus fields are unknown, not known-absent")
+    else:
         try:
             text = _syllabus_text(en, cur, schema)
-            syllabus_fields = _extract_syllabus_fields(text)
-        except Exception:
-            pass  # best-effort; overview must never fail the whole build over this
+            if text is None:
+                # No query could be built (block label carries no number). Nothing
+                # was asked, so nothing is known — not "not ingested".
+                syllabus_fields = _syllabus_unavailable(SYLLABUS_NOT_SEARCHABLE)
+                if flags is not None:
+                    flags.append(f"SYLLABUS_NOT_SEARCHABLE — block label {en.block!r} has no "
+                                 "number for the filename match; the syllabus fields are "
+                                 "unknown, not known-absent")
+            else:
+                syllabus_fields = _extract_syllabus_fields(text)
+        except Exception as exc:  # noqa: BLE001 — overview must never fail the build
+            # Was `except Exception: pass`, which left the pre-set "not ingested"
+            # placeholders in place: a query failure rendered, in the delivered
+            # worksheet, as a confident claim that the document had never been
+            # uploaded. Nothing was logged either, so the only trace of a broken
+            # syllabus read was a plausible-looking sentence in the output.
+            log.warning("block_overview: syllabus lookup failed for block=%s client=%s: %s",
+                        en.block, en.client_id, exc, exc_info=True)
+            syllabus_fields = _syllabus_unavailable(SYLLABUS_LOOKUP_FAILED)
+            if flags is not None:
+                flags.append(f"SYLLABUS_LOOKUP_FAILED — {type(exc).__name__}; the syllabus "
+                             "fields are unknown, not known-absent")
 
     return {
         "block": en.block,

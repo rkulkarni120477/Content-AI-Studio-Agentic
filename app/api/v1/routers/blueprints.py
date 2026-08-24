@@ -39,6 +39,13 @@ from app.core.exceptions import (
     PromptConfigurationError,
     WorkflowError,
 )
+from app.schemas.archive import (
+    ArchiveResponse,
+    BulkArchiveRequest,
+    BulkArchiveResponse,
+    DocumentReferences,
+    PurgeResponse,
+)
 from app.schemas.blueprint import (
     BlueprintActivateVersionResponse,
     BlueprintComponent,
@@ -104,24 +111,46 @@ def _get_blueprint_or_404(db: Session, blueprint_id: int):
 def list_blueprints(
     project_id: int | None = Query(default=None),
     course_id: int | None = Query(default=None),
+    include_archived: bool = Query(
+        default=False,
+        description="Include archived blueprints. Off by default — the archive is a bin, not the list.",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[BlueprintListItem]:
-    """Return blueprints scoped to the given project or course."""
+    """Return blueprints scoped to the given project or course.
+
+    Each row carries what references it, resolved in one batched pass over the
+    page rather than a query per row.
+    """
     from promptops_app.repositories import blueprint_repository
+    from app.services import design_doc_archive as archive_svc
 
     if course_id:
-        bps = blueprint_repository.list_blueprints_for_course(db, course_id=course_id, project_id=project_id)
+        bps = blueprint_repository.list_blueprints_for_course(
+            db, course_id=course_id, project_id=project_id, include_archived=include_archived,
+        )
     else:
-        bps = blueprint_repository.list_all_blueprints(db)
+        bps = blueprint_repository.list_all_blueprints(db, include_archived=include_archived)
 
     total = len(bps)
     start = (page - 1) * page_size
+    page_items = bps[start: start + page_size]
+    refs = archive_svc.reference_counts(db, archive_svc.BLUEPRINT, [b.id for b in page_items])
+
+    items = [
+        BlueprintListItem.model_validate(b).model_copy(update={
+            "is_archived": archive_svc.is_archived(b),
+            "references": DocumentReferences.from_refs(
+                refs.get(b.id, archive_svc.DocReferences())
+            ),
+        })
+        for b in page_items
+    ]
     return PaginatedResponse.create(
-        items=[BlueprintListItem.model_validate(b) for b in bps[start: start + page_size]],
-        total=total, page=page, page_size=page_size,
+        items=items, total=total, page=page, page_size=page_size,
     )
 
 
@@ -185,6 +214,13 @@ def generate_blueprint(
     cdd_context = ""
     if cdd_id:
         cdd_row = cdd_repository.get_cdd_by_id(db, cdd_id)
+        # An archived CDD must not feed a prompt. It cannot arrive here as the
+        # course's pin (archiving clears that), but a stale tab can still post
+        # an explicit cdd_id, and this is the one path that reads the document's
+        # content into the generation rather than just stamping its id.
+        if cdd_row is not None:
+            from app.services import design_doc_archive as archive_svc
+            archive_svc.assert_live(cdd_row, archive_svc.CDD)
         cdd_title = cdd_row.title if cdd_row else ""
         cdd_version = get_active_cdd_version(db, cdd_id)
         if cdd_version:
@@ -296,6 +332,9 @@ def generate_blueprint(
             "teacher_mode":       "Yes" if request_body.teacher_mode else "No",
             "student_mode":       "No" if request_body.teacher_mode else "Yes",
             "style_guidelines":   style_context,
+            # Same name the CDD route supplies, so a block-wide prompt is portable
+            # between the two rather than being written for one of them.
+            "block":              getattr(request_body, "block", None) or "",
         }
         try:
             system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
@@ -333,6 +372,21 @@ def generate_blueprint(
                 "prompt_name": _tpl_name,
                 "prompt_version": _tpl_version,
             }
+
+    # Same guard the CDD router applies, for the same reason: this path stores the
+    # reply AS the document, so a prompt that withholds it saves an empty one.
+    from promptops_app.services.prompt_capability import (
+        context_was_dropped, reject_if_unsatisfiable,
+    )
+    reject_if_unsatisfiable(system_prompt, user_prompt, what="generating this Blueprint")
+    if context_was_dropped(dis_context_block, system_prompt, user_prompt):
+        _log.warning(
+            "blueprint_source_context_dropped  user=%s  course=%s  context_chars=%d  "
+            "prompt_source=%s — the selected prompt has no slot for it",
+            current_user.username, request_body.course_id, len(dis_context_block),
+            prompt_provenance.get("prompt_source"),
+        )
+        prompt_provenance["source_context_dropped"] = True
 
     # Call LLM.
     llm_result = generate_with_metadata(
@@ -493,12 +547,27 @@ def generate_blueprint_block(
     current_user=Depends(require_permission("blueprint.generate")),
 ) -> BlockWideJobResponse:
     from promptops_app.repositories import job_repository
-    from promptops_app.jobs import job_runner, block_wide_jobs
+    from promptops_app.jobs import dispatch, block_wide_jobs
 
     dis_client_id = resolve_course_dis_client(
         db, course_id=request_body.course_id, project_id=request_body.project_id,
     )
     if not settings.digest_pipeline_on_for(dis_client_id):
+        # Audited before raising. This refusal happens BEFORE create_job and before
+        # the *.block_requested write below, so without this a rejected request left
+        # no job row and no audit row — the user saw an error the system had no
+        # record of. The UI now gates on the same question (courses carry
+        # digest_pipeline_enabled), so reaching here means a stale client, a direct
+        # API call, or the two checks drifting apart again; all three are worth
+        # seeing.
+        from promptops_app.services.audit_service import log_audit_event
+        log_audit_event(
+            db, current_user.username, "blueprint.block_refused",
+            entity_type="blueprint", entity_id=None,
+            project_id=request_body.project_id, course_id=request_body.course_id,
+            metadata={"block": request_body.block, "dis_client_id": dis_client_id,
+                      "reason": "digest_pipeline_disabled_for_client"},
+        )
         raise HTTPException(400, "Digest pipeline is not enabled for this course's client.")
 
     params = request_body.model_dump()
@@ -528,14 +597,244 @@ def generate_blueprint_block(
             "prompt_id": request_body.prompt_id,
             "cdd_id": request_body.cdd_id,
             "extra_instructions": request_body.extra_instructions,
+            # See the matching comment in cdd.py's generate-block audit call.
+            "style_id": request_body.style_id,
+            "estimated_duration_hours": request_body.estimated_duration_hours,
         },
     )
-    job_runner.submit(block_wide_jobs.run_block_wide_job, job_id)
+    # dispatch, not job_runner: routes to Celery when enabled so a web-container
+    # restart/OOM can't kill a long block-wide run (it falls back to the
+    # threadpool automatically when Celery is off or the broker is unreachable).
+    dispatch.submit(block_wide_jobs.run_block_wide_job, job_id)
     _log.info("blueprint_generate_block_queued  user=%s  course=%d  block=%s  job=%s",
               current_user.username, request_body.course_id, request_body.block, job_id)
     return BlockWideJobResponse(
         job_id=job_id, status="queued", deliverable="blueprint",
         block=request_body.block, poll_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Archive / restore / permanently delete
+#
+# Mirrors the CDD endpoints exactly, over the same service, so the two document
+# kinds cannot end up with different delete semantics. See
+# app/services/design_doc_archive.py for the rules.
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/bulk-archive",
+    response_model=BulkArchiveResponse,
+    summary="Archive several blueprints at once",
+    description=(
+        "Archives every blueprint named in `ids`, reporting each id's outcome. "
+        "Explicit ids only — there is no predicate form. Ids that are missing, "
+        "out of scope or pinned are skipped, not failed."
+    ),
+    responses={
+        403: {"description": "Requires the blueprint.archive permission."},
+        422: {"description": "More ids than a single request may carry."},
+    },
+)
+def bulk_archive_blueprints(
+    request_body: BulkArchiveRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.archive")),
+) -> BulkArchiveResponse:
+    """Archive a batch of blueprints, returning a row per id."""
+    from app.services import design_doc_archive as archive_svc
+    from promptops_app.services.audit_service import log_audit_event
+
+    outcomes = archive_svc.bulk_archive(
+        db, archive_svc.BLUEPRINT, request_body.ids,
+        actor=current_user.username,
+        unpin=request_body.unpin,
+        scope_course_id=request_body.course_id,
+        scope_project_id=request_body.project_id,
+    )
+    response = BulkArchiveResponse.from_outcomes(outcomes)
+
+    # Ids go in metadata, not entity_id — see the CDD bulk endpoint: entity_id is
+    # VARCHAR(64) and an overflow would silently drop the whole audit row.
+    archived_ids = [o.doc_id for o in outcomes if o.status == "archived"]
+    if archived_ids:
+        log_audit_event(
+            db, current_user.username, "blueprint.archived",
+            entity_type="blueprint",
+            course_id=request_body.course_id, project_id=request_body.project_id,
+            metadata={
+                "bulk": True,
+                "archived_ids": archived_ids,
+                "archived": response.archived,
+                "skipped": response.skipped,
+                "already_archived": response.already_archived,
+                "unpin": request_body.unpin,
+            },
+        )
+    _log.info("blueprint_bulk_archived  user=%s  archived=%d  skipped=%d",
+              current_user.username, response.archived, response.skipped)
+    return response
+
+
+@router.get(
+    "/{blueprint_id}/references",
+    response_model=DocumentReferences,
+    summary="What currently references this blueprint",
+    responses={404: {"description": "Blueprint not found."}},
+)
+def get_blueprint_references(
+    blueprint_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> DocumentReferences:
+    """Return the reference/blocker snapshot for one blueprint."""
+    from app.services import design_doc_archive as archive_svc
+
+    _get_blueprint_or_404(db, blueprint_id)
+    return DocumentReferences.from_refs(
+        archive_svc.references_for(db, archive_svc.BLUEPRINT, blueprint_id)
+    )
+
+
+@router.delete(
+    "/{blueprint_id}",
+    response_model=ArchiveResponse,
+    summary="Archive a blueprint",
+    description=(
+        "Removes the blueprint from the list without deleting anything — it can "
+        "be restored. One pinned as active on a course is refused unless "
+        "`unpin=true`."
+    ),
+    responses={
+        404: {"description": "Blueprint not found."},
+        403: {"description": "Requires the blueprint.archive permission."},
+        409: {"description": "Pinned as active and unpin was not requested."},
+    },
+)
+def archive_blueprint(
+    blueprint_id: int,
+    unpin: bool = Query(
+        default=False,
+        description="Clear the course's active-blueprint pin so a pinned blueprint can be archived.",
+    ),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.archive")),
+) -> ArchiveResponse:
+    """Soft-delete one blueprint."""
+    from app.services import design_doc_archive as archive_svc
+    from app.core.exceptions import ResourceInUseError
+    from promptops_app.services.audit_service import log_audit_event
+
+    bp = _get_blueprint_or_404(db, blueprint_id)
+    outcome = archive_svc.archive(
+        db, archive_svc.BLUEPRINT, bp, actor=current_user.username, unpin=unpin,
+    )
+    if not outcome.ok:
+        raise ResourceInUseError(
+            outcome.reason, blockers=[outcome.reason], detail={"id": blueprint_id},
+        )
+
+    if outcome.status == "archived":
+        log_audit_event(
+            db, current_user.username, "blueprint.archived",
+            entity_type="blueprint", entity_id=blueprint_id,
+            course_id=bp.course_id, project_id=bp.project_id,
+            metadata={"title": bp.title, "unpinned_courses": list(outcome.unpinned_courses)},
+        )
+        _log.info("blueprint_archived  user=%s  bp_id=%d  unpinned=%s",
+                  current_user.username, blueprint_id, outcome.unpinned_courses or "none")
+
+    return ArchiveResponse(
+        id=blueprint_id,
+        archived=True,
+        unpinned_courses=list(outcome.unpinned_courses),
+        message=(
+            "Already archived." if outcome.status == "already_archived"
+            else "Archived. Restore it any time from the archived list."
+        ),
+    )
+
+
+@router.post(
+    "/{blueprint_id}/restore",
+    response_model=ArchiveResponse,
+    summary="Restore an archived blueprint",
+    responses={
+        404: {"description": "Blueprint not found."},
+        403: {"description": "Requires the blueprint.archive permission."},
+    },
+)
+def restore_blueprint(
+    blueprint_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.archive")),
+) -> ArchiveResponse:
+    """Undo an archive."""
+    from app.services import design_doc_archive as archive_svc
+    from promptops_app.services.audit_service import log_audit_event
+
+    bp = _get_blueprint_or_404(db, blueprint_id)
+    changed = archive_svc.restore(db, archive_svc.BLUEPRINT, bp)
+    if changed:
+        log_audit_event(
+            db, current_user.username, "blueprint.restored",
+            entity_type="blueprint", entity_id=blueprint_id,
+            course_id=bp.course_id, project_id=bp.project_id,
+            metadata={"title": bp.title},
+        )
+        _log.info("blueprint_restored  user=%s  bp_id=%d", current_user.username, blueprint_id)
+
+    return ArchiveResponse(
+        id=blueprint_id,
+        archived=False,
+        message=(
+            "Restored. Pin it if you want generation to use it."
+            if changed else "That blueprint was not archived."
+        ),
+    )
+
+
+@router.delete(
+    "/{blueprint_id}/permanent",
+    response_model=PurgeResponse,
+    summary="Permanently delete an archived blueprint",
+    description=(
+        "Irreversible. Refused unless the blueprint is archived first and "
+        "nothing references it — including reviewer feedback mapped to it, which "
+        "a delete would silently unmap. Admin only."
+    ),
+    responses={
+        404: {"description": "Blueprint not found."},
+        403: {"description": "Requires the blueprint.purge permission (admin)."},
+        409: {"description": "Something still references it; see detail.blockers."},
+        422: {"description": "Not archived yet — archive it first."},
+    },
+)
+def permanently_delete_blueprint(
+    blueprint_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.purge")),
+) -> PurgeResponse:
+    """Hard-delete an archived, unreferenced blueprint and its versions."""
+    from app.services import design_doc_archive as archive_svc
+    from promptops_app.services.audit_service import log_audit_event
+
+    bp = _get_blueprint_or_404(db, blueprint_id)
+    title, course_id, project_id = bp.title, bp.course_id, bp.project_id
+
+    refs = archive_svc.purge(db, archive_svc.BLUEPRINT, bp)
+
+    log_audit_event(
+        db, current_user.username, "blueprint.purged",
+        entity_type="blueprint", entity_id=blueprint_id,
+        course_id=course_id, project_id=project_id,
+        metadata={"title": title, "versions_deleted": refs.version_count},
+    )
+    _log.warning("blueprint_purged  user=%s  bp_id=%d  versions=%d",
+                 current_user.username, blueprint_id, refs.version_count)
+    return PurgeResponse(
+        id=blueprint_id, deleted=True,
+        message=f"Permanently deleted, along with {refs.version_count} saved version(s).",
     )
 
 
@@ -647,6 +946,7 @@ def regenerate_blueprint_item(
         patch_item_in_section,
         regen_single_item,
     )
+    from promptops_app.services.usage_service import UsageLogContext
 
     bp = _get_blueprint_or_404(db, blueprint_id)
 
@@ -663,6 +963,10 @@ def regenerate_blueprint_item(
     )
     instruction = f"{(request_body.feedback or '').strip()} {context}".strip()
 
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
+        entity_type="blueprint_item_regen", entity_id=str(blueprint_id),
+    )
     new_item_text = regen_single_item(
         section_title=request_body.section_key,
         section_content=original,
@@ -670,15 +974,19 @@ def regenerate_blueprint_item(
         item_text=items[item_index]["text"],
         custom_instruction=instruction,
         model_choice=request_body.model_choice,
+        usage_ctx=usage_ctx,
     )
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
     _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d",
               current_user.username, blueprint_id, request_body.section_key, item_index)
 
+    from promptops_app.services.budget_service import build_usage_summary
+
     return BlueprintRegenerateItemResponse(
         updated_content=updated_content,
         patched_item=new_item_text or "",
+        usage_summary=build_usage_summary(db, usage_ctx, "blueprint_item_regen", str(blueprint_id)),
     )
 
 
@@ -702,6 +1010,7 @@ def regenerate_blueprint_section(
     """
     from promptops_app.parsers.blueprint_parser import get_blueprint_prompts
     from promptops_app.services.llm_service import generate_text as call_llm
+    from promptops_app.services.usage_service import UsageLogContext
 
     bp = _get_blueprint_or_404(db, blueprint_id)
     mode = "teacher" if request_body.teacher_mode else "student"
@@ -715,21 +1024,34 @@ def regenerate_blueprint_section(
         cdd_summary=cdd_summary or "No CDD linked.",
         custom_instruction=request_body.feedback or "Improve this section.",
     )
-    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt)
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
+        entity_type="blueprint_section_regen", entity_id=str(blueprint_id),
+    )
+    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt, usage_ctx)
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
 
     _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s",
               current_user.username, blueprint_id, request_body.section_key, mode)
 
-    return BlueprintRegenerateSectionResponse(updated_content=new_content.strip())
+    from promptops_app.services.budget_service import build_usage_summary
+
+    return BlueprintRegenerateSectionResponse(
+        updated_content=new_content.strip(),
+        usage_summary=build_usage_summary(db, usage_ctx, "blueprint_section_regen", str(blueprint_id)),
+    )
 
 
 @router.post("/{blueprint_id}/pin", response_model=BlueprintPinResponse, summary="Pin blueprint to a course")
 def pin_blueprint(blueprint_id: int, request_body: BlueprintPinRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.pin"))) -> BlueprintPinResponse:
     """Set as active blueprint for generation. Equivalent to the '📌 Set as Active Blueprint' button."""
     from promptops_app.repositories.course_repository import set_active_blueprint
-    _get_blueprint_or_404(db, blueprint_id)
+    from app.services import design_doc_archive as archive_svc
+    bp = _get_blueprint_or_404(db, blueprint_id)
+    # Pinning an archive would quietly put a document someone deliberately
+    # retired back in front of every generation for this course.
+    archive_svc.assert_live(bp, archive_svc.BLUEPRINT)
     set_active_blueprint(db, request_body.course_id, blueprint_id)
     _log.info("blueprint_pinned  user=%s  bp_id=%d  course_id=%d", current_user.username, blueprint_id, request_body.course_id)
     return BlueprintPinResponse(blueprint_id=blueprint_id, course_id=request_body.course_id)

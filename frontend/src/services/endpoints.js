@@ -19,6 +19,9 @@ export const PLATFORM = {
   TENANT_ROLES:   (id) => `/api/v1/platform/tenants/${id}/roles`,
   TENANT_ROLE:    (id, roleId) => `/api/v1/platform/tenants/${id}/roles/${roleId}`,
   PERMISSION_CATALOG: '/api/v1/platform/tenants/permission-catalog',
+  BUDGETS:        '/api/v1/platform/tenants/budgets',
+  BUDGET_UPSERT:  '/api/v1/platform/tenants/budgets/policy',
+  BUDGET_DELETE:  (id) => `/api/v1/platform/tenants/budgets/${id}`,
 };
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -80,8 +83,6 @@ export const IMPORTS = {
 export const USERS = {
   LIST:             '/api/v1/users',
   GET:              (id)      => `/api/v1/users/${id}`,
-  CREATE:           '/api/v1/users',
-  TOGGLE_ACTIVE:    (id)      => `/api/v1/users/${id}/toggle`,
   REVIEWERS:        '/api/v1/users/reviewers',
 };
 
@@ -154,6 +155,9 @@ export const CDD = {
   LIST_ALL:         '/api/v1/cdd',
   GET:              (id)       => `/api/v1/cdd/${id}`,
   GENERATE:         '/api/v1/cdd/generate',
+  // Upload an existing Blueprint/CDD file (Excel/DOCX/PDF) → extracted, normalized
+  // into the worksheet shape, saved as a normal CDD, and pinned active. Multipart.
+  IMPORT:           '/api/v1/cdd/import',
   // Block-wide (digest-pipeline) async generation → returns a job handle to poll
   // via GENERATE.JOB_STATUS. Flag-gated server-side (AIM only, off by default).
   GENERATE_BLOCK:   '/api/v1/cdd/generate-block',
@@ -166,6 +170,14 @@ export const CDD = {
   PIN:              (id)       => `/api/v1/cdd/${id}/pin`,
   SET_ACTIVE:       (id)       => `/api/v1/cdd/${id}/pin`,
   EXPORT:           (id)       => `/api/v1/cdd/${id}/export`,
+  // Archive is reversible and is the everyday cleanup; PURGE is not and is
+  // admin-only. Separate routes so the destructive one can never be reached by
+  // a stray retry of the safe one.
+  ARCHIVE:          (id)       => `/api/v1/cdd/${id}`,
+  RESTORE:          (id)       => `/api/v1/cdd/${id}/restore`,
+  PURGE:            (id)       => `/api/v1/cdd/${id}/permanent`,
+  BULK_ARCHIVE:     '/api/v1/cdd/bulk-archive',
+  REFERENCES:       (id)       => `/api/v1/cdd/${id}/references`,
 };
 
 // ─── Blueprint ────────────────────────────────────────────────────────────────
@@ -187,6 +199,12 @@ export const BLUEPRINT = {
   EXPORT_LESSONS:   (id)       => `/api/v1/blueprints/${id}/export-lessons`,
   PARSE_COMPONENTS: (id)       => `/api/v1/blueprints/${id}/components`,
   COMPLETION:       (id)       => `/api/v1/blueprints/${id}/completion-status`,
+  // See CDD.ARCHIVE — same split between the reversible and the irreversible.
+  ARCHIVE:          (id)       => `/api/v1/blueprints/${id}`,
+  RESTORE:          (id)       => `/api/v1/blueprints/${id}/restore`,
+  PURGE:            (id)       => `/api/v1/blueprints/${id}/permanent`,
+  BULK_ARCHIVE:     '/api/v1/blueprints/bulk-archive',
+  REFERENCES:       (id)       => `/api/v1/blueprints/${id}/references`,
 };
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
@@ -198,6 +216,17 @@ export const GENERATE = {
   COURSE_COMPLETION: (courseId) => `/api/v1/generations/course/${courseId}/completion-status`,
   JOB_STATUS:       (jobId)    => `/api/v1/jobs/${jobId}`,
   JOB_CANCEL:       (jobId)    => `/api/v1/jobs/${jobId}`,
+  // "Is one of my builds still running?" — asked on mount so a refreshed page
+  // reattaches to an in-flight job instead of orphaning it. Server-authoritative
+  // (see the endpoint's docstring): a job id in localStorage would not survive a
+  // cleared cache or another tab, and could disagree with the database.
+  // Day-level progress of a block-wide build ("day 7 of 20"). Separate from
+  // JOB_STATUS so that poll stays a single fast DB read for every job type.
+  JOB_PROGRESS:     (jobId)    => `/api/v1/jobs/${jobId}/progress`,
+  JOB_ACTIVE:       (courseId, jobType) =>
+    `/api/v1/jobs/active?course_id=${encodeURIComponent(courseId)}`
+    + (jobType ? `&job_type=${encodeURIComponent(jobType)}` : ''),
+  TRACE:            (id)       => `/api/v1/generations/${id}/trace`,
 };
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
@@ -268,12 +297,9 @@ export const ANALYTICS = {
   FEEDBACK:             '/api/v1/analytics/feedback',
   FEEDBACK_SUMMARY:     '/api/v1/analytics/feedback/summary',
   REVIEWS:              '/api/v1/analytics/reviews',
-  SYSTEM_LOGS:          '/api/v1/analytics/system-logs',
   AUDIT_TRAIL:          '/api/v1/analytics/audit-trail',
   AUDIT_TRAIL_FILTERS:  '/api/v1/analytics/audit-trail/filters',
   AUDIT_EXPORT:         '/api/v1/analytics/audit-trail/export',
-  PROMPT_PERF:          '/api/v1/analytics/prompt-performance',
-  QUALITY_TRENDS:       '/api/v1/analytics/quality-trends',
   GENERATION_HISTORY:   '/api/v1/analytics/generations',
   HISTORY_PROMPT_VERSIONS: '/api/v1/analytics/history/prompt-versions',
   HISTORY_DOC_UPLOADS:  '/api/v1/analytics/history/document-uploads',

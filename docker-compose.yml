@@ -6,6 +6,8 @@
 #   celery-worker Background job processor (no exposed port)
 #   redis         Celery broker + result backend (port 6379)
 #   postgres      Local dev database (port 5432) — prod uses AWS RDS
+#   phoenix       Self-hosted LLM tracing UI (port 6006) — traces live in a
+#                 dedicated database on the same RDS instance, see below
 #
 # Usage:
 #   Start all:         docker-compose up -d --build
@@ -33,6 +35,13 @@ services:
 
     volumes:
       - .:/app
+
+    # host.docker.internal resolves automatically on Docker Desktop (local dev)
+    # but not on plain Docker Engine on Linux (prod EC2) — needed for
+    # DIS_API_BASE_URL, which points at host.docker.internal to reach that
+    # sibling service via its host-mapped port.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     depends_on:
       redis:
@@ -77,6 +86,18 @@ services:
 
     env_file:
       - .env
+
+    # Without this, budget_service._live_flag()'s dotenv_values(".env") reads
+    # the .env baked into the image at build time, not the live host file —
+    # api's own bind mount below is what makes BUDGET_ENFORCEMENT_MODE/
+    # BUDGET_ENFORCEMENT_KILLSWITCH flip with no restart there; this worker
+    # runs block-wide generation's most expensive calls, so it needs the same
+    # live read, not a stale one that only updates on a full rebuild.
+    volumes:
+      - .:/app
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     depends_on:
       redis:
@@ -123,11 +144,51 @@ services:
     env_file:
       - ./dis_backend/.env
 
+    # Live-shared with the host (and with CAS's own api container, which
+    # writes new client YAMLs here on tenant creation) — without this, the
+    # image's baked-in COPY of config/ never sees a file written after build,
+    # and /admin/config/reload would have nothing new to pick up.
+    volumes:
+      - ./dis_backend/config:/app/config
+
     ports:
       - "${DIS_PORT}:8000"
 
     # Hard memory ceiling (P6.3, F13) — parsing / indexing service.
     mem_limit: 2g
+
+    restart: unless-stopped
+
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+
+    # Defaulted — unlike the api/celery/dis_backend names, which are already
+    # required everywhere this compose file runs, this var is new. Left
+    # unset it fails `docker compose config` outright ('' doesn't match the
+    # container-name pattern), which takes down the ENTIRE deploy — api and
+    # celery_worker included — not just this one service.
+    container_name: ${PHOENIX_CONTAINER_NAME:-contentai_phoenix}
+
+    # Scoped to only what Phoenix's own process needs — env_file: .env would
+    # hand a third-party image OPENAI_API_KEY/JWT_SECRET_KEY/AWS credentials/
+    # our own DATABASE_URL. Phoenix's UI (reachable via the SSH tunnel below)
+    # includes a prompt playground that would pick up and bill OPENAI_API_KEY.
+    environment:
+      PHOENIX_SQL_DATABASE_URL: ${PHOENIX_SQL_DATABASE_URL}
+
+    # Bound to localhost only — reach the UI via an SSH tunnel:
+    # ssh -L 6006:localhost:6006 <user>@<host>
+    # The api/celery containers reach it over the compose network by service
+    # name (http://phoenix:6006), no host.docker.internal needed.
+    ports:
+      - "127.0.0.1:6006:6006"
+
+    # Hard memory ceiling — one lightweight container. No ClickHouse/Redis/
+    # MinIO/separate worker here; traces are stored in a dedicated "phoenix"
+    # database on the same RDS instance CAS's own app already uses — see
+    # PHOENIX_SETUP.md for the one-time setup.
+    mem_limit: 768m
 
     restart: unless-stopped
 

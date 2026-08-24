@@ -32,26 +32,6 @@ def list_generations_scoped(
     return q.limit(limit).all()
 
 
-def list_generations_all_scoped(
-    db,
-    *,
-    user_name: str = None,
-    project_id: int = None,
-    is_admin: bool = True,
-    limit: int = 1000,
-):
-    """Return scoped generations up to `limit` — used for analytics leaderboard.
-
-    Capped at 1 000 by default to prevent full-table scans on busy tenants.
-    """
-    q = db.query(Generation)
-    if not is_admin and user_name:
-        q = q.filter(Generation.created_by == user_name)
-        if project_id:
-            q = q.filter(Generation.project_id == project_id)
-    return q.order_by(Generation.created_at.desc()).limit(limit).all()
-
-
 def list_recent_generations(
     db,
     *,
@@ -632,34 +612,6 @@ def count_blocks_scoped(
     if not gen_ids:
         return 0
     return db.query(Block).filter(Block.generation_id.in_(gen_ids)).count()
-
-
-def get_block_ratings_scoped(
-    db,
-    *,
-    user_name: str = None,
-    project_id: int = None,
-    is_admin: bool = True,
-):
-    q = db.query(Generation)
-    if not is_admin and user_name:
-        q = q.filter(Generation.created_by == user_name)
-        if project_id:
-            q = q.filter(Generation.project_id == project_id)
-    gen_ids = [r[0] for r in q.with_entities(Generation.id).all()]
-    if not gen_ids:
-        return []
-    return db.query(Block.rating).filter(Block.generation_id.in_(gen_ids)).all()
-
-
-def list_rated_blocks_for_gen_ids(db, gen_ids: list):
-    if not gen_ids:
-        return []
-    return (
-        db.query(Block)
-        .filter(Block.generation_id.in_(gen_ids), Block.rating > 0)
-        .all()
-    )
 
 
 # ── Review ───────────────────────────────────────────────────────────────────

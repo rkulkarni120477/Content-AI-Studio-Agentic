@@ -4,19 +4,24 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchCddsThunk, generateCddThunk, setActiveCddThunk,
+  fetchCddsThunk, generateCddThunk, importCddThunk, setActiveCddThunk,
   fetchCddVersionsThunk, commitCddVersionThunk, exportCddThunk,
   activateCddVersionThunk, regenerateCddItemThunk, regenerateCddSectionThunk,
   generateCddBlockThunk,
+  resumeCddJobThunk,
+  fetchArchivedCddsThunk, archiveCddThunk, restoreCddThunk, purgeCddThunk,
+  bulkArchiveCddsThunk,
 } from '@features/cdd/cddThunks';
 import { cddService } from '@features/cdd/services/cddService';
 import {
   selectCdds, selectActiveCdd, selectCddVersions,
-  selectCddLoading, selectCddGenerating, selectCddError, selectCddBlockJob,
-  resetBlockJob,
+  selectCddLoading, selectCddGenerating, selectCddImporting, selectCddError, selectCddBlockJob,
+  selectArchivedCdds, selectCddArchiving, selectCddArchiveRefusal,
+  resetBlockJob, clearArchiveRefusal,
 } from '@features/cdd/cddSlice';
 import { useAuth } from '@hooks/useAuth';
 import BlockWidePanel from '@components/generation/BlockWidePanel/BlockWidePanel';
+import DocumentArchivePanel from '@components/generation/DocumentArchivePanel/DocumentArchivePanel';
 import {
   selectSelectedProject, selectSelectedCluster, selectSelectedCourse,
   selectModelChoice, selectExpertDomain, selectTargetAudience, selectAudienceCategory,
@@ -72,20 +77,40 @@ export default function CddPage() {
   const audienceCategory = useAppSelector(selectAudienceCategory);
   const isLoading = useAppSelector(selectCddLoading);
   const isGenerating = useAppSelector(selectCddGenerating);
+  const isImporting = useAppSelector(selectCddImporting);
   const error = useAppSelector(selectCddError);
   const blockJob = useAppSelector(selectCddBlockJob);
+  const archivedCdds = useAppSelector(selectArchivedCdds);
+  const isArchiving = useAppSelector(selectCddArchiving);
+  const archiveRefusal = useAppSelector(selectCddArchiveRefusal);
   const { user } = useAuth();
-  // Block-wide (digest-pipeline) generation is opt-in per DIS client; the server
-  // reports the capability on /auth/me so we can hide the control otherwise.
-  const digestPipelineEnabled = Boolean(user?.digest_pipeline_enabled);
+  // Block-wide (digest-pipeline) generation is opt-in per DIS client — and the
+  // client that matters is the COURSE'S, not the viewer's, because the pipeline
+  // reads the course's own Source Library. Gating this on the user's own flag was
+  // wrong: on 2026-08-13, 71 of 106 courses showed the panel and then failed the
+  // POST with a 400. Courses now carry the same answer the endpoint gates on.
+  //
+  // `??`, not `||`: falling back only when the course has not loaded yet. Treating
+  // a loaded `false` as "unknown" would put the wrong panel back on screen, and
+  // treating an unloaded course as `false` would hide the panel from users who can
+  // legitimately use it — the same false-negative that hid it after every login.
+  const digestPipelineEnabled =
+    selCourse?.digest_pipeline_enabled ?? Boolean(user?.digest_pipeline_enabled);
 
   const [selectedStyleId, setSelectedStyleId] = useState(null);
+  // Upload-existing-blueprint control (Excel/DOCX/PDF → imported as an active CDD).
+  const importFileRef = useRef(null);
+  const [importFile, setImportFile] = useState(null);
+  const [importProgress, setImportProgress] = useState(0);
   const [refDocIds, setRefDocIds] = useState([]);
   const [sourceDocs, setSourceDocs] = useState([]);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceError, setSourceError] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
   const [promptConfig, setPromptConfig] = useState({ systemPrompt: '', userPromptTemplate: '', hasOverride: false });
+  // Reconciliation for the selected prompt, lifted out of InlinePromptControls so the
+  // block-wide half renders beside the block-wide button rather than the single-call one.
+  const [promptCapability, setPromptCapability] = useState(null);
   const [savedInstrs, setSavedInstrs] = useState([]);
   const [loadInstrSel, setLoadInstrSel] = useState('— Start fresh —');
   const [showSaveInstr, setShowSaveInstr] = useState(false);
@@ -112,7 +137,10 @@ export default function CddPage() {
 
   const generateForm = useForm({
     resolver: zodResolver(createCddSchema),
-    defaultValues: { course_title: '', document_title: '', duration_hours: 8 },
+    // duration_hours starts empty, not at 8: it is an optional input now, and a
+    // pre-filled default is indistinguishable on screen from a figure the user
+    // deliberately chose.
+    defaultValues: { course_title: '', document_title: '', duration_hours: undefined },
   });
   const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
 
@@ -146,6 +174,10 @@ export default function CddPage() {
     setBlockLabel('');
     blockLabelTouched.current = false;
     dispatch(fetchCddsThunk(courseId));
+    // Loaded on mount rather than on first expand: the count is shown on the
+    // toggle itself, and a "Show archived" button that appears a second late
+    // reads as the page still loading.
+    dispatch(fetchArchivedCddsThunk(courseId));
     dispatch(fetchStylesThunk());
   }, [courseId, projectId, dispatch]);
 
@@ -179,6 +211,22 @@ export default function CddPage() {
       setSelectedStyleId(activeStyle.id);
     }
   }, [activeStyle, selectedStyleId]);
+
+  // Reattach to a block-wide build already running server-side. The poll chain lives
+  // only in browser memory, so a refresh (or a closed laptop, or the transient network
+  // error that a 20-minute build reliably provokes) used to orphan the UI while the
+  // job kept going — leaving a dead spinner, or tempting a re-submit that pays for a
+  // second concurrent build. Runs on every mount and resolves to null when nothing is
+  // in flight, so the common case costs one cheap request and changes no state.
+  useEffect(() => {
+    if (courseId) dispatch(resumeCddJobThunk({ courseId: Number(courseId) }));
+    // projectId is in the deps because the resetBlockJob effect above lists it too:
+    // projectId arrives asynchronously and commonly flips undefined→number just after
+    // mount, which re-runs that effect and nulls blockJob while leaving isGenerating
+    // true — a disabled button with no status line. Re-running here re-adopts the job.
+    // The thunk bails out when a job is already being polled, so this cannot stack up
+    // duplicate poll chains.
+  }, [dispatch, courseId, projectId]);
 
   // Reference-document selector options. Same source as the Style tab: every
   // ingested Source Library document for this course's client (DIS `status` is a
@@ -285,7 +333,7 @@ export default function CddPage() {
       project_id: selProject?.id,
       course_title: data.course_title,
       document_title: data.document_title,
-      estimated_duration_hours: data.duration_hours || 8,
+      estimated_duration_hours: data.duration_hours || undefined,
       extra_instructions: extraInstructions,
       style_id: selectedStyleId || null,
       reference_document_ids: refDocIds,
@@ -308,6 +356,38 @@ export default function CddPage() {
     await dispatch(generateCddThunk(payload));
   }
 
+  function onImportFileChange(e) {
+    setImportFile(e.target.files?.[0] || null);
+    setImportProgress(0);
+  }
+
+  // Import an existing Blueprint file. Reuses the Block / Document Title already
+  // typed in the form above when present; otherwise the server derives them from
+  // the file. On success the imported CDD is set active (by the thunk) and shown
+  // in "Your Title Design Documents" like a generated one.
+  async function onImportBlueprint() {
+    if (!importFile) return;
+    const data = generateForm.getValues();
+    const res = await dispatch(importCddThunk({
+      file: importFile,
+      courseId: Number(courseId),
+      projectId: selProject?.id ?? projectId,
+      courseTitle: data.course_title || '',
+      documentTitle: data.document_title || '',
+      modelChoice,
+      onProgress: setImportProgress,
+    }));
+    if (importCddThunk.fulfilled.match(res)) {
+      setImportFile(null);
+      setImportProgress(0);
+      if (importFileRef.current) importFileRef.current.value = '';
+      if (res.payload?.id) {
+        setViewCddId(res.payload.id);
+        setSelectedCddId(res.payload.id);
+      }
+    }
+  }
+
   async function onGenerateBlock() {
     const data = generateForm.getValues();
     const payload = {
@@ -322,6 +402,12 @@ export default function CddPage() {
       model_choice: modelChoice,
       target_audience: targetAudience,
       expert_domain: expertDomain,
+      // The style shown in the picker above, and announced by the "<style> will be
+      // applied" banner. Omitting it made that banner false: block-wide generation
+      // ran with no style at all while the page said otherwise. Sent as the id the
+      // form displays rather than resolved server-side, so what is applied is always
+      // what the user was shown.
+      style_id: selectedStyleId || null,
       // The prompt shown in the "Prompt Template" dropdown above. Without this the
       // server can't reach its DB tier and falls through to the generic shipped
       // cdd_generation.md file — so the panel would silently distill its guidance
@@ -341,6 +427,31 @@ export default function CddPage() {
   async function onSetActive(cddId) {
     await dispatch(setActiveCddThunk({ cddId, courseId: Number(courseId) }));
     setViewCddId(cddId);
+  }
+
+  // ── Archive management ────────────────────────────────────────────────────
+  // Every handler passes courseId so the shared thunks can refetch both the
+  // live and archived lists — archiving moves a row between them.
+  const cid = Number(courseId);
+
+  function onArchiveCdd(cddId, { unpin } = {}) {
+    // The selection follows the row out of the list, so the page does not keep
+    // showing the contents of a document that is no longer in it.
+    if (viewCddId === cddId) setViewCddId(null);
+    dispatch(archiveCddThunk({ id: cddId, courseId: cid, unpin }));
+  }
+
+  function onRestoreCdd(cddId) {
+    dispatch(restoreCddThunk({ id: cddId, courseId: cid }));
+  }
+
+  function onPurgeCdd(cddId) {
+    dispatch(purgeCddThunk({ id: cddId, courseId: cid }));
+  }
+
+  function onBulkArchiveCdds(ids) {
+    if (ids.includes(viewCddId)) setViewCddId(null);
+    dispatch(bulkArchiveCddsThunk({ ids, courseId: cid, projectId }));
   }
 
   async function onCommitVersion(data) {
@@ -423,6 +534,14 @@ export default function CddPage() {
       feedback: instruction,
       modelChoice,
     })).unwrap();
+    // The model returned the section untouched — a legitimate outcome when the
+    // instruction cannot be satisfied from the context it was given. Committing
+    // it would save a version identical to the current one and show a success
+    // toast, which is why "I regenerated and nothing happened" was impossible to
+    // tell apart from a broken feature. Say so instead, and save nothing.
+    // The thunk has already reported this (see notifyRegenOutcome) — toasting
+    // again here is what put a success and a failure on screen together.
+    if (res?.changed === false) return;
     if (res?.updated_content != null) {
       const reason = instruction
         ? `AI regenerated ${blockKey}: ${instruction}`
@@ -438,7 +557,8 @@ export default function CddPage() {
   }
 
   async function onRegenerateCddItem({
-    blockKey, sectionContent, itemIndex, instruction, dluWorksheetKey, dluCourseStructure,
+    blockKey, sectionContent, itemIndex, instruction, useSources,
+    dluWorksheetKey, dluCourseStructure,
   }) {
     if (!displayCdd?.id) return;
     const res = await dispatch(regenerateCddItemThunk({
@@ -447,8 +567,12 @@ export default function CddPage() {
       sectionContent,
       itemIndex,
       feedback: instruction,
+      useSources,
       modelChoice,
     })).unwrap();
+    // Same contract as the section path above: an item returned untouched must
+    // not be committed as a new version. The thunk has already said so.
+    if (res?.changed === false) return;
     if (res?.updated_content != null) {
       const reason = instruction
         ? `AI regenerated ${blockKey} item ${itemIndex + 1}: ${instruction}`
@@ -562,7 +686,38 @@ export default function CddPage() {
                 </div>
               )}
 
-              <div className={styles.sectionLabel}>📎 CDD Reference Documents</div>
+              <div className={styles.sectionLabel}>📤 Upload existing {L.cdd}</div>
+              <div className={styles.fieldRow}>
+                <p className={styles.requiredHint}>
+                  Upload an existing {L.cdd} (Excel, Word or PDF). It's extracted, shown below, and set as active.
+                </p>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".xlsx,.xls,.docx,.pdf"
+                  onChange={onImportFileChange}
+                  disabled={isImporting}
+                />
+                {importFile && (
+                  <div className={styles.refDocsBanner}>
+                    📄 <strong>{importFile.name}</strong> selected
+                  </div>
+                )}
+                {importProgress > 0 && importProgress < 100 && (
+                  <div className={styles.refDocsBanner}>Uploading… {importProgress}%</div>
+                )}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  onClick={onImportBlueprint}
+                  disabled={!importFile || isImporting}
+                >
+                  {isImporting ? 'Importing…' : `📤 Import ${L.cdd}`}
+                </Button>
+              </div>
+
+              <div className={styles.sectionLabel}>📎 {L.cdd} Reference Documents</div>
 
               <div className={styles.fieldRow}>
                 <label className={styles.fieldLabel} htmlFor="cdd-ref-docs">
@@ -603,11 +758,18 @@ export default function CddPage() {
                   {...generateForm.register('document_title')}
                 />
                 <Input
-                  label="Estimated Duration (hours) *"
+                  label="Estimated Duration (hours)"
                   type="number"
                   min={1}
                   max={500}
-                  {...generateForm.register('duration_hours', { valueAsNumber: true })}
+                  placeholder="Optional — leave blank to omit it from the prompt"
+                  error={generateForm.formState.errors.duration_hours?.message}
+                  {...generateForm.register('duration_hours', {
+                    // setValueAs, not valueAsNumber: an empty box yields NaN under
+                    // valueAsNumber, and NaN fails the optional number schema — so a
+                    // blank optional field would block the Generate button.
+                    setValueAs: (v) => (v === '' || v === null ? undefined : Number(v)),
+                  })}
                 />
 
                 <div className={styles.extraSection}>
@@ -685,22 +847,56 @@ export default function CddPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>📂 Your Title Design Documents</summary>
+            <summary className={styles.accordion__summary}>📂 Your {L.cdds}</summary>
             <div className={styles.accordion__body}>
               {isLoading ? (
                 <div className={styles.center}><Loader size="lg" /></div>
-              ) : cdds.length === 0 ? (
+              ) : (cdds.length === 0 && archivedCdds.length === 0) ? (
                 <EmptyState
-                  title="No CDDs yet"
+                  title={`No ${L.cdds} yet`}
                   message={`Create your first ${L.cdd} using the form above.`}
                 />
               ) : (
                 <>
+                  {/* Rendered whenever there is anything to show, live OR archived,
+                      and outside the `displayCdd` guard below. Archiving the last
+                      live CDD would otherwise take the archived list off screen
+                      with it, leaving no way to restore what was just archived. */}
+                  <DocumentArchivePanel
+                    label={L.cdd}
+                    docs={cdds}
+                    archivedDocs={archivedCdds}
+                    activeId={activeCdd?.id ?? null}
+                    selectedId={viewCddId}
+                    busy={isArchiving}
+                    canPurge={user?.role === 'admin'}
+                    onSelect={(id) => {
+                      setViewCddId(id);
+                      setSelectedCddId(id);
+                      dispatch(fetchCddVersionsThunk(id));
+                    }}
+                    onSetActive={onSetActive}
+                    onArchive={onArchiveCdd}
+                    onRestore={onRestoreCdd}
+                    onPurge={onPurgeCdd}
+                    onBulkArchive={onBulkArchiveCdds}
+                    refusal={archiveRefusal}
+                    onDismissRefusal={() => dispatch(clearArchiveRefusal())}
+                  />
+
+                  {cdds.length > 0 && (
                   <Select
                     label={`Select ${L.cdd} to View/Edit`}
+                    // Title alone does not identify a row — a course can hold
+                    // dozens whose titles are character-for-character identical.
+                    // The date and author are what make the option pickable.
                     options={cdds.map((c) => ({
                       value: String(c.id),
-                      label: `${c.title || c.course_title} (ID: ${c.id})`,
+                      label: [
+                        `${c.title || c.course_title} (ID: ${c.id})`,
+                        formatDate(c.created_at),
+                        c.created_by,
+                      ].filter(Boolean).join(' — '),
                     }))}
                     value={viewCddId != null ? String(viewCddId) : ''}
                     onChange={(e) => {
@@ -710,6 +906,7 @@ export default function CddPage() {
                       if (id) dispatch(fetchCddVersionsThunk(id));
                     }}
                   />
+                  )}
 
                   {displayCdd && (
                     <>
@@ -729,27 +926,6 @@ export default function CddPage() {
                           <span className={styles.metric__value}>{versions.length}</span>
                         </div>
                       </div>
-
-                      <ul className={styles.list}>
-                        {cdds.map((cdd) => (
-                          <li
-                            key={cdd.id}
-                            className={`${styles.listItem} ${viewCddId === cdd.id ? styles['listItem--active'] : ''}`}
-                          >
-                            <div className={styles.listItem__info}>
-                              <span className={styles.listItem__title}>{cdd.title || cdd.course_title}</span>
-                              <span className={styles.listItem__meta}>{formatDate(cdd.created_at)}</span>
-                            </div>
-                            {activeCdd?.id === cdd.id ? (
-                              <span className={styles.badge__active}>Active</span>
-                            ) : (
-                              <Button variant="ghost" size="sm" onClick={() => onSetActive(cdd.id)}>
-                                Set Active
-                              </Button>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
 
                       <div className={styles.activeContent}>
                         <div className={styles.activeContent__header}>
@@ -845,13 +1021,14 @@ export default function CddPage() {
           </details>
 
           <details className={styles.accordion}>
-            <summary className={styles.accordion__summary}>🎯 CDD Prompts</summary>
+            <summary className={styles.accordion__summary}>🎯 {L.cdd} Prompts</summary>
             <div className={styles.accordion__body}>
               <InlinePromptControls
                 component="cdd"
                 embedded
                 extraInstructions={extraInstructions}
                 onPromptsChange={setPromptConfig}
+                onCapabilityChange={setPromptCapability}
                 headerHint={`📝 Fill in the ${L.titleLower} fields above, then configure the prompt and generate your ${L.cdd} below.`}
               />
 
@@ -872,8 +1049,9 @@ export default function CddPage() {
 
               {digestPipelineEnabled && (
                 <BlockWidePanel
+                  capability={promptCapability}
                   label={L.cdd}
-                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
+                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Applies the ${L.styleLower}, additional instructions and duration set above; the document selection does not apply, since every ingested source in the block is used. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
                   block={blockLabel}
                   onBlockChange={onBlockLabelChange}
                   qualityTier={qualityTier}

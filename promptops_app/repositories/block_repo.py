@@ -114,4 +114,13 @@ def restore_block_version(
         f"Block #{block.id} restored to v{target.version_num}",
         {"block_id": block.id, "source_version_id": version_id},
     )
+    from promptops_app.services.audit_service import log_audit_event
+    generation = block.generation
+    log_audit_event(
+        db, created_by, "content.snapshot_restored",
+        entity_type="block", entity_id=block.id,
+        project_id=getattr(generation, "project_id", None) if generation else None,
+        course_id=getattr(generation, "course_id", None) if generation else None,
+        metadata={"source_version_id": version_id, "restored_to_version": target.version_num},
+    )
     return restored_ver, None

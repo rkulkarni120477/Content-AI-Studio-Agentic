@@ -51,7 +51,7 @@ def test_fallback_caps_max_tokens_to_fallback_models_own_ceiling():
          patch("promptops_app.services.llm_service.settings") as mock_settings:
         mock_settings.openai_api_key = "test-key"
         mock_call.return_value = MagicMock()
-        llm_service._invoke_fallback("Claude Opus 4.8 (Bedrock)", "sys", "user", max_tokens=32000)
+        llm_service._invoke_fallback("Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=32000)
 
     assert mock_call.called
     _, kwargs = mock_call.call_args
@@ -65,23 +65,28 @@ def test_fallback_leaves_max_tokens_untouched_when_already_within_ceiling():
          patch("promptops_app.services.llm_service.settings") as mock_settings:
         mock_settings.openai_api_key = "test-key"
         mock_call.return_value = MagicMock()
-        llm_service._invoke_fallback("Claude Opus 4.8 (Bedrock)", "sys", "user", max_tokens=2000)
+        llm_service._invoke_fallback("Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=2000)
 
     _, kwargs = mock_call.call_args
     assert kwargs["max_tokens"] == 2000
 
 
 # Bedrock model IDs confirmed invokable on this AWS account by direct InvokeModel
-# in BOTH deploy regions (us-east-1 and ap-south-1). A valid-looking
-# inference-profile prefix is NOT evidence of availability: this set is
-# deliberately narrow because `global.anthropic.claude-haiku-4-5-...` and
-# `global.anthropic.claude-opus-4-8` both carry a correct prefix and both return
-# AccessDeniedException — the account has no model access for them.
+# in BOTH deploy regions (ap-south-1 and us-east-1).
+#
+# A valid-looking inference-profile prefix is NOT evidence of availability:
+# `global.anthropic.claude-haiku-4-5-...` and `global.anthropic.claude-opus-4-8`
+# both carry a correct prefix and both return AccessDeniedException, so neither is
+# listed here. Availability is per-region AND per-role.
 #
 # To extend this set, actually invoke the ID in every deploy region first
-# (max_tokens=1 is enough), then add it. Do not add one on the strength of its
+# (max_tokens=4 is enough), then add it. Do not add one on the strength of its
 # shape, or because Bedrock's ListFoundationModels includes the base model.
 VERIFIED_INVOKABLE_BEDROCK_IDS = frozenset({
+    "global.anthropic.claude-sonnet-5",
+    "global.anthropic.claude-opus-5",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-sonnet-4-6",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
 })
 
@@ -161,3 +166,71 @@ def test_dis_default_text_models_are_verified_invokable():
             f"DIS default {step}={getattr(cfg, step)!r} is not verified invokable; "
             f"call_llm would silently return its stub for every {step} call."
         )
+
+
+# --------------------------------------------------------------------------- #
+# Fallback ordering: same provider before crossing to another vendor
+# --------------------------------------------------------------------------- #
+def test_sibling_candidates_are_same_provider_and_exclude_the_failed_model():
+    from promptops_app.services.llm_service import _sibling_candidates
+
+    sibs = _sibling_candidates("Claude Opus 5 (Bedrock)")
+    assert sibs, "an Opus failure must have somewhere to go on Bedrock"
+    assert all(m.provider == "bedrock" for m in sibs), "must not cross providers here"
+    assert all("opus-5" not in m.api_model_id for m in sibs), "the failed model was retried"
+    # Sonnet is the natural substitute for Opus and must be reached first.
+    assert "sonnet-5" in sibs[0].api_model_id
+
+
+def test_openai_primary_gets_openai_siblings():
+    from promptops_app.services.llm_service import _sibling_candidates
+    assert all(m.provider == "openai" for m in _sibling_candidates("GPT-5.4"))
+
+
+def test_invoke_model_caps_tokens_to_that_models_own_ceiling(monkeypatch):
+    """Each candidate has its own real limit; forwarding the primary's value gets a
+    400 before any generation rather than a longer answer."""
+    from promptops_app.core.models import resolve_model
+    from promptops_app.services import llm_service
+
+    seen = {}
+    monkeypatch.setattr(llm_service, "_call_bedrock_raw",
+                        lambda *a, **kw: seen.update(kw) or MagicMock())  # accepts usage_ctx via **kw
+    haiku = resolve_model("Claude Haiku 4.5 (Bedrock)")   # ceiling 16384
+    llm_service._invoke_model(haiku, "sys", "user", max_tokens=32000)
+    assert seen["max_tokens"] == 16384
+    seen.clear()
+    llm_service._invoke_model(haiku, "sys", "user", max_tokens=1000)
+    assert seen["max_tokens"] == 1000
+
+
+def test_a_bedrock_failure_tries_bedrock_before_openai(monkeypatch):
+    """The regression this ordering fixes: an unavailable model ID sent content to a
+    different vendor when a sibling on the same connection would have worked."""
+    from promptops_app.services import llm_service
+
+    order = []
+
+    def bedrock_raw(system, user, model_id=None, usage_ctx=None, max_tokens=None):
+        order.append(model_id)
+        if "opus" in model_id:
+            raise llm_service.LLMProviderError("AccessDeniedException for this model")
+        resp = MagicMock()
+        resp.text, resp.model = "ok", model_id
+        resp.prompt_tokens = resp.completion_tokens = 1
+        return resp
+
+    def openai_raw(*a, **kw):
+        order.append("OPENAI")
+        raise AssertionError("crossed providers before exhausting Bedrock")
+
+    monkeypatch.setattr(llm_service, "_call_bedrock_raw", bedrock_raw)
+    monkeypatch.setattr(llm_service, "_call_openai_raw", openai_raw)
+    monkeypatch.setattr(llm_service._cfg, "llm_fallback_enabled", True)
+
+    result = llm_service.generate_with_metadata(
+        "Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=2000)
+
+    assert "OPENAI" not in order, f"jumped providers too early: {order}"
+    assert any("sonnet" in m for m in order), f"never tried a Sonnet sibling: {order}"
+    assert result.status in ("fallback_success", "retry_success", "success")

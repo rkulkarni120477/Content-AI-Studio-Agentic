@@ -44,6 +44,16 @@ same day):
     final/cumulative/block-ending exam — not new instruction and not
     reflection/review. Use this, not Metacognitive, when the SOURCES show an
     actual graded test happening this day.
+  - Review-Assessment: the day both revisits earlier material AND carries a
+    graded check on it (a quiz, review questions collected for marks). Use this
+    rather than Metacognitive when a graded element is present, and rather than
+    Summative Assessment when the assessment covers a section rather than the
+    whole block.
+  - Project-Application / Review: the day's PURPOSE is the learner applying
+    earlier material in a project or activity, rather than new instruction —
+    typically a project work day, often paired with review of what it draws on.
+    Use this in preference to Skill when the SOURCES show a named project as the
+    day's main event rather than practice embedded in a lesson.
 concept_type_explanation is one sentence grounding that choice in what the
 SOURCES below actually contain — never a generic restatement of the label. If
 you pick Procedural or Skill, name the specific hands-on task/project/exercise
@@ -57,6 +67,29 @@ this day's SOURCES; do not supply subject matter from your own knowledge of the
 field. It must NOT be a restatement of the day's topic or lesson title — the scope
 names what *within* that topic was taught. Use "" only when the sources for this
 day carry no identifiable subject content at all.
+
+interactive_candidate and job_aid_candidate DEFAULT TO false. They are
+recommendations that cost real production money, so each one has to be earned by
+evidence in THIS day's SOURCES. If you cannot point to the specific thing named
+below, answer false — a thin "maybe" is worse than a clear no, because a reviewer
+cannot tell a speculative yes from a grounded one.
+
+interactive_candidate is true only when this day's SOURCES contain a concrete
+artefact with checkable structure that a learner would manipulate — parts to
+label on a named diagram, terms to match to definitions, a sequence to order, or
+values to read off a named table/chart. It is false when the day is carried by
+explanation or discussion alone, however important the topic, and false on days
+whose purpose is review, project work, or assessment: those days exercise
+material that was already made interactive earlier, and duplicating it adds cost
+without adding coverage.
+
+job_aid_candidate is true only when this day's SOURCES contain a REFERENCE
+artefact a technician would consult repeatedly at the bench AFTER the lesson —
+e.g. a symbol/line-type legend, a tolerance or torque table, a conversion chart,
+a fixed step checklist. It is false when the day's value is understanding rather
+than lookup, and false when the only candidate content is a summary of the
+lesson itself: a recap is not a job aid. A day rich in facts is not sufficient —
+name the artefact, or answer false.
 
 interactive_scope is a short phrase naming what the interactive would cover, in
 the form "<verb-ing> <the specific thing from THIS day's sources>" (e.g.

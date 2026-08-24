@@ -1,6 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { editorService } from './services/editorService';
-import { extractErrorMessage } from '@utils/helpers';
+import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { downloadBlob } from '@utils/helpers';
 import toast from 'react-hot-toast';
 
@@ -109,7 +109,9 @@ export const regenerateBlockThunk = createAsyncThunk(
         feedback_instruction: instruction,
         model_choice: modelChoice,
       });
-      toast.success('Block regenerated.');
+      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
+      const message = usageMsg ? `Block regenerated. ${usageMsg}` : 'Block regenerated.';
+      if (hasOverBudget(result.usage_summary)) toast.error(message); else toast.success(message);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -257,7 +259,9 @@ export const regenerateBlockItemThunk = createAsyncThunk(
 
       // Backwards-safe: if the server ever returns the old synchronous shape.
       if (accepted?.updated_content && !accepted?.job_id) {
-        toast.success('Item regenerated.');
+        const usageMsg = formatUsageSummaryMessage(accepted.usage_summary);
+        const message = usageMsg ? `Item regenerated. ${usageMsg}` : 'Item regenerated.';
+        if (hasOverBudget(accepted.usage_summary)) toast.error(message); else toast.success(message);
         return accepted;
       }
 
@@ -270,7 +274,9 @@ export const regenerateBlockItemThunk = createAsyncThunk(
         const status = await editorService.getJobStatus(jobId);
         if (status.status === 'completed') {
           const block = await editorService.getBlock(blockId);
-          toast.success('Item regenerated.');
+          const usageMsg = formatUsageSummaryMessage(status.usage_summary);
+          const message = usageMsg ? `Item regenerated. ${usageMsg}` : 'Item regenerated.';
+          if (hasOverBudget(status.usage_summary)) toast.error(message); else toast.success(message);
           // Return the shape the slice/component already consume.
           return { block_id: blockId, updated_content: block.content, patched_item: '' };
         }

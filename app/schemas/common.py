@@ -20,6 +20,8 @@ from typing import Generic, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
+from app.schemas.budget import UsageSummary
+
 # TypeVar for the generic paginated list items.
 T = TypeVar("T")
 
@@ -113,6 +115,16 @@ class JobStatusResponse(BaseModel):
         default=None,
         description="User-safe error description. Populated on failure.",
     )
+    warning: Optional[str] = Field(
+        default=None,
+        description=(
+            "User-safe description of gaps in an otherwise SUCCESSFUL result — e.g. a "
+            "block-wide generation where some days failed extraction. Distinct from "
+            "error_message: the job completed and produced a usable artifact, but it "
+            "is incomplete, and the incomplete rows carry defaults rather than blanks "
+            "so they do not look missing. None when the result is intact."
+        ),
+    )
     queue_position: Optional[int] = Field(
         default=None,
         description=(
@@ -123,6 +135,38 @@ class JobStatusResponse(BaseModel):
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    block: Optional[str] = Field(
+        default=None,
+        description=(
+            "For a block-wide CDD/Blueprint job: the block it is building (e.g. "
+            "'Block 2'). Lets a reattached page name which block is in flight, since a "
+            "course can hold several and adopting the wrong one would report a "
+            "completion for a block the user was not looking at. None for other jobs."
+        ),
+    )
+    usage_summary: Optional[UsageSummary] = Field(
+        default=None,
+        description="Cost/tokens for this job's LLM call + remaining budget headroom. Populated on completion.",
+    )
+
+
+class ActiveJobResponse(BaseModel):
+    """The caller's in-flight job for a course, if there is one.
+
+    A wrapper rather than a nullable ``JobStatusResponse`` so "no job running" is an
+    ordinary 200 with an explicit ``null`` — a bare ``null`` body reads as an error to
+    most clients, and a 404 would make the common case look like a failure in logs and
+    monitoring.
+    """
+
+    job: Optional[JobStatusResponse] = Field(
+        default=None,
+        description=(
+            "The most recent queued-or-running job the caller owns for the requested "
+            "course, in the same shape the status poller consumes, so a reloaded page "
+            "can resume polling directly. None when nothing is in flight."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

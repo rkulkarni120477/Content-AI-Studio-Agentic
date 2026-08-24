@@ -171,10 +171,11 @@ class TestExplicitArchiveAccess:
         from promptops_app.database import User
 
         db.add(User(username="arch_reviewer", password_hash=hash_password("test_password"),
-                    role="reviewer", is_active=True))
+                    role="reviewer", is_active=True, is_platform_admin=True))
         db.commit()
         r = client.post("/api/v1/auth/login",
-                        json={"username": "arch_reviewer", "password": "test_password"})
+                        json={"username": "arch_reviewer", "password": "test_password",
+                              "platform_admin": True})
         headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
 
         lib = make_db_prompt(db, "arch_lib_reviewer", system="S", user="U")

@@ -3,8 +3,10 @@ import { buildCddUiBlocks } from '@utils/cddContent';
 import { detectDluCddContent, buildDluWorksheetBlocks, replaceWorksheet } from '@utils/cddWorksheets';
 import { renderMarkdownPreview, renderInlineMarkdown } from '@utils/markdownPreview';
 import { parseItemsFromSection } from '@utils/blockItems';
+import { useLabels } from '@hooks/useLabels';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
+import Modal from '@components/common/Modal/Modal';
 import styles from './CddContentView.module.scss';
 
 export default function CddContentView({
@@ -16,6 +18,7 @@ export default function CddContentView({
   onRegenerateSection,
   onRegenerateItem,
 }) {
+  const L = useLabels();
   // DLU (worksheet-based) CDDs render as tabs; standard CDDs use the accordion.
   const isDlu = useMemo(() => detectDluCddContent(fullContent), [fullContent]);
 
@@ -25,8 +28,8 @@ export default function CddContentView({
   );
 
   const uiBlocks = useMemo(
-    () => (isDlu ? [] : buildCddUiBlocks(fullContent, sections)),
-    [isDlu, fullContent, sections],
+    () => (isDlu ? [] : buildCddUiBlocks(fullContent, sections, L)),
+    [isDlu, fullContent, sections, L],
   );
 
   const [expanded, setExpanded] = useState(null);
@@ -35,6 +38,12 @@ export default function CddContentView({
   const [scopes, setScopes] = useState({});
   const [regenSection, setRegenSection] = useState(null);
   const [regenItem, setRegenItem] = useState(null);
+  // The pending single-item regeneration, or null. ⟳ used to fire immediately on
+  // whatever happened to be in the shared instruction box — which meant it could
+  // silently reuse a stale instruction from a previous Save Edit, spend an LLM
+  // call, and commit a new document version with no chance to look first. Now it
+  // opens this, and nothing is spent or saved until the user confirms.
+  const [itemPrompt, setItemPrompt] = useState(null);
 
   useEffect(() => {
     // Content/version changed — clear any in-progress edits. Keep all accordion
@@ -103,25 +112,46 @@ export default function CddContentView({
     }
   }
 
-  async function handleRegenItem(block, idx) {
-    if (!onRegenerateItem) return;
+  /** Open the confirm dialog for one item, pre-filled from the section's box. */
+  function openItemPrompt(block, idx, itemText) {
+    const prefill = (reasons[block.key] || '').trim();
+    setItemPrompt({
+      block,
+      idx,
+      itemText,
+      instruction: prefill,
+      // Default follows the instruction: with something to search for, search;
+      // with an empty box there is no question to ask the library, and a lookup
+      // would only add latency to "just improve this line". The backend still
+      // infers when the field is absent, so this only ever overrides a guess.
+      useSources: Boolean(prefill),
+    });
+  }
+
+  async function handleRegenItem() {
+    if (!onRegenerateItem || !itemPrompt) return;
+    const { block, idx, instruction, useSources } = itemPrompt;
+    setItemPrompt(null);
     setRegenItem(`${block.key}:${idx}`);
     try {
+      const common = {
+        itemIndex: idx,
+        instruction: (instruction || '').trim(),
+        useSources,
+      };
       if (block.dluKey) {
         await onRegenerateItem({
+          ...common,
           blockKey: block.dluTitle,
           sectionContent: block.content,
-          itemIndex: idx,
-          instruction: (reasons[block.key] || '').trim(),
           dluWorksheetKey: block.dluKey,
           dluCourseStructure: csText,
         });
       } else {
         await onRegenerateItem({
+          ...common,
           blockKey: block.key,
           sectionContent: block.content,
-          itemIndex: idx,
-          instruction: (reasons[block.key] || '').trim(),
         });
       }
     } finally {
@@ -218,7 +248,9 @@ export default function CddContentView({
             {onRegenerateItem && items.length > 0 && (
               <div className={styles.itemRegen}>
                 <p className={styles.itemRegen__head}>
-                  🔄 Regenerate a single item — click ⟳ next to any item
+                  🔄 Regenerate a single item — click ⟳ next to any item. You can
+                  give it its own instruction before it runs; nothing is spent or
+                  saved until you confirm.
                 </p>
                 <ul className={styles.itemList}>
                   {items.map((item, idx) => {
@@ -237,8 +269,8 @@ export default function CddContentView({
                           size="sm"
                           loading={busy}
                           disabled={Boolean(regenItem) || sectionBusy}
-                          onClick={() => handleRegenItem(block, idx)}
-                          title={`Regenerate only item ${idx + 1}. Others stay unchanged.`}
+                          onClick={() => openItemPrompt(block, idx, item.text)}
+                          title={`Regenerate only item ${idx + 1} — you'll be asked for an instruction first. Others stay unchanged.`}
                         >
                           ⟳
                         </Button>
@@ -259,7 +291,7 @@ export default function CddContentView({
   const blocks = isDlu ? dluBlocks : uiBlocks;
 
   if (!fullContent?.trim() && blocks.length === 0) {
-    return <p className={styles.empty}>No CDD content yet.</p>;
+    return <p className={styles.empty}>No {L.cdd} content yet.</p>;
   }
 
   if (blocks.length === 0) {
@@ -290,6 +322,70 @@ export default function CddContentView({
           </div>
         );
       })}
+
+      {/* Confirm step for a single-item regeneration. Deliberately a gate rather
+          than a convenience: the click behind it spends an LLM call and commits a
+          new document version, so this is the only chance to see what is about to
+          be rewritten and with what instruction. */}
+      <Modal
+        open={Boolean(itemPrompt)}
+        onClose={() => setItemPrompt(null)}
+        title={itemPrompt ? `Regenerate item ${itemPrompt.idx + 1}` : ''}
+        size="md"
+        footer={(
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setItemPrompt(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={handleRegenItem}>
+              Regenerate
+            </Button>
+          </>
+        )}
+      >
+        {itemPrompt && (
+          <div className={styles.itemPrompt}>
+            <p className={styles.itemPrompt__label}>Current item</p>
+            <div
+              className={styles.itemPrompt__current}
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(itemPrompt.itemText) }}
+            />
+
+            <label className={styles.itemPrompt__label} htmlFor="cdd-item-instruction">
+              Instruction (optional)
+            </label>
+            <textarea
+              id="cdd-item-instruction"
+              className={styles.itemPrompt__input}
+              rows={3}
+              placeholder="e.g. refer to the syllabus and list every applicable handbook"
+              value={itemPrompt.instruction}
+              onChange={(e) => setItemPrompt((p) => ({ ...p, instruction: e.target.value }))}
+            />
+
+            <label className={styles.itemPrompt__check}>
+              <input
+                type="checkbox"
+                checked={itemPrompt.useSources}
+                onChange={(e) => setItemPrompt((p) => ({ ...p, useSources: e.target.checked }))}
+              />
+              <span>
+                Search the source library
+                <em className={styles.itemPrompt__hint}>
+                  Looks up this block&apos;s ingested documents — the syllabus, calendars
+                  and day material. Needed to fill anything the worksheet does not
+                  already contain; adds a few seconds.
+                </em>
+              </span>
+            </label>
+
+            <p className={styles.itemPrompt__hint}>
+              Only this item changes. Everything else in the section is carried
+              across untouched.
+            </p>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

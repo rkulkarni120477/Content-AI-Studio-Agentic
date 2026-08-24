@@ -300,6 +300,74 @@ CDD_SECTION_REGENERATE_PROMPT = """You are a curriculum architect. Regenerate ON
 Return ONLY the content for this section (do not repeat the heading). Be comprehensive and prescriptive."""
 
 
+# The grounded replacement for the prompt above. The original is kept because
+# promptops_app/core/shared.py (Streamlit) still formats it with its own three
+# variables; changing its placeholders would break that caller silently.
+#
+# Three differences, each fixing a specific failure of the original:
+#   * CURRENT CONTENT — the old prompt never sent the section it was replacing,
+#     so "regenerate" meant "write something new with this title" and a 77,099
+#     character worksheet was replaced from a 457-character prompt.
+#   * CONTEXT — the block overview, day rows and ACS registry entries the
+#     instruction refers to, read from the document's own other worksheets.
+#   * The preservation rule — regeneration must not silently drop rows or
+#     invent structural values, which is the failure mode that makes an
+#     unreviewed regeneration dangerous rather than merely unhelpful.
+CDD_SECTION_REGENERATE_GROUNDED_PROMPT = """You are a curriculum architect revising one section of an existing Course Design Document.
+
+**Section:** {section_title}
+**Course:** {course_title}
+**Instruction:** {custom_instruction}
+
+{context_block}
+
+=== CURRENT CONTENT OF THIS SECTION ===
+{current_content}
+=== END CURRENT CONTENT ===
+
+RULES:
+- Revise the CURRENT CONTENT above. Do not write a replacement from scratch.
+- Apply the instruction. Leave everything the instruction does not ask about exactly as it is.
+- If the content is a table, return the COMPLETE table: same columns, same number of rows, same order. Never drop or merge rows.
+- Never invent ACS codes, day numbers, file names or handbook references. Use only what appears above; if something is genuinely absent, say so in the cell rather than filling it in.
+- If the instruction cannot be satisfied from the context provided, return the content unchanged.
+
+Return ONLY the content for this section (do not repeat the heading)."""
+
+
+# Row-scoped regeneration: the model sees only the day rows the instruction
+# named and answers with only those rows. The rows it is not shown are carried
+# across untouched by the merge (app/services/cdd_scoped_regen.py), so this
+# prompt never asks it to restate a table it was not asked to change — which is
+# both what made the old call exceed its output ceiling and what gave it the
+# opportunity to drop rows.
+#
+# The protected-column rule is enforced in code after the answer comes back;
+# stating it here as well is belt-and-braces, and it stops the model wasting
+# output on cells that will be discarded.
+CDD_ROW_REGENERATE_PROMPT = """You are a curriculum architect revising specific days of a Course Design Document's day-by-day map.
+
+**Course:** {course_title}
+**Worksheet:** {section_title}
+**Instruction:** {custom_instruction}
+
+{context_block}
+
+=== ROWS TO REVISE ===
+{current_rows}
+=== END ROWS ===
+
+RULES:
+- Return a markdown table with the SAME columns, in the same order, containing EXACTLY the rows shown above — one row per day, no more, no fewer.
+- You may change only these columns: {writable_columns}
+- Reproduce these columns EXACTLY as given, character for character: {protected_columns}
+- Apply the instruction. Any cell the instruction does not concern must come back unchanged.
+- Never invent an ACS code, day number, file name or handbook reference.
+- If a cell cannot be filled from the context provided, say what is missing in that cell rather than inventing a value.
+
+Return ONLY the markdown table."""
+
+
 # =============================================================================
 # Module Blueprint Prompts for students
 # =============================================================================

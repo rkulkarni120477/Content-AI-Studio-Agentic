@@ -377,7 +377,7 @@ export default function GeneratePage() {
 
         <div className={styles.contextBanner}>
           <div className={styles.contextBanner__col}>
-            <div className={styles.contextBanner__heading}>📘 Active CDD</div>
+            <div className={styles.contextBanner__heading}>📘 Active {L.cdd}</div>
             <div className={styles.contextBanner__value}>
               <span className={styles.contextBanner__dot} style={{ background: activeCdd ? '#10b981' : '#ef4444' }} />
               {cddDisp}
@@ -385,7 +385,7 @@ export default function GeneratePage() {
           </div>
           <div className={styles.contextBanner__divider} />
           <div className={styles.contextBanner__col}>
-            <div className={styles.contextBanner__heading}>🧩 Active Blueprint</div>
+            <div className={styles.contextBanner__heading}>🧩 Active {L.blueprint}</div>
             <div className={styles.contextBanner__value}>
               <span className={styles.contextBanner__dot} style={{ background: activeBlueprint ? '#10b981' : '#ef4444' }} />
               {bpDisp}
@@ -393,13 +393,13 @@ export default function GeneratePage() {
           </div>
           <div className={styles.contextBanner__divider} />
           <div className={styles.contextBanner__col}>
-            <div className={styles.contextBanner__heading}>🎨 Active Style</div>
+            <div className={styles.contextBanner__heading}>🎨 Active {L.style}</div>
             <div className={styles.contextBanner__value}>
               <span className={styles.contextBanner__dot} style={{ background: activeStyle ? '#10b981' : '#ef4444' }} />
               {styleDisp}
             </div>
           </div>
-          <div className={styles.contextBanner__hint}>Set via Style / CDD / Blueprint tabs</div>
+          <div className={styles.contextBanner__hint}>Set via {L.style} / {L.cdd} / {L.blueprint} tabs</div>
         </div>
 
         <div className={styles.sectionStack}>

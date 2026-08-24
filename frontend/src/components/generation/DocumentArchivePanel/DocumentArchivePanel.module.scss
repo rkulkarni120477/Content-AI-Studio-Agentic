@@ -1,0 +1,131 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+}
+
+// A refused archive/purge. Sits above the list, not in place of it — the reason
+// only helps while the row it refers to is still on screen.
+.refusal {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  border: 1px solid var(--color-warning-light, #f0d090);
+  background: var(--color-warning-bg, #fdf6e3);
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+
+  &__body { min-width: 0; }
+
+  &__list {
+    margin: $space-1 0 0;
+    padding-left: $space-4;
+    color: var(--text-secondary, #666);
+  }
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-3;
+  flex-wrap: wrap;
+
+  &__count {
+    font-size: $font-size-xs;
+    color: var(--text-secondary, #666);
+  }
+
+  &__actions {
+    display: flex;
+    gap: $space-2;
+    flex-wrap: wrap;
+  }
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+  // Tall enough to show several rows without the page growing without bound —
+  // a course can hold dozens of documents.
+  max-height: 260px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $space-3;
+  padding: $space-2 $space-3;
+  background: $color-white;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-lg;
+  transition: all $transition-fast;
+
+  &:hover { border-color: $color-gray-300; }
+  &--selected { border-color: $color-primary; background: $color-primary-soft; }
+  &--archived { opacity: 0.72; background: $color-gray-50; }
+
+  // A button, not a div: selecting a document is an action, and it has to be
+  // reachable by keyboard like every other one in this list.
+  &__info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+    text-align: left;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    @include text-truncate;
+  }
+
+  &__meta {
+    font-size: $font-size-xs;
+    color: $color-gray-500;
+    @include text-truncate;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: $space-1;
+    flex-shrink: 0;
+  }
+}
+
+.badgeActive {
+  @include badge($color-success-bg, $color-success, $color-success-light);
+}
+
+.archived {
+  margin-top: $space-2;
+  padding-top: $space-3;
+  border-top: 1px dashed $color-gray-200;
+
+  &__title {
+    margin: 0 0 $space-2;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: $color-gray-500;
+  }
+}

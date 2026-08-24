@@ -232,11 +232,36 @@ class AppSettings(BaseSettings):
     dis_enabled: bool = Field(default=True, alias="DIS_ENABLED")
     dis_api_base_url: str = Field(default="http://localhost:8010/v1", alias="DIS_API_BASE_URL")
     dis_api_timeout_seconds: int = Field(default=300, alias="DIS_API_TIMEOUT_SECONDS", gt=0)
+    # How long to wait for a block digest build, which is started and then polled
+    # (DISClient.build_digests_sync) rather than held open on one request. Default 40
+    # minutes: a cold 20-day block measured ~10 minutes even with the MAP fan-out, and
+    # this must stay comfortably under the stranded-job reaper's window
+    # (promptops_app.jobs.reaper.DEFAULT_STALE_AFTER_MINUTES, 60) so the reaper never
+    # marks a job stranded while its build is still legitimately running.
+    dis_digest_build_deadline_seconds: int = Field(
+        default=2400, alias="DIS_DIGEST_BUILD_DEADLINE_SECONDS", gt=0)
+    dis_digest_build_poll_seconds: int = Field(
+        default=5, alias="DIS_DIGEST_BUILD_POLL_SECONDS", gt=0)
     dis_service_token: str = Field(default="dev-dis-token", alias="DIS_SERVICE_TOKEN")
     dis_default_tenant_id: str = Field(default="aim", alias="DIS_DEFAULT_TENANT_ID")
     dis_default_client_id: str = Field(default="", alias="DIS_DEFAULT_CLIENT_ID")
-    dis_available_clients: str = Field(default="aim,cengage", alias="DIS_AVAILABLE_CLIENTS")
+    # Blank by default so config/dis_access.json's own available_clients list
+    # (which tenant creation now writes new clients into) is actually the
+    # fallback it's meant to be — a non-empty default here would always win
+    # over the file, per load_dis_access_config's own env-overrides-file logic.
+    dis_available_clients: str = Field(default="", alias="DIS_AVAILABLE_CLIENTS")
     dis_super_admin_usernames: str = Field(default="", alias="DIS_SUPER_ADMIN_USERNAMES")
+
+    # ── Phoenix observability (self-hosted LLM tracing) ───────────────────────
+    # phoenix.otel.register() reads PHOENIX_COLLECTOR_ENDPOINT/PHOENIX_PROJECT_NAME
+    # directly too — these fields exist so app/core/phoenix_client.py's server-side
+    # fetch (the trace-detail endpoint) doesn't need its own separate env-parsing.
+    phoenix_collector_endpoint: str = Field(
+        default="http://localhost:6006/v1/traces", alias="PHOENIX_COLLECTOR_ENDPOINT",
+    )
+    phoenix_base_url: str = Field(default="http://localhost:6006", alias="PHOENIX_BASE_URL")
+    phoenix_project_name: str = Field(default="content-ai-studio", alias="PHOENIX_PROJECT_NAME")
+    phoenix_api_key: str = Field(default="", alias="PHOENIX_API_KEY")
     dis_super_admin_roles: str = Field(default="", alias="DIS_SUPER_ADMIN_ROLES")
     dis_user_client_map: str = Field(default="", alias="DIS_USER_CLIENT_MAP")
     dis_access_config_path: str = Field(default="", alias="DIS_ACCESS_CONFIG_PATH")
@@ -272,6 +297,23 @@ class AppSettings(BaseSettings):
     # every repeat generation. Content-keyed ⇒ an edited prompt misses naturally.
     prompt_guidance_cache_size: int = Field(
         default=64, alias="PROMPT_GUIDANCE_CACHE_SIZE", ge=0)
+
+    # ── User directives (the generation form's own inputs → MAP/REDUCE) ───────
+    # How much of the selected style reaches each stage. Two caps, not one,
+    # because the two stages have very different economics: REDUCE is a handful
+    # of calls, MAP is one call PER DAY (20 on AIM's Block 2), so a character
+    # sent to MAP costs ~20x what the same character costs at REDUCE — and it
+    # also eats the MAP context headroom that mapper.py's source budget reserves
+    # for "the prompt scaffold, rubric and guidance".
+    #
+    # Bounding this is not optional: build_style_context (database.py) embeds
+    # whole style reference DOCUMENTS when a style has no generated_summary, so
+    # an uncapped style could be tens of thousands of characters and would fail
+    # every day of a build with a hard "Input is too long" from Bedrock.
+    block_wide_style_chars_reduce: int = Field(
+        default=12000, alias="BLOCK_WIDE_STYLE_CHARS_REDUCE", gt=0)
+    block_wide_style_chars_map: int = Field(
+        default=2000, alias="BLOCK_WIDE_STYLE_CHARS_MAP", gt=0)
 
     # ── Validators ────────────────────────────────────────────────────────────
 

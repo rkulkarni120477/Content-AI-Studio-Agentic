@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@services/apiClient';
 import { BLOCKS, MODULES } from '@services/endpoints';
 import { WORKFLOW_STATES } from '@utils/constants';
-import { truncate, downloadBlob, downloadText } from '@utils/helpers';
+import { truncate, downloadBlob, downloadText, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import Modal from '@components/common/Modal/Modal';
@@ -386,7 +386,10 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
     setRegenIds((prev) => new Set(prev).add(block.id));
     try {
       const res = await api.post(BLOCKS.CANVAS_HTML_REGEN(block.id));
-      toast.success(`HTML regenerated for “${truncate(block.block_label || `Block ${block.id}`, 40)}”.`);
+      const usageMsg = formatUsageSummaryMessage(res.usage_summary);
+      const baseMsg = `HTML regenerated for “${truncate(block.block_label || `Block ${block.id}`, 40)}”.`;
+      const message = usageMsg ? `${baseMsg} ${usageMsg}` : baseMsg;
+      if (hasOverBudget(res.usage_summary)) toast.error(message); else toast.success(message);
       patchBlockInLayout(block.id, { has_html: true });
       if (preview?.block?.id === block.id) {
         setPreview({
@@ -456,8 +459,8 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
           <p className={styles.subtitle}>
             {courseName ? (
               <>
-                Title: <strong>{courseName}</strong> — modules and sequence follow the CDD /
-                Blueprint. Preview or regenerate Canvas HTML, then export IMS CC.
+                {L.title}: <strong>{courseName}</strong> — modules and sequence follow the {L.cdd} /
+                {' '}{L.blueprint}. Preview or regenerate Canvas HTML, then export IMS CC.
               </>
             ) : (
               <>Modules follow the {L.blueprint} structure. Export as an IMS CC package for LMS import.</>
@@ -507,15 +510,15 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
       ) : blockCount === 0 ? (
         <div className={styles.hint}>
           <p>
-            No published blocks in <strong>{courseName || `title #${courseId}`}</strong> yet.
+            No published blocks in <strong>{courseName || `${L.titleLower} #${courseId}`}</strong> yet.
           </p>
           <p>
             Publish blocks from the <strong>Workflow</strong> page after generating content from
-            the Blueprint, then return here to export.
+            the {L.blueprint}, then return here to export.
           </p>
           {projectCourses.length > 1 && (
             <p className={styles.hintCourses}>
-              Titles in this project: {projectCourses.map((c) => c.name).join(', ')}
+              {L.titles} in this project: {projectCourses.map((c) => c.name).join(', ')}
             </p>
           )}
         </div>
@@ -552,7 +555,7 @@ export default function PublishedTocPanel({ courseId, courseName, projectCourses
               <div className={styles.moduleHeader}>
                 <h3 className={styles.moduleTitle}>Other published content</h3>
                 <span className={styles.moduleHint}>
-                  Not matched to a Blueprint lesson — exported after Blueprint modules
+                  Not matched to a {L.blueprint} lesson — exported after {L.blueprint} modules
                 </span>
               </div>
               <ol className={styles.list}>

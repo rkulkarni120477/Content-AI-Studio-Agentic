@@ -3,8 +3,22 @@
 from promptops_app.database import ModuleBlueprint, BlueprintVersion
 
 
-def list_blueprints_for_course(db, course_id: int = None, project_id: int = None, limit: int = 100):
-    q = db.query(ModuleBlueprint)
+def _live_only(q, *, include_archived: bool):
+    """Exclude archived blueprints unless the caller explicitly asks for them.
+
+    Applied in SQL rather than filtered in the caller so that pagination counts,
+    limits and every consumer of these helpers agree on what "the list" means.
+    Archived rows are still reachable by id — see ``get_blueprint_by_id`` —
+    because restoring and inspecting one has to work.
+    """
+    if include_archived:
+        return q
+    return q.filter(ModuleBlueprint.deleted_at.is_(None))
+
+
+def list_blueprints_for_course(db, course_id: int = None, project_id: int = None, limit: int = 100,
+                               *, include_archived: bool = False):
+    q = _live_only(db.query(ModuleBlueprint), include_archived=include_archived)
     if course_id:
         q = q.filter(ModuleBlueprint.course_id == course_id)
     if project_id:
@@ -12,9 +26,9 @@ def list_blueprints_for_course(db, course_id: int = None, project_id: int = None
     return q.order_by(ModuleBlueprint.created_at.desc()).limit(limit).all()
 
 
-def list_all_blueprints(db, limit: int = 200):
+def list_all_blueprints(db, limit: int = 200, *, include_archived: bool = False):
     return (
-        db.query(ModuleBlueprint)
+        _live_only(db.query(ModuleBlueprint), include_archived=include_archived)
         .order_by(ModuleBlueprint.created_at.desc())
         .limit(limit)
         .all()
@@ -22,6 +36,12 @@ def list_all_blueprints(db, limit: int = 200):
 
 
 def get_blueprint_by_id(db, bp_id: int):
+    """Fetch by id, archived or not.
+
+    Deliberately unfiltered: an archived blueprint still exists, and restoring
+    it, inspecting it or refusing to pin it all need the row. Callers that must
+    not act on an archive use ``design_doc_archive.assert_live``.
+    """
     return db.query(ModuleBlueprint).filter(ModuleBlueprint.id == bp_id).first()
 
 
@@ -43,8 +63,14 @@ def get_blueprint_version(db, bp_id: int, version: str):
 
 
 def get_existing_module_blueprint(db, cdd_id: int, module_number: int):
+    """The live blueprint for this CDD's module, if there is one.
+
+    Archived blueprints are treated as absent so a regeneration builds a fresh
+    one rather than writing new versions onto a document someone deliberately
+    took out of circulation.
+    """
     return (
-        db.query(ModuleBlueprint)
+        _live_only(db.query(ModuleBlueprint), include_archived=False)
         .filter(
             ModuleBlueprint.cdd_id == cdd_id,
             ModuleBlueprint.module_number == module_number,
@@ -54,8 +80,9 @@ def get_existing_module_blueprint(db, cdd_id: int, module_number: int):
 
 
 def get_existing_module_numbers(db, cdd_id: int) -> set:
+    """Module numbers this CDD already has a *live* blueprint for."""
     rows = (
-        db.query(ModuleBlueprint.module_number)
+        _live_only(db.query(ModuleBlueprint.module_number), include_archived=False)
         .filter(ModuleBlueprint.cdd_id == cdd_id)
         .all()
     )
@@ -131,8 +158,9 @@ def restore_blueprint_version(
     return new_ver, None
 
 
-def count_blueprints_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True) -> int:
-    q = db.query(ModuleBlueprint)
+def count_blueprints_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True,
+                            *, include_archived: bool = False) -> int:
+    q = _live_only(db.query(ModuleBlueprint), include_archived=include_archived)
     if not is_admin and user_name:
         q = q.filter(ModuleBlueprint.created_by == user_name)
         if project_id:

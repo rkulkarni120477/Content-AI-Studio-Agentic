@@ -32,7 +32,10 @@ _log = logging.getLogger(__name__)
 
 # Max characters of extracted text sent to the LLM. Guards against pathological
 # uploads blowing the context window / cost; feedback docs are far smaller.
-_MAX_TEXT_CHARS = 120_000
+# Advisory size only — nothing is cut at it (see analyze_and_store). Named
+# _LARGE_ rather than _MAX_ because a constant called MAX asserts a bound,
+# and this one no longer enforces anything.
+_LARGE_TEXT_CHARS = 120_000
 
 _VALID_SENTIMENTS = {"suggestion", "concern", "praise", "neutral"}
 _VALID_PRIORITIES = {"high", "medium", "low"}
@@ -164,9 +167,17 @@ def analyze_and_store(
 
     # 1. Parse to text.
     document_text = parse_file_bytes(raw_bytes, filename)
-    if len(document_text) > _MAX_TEXT_CHARS:
-        document_text = document_text[:_MAX_TEXT_CHARS]
-        _log.info("feedback text truncated to %d chars for '%s'", _MAX_TEXT_CHARS, filename)
+    # Sent whole. This used to cut at _LARGE_TEXT_CHARS and log an INFO line — but
+    # the model reads a truncated document as a complete one, so feedback on a
+    # long design document silently stopped applying past the cut while the
+    # response still read as a review of the whole thing. A log line the reviewer
+    # never sees is not a disclosure. If a document genuinely exceeds the model's
+    # window the call fails loudly, which is the correct outcome: a partial review
+    # presented as a complete one is worse than no review.
+    if len(document_text) > _LARGE_TEXT_CHARS:
+        _log.info("feedback document is %d chars for %r — sent whole (over the "
+                  "%d-char advisory size); expect a larger prompt",
+                  len(document_text), filename, _LARGE_TEXT_CHARS)
 
     # 2. Build prompt.
     system_prompt, user_prompt = _build_prompts(
@@ -230,9 +241,24 @@ def analyze_and_store(
 # so generalising later means only swapping the block-selection step (e.g. for a
 # semantic retriever), not this orchestration.
 
-_REC_CONTEXT_CHARS = 45_000   # total course-content budget sent per recommendation
+#: Total course-content budget per recommendation. A SELECTION budget — it decides
+#: how many whole blocks are sent, never how much of one.
+#:
+#: Raised from 45,000 (~11k tokens) once blocks stopped being pre-cut to 6,000
+#: chars. At the old value a single large block could spend the whole budget on
+#: its own and leave every smaller relevant block unselected — the same
+#: crowding-out the per-block cut existed to prevent, reappearing as a selection
+#: problem instead of a truncation one. 400,000 chars is ~100k tokens, well inside
+#: the 200k-token window of every model this product targets, which makes
+#: crowding-out unreachable for realistic course content rather than merely rarer.
+_REC_CONTEXT_CHARS = 400_000
 _REC_MAX_BLOCKS = 12          # cap on number of blocks included as context
-_REC_BLOCK_CHARS = 6_000      # per-block cap so one huge block can't dominate
+# A per-block cut of 6,000 chars used to sit here. It sliced each block before the
+# model read it, so a recommendation about a long block was drawn from its opening
+# and presented as a recommendation about the block. Domination is a SELECTION
+# problem, and _REC_CONTEXT_CHARS above already solves it by selection: a block is
+# included whole or not at all, and one huge block simply spends the budget and
+# stops the loop.
 _REC_MAX_REFS = 8             # cap on stored referenced-block labels
 
 _STOPWORDS = {
@@ -281,6 +307,49 @@ def _load_course_blocks(db, course_id: int) -> list[tuple[str, str]]:
     return out
 
 
+def _load_module_blocks(db, blueprint_id: int) -> list[tuple[str, str]]:
+    """Return [(label, content), ...] for the blocks of ONE module (blueprint).
+
+    Uses the current version of each lesson in the module (latest generation per
+    topic), mirroring how the module is assembled for export, so a feedback item
+    mapped to a module is grounded only in that module's content.
+    """
+    if blueprint_id is None:
+        return []
+    from promptops_app.repositories.generation_repository import (
+        list_blocks_for_gen_ids,
+        list_latest_generations_for_blueprint,
+    )
+
+    gens = list_latest_generations_for_blueprint(db, blueprint_id)
+    gen_ids = [g.id for g in gens]
+    if not gen_ids:
+        return []
+    blocks = list_blocks_for_gen_ids(db, gen_ids, limit=2000)
+    out: list[tuple[str, str]] = []
+    for i, b in enumerate(blocks):
+        content = (getattr(b, "content", None) or "").strip()
+        if content:
+            out.append((_block_label(b, i), content))
+    return out
+
+
+def _load_blocks_for_item(db, course_id, blueprint_id) -> list[tuple[str, str]]:
+    """Blocks used to ground a feedback item's recommendation.
+
+    When the item is mapped to a module (``blueprint_id`` set), restrict the
+    context to that module's blocks so the recommendation stays relevant to the
+    target module. Fall back to the whole course when the item has no module
+    mapping, or the module has no usable blocks yet — scoping must never leave the
+    model with nothing to work from.
+    """
+    if blueprint_id is not None:
+        module_blocks = _load_module_blocks(db, blueprint_id)
+        if module_blocks:
+            return module_blocks
+    return _load_course_blocks(db, course_id)
+
+
 def _select_relevant_blocks(
     blocks: list[tuple[str, str]], feedback_item, *, max_chars: int = _REC_CONTEXT_CHARS,
 ) -> list[tuple[str, str]]:
@@ -312,11 +381,21 @@ def _select_relevant_blocks(
     for _overlap, _idx, label, content in scored:
         if len(selected) >= _REC_MAX_BLOCKS:
             break
-        snippet = content[:_REC_BLOCK_CHARS]
-        cost = len(snippet) + len(label) + 32
+        # Whole block, or none of it. `and selected` keeps the first regardless,
+        # so an oversized top-ranked block still informs the answer rather than
+        # leaving the model with nothing.
+        #
+        # `continue`, not `break`. While every block was pre-cut to 6,000 chars a
+        # block rarely overran the budget, so ending the loop at the first one
+        # that did was near enough to harmless. Now that blocks are whole, one
+        # 40,000-char block early in the ranking would end selection and discard
+        # every smaller, still-relevant block behind it. Skip the one that does
+        # not fit and keep going — the same include-whole-or-skip rule the
+        # document assembler uses.
+        cost = len(content) + len(label) + 32
         if used + cost > max_chars and selected:
-            break
-        selected.append((label, snippet))
+            continue
+        selected.append((label, content))
         used += cost
     return selected
 
@@ -330,11 +409,15 @@ def _format_course_content(selected: list[tuple[str, str]]) -> str:
 
 
 _REC_FALLBACK_SYSTEM = (
-    "You are an instructional-design editor. Given one reviewer feedback item and "
+    "You are an instructional-design editor. Given ONE reviewer feedback item and "
     "labelled excerpts of a course's content, produce a concrete, actionable "
-    "recommendation for revising the content. Write the recommendation as rich "
-    "Markdown: a one-line **bold summary**, then 2-4 `-` bullets naming what to "
-    "change and where, then an optional `> **Suggested revision:**` blockquote. "
+    "recommendation for revising the content. Address only this feedback item. "
+    "Write the recommendation as rich Markdown with three labelled sections in "
+    "order: a `**Summary**` one-liner starting with an action verb; a "
+    "`**What to change**` heading followed by 1-3 distinct `-` bullets naming what "
+    "to change and where (no duplicates or contradictions); a `**Why**` heading "
+    "followed by 1-2 `-` bullets on how it resolves the feedback; then, when a "
+    "concrete rewrite helps, a `> **Suggested revision:**` blockquote. "
     'Return ONLY a JSON object {"recommendation": "string", "referenced_blocks": '
     '["label", ...]} with "\\n" for line breaks. Cite only labels that appear in '
     "the provided content; use an empty array if none apply."
@@ -458,7 +541,9 @@ def _parse_recommendation(raw_text: str, allowed_labels: list[str]) -> tuple[str
         if len(refs) >= _REC_MAX_REFS:
             break
 
-    return rec_text[:8000], refs
+    # The recommendation text is a MODEL RESULT — cutting it at 8000 chars
+    # delivered a recommendation that stops mid-sentence and reads as finished.
+    return rec_text, refs
 
 
 def recommend_for_items(
@@ -483,22 +568,28 @@ def recommend_for_items(
     from promptops_app.database import Course
 
     course_cache: dict[int, object] = {}
-    blocks_cache: dict[int, list[tuple[str, str]]] = {}
+    # Blocks are cached per (course, module) — items in the same course but
+    # different modules must not share a scoped block set.
+    blocks_cache: dict[tuple, list[tuple[str, str]]] = {}
 
     for item in items:
         course_id = getattr(item, "course_id", None)
+        blueprint_id = getattr(item, "blueprint_id", None)
         course = None
+        blocks: list[tuple[str, str]] = []
         if course_id is not None:
             if course_id not in course_cache:
                 course_cache[course_id] = (
                     db.query(Course).filter(Course.id == course_id).first()
                 )
             course = course_cache[course_id]
-            if course_id not in blocks_cache:
-                blocks_cache[course_id] = _load_course_blocks(db, course_id)
+            cache_key = (course_id, blueprint_id)
+            if cache_key not in blocks_cache:
+                blocks_cache[cache_key] = _load_blocks_for_item(db, course_id, blueprint_id)
+            blocks = blocks_cache[cache_key]
 
         model_choice = _resolve_requested_model(model_override, course)
-        selected = _select_relevant_blocks(blocks_cache.get(course_id, []), item)
+        selected = _select_relevant_blocks(blocks, item)
         course_content = _format_course_content(selected)
         allowed_labels = [label for label, _c in selected]
 

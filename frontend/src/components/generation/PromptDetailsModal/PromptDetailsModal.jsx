@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { promptsService } from '@features/prompts/services/promptsService';
 import { COMPONENT_LABELS, buildPromptDownloadMd } from '@utils/promptDefaults';
 import { downloadBlob } from '@utils/helpers';
+import { useLabels } from '@hooks/useLabels';
 import Modal from '@components/common/Modal/Modal';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
@@ -30,6 +31,7 @@ export default function PromptDetailsModal({
 }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
+  const L = useLabels();
 
   const compLabel = COMPONENT_LABELS[component] || component;
 
@@ -57,9 +59,9 @@ export default function PromptDetailsModal({
     const parts = [];
     if (projectName) parts.push({ label: 'Project', value: projectName });
     if (clusterName) parts.push({ label: 'Cluster', value: clusterName });
-    if (courseName) parts.push({ label: 'Title', value: courseName });
+    if (courseName) parts.push({ label: L.title, value: courseName });
     return parts;
-  }, [projectName, clusterName, courseName]);
+  }, [projectName, clusterName, courseName, L]);
 
   const viewSystem = (systemPrompt || detail?.system_prompt || '').trim() || '(empty)';
   const viewUser = (userPrompt || detail?.user_prompt_template || '').trim() || '(empty)';

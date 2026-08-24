@@ -6,8 +6,10 @@ where needed). Safe for FastAPI or CLI use.
 Extracted from core/shared.py (Phase 3 refactoring).
 """
 
+import logging
 import re
 import re as _re_engine  # alias used by the item-parsing engine
+from typing import Optional
 
 from promptops_app.prompt_templates import (
     BLUEPRINT_SYSTEM_PROMPT,
@@ -18,7 +20,11 @@ from promptops_app.prompt_templates import (
     TEACHER_BLUEPRINT_SECTION_REGENERATE_PROMPT,
 )
 from promptops_app.core.llm_client import safe_json_loads
+from promptops_app.parsers.markdown_emphasis import repair_emphasis
 from promptops_app.services.llm_service import generate_text as call_llm
+from promptops_app.services.usage_service import UsageLogContext
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Blueprint section visibility
@@ -195,6 +201,30 @@ _ITEM_REGEN_SYSTEM = (
 )
 
 
+#: Strips a list bullet the model re-added, WITHOUT eating markdown emphasis.
+#:
+#: The previous pattern was ``^[-*•]\\s*``, and because ``\\s*`` matches zero
+#: characters it read the first ``*`` of ``**Bold:** value`` as a bullet and
+#: removed it. patch_item_in_section then prepended the real bullet, so a
+#: single-item regeneration turned
+#:     - **Supplemental References:** Essential Texts: …
+#: into
+#:     - *Supplemental References:** Essential Texts: …
+#: deterministically, on every run. Worksheet 1 of an AIM CDD is nothing but
+#: ``- **Field:** value`` lines, so every per-item regeneration there corrupted
+#: the field label, and the same applied to italics (``*emphasis*`` → ``emphasis*``).
+#: Observed live on CDD 169 item 12.
+#:
+#: ``-`` and ``•`` keep the old zero-width behaviour, since neither carries any
+#: meaning in markdown beyond "bullet". ``*`` requires real whitespace after it,
+#: which is what distinguishes a bullet from an emphasis delimiter.
+_LEADING_BULLET_RE = _re_engine.compile(r"^(?:[-•]\s*|\*\s+)")
+
+
+def _strip_leading_bullet(text: str) -> str:
+    return _LEADING_BULLET_RE.sub("", text, count=1)
+
+
 def regen_single_item(
     section_title: str,
     section_content: str,
@@ -203,18 +233,54 @@ def regen_single_item(
     custom_instruction: str,
     model_choice: str = "GPT-5.4",
     learning_signals: str = "",
+    usage_ctx: Optional["UsageLogContext"] = None,
+    context: str = "",
 ) -> str:
-    """Regenerate a single item inside a section using the LLM."""
+    """Regenerate a single item inside a section using the LLM.
+
+    Pass usage_ctx (project/course/user) so this call's cost is attributed in
+    llm_usage_logs — this is a real, live LLM-calling path (cdd.py/blueprints.py/
+    blocks.py all route their per-item regenerate endpoint through here), not a
+    dead one; without it the call still logs, just as unattributed.
+
+    ``context`` (optional) is grounding assembled by the caller — for CDDs, the
+    block overview and the day/ACS rows the instruction refers to (see
+    app.services.cdd_regen_context). "" reproduces this function's exact
+    previous behaviour, which is what the blueprint and block callers still get.
+    """
+    # When the "item" IS the whole section — which is what a markdown table
+    # parses to, since parse_items_from_section recognises lists and headings
+    # but not table rows — appending it again as "Section context" doubles the
+    # prompt for no added information. The check is cheap and the saving is
+    # ~19k tokens on a CDD day table.
+    section_context = "" if section_content.strip() == item_text.strip() else section_content
+
     user_p = (
         f"Section: {section_title}\n\n"
         f"Current item (index {item_index}): {item_text}\n\n"
         f"Instruction: {custom_instruction or 'Improve this item.'}"
+        + (f"\n\n{context}" if context else "")
         + (f"\n\nLEARNED PREFERENCES:\n{learning_signals}" if learning_signals else "")
-        + f"\n\nSection context:\n{section_content}"
+        + (f"\n\nSection context:\n{section_context}" if section_context else "")
     )
     sys_p = _ITEM_REGEN_SYSTEM
-    result = call_llm(model_choice, sys_p, user_p)
-    result = _re_engine.sub(r"^[-*•]\s*", "", result.strip())
+    result = call_llm(model_choice, sys_p, user_p, usage_ctx)
+    result = _strip_leading_bullet(result.strip())
+
+    # A second line of defence, on a different failure than the strip above.
+    # _strip_leading_bullet no longer eats emphasis, but the model can still
+    # return a label whose delimiters do not pair up, and a malformed line
+    # committed here is sticky: every later save of the document preserves
+    # untouched lines byte for byte, so it survives until somebody edits that
+    # exact line by hand. Repair the one unambiguous shape, and say so when the
+    # damage is a guess rather than a fix.
+    result, emphasis = repair_emphasis(result.strip())
+    if emphasis:
+        _log.warning(
+            "regen_single_item: unbalanced markdown emphasis in the model reply "
+            "for section=%r item=%s — %s",
+            section_title, item_index, "; ".join(f.describe() for f in emphasis),
+        )
     return result.strip()
 
 

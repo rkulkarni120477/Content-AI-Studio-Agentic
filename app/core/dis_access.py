@@ -30,6 +30,7 @@ class DISAccessContext:
 
 
 _ACCESS_CONFIG_CACHE: dict[str, Any] | None = None
+_ACCESS_CONFIG_CACHE_MTIME: float | None = None
 
 
 def _setting(name: str, default: Any = "") -> Any:
@@ -89,12 +90,29 @@ def load_dis_access_config(force_reload: bool = False) -> dict[str, Any]:
 
     Env values override file values where configured. This lets production use
     secure env/secrets while local dev can simply edit config/dis_access.json.
+
+    Cached, but keyed on the file's mtime rather than cached forever: api,
+    celery_worker and any other process reading this each hold their own
+    in-process cache, and force_reload only ever clears the caller's own copy
+    — a provisioning call's force_reload=True (see dis_provisioning.py) never
+    reaches the other containers' caches. The file itself is the one thing
+    every container actually shares (same bind-mounted path), so re-``stat``ing
+    it — a single cheap syscall — and reloading on a changed mtime gets every
+    process caught up on its own next call, with no cross-process signalling.
     """
-    global _ACCESS_CONFIG_CACHE
-    if _ACCESS_CONFIG_CACHE is not None and not force_reload:
+    global _ACCESS_CONFIG_CACHE, _ACCESS_CONFIG_CACHE_MTIME
+    path = _access_config_path()
+    try:
+        current_mtime = path.stat().st_mtime if path.exists() else None
+    except OSError:
+        current_mtime = None
+    if (
+        _ACCESS_CONFIG_CACHE is not None
+        and not force_reload
+        and current_mtime == _ACCESS_CONFIG_CACHE_MTIME
+    ):
         return _ACCESS_CONFIG_CACHE
 
-    path = _access_config_path()
     file_cfg: dict[str, Any] = {}
     if path.exists():
         try:
@@ -132,6 +150,7 @@ def load_dis_access_config(force_reload: bool = False) -> dict[str, Any]:
         "user_client_map": {k.lower(): v for k, v in user_client_map.items()},
     }
     _ACCESS_CONFIG_CACHE = cfg
+    _ACCESS_CONFIG_CACHE_MTIME = current_mtime
     return cfg
 
 
@@ -214,6 +233,28 @@ def resolve_course_dis_client(db: Any, *, course_id: Any = None, project_id: Any
     except Exception:
         return ""
     return ""
+
+
+def digest_pipeline_enabled_for_course(db: Any, *, course_id: Any = None,
+                                       project_id: Any = None) -> bool:
+    """Can the block-wide digest pipeline run against THIS course?
+
+    The one question the generate-block endpoints actually gate on, so the UI can
+    ask it too instead of guessing. Deliberately keyed on the COURSE's client and
+    not the caller's: the pipeline enumerates the course's own DIS Source Library,
+    so a user whose personal client is allowlisted still has nothing to read from
+    on a course belonging to a client that is not.
+
+    That divergence was a live bug. The generation panel was gated on
+    ``UserProfileResponse.digest_pipeline_enabled`` — the CALLER's client — while
+    ``POST /cdd/generate-block`` gated on this. Measured 2026-08-13, 71 of 106
+    courses would have shown the panel and then failed with a 400, before the job
+    row and before the audit write, leaving the failure with no trace anywhere.
+    """
+    from app.core.config import settings
+    return settings.digest_pipeline_on_for(
+        resolve_course_dis_client(db, course_id=course_id, project_id=project_id)
+    )
 
 
 def _membership_clients(current_user: Any) -> list[tuple[str, str]]:
@@ -321,7 +362,17 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
         if member_clients and (not requested_norm or requested_norm in member_clients):
             client_id = requested_norm if requested_norm in member_clients else member_clients[0]
             member_role = next((mrole for cid, mrole in membership if cid == client_id), "")
-            dis_role = "client_admin" if (member_role == "admin" or role in {"admin", "reviewer"}) else "user"
+            if member_role == "admin" or role in {"admin", "reviewer"}:
+                dis_role = "client_admin"
+            elif role == "author":
+                # Narrow tier: upload/batch/folder-scan only — NOT a client_admin
+                # synonym. Must never satisfy require_role("client_admin"),
+                # including the restricted-content gate in DIS's
+                # retrieve_course_generation_context (answer keys/instructor-only
+                # material stay blocked for authors).
+                dis_role = "uploader"
+            else:
+                dis_role = "user"
             return DISAccessContext(
                 tenant_id=client_id,
                 client_id=client_id,
@@ -330,7 +381,12 @@ def get_dis_access_for_user(current_user: Any, requested_client_id: str | None =
                 available_clients=[client_id],
             )
         client_id = profile_client or inferred_client or default_client
-        dis_role = "client_admin" if role in {"admin", "reviewer"} else "user"
+        if role in {"admin", "reviewer"}:
+            dis_role = "client_admin"
+        elif role == "author":
+            dis_role = "uploader"  # upload/batch/folder-scan only — see note above
+        else:
+            dis_role = "user"
 
     if available and client_id not in available:
         client_id = default_client

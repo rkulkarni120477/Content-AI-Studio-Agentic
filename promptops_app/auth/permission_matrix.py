@@ -73,6 +73,8 @@ PERMISSION_CATALOG: list[dict] = [
             {"key": "cdd.pin",      "label": "Pin CDD for generation",  "scope": "course"},
             {"key": "cdd.review",   "label": "Review & approve CDDs",   "scope": "course"},
             {"key": "cdd.version",  "label": "Create new CDD versions", "scope": "course"},
+            {"key": "cdd.archive",  "label": "Archive / restore CDDs",  "scope": "course"},
+            {"key": "cdd.purge",    "label": "Permanently delete archived CDDs", "scope": "course"},
         ],
     },
     # ── Blueprint Pipeline ───────────────────────────────────────────────────
@@ -85,6 +87,8 @@ PERMISSION_CATALOG: list[dict] = [
             {"key": "blueprint.pin",      "label": "Pin blueprint for generation", "scope": "course"},
             {"key": "blueprint.review",   "label": "Review & approve blueprints",  "scope": "course"},
             {"key": "blueprint.version",  "label": "Create new blueprint versions","scope": "course"},
+            {"key": "blueprint.archive",  "label": "Archive / restore blueprints", "scope": "course"},
+            {"key": "blueprint.purge",    "label": "Permanently delete archived blueprints", "scope": "course"},
         ],
     },
     # ── Content Generation ───────────────────────────────────────────────────

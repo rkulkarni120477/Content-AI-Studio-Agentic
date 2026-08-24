@@ -18,8 +18,8 @@ Proven end-to-end in the Phase-0 spike; this promotes it to product code.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from services.digests import attribution
@@ -75,7 +75,23 @@ class MapExtractionError(RuntimeError):
     ``coverage.failed_days`` entry. A silently-defaulted day is indistinguishable
     downstream from a genuinely extracted one, which is how an entire block once
     rendered with every LLM field at its default while reporting success.
+
+    Carries the token counts and the model of the call that produced the bad reply.
+    A rejected reply was still generated and still billed, and ``build_digest``'s
+    ``except`` branch is the only place that spend can be recorded — the success
+    path's counter is never reached. Without this, prod's 2026-08-13 Block 2 build
+    reported ``map_calls=0`` and $0 spent for 20 days that had each made a real
+    Bedrock call. ``model`` matters just as much: ``_llm_extract`` may ESCALATE a
+    content-rich day to a larger-context model, so the model that failed is often
+    not the one configured, and the failed digest is the only record of which.
     """
+
+    def __init__(self, message: str, *, tokens_in: int = 0, tokens_out: int = 0,
+                 model: str = "") -> None:
+        super().__init__(message)
+        self.tokens_in = int(tokens_in or 0)
+        self.tokens_out = int(tokens_out or 0)
+        self.model = model or ""
 
 #: Last-resort fallback if ``templates/digest_map.md`` is missing, empty, unreadable, or
 #: fails the reply-key contract check. Deliberately a COMPACT prompt rather than a
@@ -133,13 +149,51 @@ def current_prompt_version() -> str:
 #: Backwards-compatible module attribute. Prefer ``current_prompt_version()``: this is a
 #: snapshot taken at import and does not reflect a later template edit.
 PROMPT_VERSION = PROMPT_VERSION_BASE
-MAP_MAX_TOKENS = 4096  # raised from 900 (itself raised from 600) — 900 was still an artificial
-# ceiling below this model's real limit. aim.yaml's digest_extraction model is Bedrock Claude 3
-# Sonnet, whose actual max output is 4096 — matching that gives every field (derived_objective,
-# misconceptions, salient_excerpts, concept_type, 7 interactive/job-aid fields) full headroom to
-# return complete, untruncated content instead of risking exactly the failure this file's own
-# comment on `_llm_extract` already warned about ("likely truncated mid-JSON for content-rich
-# days"). Matches the fallback fix in llm_service.py: cap to the model's REAL ceiling, not below.
+def _env_int_or_none(name: str) -> Optional[int]:
+    """Operator override for a derived limit: an int (0 = no limit), or None if unset.
+
+    Junk and negative values resolve to None — i.e. "fall back to the default/derived
+    budget" — never to a number. Returning a sentinel like -1 here looks harmless but
+    is not: -1 is truthy, so it flowed straight into the trim comparison and silently
+    kept only the FIRST source unit of every day, leaving nothing but a log line to
+    say so. A malformed limit must never be quieter, or more destructive, than an
+    unset one.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer — ignoring it and using the default "
+                    "(model-derived) budget instead", name, raw)
+        return None
+    if value < 0:
+        log.warning("%s=%d is negative — ignoring it and using the default "
+                    "(model-derived) budget instead (use 0 for 'no limit')", name, value)
+        return None
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int limit from the environment. 0 means "no limit".
+
+    Thin wrapper over :func:`_env_int_or_none` so the parsing and the
+    junk-value-is-not-a-number rule live in exactly one place.
+    """
+    value = _env_int_or_none(name)
+    return default if value is None else value
+
+
+#: Fallback MAP output ceiling for a model this module has no entry for. Any cap
+#: below the model's real limit risks a digest truncated mid-JSON (which MAP does
+#: now catch — the day fails rather than storing defaults — but a failed day is
+#: still a day nobody got an answer for). 4096 matched Claude 3 Sonnet's actual
+#: maximum; the modern family is far higher, so a single flat number is wrong in
+#: BOTH directions: it throttles capable models and it exceeds what legacy models
+#: will accept. Per-model values live in ``_MAX_OUTPUT_TOKENS``; this is only what
+#: an unrecognised id gets. Set DIS_MAP_MAX_TOKENS to override everything.
+MAP_MAX_TOKENS = _env_int("DIS_MAP_MAX_TOKENS", 32_000)
 
 # One canonical "teachable substance" set, shared with ENUMERATE's THIN_DAY logic
 # so the two never disagree about what makes a day thin (was previously a divergent
@@ -246,10 +300,24 @@ def _acs_codes(unit: Dict[str, Any]) -> List[str]:
 
 
 def _guidance_block(map_guidance: str) -> str:
-    """Render the optional prompt-derived guidance as a clearly-delimited,
-    contract-safe addendum — "" (no extra lines) when there is none, so a day
-    with no guidance produces byte-identical prompt text to before this
-    feature existed."""
+    """Render the optional guidance as a clearly-delimited, contract-safe addendum —
+    "" (no extra lines) when there is none, so a day with no guidance produces
+    byte-identical prompt text to before this feature existed.
+
+    CAREFUL — the heading below says "derived from the course's selected prompt
+    template", and since 2026-08-13 that is only half true: CAS composes TWO layers
+    into this one string (the distilled template, then the requester's own style and
+    instructions — see promptops_app/services/user_directives.py), each carrying its
+    own inner heading. The wrapper's CONSTRAINTS still apply correctly to both, which
+    is what matters for the extraction contract; only its attribution clause is loose.
+
+    It is left loose on purpose. Every character of this function's output is part of
+    the MAP prompt, and the prompt version is ``PROMPT_VERSION_BASE`` + the template
+    hash — which does NOT cover this module — so rewording the heading changes what
+    every client's digests were built from WITHOUT invalidating them. Fixing the
+    wording therefore means bumping PROMPT_VERSION_BASE, which rebuilds every day of
+    every block for every tenant. Worth doing alongside a schema bump; not worth doing
+    on its own for an attribution nicety."""
     text = (map_guidance or "").strip()
     if not text:
         return ""
@@ -268,8 +336,145 @@ def _guidance_block(map_guidance: str) -> str:
 #: on Block 2 Day 1 before attribution was tightened. Chosen so that even worst-case
 #: dense text (ACS code lists tokenize at roughly one token per character, far worse
 #: than the usual ~4 chars/token) stays inside a 200k-token window.
-MAP_MAX_SOURCE_CHARS = 120_000
-MAP_MAX_UNIT_CHARS = 4_000
+#: Per-model input capacity, in CHARACTERS of assembled SOURCES block.
+#:
+#: Derived from each model's context window rather than guessed: a single global
+#: constant is wrong by construction, because the same number is simultaneously too
+#: small for a large-window model and too large for a small one.
+#:
+#: The chars-per-token divisor is deliberately pessimistic. Ordinary prose runs ~4
+#: chars/token, but this content is not ordinary prose — ACS code lists
+#: ("AM.I.B.K1") tokenize closer to 1 token per character, and underestimating here
+#: means a hard "Input is too long" rejection that fails the whole day. 2.5
+#: chars/token leaves room for the prompt scaffold, rubric and guidance that share
+#: the window with the sources.
+_CHARS_PER_TOKEN = 2.5
+_CONTEXT_TOKENS = {
+    # Current generation — verified invokable via `global.` in ap-south-1 AND
+    # us-east-1 on this account (direct InvokeModel).
+    "global.anthropic.claude-opus-5": 1_000_000,
+    "global.anthropic.claude-sonnet-5": 1_000_000,
+    "global.anthropic.claude-sonnet-4-6": 1_000_000,
+    "global.anthropic.claude-fable-5": 1_000_000,
+    # Available on Bedrock but NO model access for this account's role.
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": 200_000,
+    "global.anthropic.claude-opus-4-8": 1_000_000,
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": 200_000,
+    # Legacy Claude 3 — still referenced by academian.yaml / cengage.yaml, so they
+    # need a window here or they would fall to the pessimistic default. Do not use
+    # for new config: Sonnet 3 is end-of-life in us-east-1 and Haiku 3 is
+    # provider-legacy and denied in every region.
+    "anthropic.claude-3-sonnet-20240229-v1:0": 200_000,
+    "anthropic.claude-3-haiku-20240307-v1:0": 200_000,
+}
+#: Each model's maximum OUTPUT tokens — the one kind of cap that is a real model
+#: limit rather than a policy choice, so it is the only one MAP applies. Keys mirror
+#: _CONTEXT_TOKENS exactly; an id absent from both falls back to MAP_MAX_TOKENS,
+#: which is deliberately the previous flat value so an unrecognised model can never
+#: end up MORE throttled than before this table existed.
+#:
+#: The first four values are NOT independent guesses — they are copied from CAS's
+#: promptops_app.core.models registry, which carries these numbers from live probes
+#: on the same account. The two deployables cannot share a module, so
+#: tests/unit/test_no_silent_truncation.py asserts they still agree for every id
+#: present in both; that test is what makes this a mirror rather than a second
+#: opinion. Note in particular that Haiku 4.5 is 16,384, not 64,000 — grouping it
+#: with the rest of the modern family is the obvious wrong guess.
+_MAX_OUTPUT_TOKENS = {
+    # Mirrored from CAS's registry (probe-verified there).
+    "global.anthropic.claude-opus-5": 64_000,
+    "global.anthropic.claude-sonnet-5": 64_000,
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": 64_000,
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": 16_384,
+    # Not in CAS's registry, so these are the published maxima rather than measured
+    # ones. Safe to be wrong high: Bedrock does not reject an oversized max_tokens
+    # (128,000 was accepted in the probe recorded in that registry), so the cost of
+    # an over-guess is nothing while an under-guess silently shortens a digest.
+    "global.anthropic.claude-sonnet-4-6": 64_000,
+    "global.anthropic.claude-fable-5": 64_000,
+    "global.anthropic.claude-opus-4-8": 64_000,
+    # Legacy Claude 3: 4,096 is the provider's hard maximum, so the flat 32,000 was
+    # asking these ids for eight times what they can produce.
+    "anthropic.claude-3-sonnet-20240229-v1:0": 4_096,
+    "anthropic.claude-3-haiku-20240307-v1:0": 4_096,
+}
+
+
+def max_output_tokens(model: str) -> int:
+    """The output ceiling to request for *model*.
+
+    An explicit DIS_MAP_MAX_TOKENS override wins, because an operator setting it is
+    making a deliberate choice; otherwise the model's own documented maximum, and
+    the previous flat default for anything unrecognised.
+    """
+    if _env_int_or_none("DIS_MAP_MAX_TOKENS") is not None:
+        return MAP_MAX_TOKENS
+    return _MAX_OUTPUT_TOKENS.get(model) or MAP_MAX_TOKENS
+
+
+#: Reserved for the prompt scaffold (schema, rubric, guidance, day metadata) that
+#: shares the window with the sources.
+_PROMPT_OVERHEAD_CHARS = 40_000
+
+#: Ordered escalation ladder: when a day's sources do not fit the configured model,
+#: move UP to a larger-window model instead of trimming. Comma-separated model IDs,
+#: largest window last is irrelevant — they are sorted by known window.
+#:
+#: Empty by default: on this account every larger-window model (Opus 5, Sonnet 5,
+#: Sonnet 4.6) is AccessDenied for DIS's principal, and escalating to a model that
+#: cannot be invoked would fail the day outright — worse than the trim it avoids.
+#: Populate it once a larger model is genuinely invokable from this environment,
+#: measured on repeated probes rather than one:
+#:     DIS_MAP_ESCALATION_MODELS=global.anthropic.claude-opus-5
+MAP_ESCALATION_MODELS = [
+    m.strip() for m in (os.getenv("DIS_MAP_ESCALATION_MODELS") or "").split(",") if m.strip()
+]
+
+
+#: Hard override of the derived per-model budget. 0 = NO LIMIT (never trim; accept a
+#: hard context-window rejection instead). Unset ⇒ use the model-derived capacity,
+#: which is the better behaviour and needs no configuration.
+MAP_MAX_SOURCE_CHARS = _env_int_or_none("DIS_MAP_MAX_SOURCE_CHARS")
+MAP_MAX_UNIT_CHARS = _env_int("DIS_MAP_MAX_UNIT_CHARS", 0)
+
+
+def context_budget_chars(model: str) -> int:
+    """Characters of SOURCES this model can take. 0 = unlimited (explicit override).
+
+    An unknown model gets the smallest known window rather than an optimistic guess:
+    being wrong low costs a flagged trim, being wrong high costs the whole day.
+    """
+    if MAP_MAX_SOURCE_CHARS is not None:      # explicit operator override wins
+        return MAP_MAX_SOURCE_CHARS
+    tokens = _CONTEXT_TOKENS.get(model) or min(_CONTEXT_TOKENS.values())
+    # Floored, never negative: a budget below zero is truthy in the trim comparison
+    # and would keep only the first unit of every day.
+    return max(int(tokens * _CHARS_PER_TOKEN) - _PROMPT_OVERHEAD_CHARS, 10_000)
+
+
+def select_model_for(configured: str, needed_chars: int) -> tuple[str, Optional[str]]:
+    """Pick the model to run this day on, escalating if the sources don't fit.
+
+    Returns ``(model, note)`` where *note* is None when the configured model was
+    kept, else a human-readable reason recorded on the digest so the substitution is
+    visible rather than inferred from a cost report.
+
+    Escalating beats trimming: a larger window keeps ALL of the day's material, where
+    trimming silently removes evidence the extraction is supposed to be based on.
+    """
+    if not needed_chars or needed_chars <= context_budget_chars(configured):
+        return configured, None
+    ladder = sorted(
+        (m for m in MAP_ESCALATION_MODELS if m != configured),
+        key=lambda m: _CONTEXT_TOKENS.get(m, 0),
+    )
+    for candidate in ladder:
+        if needed_chars <= context_budget_chars(candidate):
+            note = (f"escalated from {configured} to {candidate}: sources are "
+                    f"{needed_chars} chars, over that model's capacity")
+            log.warning("MAP %s", note)
+            return candidate, note
+    return configured, None
 
 #: Truncation order when a day exceeds the budget: keep the units we are most
 #: confident belong to this day. Mirrors attribution's own signal hierarchy
@@ -278,8 +483,9 @@ MAP_MAX_UNIT_CHARS = 4_000
 _SIGNAL_PRIORITY = {"raw": 0, "S1": 1, "S2": 2, "S3": 3}
 
 
-def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
-    """Assemble the SOURCES block under MAP_MAX_SOURCE_CHARS.
+def _source_body(llm_units: List[Dict[str, Any]],
+                 limit: Optional[int] = None) -> tuple[str, Dict[str, int]]:
+    """Assemble the SOURCES block, trimming to *limit* chars (0/None = no trim).
 
     Returns ``(body, dropped)`` where ``dropped`` is {"units": n, "chars": n} —
     empty when everything fit. Truncation is reported, never silent: the caller
@@ -295,9 +501,11 @@ def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
     used = 0
     dropped_units = dropped_chars = 0
     for idx, u in ordered:
-        block = (f"[{u.get('unit_type')}] {u.get('title') or ''}\n"
-                 f"{(u.get('text_content') or '')[:MAP_MAX_UNIT_CHARS]}")
-        if used + len(block) > MAP_MAX_SOURCE_CHARS and kept:
+        text = u.get("text_content") or ""
+        if MAP_MAX_UNIT_CHARS:                      # 0 => send the unit whole
+            text = text[:MAP_MAX_UNIT_CHARS]
+        block = f"[{u.get('unit_type')}] {u.get('title') or ''}\n{text}"
+        if limit and used + len(block) > limit and kept:
             dropped_units += 1
             dropped_chars += len(block)
             continue
@@ -311,10 +519,11 @@ def _source_body(llm_units: List[Dict[str, Any]]) -> tuple[str, Dict[str, int]]:
 
 def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: str,
                  call_llm, safe_json, map_guidance: str = ""
-                 ) -> tuple[Dict[str, Any], int, int, Dict[str, int]]:
-    """Call the extractor and return (fields, tokens_in, tokens_out, dropped).
+                 ) -> tuple[Dict[str, Any], int, int, Dict[str, int], str, Optional[str]]:
+    """Call the extractor and return (fields, tokens_in, tokens_out, dropped,
+    model_used, escalation_note).
 
-    ``dropped`` reports any SOURCES truncation applied to fit MAP_MAX_SOURCE_CHARS.
+    ``dropped`` reports any SOURCES truncation that survived model escalation.
 
     ``map_guidance`` (optional) is judgment/emphasis instructions distilled from
     the course's selected CDD/Blueprint prompt (see resolve_prompt_guidance) —
@@ -322,11 +531,20 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     the model is told explicitly it may only refine judgment within the fields
     already specified, not add a field or contradict the required JSON shape.
     """
-    body, dropped = _source_body(llm_units)
+    # Measure the day untrimmed FIRST, then choose a model that can hold it. Sizing
+    # the content to the model is backwards when a larger-window model is available:
+    # escalating keeps all of the day's evidence, trimming silently discards the very
+    # material the extraction is supposed to rest on.
+    full_body, _ = _source_body(llm_units, limit=0)
+    model, escalation = select_model_for(model, len(full_body))
+
+    budget = context_budget_chars(model)
+    body, dropped = _source_body(llm_units, limit=budget)
     if dropped:
-        log.warning("digest MAP day %s: SOURCES truncated to %d chars — dropped %d "
-                    "lowest-confidence unit(s) (%d chars) to fit the extractor's "
-                    "context window", day.get("day_number"), MAP_MAX_SOURCE_CHARS,
+        log.warning("digest MAP day %s: SOURCES truncated to %d chars for model %s — "
+                    "dropped %d lowest-confidence unit(s) (%d chars). No larger model "
+                    "was available; see DIS_MAP_ESCALATION_MODELS.",
+                    day.get("day_number"), budget, model,
                     dropped["units"], dropped["chars"])
     template, _template_hash = map_prompt()
     prompt = prompt_template_render(template, {
@@ -341,14 +559,14 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         "lesson_title": day.get("lesson_title") or "",
         "sources": body if body.strip() else "(no text-allowed source units for this day)",
     })
-    text, ti, to = call_llm(model, prompt, MAP_MAX_TOKENS)
+    text, ti, to = call_llm(model, prompt, max_output_tokens(model))
     data = safe_json(text) or {}
     if not data or "derived_objective" not in data or "concept_type" not in data:
         # safe_json's json.loads is strict — either the raw response didn't
         # parse at all (likely truncated mid-JSON for content-rich days) or it
-        # parsed into an unrelated shape (e.g. call_llm's exception-path
-        # fallback '{"doc_type":"other",...}', which IS valid JSON but has none
-        # of our keys).
+        # parsed into an unrelated shape. A provider error no longer arrives here
+        # at all: call_llm raises LLMCallFailed, which build_digest catches. So this
+        # branch now means what it says — the model answered, in the wrong shape.
         #
         # This USED to only log and let every field default, leaving
         # digest_status="ok". That is the failure mode that shipped a complete-
@@ -364,9 +582,34 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
             "digest MAP day %s: response missing expected keys (parsed=%r), "
             "raw_text=%r", day.get("day_number"), bool(data), text[:2000],
         )
+        # These messages are the only artefact that leaves the DIS process, so they
+        # carry the reply snippet and the model: a body cut off mid-JSON means the
+        # token budget was too small, and the model matters because escalation may
+        # have swapped in one this account cannot invoke. The raw_text logged above is
+        # not reachable by whoever reads the failed generation.
+        #
+        # The stub branch below is now DEFENSIVE, not the main path: call_llm raises
+        # LLMCallFailed on a provider error rather than returning
+        # '{"doc_type":"other",...}', so a timeout or throttle never reaches here. It
+        # is kept because a stored digest from before that change carries this shape,
+        # and because a model could in principle reply with it — in which case
+        # reporting "lacks the required keys" would repeat 2026-08-13's mistake of
+        # sending diagnosis to the prompt instead of to a 60-second read timeout.
+        from services.pipeline.common import is_llm_failure_stub
+        if is_llm_failure_stub(text):
+            raise MapExtractionError(
+                f"MAP call for day {day.get('day_number')} FAILED at the provider "
+                f"(model={model}) — the reply is call_llm's failure stub, so no "
+                f"extraction happened. This is a credentials/timeout/throttling/quota "
+                f"problem, not a prompt or schema one. The preceding '[LLM] failed' log "
+                f"line names the underlying AWS exception.",
+                tokens_in=ti, tokens_out=to, model=model,
+            )
         raise MapExtractionError(
             f"MAP reply for day {day.get('day_number')} lacks the required keys "
-            f"(derived_objective/concept_type); got keys={sorted(data)[:8]}"
+            f"(derived_objective/concept_type); model={model} "
+            f"keys={sorted(data)[:8]} reply[:160]={text[:160]!r}",
+            tokens_in=ti, tokens_out=to, model=model,
         )
     fields = {
         "derived_objective": data.get("derived_objective", ""),
@@ -385,7 +628,7 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
         "job_aid_description": data.get("job_aid_description", ""),
         "job_aid_source_reference": data.get("job_aid_source_reference", "N/A"),
     }
-    return fields, ti, to, dropped
+    return fields, ti, to, dropped, model, escalation
 
 
 def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
@@ -448,9 +691,15 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     llm_units = [u for u in units if text_allowed_for_digest(u, "instructor")]
     digest["text_withheld_units"] = len(units) - len(llm_units)
     try:
-        fields, ti, to, dropped = _llm_extract(day, llm_units, model, call_llm, safe_json,
-                                               map_guidance=map_guidance)
+        fields, ti, to, dropped, model_used, escalation = _llm_extract(
+            day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance)
         digest.update(fields)
+        # Record the model that actually ran, not the one configured — an escalated
+        # day is a different extraction and the cache key is keyed on the model, so
+        # the digest must say which one produced it.
+        digest["extractor_model"] = model_used
+        if escalation:
+            digest["review_flags"].append(f"MODEL_ESCALATED — {escalation}")
         if dropped:
             digest["review_flags"].append(
                 f"SOURCES_TRUNCATED — day exceeded the extractor input budget; "
@@ -463,7 +712,39 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     except Exception as exc:  # per-day failure isolation (§8.3)
         log.warning("digest MAP failed for day %s: %s", dn, exc)
         digest["digest_status"] = "failed"
+        # A provider failure now arrives as LLMCallFailed carrying the real AWS
+        # exception, so the stored error names the actual cause (e.g.
+        # "ReadTimeoutError") instead of describing the fallback stub's shape.
         digest["error"] = str(exc)
+        from services.pipeline.common import LLMCallFailed
+        if isinstance(exc, LLMCallFailed):
+            # An attempt was made and, for a read timeout, the model generated and AWS
+            # billed it — so count the call even though no token counts came back.
+            # Reporting zero calls here is what made prod's build look like it never
+            # contacted a model.
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+            if exc.model:
+                digest["extractor_model"] = exc.model
+        # The success path's counter above is only reached when _llm_extract
+        # RETURNS, so before this every failed day contributed zero calls and zero
+        # tokens to the build report — prod's 2026-08-13 Block 2 build reported
+        # map_calls=0 while all 20 days had made a real, billed Bedrock call, and
+        # the cost dashboard recorded $0 for it. Only MapExtractionError knows a
+        # call actually happened; anything else raised before or around the call
+        # with no usable counts, and inventing numbers for it would be worse than
+        # reporting none.
+        if isinstance(exc, MapExtractionError):
+            if budget is not None:
+                budget["calls"] = budget.get("calls", 0) + 1
+                budget["tok_in"] = budget.get("tok_in", 0) + exc.tokens_in
+                budget["tok_out"] = budget.get("tok_out", 0) + exc.tokens_out
+            # The model that actually ran, which escalation may have changed from
+            # the configured one. On the success path this is recorded from
+            # model_used; a failed day needs it for the same reason and is exactly
+            # the case where "which model was this?" is the question being asked.
+            if exc.model:
+                digest["extractor_model"] = exc.model
 
     # Structural review flags.
     if not substantive:

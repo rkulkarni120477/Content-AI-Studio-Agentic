@@ -4,7 +4,7 @@ All tenant config loaded from YAML files.
 Global settings from environment variables (.env).
 """
 from __future__ import annotations
-import glob, os
+import glob, os, re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -70,14 +70,30 @@ class ProcessingConfig(BaseModel):
     pptx_extract_images: bool = False
     max_extracted_chars: int = 250000
 
-# Defaults used whenever a client YAML omits a model key. These MUST name a model
-# that is invokable in every deploy region: call_llm returns a valid-JSON stub on
-# failure, so an unavailable default degrades silently into empty extractions
-# rather than an error. The Claude 3 defaults these replace were end-of-life in
-# us-east-1 (Sonnet 3) or provider-marked legacy and denied in every region
-# (Haiku 3) — verified live via InvokeModel. Sonnet 4.5 on the `global.` inference
-# profile is the only Anthropic text model invokable on this account in both
-# us-east-1 and ap-south-1.
+# Default model for every text step when a client YAML omits the key.
+#
+# Sonnet 4.5 on the `global.` inference profile. Not the newest Sonnet — the only
+# Anthropic text model this account invokes RELIABLY (3/3 consecutive InvokeModel
+# calls in both ap-south-1 and us-east-1). Sonnet 5, Opus 5 and Sonnet 4.6 are listed
+# by Bedrock in both regions but each produced one spurious success and then failed
+# every repeat, so they are not usable yet; a single successful probe is not evidence
+# of availability. Switch to Sonnet 5 (1M context) once its access grant lands and it
+# measures clean from the target environment.
+#
+# Availability is per-region AND per-role, so this can still be wrong in a given
+# environment — on 2026-08-12 a deployed role could not invoke it and, because
+# call_llm THEN returned a valid-JSON stub on any exception, the failure was silent:
+# 8 of 20 days came back with concept_type "Unknown" and every AM.I.B ACS code was
+# orphaned while the job reported success. Two guards now exist so that cannot
+# repeat quietly:
+#
+#   * services/digests/build.py preflights the extractor model once per build and
+#     fails the whole build with the AWS error if it cannot be invoked;
+#   * a block whose days all failed is refused rather than persisted, and a
+#     partially-failed one carries a user-visible warning.
+#
+# To run a different model in a given environment, set DIS_MODEL_TEXT_ALL (or a
+# per-step DIS_MODEL_<STEP>) there rather than editing this file.
 _TEXT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
@@ -153,7 +169,11 @@ class DocumentProcessingConfig(BaseModel):
     enabled_document_types: List[str] = [
         "course_calendar", "syllabus", "lesson_slide_deck", "project_activity",
         "project_key", "quiz_exam", "quiz_answer_key", "study_questions",
-        "ebook_reference", "instructor_guide", "student_handout", "other"
+        "ebook_reference", "instructor_guide", "student_handout",
+        # Aggregate knowledge-test performance data (e.g. an AKTR missed-code
+        # rollup). Not in restricted_document_types below: it holds no questions and
+        # no answers, so it is design input, not exam content.
+        "knowledge_test_report", "other"
     ]
     # These document types are hidden from normal user context retrieval.
     # Client admins and super admins can still see/retrieve them.
@@ -172,6 +192,7 @@ class DocumentProcessingConfig(BaseModel):
         "ebook_reference": "page",
         "instructor_guide": "guide_section",
         "student_handout": "chunk",
+        "knowledge_test_report": "knowledge_test_item",
         "other": "chunk",
     }
     fallback_doc_type: str = "other"
@@ -212,6 +233,18 @@ class StorageConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     max_results: int = 20
     result_size_cap: int = 50
+    # Ceiling on the per-request `retrieval.token_budget` a caller may ask for.
+    #
+    # This was a magic `20000` inlined in the packing call, which silently overrode
+    # any larger request. The caller is the side that knows which model the context
+    # is destined for, so a fixed ceiling here can only be wrong: it made a CAS
+    # request for 100k arrive as 20k, and the units past that point were dropped by
+    # DIS's own ranking BEFORE the caller's block filtering and whole-document
+    # regrouping ran — producing a set that looks whole and is not.
+    #
+    # Kept as a configurable backstop rather than removed so one runaway request
+    # cannot pack an unbounded response, but sized so it is not reached in practice.
+    token_budget_cap: int = 200_000
     # Restricted content is role-filtered using metadata/access_level.
     restricted_content_filter: bool = True
     # Config-driven UI and retrieval defaults used by Content AI Studio.
@@ -235,6 +268,130 @@ class EmbeddingConfig(BaseModel):
     dimension: int = 1024
     region: str = "us-east-1"
     max_input_chars: int = 50000
+
+# ---------------------------------------------------------------------------
+# Environment-driven store location
+#
+# The client YAMLs are committed, so any connection string written into them is
+# baked into the image and every environment is forced onto the same database.
+# That is how local, dev and prod all ended up pointed at one dev RDS whose
+# security group admits a single hard-coded /32 — a setup that fails the moment
+# an IP changes, and that cannot be repointed without editing a tracked file.
+# (It also means a Postgres password lives in git; rotate it and move it here.)
+#
+# Two mechanisms, both additive — with no environment variables set, behaviour is
+# byte-identical to the YAML literal:
+#
+#   1. ``${VAR}`` / ``${VAR:-fallback}`` placeholders anywhere in the client
+#      config are expanded from the environment.
+#   2. Explicit overrides for the connection-critical fields, so an environment
+#      can repoint a store without the YAML mentioning it at all:
+#
+#        DIS_STRUCTURE_STORE_URL          / DIS_STRUCTURE_STORE_URL_<CLIENT>
+#        DIS_VECTOR_STORE_ENDPOINT        / DIS_VECTOR_STORE_ENDPOINT_<CLIENT>
+#        DIS_VECTOR_STORE_INDEX           / DIS_VECTOR_STORE_INDEX_<CLIENT>
+#
+# Precedence: per-client env > global env > expanded YAML > YAML literal. The
+# per-client form exists because tenants may legitimately diverge (separate
+# databases per client) while sharing one image.
+# ---------------------------------------------------------------------------
+
+_ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _resolve_env_placeholders(value: str) -> str:
+    """Expand ``${VAR}`` and ``${VAR:-fallback}`` in *value*.
+
+    An unset variable with no fallback expands to "" — the same "unconfigured"
+    signal an absent YAML key gives, so ``enabled: true`` with a blank url fails
+    loudly at connect time rather than silently connecting somewhere unintended.
+    """
+    def sub(m: "re.Match[str]") -> str:
+        return os.getenv(m.group(1)) or (m.group(2) if m.group(2) is not None else "")
+    return _ENV_PLACEHOLDER.sub(sub, value)
+
+
+def _expand_env_in_tree(node: Any) -> Any:
+    """Recursively expand env placeholders in every string in a config tree."""
+    if isinstance(node, str):
+        return _resolve_env_placeholders(node)
+    if isinstance(node, dict):
+        return {k: _expand_env_in_tree(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_expand_env_in_tree(v) for v in node]
+    return node
+
+
+# (config section, field) -> env var stem
+_STORE_ENV_OVERRIDES = (
+    ("structure_store", "url", "DIS_STRUCTURE_STORE_URL"),
+    ("vector_store", "endpoint", "DIS_VECTOR_STORE_ENDPOINT"),
+    ("vector_store", "index_name", "DIS_VECTOR_STORE_INDEX"),
+)
+
+# Which Bedrock model each pipeline step uses, overridable per environment.
+#
+# Model availability is an environment fact, not a code fact: an ID can be
+# end-of-life in one region, provider-legacy in another, and require a model-access
+# grant the calling role may not hold. Baking one ID into a committed YAML forces
+# every environment onto it. When call_llm still returned a valid-JSON stub on
+# failure, an unavailable model degraded into complete-looking output with every
+# extracted field empty — observed 2026-08-12, where 8 of 20 days produced
+# concept_type "Unknown" and orphaned every AM.I.B ACS code. call_llm now raises
+# LLMCallFailed instead, so that specific silence is closed; the ID being wrong for
+# an environment is still an environment fact this file cannot settle.
+#
+#   DIS_MODEL_DIGEST_EXTRACTION / DIS_MODEL_DIGEST_EXTRACTION_<CLIENT>
+#   DIS_MODEL_CLASSIFICATION, DIS_MODEL_METADATA_EXTRACTION,
+#   DIS_MODEL_STRUCTURE_EXTRACTION, DIS_MODEL_QUALITY_CHECK, DIS_MODEL_VISION
+#   DIS_MODEL_TEXT_ALL  — sets every text step at once (checked last)
+_TEXT_STEPS = ("classification", "metadata_extraction", "structure_extraction",
+               "quality_check", "vision", "digest_extraction")
+
+
+def _client_suffix(client_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "_", str(client_id or "")).upper()
+
+
+def _env_for(stem: str, suffix: str) -> str:
+    """Per-client variable if set, else the global one. Blank counts as unset."""
+    return ((os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem) or "").strip()
+
+
+def _apply_store_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
+    """Point the backing stores wherever this environment says, in place."""
+    suffix = _client_suffix(client_id)
+    for section, field, stem in _STORE_ENV_OVERRIDES:
+        value = _env_for(stem, suffix)
+        if not value:
+            continue
+        converted.setdefault(section, {})
+        if isinstance(converted[section], dict):
+            converted[section][field] = value
+
+
+def _apply_model_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
+    """Select each pipeline step's model from the environment, in place.
+
+    Per-step variables win over ``DIS_MODEL_TEXT_ALL``, which exists because the
+    common case is "this environment can invoke exactly one text model" and
+    repeating it six times invites the six from drifting apart.
+    """
+    suffix = _client_suffix(client_id)
+    pipeline = converted.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+    models = pipeline.get("models")
+    if not isinstance(models, dict):
+        models = {}
+        pipeline["models"] = models
+
+    all_text = _env_for("DIS_MODEL_TEXT_ALL", suffix)
+    for step in _TEXT_STEPS:
+        value = _env_for(f"DIS_MODEL_{step.upper()}", suffix) or all_text
+        if value:
+            models[step] = value
+
 
 class StructureStoreConfig(BaseModel):
     # Tenant-specific structured store. Default provider is postgres/RDS.
@@ -381,9 +538,67 @@ class GlobalSettings(BaseSettings):
     aws_session_token: Optional[str] = None
     aws_endpoint_url: str = ""          # LocalStack override
 
+    # ── Bedrock-only credentials (optional) ──────────────────────────────────
+    # Model access is granted per IAM principal, and the principal that can invoke
+    # the models is not necessarily the one that owns the storage. Measured on
+    # 2026-08-12: `promptops-contentAI-Dev` (account 498628474556) invokes Sonnet 5,
+    # Opus 5, Haiku 4.5, Sonnet 4.6 and Sonnet 4.5 — 3/3 in both regions — while
+    # `nandkishor-ai-project-access` (account 410453487786), which owns DIS's S3
+    # bucket and OpenSearch domain, can only invoke Sonnet 4.5.
+    #
+    # DIS otherwise uses ONE credential set for Bedrock, S3 and OpenSearch, so
+    # swapping AWS_* wholesale would buy model access at the cost of the digest store
+    # — trading a model problem for a storage problem. These let the model calls use
+    # one principal while storage keeps the other, mirroring what CAS already does
+    # for the shared bucket via DIS_S3_ACCESS_KEY_ID.
+    #
+    # ALL OPTIONAL: blank ⇒ fall back to the AWS_* pair above, which is exactly
+    # today's behaviour. Set them in dis_backend/.env, copying the values from the
+    # root .env (the container cannot read that file itself — its compose env_file is
+    # dis_backend/.env, and adding the root file there would override the storage
+    # credentials too).
+    bedrock_access_key_id: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_ACCESS_KEY_ID"))
+    bedrock_secret_access_key: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_SECRET_ACCESS_KEY"))
+    bedrock_session_token: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("DIS_BEDROCK_SESSION_TOKEN"))
+    bedrock_region: str = Field(
+        default="", validation_alias=AliasChoices("DIS_BEDROCK_REGION"))
+
     # Bedrock / Anthropic
     use_bedrock: bool = True            # True = Bedrock, False = direct Anthropic API
     anthropic_api_key: Optional[str] = None
+
+    def bedrock_client_kwargs(self) -> Dict[str, Any]:
+        """boto3 kwargs for a bedrock-runtime client.
+
+        Prefers the Bedrock-only credentials when configured, else the shared AWS_*
+        pair. Credentials are passed explicitly rather than left to boto3's ambient
+        chain: this deployment has no instance role, and an implicit fallback there
+        raised NoCredentialsError inside call_llm, which at the time swallowed it and
+        returned a valid-JSON stub — a whole block of empty digests reported as
+        success. call_llm raises LLMCallFailed now, but passing credentials explicitly
+        is still what keeps that error from happening at all.
+        """
+        key = (self.bedrock_access_key_id or "").strip() or self.aws_access_key_id
+        secret = ((self.bedrock_secret_access_key or "").strip()
+                  or self.aws_secret_access_key)
+        token = ((self.bedrock_session_token or "").strip()
+                 # Only pair the shared token with the shared key: a token belonging
+                 # to a different principal than the key is rejected outright.
+                 or (self.aws_session_token if not (self.bedrock_access_key_id or "").strip() else None))
+        kwargs: Dict[str, Any] = {
+            "region_name": (self.bedrock_region or "").strip() or self.aws_region,
+        }
+        if self.aws_endpoint_url:
+            kwargs["endpoint_url"] = self.aws_endpoint_url
+        if key:
+            kwargs["aws_access_key_id"] = key
+            kwargs["aws_secret_access_key"] = secret
+            if token:
+                kwargs["aws_session_token"] = token
+        return kwargs
 
     # OpenSearch
     opensearch_endpoint: str = "http://localhost:9200"
@@ -486,6 +701,12 @@ class TenantRegistry:
             if key in raw:
                 converted[key] = raw[key]
 
+        # Let the environment decide where the backing stores live, so the same
+        # image runs anywhere. See _resolve_env_placeholders / _apply_store_env.
+        converted = _expand_env_in_tree(converted)
+        _apply_store_env_overrides(converted, client_id)
+        _apply_model_env_overrides(converted, client_id)
+
         # Client-specific rule blocks stay available at runtime through cfg.client_rules.
         # Example: config/clients/aim.yaml -> aim_content_rules.
         if "client_rules" not in converted:
@@ -523,7 +744,23 @@ class TenantRegistry:
         if base_prefix:
             tenant.storage.base_prefix = base_prefix
 
-        region = os.environ.get("AWS_REGION", os.environ.get("DIS_AWS_REGION", "")).strip()
+        # DIS-specific only. AWS_REGION is deliberately NOT consulted here.
+        #
+        # A bucket's region is a property of the bucket, not of the process's
+        # default AWS region, and AWS_REGION is set to wherever Bedrock runs
+        # (ap-south-1 in this deployment). Reading it here silently overrode the
+        # explicit, correct `region: us-east-1` in every client YAML, so DIS
+        # addressed a us-east-1 bucket through the ap-south-1 endpoint. S3
+        # answered with a redirect to the regional us-east-1 host, and where that
+        # host is unreachable the result was EndpointConnectionError after
+        # botocore's retries — surfacing in CAS as a source-library lookup that
+        # simply never returned.
+        #
+        # Every neighbouring override above and below uses a DIS_ prefix for
+        # exactly this reason: a generic SDK variable must not reach in and
+        # reconfigure per-tenant storage. DIS_AWS_REGION is kept for
+        # compatibility; DIS_S3_REGION is the accurate name for what it sets.
+        region = os.environ.get("DIS_S3_REGION", os.environ.get("DIS_AWS_REGION", "")).strip()
         if region:
             tenant.storage.s3.region = region
 

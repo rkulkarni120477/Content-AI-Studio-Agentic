@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { buildBlueprintUiSections } from '@utils/blueprintContent';
 import { renderMarkdownPreview, renderInlineMarkdown } from '@utils/markdownPreview';
 import { parseItemsFromSection } from '@utils/blockItems';
+import { useLabels } from '@hooks/useLabels';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import styles from './BlueprintContentView.module.scss';
@@ -15,6 +16,7 @@ export default function BlueprintContentView({
   onRegenerateSection,
   onRegenerateItem,
 }) {
+  const L = useLabels();
   const uiSections = useMemo(
     () => buildBlueprintUiSections(fullContent, sections),
     [fullContent, sections],
@@ -94,7 +96,7 @@ export default function BlueprintContentView({
   }
 
   if (!fullContent?.trim() && uiSections.length === 0) {
-    return <p className={styles.empty}>No Blueprint content yet.</p>;
+    return <p className={styles.empty}>No {L.blueprint} content yet.</p>;
   }
 
   if (uiSections.length === 0) {

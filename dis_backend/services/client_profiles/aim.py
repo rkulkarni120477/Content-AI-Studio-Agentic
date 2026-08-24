@@ -48,9 +48,15 @@ DEFAULT_AIM_RULES: Dict[str, Any] = {
         "quiz_answer_key": "instructor_only",
         "final_exam_answer_key": "instructor_only",
         "project_instructor_guide": "instructor_only",
+        # Aggregate cohort performance data. Not restricted (it holds no questions
+        # and no answers, so it is legitimate design input), but not student-facing
+        # either — instructor_only leaves it readable to instructor-facing
+        # deliverables while `text_allowed_for_digest` withholds it from
+        # student-facing ones.
+        "knowledge_test_report": "instructor_only",
         "archive_or_working_version": "internal_only",
     },
-    "blueprint_source_types": ["course_calendar", "syllabus"],
+    "blueprint_source_types": ["course_calendar", "syllabus", "knowledge_test_report"],
     "course_generation_source_types": ["lesson_pdf", "slide_deck", "quiz", "final_exam", "project", "hangar_activity", "study_questions"],
     "calendar_mapping_required_types": ["quiz", "final_exam", "project", "hangar_activity", "study_questions"],
     "calendar_mapping_strategy": "calendar_first_then_filename",
@@ -137,6 +143,19 @@ class AIMClientProfile(BaseClientProfile):
             "mapping_source_preference": self.aim_rules.get("calendar_mapping_strategy", "calendar_first_then_filename"),
         })
 
+        # A knowledge-test rollup spans the whole program — one sheet per block — so
+        # no single doc-level block is true of it. _extract_block_day only sees the
+        # first 1,500 characters, i.e. the FIRST sheet, so it filed all sixteen
+        # blocks' data under that one block, and the block-scoped digest loader
+        # (`metadata_json->>'block' = %s`) then found it for no other block. Real
+        # attribution is per content unit, one unit per sheet — see
+        # content_unit_creation_agent — so leave the document itself block-less
+        # rather than confidently wrong.
+        if content_type == "knowledge_test_report":
+            meta.update({"block": "", "block_id": "", "block_number": None,
+                         "day_id": "", "day_number": None,
+                         "spans_multiple_blocks": True})
+
         # Assessment/project identifiers. Calendar can later override administered/mapped day.
         quiz_no = self._quiz_number(name)
         if quiz_no:
@@ -173,6 +192,20 @@ class AIMClientProfile(BaseClientProfile):
         # words that merely contain the letters (e.g. "turnbuckle", "monkey").
         is_key = ("answer key" in low_name or "exam key" in low_name or "quiz key" in low_name
                   or re.search(r"[ ._-]key\b", low_name) is not None)
+        # Before every assessment heuristic below: an AKTR missed-code rollup is
+        # performance ANALYTICS about an exam, not exam content. Left to fall
+        # through, ALLCAMPUS_AKTR_MissedCodes_Q12026.xlsx was typed
+        # quiz_answer_key by the LLM classifier and inherited that family's
+        # restricted status, which hid it from every CDD and Blueprint.
+        # Names only AKTR material carries. Deliberately NOT a bare "knowledge test":
+        # that phrase also fits study/prep material ("Knowledge Test Prep.pdf"), which
+        # is lesson content, and this branch runs ahead of every assessment heuristic
+        # below, so a loose match here would silently retype it. Content-based
+        # evidence still reaches this function through `doc_type`, which
+        # infer_doc_type/the classifier resolve from the sheet text.
+        if (doc_type == "knowledge_test_report" or "aktr" in low_name
+                or "missed code" in low_name or "missedcodes" in low_name):
+            return "knowledge_test_report"
         if is_key:
             if "final exam" in low_name:
                 return "final_exam_answer_key"

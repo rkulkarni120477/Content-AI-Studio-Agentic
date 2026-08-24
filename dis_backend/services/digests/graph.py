@@ -30,6 +30,7 @@ from typing_extensions import Annotated, TypedDict
 
 from config.settings import TenantConfig
 from services.digests import build as _build
+from services.digests import progress
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,15 @@ def build_digests_via_graph(
 
     client_id = en.client_id
 
+    # Progress is reported here as well as in the sequential loop, because this is the
+    # path AIM actually runs (digest_fanout_enabled). The cached days are known up
+    # front, so they are recorded immediately — a retry that reuses 15 of 20 days
+    # should jump to 15/20 at once rather than crawling, which is both honest and what
+    # makes the remaining work legible.
+    progress.start(client_id, block, total=len(en.days))
+    for _dn in cached_days:
+        progress.record(client_id, block, "cached")
+
     def map_day(state: Dict[str, Any]) -> Dict[str, Any]:
         """One MAP node = one day's digest (build + upsert). Reuses the shared
         per-day primitive; returns a single-item ``results`` list to be merged."""
@@ -115,6 +125,8 @@ def build_digests_via_graph(
             tenant_cfg, state["day"], state["units"], model, client_id, block,
             map_guidance=map_guidance,
         )
+        # Runs on N worker threads concurrently; the registry takes a lock per call.
+        progress.record(client_id, block, res["status"])
         return {"results": [res]}
 
     def fan_out(state: _MapState):
@@ -142,7 +154,12 @@ def build_digests_via_graph(
         config.setdefault("configurable", {})["thread_id"] = f"digest:{client_id}:{block}"
 
     init: _MapState = {"days_to_build": days_to_build, "cached_days": cached_days, "results": []}
-    final = compiled.invoke(init, config=config)
+    try:
+        final = compiled.invoke(init, config=config)
+    finally:
+        # In a finally so a fan-out that raises still stops reporting itself in flight,
+        # rather than leaving the UI on a bar that never completes.
+        progress.finish(client_id, block)
 
     # Merge per-day results into the standard report (cached days re-added here).
     per_day: List[Dict[str, Any]] = [{"day_number": dn, "status": "cached"} for dn in cached_days]
@@ -152,4 +169,5 @@ def build_digests_via_graph(
             budget[k] += (res.get("budget") or {}).get(k, 0)
         per_day.append({"day_number": res["day_number"], "status": res["status"], "error": res.get("error")})
 
-    return _build._finalize_report(block, en, per_day, budget, strategy="langgraph_send")
+    return _build._finalize_report(block, en, per_day, budget, strategy="langgraph_send",
+                                  model=model)

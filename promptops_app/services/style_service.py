@@ -13,7 +13,7 @@ import logging
 from promptops_app.database import _build_unified_style_docs
 from promptops_app.core.logging import log_duration
 from promptops_app.services.llm_service import generate_with_metadata as _llm_meta
-from promptops_app.services.usage_service import UsageLogContext, log_llm_usage
+from promptops_app.services.usage_service import UsageLogContext
 
 _log = logging.getLogger(__name__)
 
@@ -134,9 +134,11 @@ def generate_style_understanding(
         "style_service.generate_style_understanding",
         extra={"style_id": style.id, "model": model_choice, "prompt_template": _tpl_name},
     ):
-        _result = _llm_meta(model_choice, system_prompt, user_p)
-
-    log_llm_usage(db, _result, UsageLogContext(entity_type="style", entity_id=str(style.id)))
+        # usage_ctx passed straight into the call — the choke point (llm_client.py's
+        # _log_and_trace) logs it now; a separate log_llm_usage() call here would
+        # double-count this call's cost, since every attempt logs automatically.
+        _result = _llm_meta(model_choice, system_prompt, user_p,
+                             UsageLogContext(entity_type="style", entity_id=str(style.id)))
 
     if _result.is_error:
         _log.error(
@@ -181,9 +183,8 @@ def regenerate_style_understanding(
         "style_service.regenerate_style_understanding",
         extra={"style_id": style.id, "model": model_choice},
     ):
-        _result = _llm_meta(model_choice, system_prompt, user_p)
-
-    log_llm_usage(db, _result, UsageLogContext(entity_type="style", entity_id=str(style.id)))
+        _result = _llm_meta(model_choice, system_prompt, user_p,
+                             UsageLogContext(entity_type="style", entity_id=str(style.id)))
 
     if _result.is_error:
         _log.error(

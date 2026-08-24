@@ -1,9 +1,11 @@
 import { createSlice } from '@reduxjs/toolkit';
 import { attachBlockJobReducers } from '@features/shared/blockJob';
+import { attachArchiveReducers } from '@features/shared/documentArchive';
 import {
   fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, fetchBlueprintComponentsThunk,
-  activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk,
+  activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk, resumeBlueprintJobThunk,
+  fetchArchivedBlueprintsThunk, blueprintArchiveThunks,
 } from './blueprintThunks';
 
 const initialState = {
@@ -17,6 +19,13 @@ const initialState = {
   error:          null,
   // Block-wide async job tracking (digest pipeline).
   blockJob:       null,  // { jobId, status, progress, currentStep }
+  // Archive. Held apart from `blueprints` because that array feeds the module
+  // picker — a retired document must not be one missed filter away from a prompt.
+  archivedBlueprints: [],
+  isArchiving:        false,
+  // A refused archive/purge, with the server's reasons. Separate from `error`
+  // so the list stays on screen while the user acts on the refusal.
+  archiveRefusal:     null,
 };
 
 const blueprintSlice = createSlice({
@@ -24,6 +33,7 @@ const blueprintSlice = createSlice({
   initialState,
   reducers: {
     clearError(s)                     { s.error = null; },
+    clearArchiveRefusal(s)            { s.archiveRefusal = null; },
     setGenerationMode(s, { payload }) { s.generationMode = payload; },
     setActiveBlueprintLocal(s, { payload }) { s.activeBlueprint = payload; },
     resetBlockJob(s) { s.blockJob = null; },
@@ -65,12 +75,24 @@ const blueprintSlice = createSlice({
         s.components = Array.isArray(payload) ? payload : (payload?.components || []);
       });
 
+    b.addCase(fetchArchivedBlueprintsThunk.fulfilled, (s, { payload }) => {
+      s.archivedBlueprints = payload ?? [];
+    });
+    // A failed archived-list load leaves the previous contents rather than
+    // emptying them — "none archived" and "we could not check" must not look
+    // the same right before someone decides to regenerate.
+
     // Shared block-wide async-job cases (pending/fulfilled/rejected + poll).
-    attachBlockJobReducers(b, { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk });
+    attachBlockJobReducers(b, { generateThunk: generateBlueprintBlockThunk, pollThunk: pollBlueprintJobThunk,
+                                 resumeThunk: resumeBlueprintJobThunk });
+    // Shared archive/restore/purge cases.
+    attachArchiveReducers(b, blueprintArchiveThunks);
   },
 });
 
-export const { clearError, setGenerationMode, setActiveBlueprintLocal, resetBlockJob } = blueprintSlice.actions;
+export const {
+  clearError, clearArchiveRefusal, setGenerationMode, setActiveBlueprintLocal, resetBlockJob,
+} = blueprintSlice.actions;
 export default blueprintSlice.reducer;
 
 export const selectBlueprints          = (s) => s.blueprint.blueprints;
@@ -82,3 +104,6 @@ export const selectBlueprintLoading    = (s) => s.blueprint.isLoading;
 export const selectBlueprintGenerating = (s) => s.blueprint.isGenerating;
 export const selectBlueprintError      = (s) => s.blueprint.error;
 export const selectBlueprintBlockJob   = (s) => s.blueprint.blockJob;
+export const selectArchivedBlueprints  = (s) => s.blueprint.archivedBlueprints;
+export const selectBlueprintArchiving  = (s) => s.blueprint.isArchiving;
+export const selectBlueprintArchiveRefusal = (s) => s.blueprint.archiveRefusal;

@@ -13,17 +13,197 @@ This router only reads and cancels jobs — it never executes them.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import JobNotFoundError
-from app.schemas.common import JobStatusResponse
+from app.schemas.common import ActiveJobResponse, JobStatusResponse
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _utc_iso(value) -> Optional[str]:
+    """ISO-8601 with an explicit UTC marker, or None.
+
+    ``created_at``/``updated_at`` are written with ``datetime.utcnow()``, i.e. naive
+    but UTC. A bare ``.isoformat()`` therefore emits "2026-08-13T06:25:22" with no
+    offset, and JavaScript's ``new Date(...)`` parses an offset-less timestamp as
+    LOCAL time — so a browser in IST reads a build that started 5.5 hours in the
+    future, and any elapsed-time calculation comes out negative. Appending the marker
+    is the fix; guessing in the client would only move the bug.
+    """
+    if value is None:
+        return None
+    text = value.isoformat()
+    # Only stamp genuinely naive values: a tz-aware column would already carry an
+    # offset, and appending Z to that would produce an invalid timestamp.
+    if value.tzinfo is None and not text.endswith("Z"):
+        return text + "Z"
+    return text
+
+
+def _active_block(job) -> Optional[str]:
+    """The block a block-wide job is building, if it is one.
+
+    Returned so a reattached page can say WHICH block is running. ``/active`` matches
+    on user + course + job_type, and a course can hold several blocks — so a page
+    showing "Block 3" could otherwise adopt a running Block 2 build and, on
+    completion, report "Done — pinned as active" for a block the user was not looking
+    at. Naming it makes that visible instead of silently wrong.
+    """
+    raw = getattr(job, "request_json", None)
+    if not raw:
+        return None
+    try:
+        params = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    block = params.get("block") if isinstance(params, dict) else None
+    return str(block) if block else None
+
+
+def _result_warning(job) -> Optional[str]:
+    """Read the ``warning`` a completed job recorded in result_json, if any.
+
+    Kept tolerant: result_json is free-form and written by several job types, so a
+    missing key or unparseable payload means "no warning", never an error on a
+    status poll.
+    """
+    raw = getattr(job, "result_json", None)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    warning = payload.get("warning")
+    return warning.strip() if isinstance(warning, str) and warning.strip() else None
+
+
+@router.get(
+    "/active",
+    response_model=ActiveJobResponse,
+    summary="Find the caller's in-flight job for a course",
+    description=(
+        "Returns the caller's most recent queued-or-running job for a course, or "
+        "`{\"job\": null}` when there is none. The frontend calls this on mount so a "
+        "page refresh reattaches to a build already in progress instead of losing it."
+    ),
+)
+def get_active_job(
+    course_id: Optional[int] = None,
+    job_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> ActiveJobResponse:
+    """Let a reloaded page find the job it was already watching.
+
+    Block-wide generation runs for minutes, and the poll chain lived only in browser
+    memory: a refresh (or a closed laptop, or the network blip that surfaced as
+    "Network error. Check your connection.") orphaned the UI while the job kept
+    running server-side. Users then either sat on a dead spinner or re-submitted,
+    paying for a second concurrent build. Observed 2026-08-13 on a 22-minute Block 2
+    build.
+
+    Deliberately server-authoritative rather than a job id kept in localStorage: it
+    survives a cleared cache, a different tab, and a different machine, and it cannot
+    disagree with the database about whether the job is still alive.
+
+    ``job_type`` accepts a comma-separated list so a page watching one deliverable
+    ("cdd_block") is not reattached to an unrelated job the same user started
+    elsewhere.
+    """
+    from promptops_app.repositories import job_repository
+
+    job_types = [t.strip() for t in (job_type or "").split(",") if t.strip()] or None
+    job = job_repository.get_active_job_for_user(
+        db, current_user.username, course_id=course_id, job_types=job_types,
+    )
+    if not job:
+        return ActiveJobResponse(job=None)
+    # Reuses the same shape the poller already consumes, so reattaching needs no
+    # second response format. usage_summary/warning are absent by construction: this
+    # only ever returns queued or running jobs.
+    return ActiveJobResponse(job=JobStatusResponse(
+        job_id=str(job.id),
+        status=job.status,
+        progress=job.progress or 0,
+        current_step=job.current_step,
+        generation_id=job.result_entity_id,
+        error_message=job.error_message,
+        created_at=_utc_iso(job.created_at),
+        updated_at=_utc_iso(job.updated_at),
+        block=_active_block(job),
+    ))
+
+
+@router.get(
+    "/{job_id}/progress",
+    summary="Per-day progress of a block-wide build",
+    description=(
+        "Day-level progress for a block-wide CDD/Blueprint job — how many of the "
+        "block's days are done. Returns `{\"progress\": null}` for any job that is "
+        "not a block-wide build, or when the build is not reporting."
+    ),
+)
+def get_block_job_progress(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> dict:
+    """Let the UI show "day 7 of 20" instead of a bar frozen at 20%.
+
+    The job row only moves at stage boundaries (20% "Building day digests..." → 90%
+    "Saving output..."), so a cold 20-day build shows one label for its entire
+    duration and cannot be told apart from a wedged one. The day counts live in the
+    DIS process actually doing the work, so this reads them from there.
+
+    Separate from the status poll rather than folded into it: that endpoint is hit by
+    every job type in the app and must stay a single fast DB read, not gain a
+    cross-service call. Failures here degrade to ``null`` — progress is a nicety, and
+    it must never be able to break the poll the UI depends on to detect completion.
+    """
+    import json as _json
+
+    from promptops_app.repositories import job_repository
+
+    job = job_repository.get_job(db, job_id)
+    if not job:
+        raise JobNotFoundError(job_id)
+    if job.job_type not in ("cdd_block", "blueprint_block"):
+        return {"progress": None}
+
+    try:
+        params = _json.loads(job.request_json or "{}")
+        block = params.get("block")
+        if not block:
+            return {"progress": None}
+        # The module singleton, NOT DISClient(): each instance lazily builds its own
+        # httpx.Client and nothing closes it, so constructing one per poll leaked a
+        # client (and its connection pool) every 2 seconds for the whole build —
+        # roughly 240 of them over an 8-minute run — while defeating the reuse the
+        # pooling in DISClient exists to provide.
+        from app.core.dis_client import dis_client
+
+        reply = dis_client.get_digest_progress_sync(
+            block, current_user=current_user, client_id=params.get("dis_client_id") or "",
+        )
+        progress = reply.get("progress") if isinstance(reply, dict) else None
+        return {"progress": progress}
+    except Exception:
+        # Debug, not warning: DIS being momentarily unreachable during a 2-second poll
+        # is unremarkable, and logging it at warning would bury real problems under one
+        # line per poll per user.
+        _log.debug("block job %s: day progress unavailable", job_id, exc_info=True)
+        return {"progress": None}
 
 
 @router.get(
@@ -54,6 +234,28 @@ def get_job_status(
     if not job:
         raise JobNotFoundError(job_id)
 
+    usage_summary = None
+    # Scoped to the job's own creator, not whoever happens to be polling —
+    # get_job_status has no ownership check (pre-existing), so without this a
+    # shared/guessed job_id would leak a stranger's personal budget headroom
+    # under someone else's cost/token numbers. In the normal flow the poller
+    # already is the creator, so this changes nothing for legitimate use.
+    if job.status == "completed" and job.created_by == current_user.username:
+        from promptops_app.services.budget_service import build_usage_summary
+        from promptops_app.services.usage_service import UsageLogContext
+
+        usage_ctx = UsageLogContext(
+            user_name=job.created_by, project_id=job.project_id, course_id=job.course_id,
+        )
+        # entity_id differs per job type: the full-generation job logs its LLM
+        # call under its own job id, but the regenerate-item job logs under the
+        # block it regenerated (result_entity_id) — matches how each job type
+        # constructs its own UsageLogContext at the actual LLM call site.
+        if job.job_type == "regenerate_item":
+            usage_summary = build_usage_summary(db, usage_ctx, "block_item_regen", str(job.result_entity_id))
+        else:
+            usage_summary = build_usage_summary(db, usage_ctx, "generation", str(job.id))
+
     # Queue-depth visibility (P4.6/F19): for a still-queued job, tell the user how
     # many jobs are ahead of it instead of showing a bare, position-less spinner.
     # Folded into current_step too, so the existing progress UI shows it with no
@@ -75,9 +277,11 @@ def get_job_status(
         current_step=current_step,
         generation_id=job.result_entity_id,
         error_message=job.error_message,
+        warning=_result_warning(job),
         queue_position=queue_position,
-        created_at=job.created_at.isoformat() if job.created_at else None,
-        updated_at=job.updated_at.isoformat() if job.updated_at else None,
+        created_at=_utc_iso(job.created_at),
+        updated_at=_utc_iso(job.updated_at),
+        usage_summary=usage_summary,
     )
 
 

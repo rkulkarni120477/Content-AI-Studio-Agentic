@@ -31,9 +31,20 @@ from services.digests.enumerate import enumerate_block
 
 log = logging.getLogger(__name__)
 
-# Bound the kNN supplement so a day-scoped call stays cheap and precise.
+# Bound the kNN supplement so a day-scoped call stays precise. This is a bound on
+# HOW MANY units come back, never on how much of a unit is returned: precision is a
+# selection problem, and answering it by cutting the selected units mid-sentence
+# solves nothing while corrupting what was selected.
 DEFAULT_SUPPLEMENT_K = 6
-_SUPPLEMENT_TEXT_CAP = 1200  # chars per supplemental hit (bounded context)
+#: Supplemental hits used to be cut at 1200 characters. A silently-truncated excerpt
+#: reads to the model as a complete passage, so it concludes that something absent
+#: from the fragment "is not covered" when the sentence stating it fell past the cap
+#: — a wrong answer produced with full confidence, which is worse than a slow one.
+#: Units are now returned whole, like the day's own units. If a supplement is too
+#: large to be worth sending, the fix is to select fewer units (supplement_k), not to
+#: send damaged ones.
+_SUPPLEMENT_TEXT_CAP = 0  # 0 = no character cap; kept as a name so an operator
+                          # override has somewhere to go, not as a default behaviour
 
 
 def _unit_projection(unit: Dict[str, Any], audience: str) -> Dict[str, Any]:
@@ -149,7 +160,9 @@ def day_context(
                 # text gate the day's own units use before returning any text.
                 if not _supplement_allowed(h, audience):
                     continue
-                text = (h.get("text") or "")[:_SUPPLEMENT_TEXT_CAP]
+                full = h.get("text") or ""
+                truncated = bool(_SUPPLEMENT_TEXT_CAP) and len(full) > _SUPPLEMENT_TEXT_CAP
+                text = full[:_SUPPLEMENT_TEXT_CAP] if truncated else full
                 supplement.append({
                     "content_unit_id": h.get("content_unit_id"),
                     "unit_type": h.get("unit_type"),
@@ -157,12 +170,19 @@ def day_context(
                     "day_number": h.get("day_number"),
                     "score": round(float(h.get("_score", 0.0)), 4),
                     "text": text,
+                    # Machine-readable twin of the marker, for callers that render the
+                    # supplement themselves instead of pasting `text` into a prompt.
+                    "text_truncated": truncated,
                 })
                 if len(supplement) >= supplement_k:
                     break
         except Exception as exc:  # noqa: BLE001 — supplement is best-effort
             log.warning("day_context: kNN supplement failed for block=%s day=%s: %s", block, day, exc)
             flags.append("SUPPLEMENT_FAILED")
+        cut = sum(1 for s in supplement if s.get("text_truncated"))
+        if cut:
+            flags.append(f"SUPPLEMENT_TRUNCATED:{cut} — supplemental excerpt(s) cut at "
+                         f"{_SUPPLEMENT_TEXT_CAP} chars; the day's own units are complete")
 
     units = [_unit_projection(u, audience) for u in day_units]
     return {

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import NotFoundError, ValidationError
 from app.schemas.common import MessageResponse, PaginatedResponse
+from app.core.dis_access import digest_pipeline_enabled_for_course
 from app.schemas.course import (
     CourseCreateRequest,
     CourseListItem,
@@ -25,6 +26,8 @@ from app.schemas.course import (
     CourseUpdateRequest,
     CourseUserAssignRequest,
     CourseUserListItem,
+    build_course_list_item,
+    build_course_read,
 )
 from app.schemas.cdd import CDDRead
 from app.api.v1.cdd_response import build_cdd_read
@@ -58,10 +61,15 @@ def list_courses(
     from promptops_app.repositories import course_repository
 
     courses = course_repository.list_courses_for_project(db, project_id)
+    digest_on = digest_pipeline_enabled_for_course(db, project_id=project_id)
     total = len(courses)
     start = (page - 1) * page_size
     return PaginatedResponse.create(
-        items=[CourseListItem.model_validate(c) for c in courses[start: start + page_size]],
+        # Resolved once for the whole project, not per row: the flag is a property
+        # of the project's client, so a per-course lookup would be N+1 queries for
+        # N identical answers.
+        items=[build_course_list_item(c, digest_pipeline_enabled=digest_on)
+               for c in courses[start: start + page_size]],
         total=total,
         page=page,
         page_size=page_size,
@@ -88,13 +96,16 @@ def create_course(
         project_id=project_id,
         cluster_id=request_body.cluster_id,
     )
+    if request_body.description is not None:
+        course.description = request_body.description.strip() or None
     db.add(course)
     db.commit()
     db.refresh(course)
 
     _log.info("course_created  user=%s  course_id=%d  project_id=%d  name=%s",
               current_user.username, course.id, project_id, course.name)
-    return CourseRead.model_validate(course)
+    return build_course_read(course, digest_pipeline_enabled=digest_pipeline_enabled_for_course(
+        db, course_id=course.id, project_id=course.project_id))
 
 
 @router.get(
@@ -108,7 +119,9 @@ def get_course(
     current_user=Depends(get_current_user),
 ) -> CourseRead:
     """Return course details including active CDD and Blueprint IDs."""
-    return CourseRead.model_validate(_get_course_or_404(db, course_id))
+    course = _get_course_or_404(db, course_id)
+    return build_course_read(course, digest_pipeline_enabled=digest_pipeline_enabled_for_course(
+        db, course_id=course.id, project_id=course.project_id))
 
 
 @router.get(
@@ -167,7 +180,8 @@ def update_course(
     db.commit()
     db.refresh(course)
     _log.info("course_updated  user=%s  course_id=%d", current_user.username, course_id)
-    return CourseRead.model_validate(course)
+    return build_course_read(course, digest_pipeline_enabled=digest_pipeline_enabled_for_course(
+        db, course_id=course.id, project_id=course.project_id))
 
 
 @router.delete(

@@ -6,7 +6,7 @@
 // dropped — the host owns authentication.
 import { tokenStorage } from '@utils/storage';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PL_PREFIX = '/api/v1/prompt-library';
 
 export function apiUrl(path) {
@@ -27,6 +27,21 @@ export async function apiFetch(path, init = {}) {
     headers.set('Authorization', `Bearer ${token}`);
   }
   return fetch(apiUrl(path), { ...init, headers });
+}
+
+// FastAPI raises {"detail": "..."} for plain errors and {"detail": {...}} when a
+// handler carries structured data (the delete guard's PROMPT_IN_USE payload);
+// the host's AppError envelope is {"error": {code, message, detail}}. One reader
+// for all three, so a server-side reason always reaches the user instead of
+// being flattened to a generic fallback or "[object Object]".
+export function errorMessage(data, fallback = 'Request failed') {
+  for (const v of [data?.detail, data?.error]) {
+    if (typeof v === 'string' && v.trim()) return v;
+    if (v && typeof v === 'object' && typeof v.message === 'string' && v.message.trim()) {
+      return v.message;
+    }
+  }
+  return fallback;
 }
 
 // Authenticated file download. Direct <a href> GETs cannot carry the Bearer token,
