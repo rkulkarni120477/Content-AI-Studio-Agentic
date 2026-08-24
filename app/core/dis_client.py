@@ -23,6 +23,18 @@ def _get_setting(name: str, default: Any = None) -> Any:
     return getattr(settings, name, default)
 
 
+# Tier 2 Step 2 (resilience): retry ONLY connection-establishment failures.
+# A ConnectError/ConnectTimeout means the TCP connection was never established, so
+# DIS never received the request — retrying is safe even for a non-idempotent POST
+# (upload), because no job/record could have been created. This rides out a DIS
+# restart (e.g. after an OOM-kill) transparently. We deliberately do NOT retry
+# HTTP 5xx responses or read/write timeouts: there the request may have reached and
+# been (partially) processed by DIS, so a retry could duplicate an upload.
+_CONNECT_RETRY_ATTEMPTS = 3       # total attempts (1 initial + 2 retries)
+_CONNECT_RETRY_BASE_DELAY = 0.5   # seconds; exponential: 0.5s, 1.0s (fast — connect refusals fail immediately)
+_CONNECT_RETRY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
 class DISClient:
     def __init__(self) -> None:
         self.enabled = bool(_get_setting("dis_enabled", True))
@@ -92,17 +104,30 @@ class DISClient:
         if not self.enabled:
             return {"enabled": False, "documents": [], "sources": [], "combined_context": "", "source_units": []}
         url = f"{self.base_url}/{path.lstrip('/')}"
-        try:
-            client = self._get_async_client()
-            response = await client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as exc:
-            detail = exc.response.text
-            raise HTTPException(exc.response.status_code, f"DIS error: {detail}") from exc
-        except httpx.RequestError as exc:
-            detail = str(exc) or f"Cannot reach DIS backend at {self.base_url}. Start DIS with: uvicorn main:app --port 8010 --reload"
-            raise HTTPException(503, f"DIS unavailable: {detail}") from exc
+        for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+            try:
+                client = self._get_async_client()
+                response = await client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text
+                raise HTTPException(exc.response.status_code, f"DIS error: {detail}") from exc
+            except _CONNECT_RETRY_ERRORS as exc:
+                # Connection never established → DIS did not receive the request.
+                # Safe to retry any method; ride out a DIS restart.
+                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                    delay = _CONNECT_RETRY_BASE_DELAY * (2 ** attempt)
+                    _log.warning("DIS connect failed (attempt %d/%d): %s — retrying in %.1fs",
+                                 attempt + 1, _CONNECT_RETRY_ATTEMPTS, exc, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                raise HTTPException(503, f"DIS unavailable: {exc}") from exc
+            except httpx.RequestError as exc:
+                # Other transport errors (read/write timeout, connection reset
+                # mid-response): the request may have reached DIS, so do NOT retry.
+                detail = str(exc) or f"Cannot reach DIS backend at {self.base_url}."
+                raise HTTPException(503, f"DIS unavailable: {detail}") from exc
 
 
     def request_sync(self, method: str, path: str, *, current_user: Any = None, client_id: str = "", **kwargs: Any) -> Dict[str, Any]:
@@ -115,17 +140,28 @@ class DISClient:
         if not self.enabled:
             return {"enabled": False, "documents": [], "sources": [], "combined_context": "", "source_units": []}
         url = f"{self.base_url}/{path.lstrip('/')}"
-        try:
-            client = self._get_sync_client()
-            response = client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as exc:
-            detail = exc.response.text
-            raise HTTPException(exc.response.status_code, f"DIS error: {detail}") from exc
-        except httpx.RequestError as exc:
-            detail = str(exc) or f"Cannot reach DIS backend at {self.base_url}. Start DIS with: uvicorn main:app --port 8010 --reload"
-            raise HTTPException(503, f"DIS unavailable: {detail}") from exc
+        for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+            try:
+                client = self._get_sync_client()
+                response = client.request(method, url, headers=self._headers(current_user, client_id), **kwargs)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text
+                raise HTTPException(exc.response.status_code, f"DIS error: {detail}") from exc
+            except _CONNECT_RETRY_ERRORS as exc:
+                # Connection never established → safe to retry (see request()).
+                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                    delay = _CONNECT_RETRY_BASE_DELAY * (2 ** attempt)
+                    _log.warning("DIS connect failed (sync, attempt %d/%d): %s — retrying in %.1fs",
+                                 attempt + 1, _CONNECT_RETRY_ATTEMPTS, exc, delay)
+                    time.sleep(delay)
+                    continue
+                raise HTTPException(503, f"DIS unavailable: {exc}") from exc
+            except httpx.RequestError as exc:
+                # Other transport errors: request may have reached DIS — do NOT retry.
+                detail = str(exc) or f"Cannot reach DIS backend at {self.base_url}."
+                raise HTTPException(503, f"DIS unavailable: {detail}") from exc
 
     def retrieve_context_sync(self, purpose: str, payload: Dict[str, Any], current_user: Any = None,
                               client_id: str = "", timeout: float | None = None) -> Dict[str, Any]:
