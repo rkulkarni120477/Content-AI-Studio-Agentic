@@ -832,11 +832,18 @@ async def _process_folder_scan_parallel(
                     skip_duplicate=skip_duplicates,
                     metadata_hints=metadata_hints,
                 )
+                # Tier 2 Step 1 (memory): the raw file is now in S3, so release the
+                # local buffer before the slow pipeline and let _process re-download
+                # via content=None. Unlike upload_file/batch_upload (background tasks
+                # whose scope ends immediately), _process is awaited inline here, so
+                # dropping this reference is what actually frees the RAM while up to
+                # max_workers files wait on the DIS_MAX_CONCURRENT_PIPELINES slots.
+                content = None
                 rec = job_store.get(job_id) or {}
                 await _process(
                     job_id=job_id, tenant_cfg=tenant_cfg, client_id=client_id, user_id=user_id,
                     namespace=namespace, filename=path.name, s3_key=rec.get("s3_key", ""),
-                    content=content, raw_storage_url=rec.get("storage_url", ""),
+                    content=None, raw_storage_url=rec.get("storage_url", ""),
                     source_relative_path=rel_with_root, source_root=str(root),
                     metadata_hints=metadata_hints,
                 )

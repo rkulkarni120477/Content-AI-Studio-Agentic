@@ -75,6 +75,8 @@ class MemoryJobStore:
             if not is_admin and user_id is not None and rec.get("user_id") != user_id:
                 continue
             out.append(copy.deepcopy(rec))
+        # Newest first, so both backends have identical ordering (see RedisJobStore.list).
+        out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
         return out[:limit]
 
 
@@ -130,9 +132,11 @@ class RedisJobStore:
             if not is_admin and user_id is not None and rec.get("user_id") != user_id:
                 continue
             out.append(rec)
-            if len(out) >= limit:
-                break
-        return out
+        # smembers() is an unordered set, so sort before slicing — otherwise `limit`
+        # would return an arbitrary subset in arbitrary order. Newest first, matching
+        # MemoryJobStore.list (the module's "identical semantics" contract).
+        out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        return out[:limit]
 
 
 # --- singleton wiring (same DIS_REDIS_URL switch as services.locks) ----------
