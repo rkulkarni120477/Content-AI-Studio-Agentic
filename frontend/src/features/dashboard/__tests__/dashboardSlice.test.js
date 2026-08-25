@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import reducer, {
   setSelectedProject, setSelectedCluster,
 } from '@features/dashboard/dashboardSlice';
+import { fetchCoursesThunk, fetchClustersThunk } from '@features/dashboard/dashboardThunks';
 
 // Bug: after a hard refresh, CoursesPage/ClustersPage re-derive
 // selectedProject/selectedCluster via their own sync effect (1-2 sequential
@@ -65,5 +66,63 @@ describe('dashboardSlice — selection reducers must not clobber independently-f
     const state = { ...baseState, selectedCourse: { id: 10, name: 'Existing Course' } };
     const next = reducer(state, setSelectedCluster({ id: 2, name: 'Different Cluster' }));
     expect(next.selectedCourse).toBeNull();
+  });
+});
+
+// Bug: navigating cluster A -> cluster B in quick succession dispatches two
+// fetchCoursesThunk(cid) calls. If A's response is slower (network jitter)
+// and lands AFTER B's has already resolved and populated the list, A's
+// stale "fulfilled" used to unconditionally overwrite state.courses with
+// A's (wrong, or empty) list — the titles visibly vanish/revert until a
+// manual reload re-fetches the right cluster. Reported live as "tiles
+// disappear intermittently, reload brings them back."
+describe('dashboardSlice — a superseded courses/clusters fetch cannot clobber a newer one', () => {
+  it('a late-arriving stale fulfilled is ignored once a newer request has started', () => {
+    let state = reducer(baseState, fetchCoursesThunk.pending('request-A', 1));
+    state = reducer(state, fetchCoursesThunk.pending('request-B', 2));
+    // A's response finally lands — after B already started, so it must not win.
+    state = reducer(
+      state,
+      fetchCoursesThunk.fulfilled({ items: [{ id: 999, name: 'Wrong Cluster Course' }], total: 1 }, 'request-A', 1),
+    );
+    expect(state.courses).toBe(baseState.courses);   // untouched
+    expect(state.isLoadingCourses).toBe(true);        // B is still in flight
+
+    // B's own fulfilled, the current request, applies normally.
+    state = reducer(
+      state,
+      fetchCoursesThunk.fulfilled({ items: [{ id: 20, name: 'Right Cluster Course' }], total: 1 }, 'request-B', 2),
+    );
+    expect(state.courses.items).toEqual([{ id: 20, name: 'Right Cluster Course' }]);
+    expect(state.isLoadingCourses).toBe(false);
+  });
+
+  it('a late-arriving stale rejection does not overwrite a newer request´s error/loading state', () => {
+    let state = reducer(baseState, fetchCoursesThunk.pending('request-A', 1));
+    state = reducer(state, fetchCoursesThunk.pending('request-B', 2));
+    state = reducer(state, fetchCoursesThunk.rejected(new Error('stale failure'), 'request-A', 1, 'stale error'));
+    expect(state.error).toBeNull();
+    expect(state.isLoadingCourses).toBe(true);
+  });
+
+  it('the same race guard applies to fetchClustersThunk', () => {
+    let state = reducer(baseState, fetchClustersThunk.pending('request-A', 5));
+    state = reducer(state, fetchClustersThunk.pending('request-B', 6));
+    state = reducer(
+      state,
+      fetchClustersThunk.fulfilled({ items: [{ id: 999, name: 'Wrong Project Cluster' }], total: 1 }, 'request-A', 5),
+    );
+    expect(state.clusters).toBe(baseState.clusters);
+    expect(state.isLoadingClusters).toBe(true);
+  });
+
+  it('when requests resolve in order, the normal single-fetch case is unaffected', () => {
+    let state = reducer(baseState, fetchCoursesThunk.pending('request-A', 1));
+    state = reducer(
+      state,
+      fetchCoursesThunk.fulfilled({ items: [{ id: 20, name: 'Course' }], total: 1 }, 'request-A', 1),
+    );
+    expect(state.courses.items).toEqual([{ id: 20, name: 'Course' }]);
+    expect(state.isLoadingCourses).toBe(false);
   });
 });

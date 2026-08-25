@@ -23,6 +23,15 @@ const initialState = {
   isLoadingCourses:  false,
   isLoadingModels:   false,
   error: null,
+  // Tracks the requestId of the most recently DISPATCHED courses/clusters
+  // fetch, so a slower/out-of-order response from an earlier, superseded
+  // fetch (e.g. the cluster-A request still in flight when the user has
+  // already navigated to cluster B, whose own fetch resolves first) can't
+  // win the race and clobber the list with the wrong project's/cluster's
+  // items — or an empty one — once it finally lands. See fetchCoursesThunk's
+  // and fetchClustersThunk's fulfilled/rejected below.
+  coursesRequestId: null,
+  clustersRequestId: null,
 };
 
 const dashboardSlice = createSlice({
@@ -77,13 +86,40 @@ const dashboardSlice = createSlice({
       .addCase(fetchProjectsThunk.fulfilled, (s, { payload }) => { s.isLoadingProjects = false; s.projects = payload; })
       .addCase(fetchProjectsThunk.rejected,  (s, { payload }) => { s.isLoadingProjects = false; s.error = payload; })
 
-      .addCase(fetchClustersThunk.pending,   (s) => { s.isLoadingClusters = true; s.error = null; })
-      .addCase(fetchClustersThunk.fulfilled, (s, { payload }) => { s.isLoadingClusters = false; s.clusters = payload; })
-      .addCase(fetchClustersThunk.rejected,  (s, { payload }) => { s.isLoadingClusters = false; s.error = payload; })
+      .addCase(fetchClustersThunk.pending,   (s, action) => {
+        s.clustersRequestId = action.meta.requestId;
+        s.isLoadingClusters = true;
+        s.error = null;
+      })
+      .addCase(fetchClustersThunk.fulfilled, (s, action) => {
+        if (action.meta.requestId !== s.clustersRequestId) return;
+        s.isLoadingClusters = false;
+        s.clusters = action.payload;
+      })
+      .addCase(fetchClustersThunk.rejected,  (s, action) => {
+        if (action.meta.requestId !== s.clustersRequestId) return;
+        s.isLoadingClusters = false;
+        s.error = action.payload;
+      })
 
-      .addCase(fetchCoursesThunk.pending,   (s) => { s.isLoadingCourses = true; s.error = null; })
-      .addCase(fetchCoursesThunk.fulfilled, (s, { payload }) => { s.isLoadingCourses = false; s.courses = payload; })
-      .addCase(fetchCoursesThunk.rejected,  (s, { payload }) => { s.isLoadingCourses = false; s.error = payload; })
+      .addCase(fetchCoursesThunk.pending,   (s, action) => {
+        s.coursesRequestId = action.meta.requestId;
+        s.isLoadingCourses = true;
+        s.error = null;
+      })
+      .addCase(fetchCoursesThunk.fulfilled, (s, action) => {
+        // A superseded request (the user already navigated on before this
+        // one finished) must not overwrite what the newer, still-in-flight
+        // or already-resolved request put there.
+        if (action.meta.requestId !== s.coursesRequestId) return;
+        s.isLoadingCourses = false;
+        s.courses = action.payload;
+      })
+      .addCase(fetchCoursesThunk.rejected,  (s, action) => {
+        if (action.meta.requestId !== s.coursesRequestId) return;
+        s.isLoadingCourses = false;
+        s.error = action.payload;
+      })
 
       .addCase(fetchModelsThunk.fulfilled, (s, { payload }) => { s.models = payload; });
   },
