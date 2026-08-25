@@ -41,12 +41,30 @@ export default function BlueprintContentView({
     setReasons({});
   }, [fullContent, sections]);
 
-  function toggle(title) {
-    setExpanded((prev) => (prev === title ? null : title));
+  /**
+   * Stable identity for a section's UI state (open/closed, draft, reason).
+   *
+   * Titles are not unique — a generator can emit two `### Screen: Quick Check`
+   * headings in one document, and keying on the title would collapse them into
+   * one accordion sharing one draft while the range-based splice edited them
+   * separately. Parsers that can produce duplicates supply `key`; the others
+   * fall back to the title they have always used.
+   */
+  function idOf(sec) {
+    return sec.key || sec.title;
+  }
+
+  /** `id`/`htmlFor` safe: section keys and titles carry `:`, `#`, spaces. */
+  function domId(sec) {
+    return `bp-edit-${idOf(sec).replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+  }
+
+  function toggle(id) {
+    setExpanded((prev) => (prev === id ? null : id));
   }
 
   function isOpen(sec) {
-    return sec.whole ? expanded !== sec.title : expanded === sec.title;
+    return sec.whole ? expanded !== idOf(sec) : expanded === idOf(sec);
   }
 
   /**
@@ -55,11 +73,17 @@ export default function BlueprintContentView({
    * was displayed.
    */
   function shapeOf(sec) {
-    return { isWholeDocument: Boolean(sec.whole), isDluSection: Boolean(sec.dlu) };
+    return {
+      isWholeDocument: Boolean(sec.whole),
+      isDluSection: Boolean(sec.dlu),
+      // The line range this section occupies in the document that was rendered.
+      // Passed along so the save splices exactly the lines the reader edited.
+      headingLocator: sec.heading ? sec.locator : undefined,
+    };
   }
 
   function getDraft(sec) {
-    return drafts[sec.title] ?? sec.content;
+    return drafts[idOf(sec)] ?? sec.content;
   }
 
   function isChanged(sec) {
@@ -67,7 +91,8 @@ export default function BlueprintContentView({
   }
 
   async function handleSave(sec) {
-    const reason = (reasons[sec.title] || '').trim();
+    const id = idOf(sec);
+    const reason = (reasons[id] || '').trim();
     if (!reason) return;
     await onSaveSection?.({
       sectionTitle: sec.title,
@@ -77,19 +102,19 @@ export default function BlueprintContentView({
     });
     setDrafts((d) => {
       const next = { ...d };
-      delete next[sec.title];
+      delete next[id];
       return next;
     });
     setReasons((r) => {
       const next = { ...r };
-      delete next[sec.title];
+      delete next[id];
       return next;
     });
   }
 
   async function handleRegenSection(sec) {
     if (!onRegenerateSection) return;
-    const instruction = (reasons[sec.title] || '').trim();
+    const instruction = (reasons[idOf(sec)] || '').trim();
     // Section regeneration is not given the current text — it drafts from the
     // section title, the module and the CDD summary. On a whole-document
     // section that means one click would replace the entire document with an
@@ -105,7 +130,7 @@ export default function BlueprintContentView({
       );
       if (!ok) return;
     }
-    setRegenSection(sec.title);
+    setRegenSection(idOf(sec));
     try {
       await onRegenerateSection({
         sectionTitle: sec.title,
@@ -119,13 +144,13 @@ export default function BlueprintContentView({
 
   async function handleRegenItem(sec, idx) {
     if (!onRegenerateItem) return;
-    setRegenItem(`${sec.title}:${idx}`);
+    setRegenItem(`${idOf(sec)}\u0000${idx}`);
     try {
       await onRegenerateItem({
         sectionTitle: sec.title,
         sectionContent: sec.content,
         itemIndex: idx,
-        instruction: (reasons[sec.title] || '').trim(),
+        instruction: (reasons[idOf(sec)] || '').trim(),
         ...shapeOf(sec),
       });
     } finally {
@@ -141,22 +166,23 @@ export default function BlueprintContentView({
     <div className={styles.wrap}>
       {wholeDoc && editable && (
         <p className={styles.structureNotice}>
-          ⚠️ This {L.blueprint}&apos;s structure wasn&apos;t recognised, so it is edited as one
-          document instead of part by part. Editing, single-item regeneration and versioning
-          all work as usual.
+          ℹ️ This {L.blueprint} has no section headings, so it is edited as a single document
+          rather than section by section. Editing, single-item regeneration and version
+          history all work as usual.
         </p>
       )}
       {uiSections.map((sec) => {
+        const id = idOf(sec);
         const open = isOpen(sec);
         const items = editable ? parseItemsFromSection(sec.content) : [];
-        const sectionBusy = regenSection === sec.title;
-        const instruction = (reasons[sec.title] || '').trim();
+        const sectionBusy = regenSection === id;
+        const instruction = (reasons[id] || '').trim();
         return (
-          <div key={sec.title} className={styles.section}>
+          <div key={id} className={styles.section}>
             <button
               type="button"
               className={styles.section__head}
-              onClick={() => toggle(sec.title)}
+              onClick={() => toggle(id)}
               aria-expanded={open}
             >
               <span>{sec.title}</span>
@@ -170,14 +196,14 @@ export default function BlueprintContentView({
                 />
                 {editable && (
                   <>
-                    <label className={styles.editLabel} htmlFor={`bp-edit-${sec.title}`}>
+                    <label className={styles.editLabel} htmlFor={domId(sec)}>
                       ✏️ Edit this {sec.whole ? 'document' : 'section'}
                     </label>
                     <textarea
-                      id={`bp-edit-${sec.title}`}
+                      id={domId(sec)}
                       className={styles.editTextarea}
                       value={getDraft(sec)}
-                      onChange={(e) => setDrafts((d) => ({ ...d, [sec.title]: e.target.value }))}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [id]: e.target.value }))}
                     />
                     {isChanged(sec) && (
                       <p className={styles.editHint}>✏️ Edited. Add a reason before saving.</p>
@@ -185,8 +211,8 @@ export default function BlueprintContentView({
                     <Input
                       label="Edit reason / Regen instruction"
                       placeholder="What changed? (also used as the AI regeneration instruction)"
-                      value={reasons[sec.title] || ''}
-                      onChange={(e) => setReasons((r) => ({ ...r, [sec.title]: e.target.value }))}
+                      value={reasons[id] || ''}
+                      onChange={(e) => setReasons((r) => ({ ...r, [id]: e.target.value }))}
                     />
                     <div className={styles.saveRow}>
                       <Button
@@ -222,7 +248,7 @@ export default function BlueprintContentView({
                         </p>
                         <ul className={styles.itemList}>
                           {items.map((item, idx) => {
-                            const busy = regenItem === `${sec.title}:${idx}`;
+                            const busy = regenItem === `${id}\u0000${idx}`;
                             return (
                               <li key={idx} className={styles.itemList__row}>
                                 <span className={styles.itemList__text}>

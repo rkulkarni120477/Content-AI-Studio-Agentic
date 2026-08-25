@@ -37,7 +37,7 @@ import {
   existingModuleNumbersForCdd,
   buildExtraInstructionsBlock,
 } from '@utils/blueprintModules';
-import { parseSectionsFromText } from '@utils/blueprintContent';
+import { parseSectionsFromText, replaceHeadingSection } from '@utils/blueprintContent';
 import { replaceDluBlueprintSection } from '@utils/dluBlueprint';
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { commitVersionSchema } from '@utils/validation';
@@ -433,6 +433,29 @@ export default function BlueprintPage() {
         updatedSections: {},
         newFull: replaceDluBlueprintSection(fullContent, sectionTitle, newContent),
       };
+    }
+    // A document outlined by `# `/`### ` headings instead of `## ` is spliced by
+    // the line range the section occupied when it was rendered, so its heading
+    // line, its heading level, the preamble and every other section come back
+    // byte-identical. The `## ` rebuild below cannot be used for these: it would
+    // rewrite every heading to `## `, drop anything above the first heading, and
+    // reorder the document to match object key order.
+    if (shape.headingLocator) {
+      const spliced = replaceHeadingSection(fullContent, shape.headingLocator, newContent);
+      // null means the section could not be re-found in the document being
+      // saved — the version changed under the editor. Failing the save is the
+      // only safe answer: splicing a stale range overwrites the wrong lines and
+      // would report success.
+      if (spliced === null) {
+        const msg = `Could not locate the "${sectionTitle}" section in the version `
+          + 'being saved. Nothing was saved — reload the page and try the edit again.';
+        // Toast as well as throw: no caller of this page's save handlers catches a
+        // rejection, so a bare throw would clear the spinner and say nothing —
+        // the silent success/failure confusion this guard exists to prevent.
+        toast.error(msg);
+        throw new Error(msg);
+      }
+      return { updatedSections: {}, newFull: spliced };
     }
     let sections = versionDetail?.sections;
     if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
