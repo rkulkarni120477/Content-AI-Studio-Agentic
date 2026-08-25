@@ -410,3 +410,99 @@ class TestContextFallbacks:
         )
         assert prov == {"grounded": False, "reason": "no_cdd"}
         assert text == "No CDD linked."
+
+
+# ---------------------------------------------------------------------------
+# Item regeneration — the same grounding, and the same refusal
+# ---------------------------------------------------------------------------
+
+SECTION_WITH_ITEMS = (
+    "- First bullet about drawings.\n"
+    "- Second bullet about materials.\n"
+    "- Third bullet about corrosion.\n"
+)
+
+
+@pytest.fixture()
+def stub_item_llm(monkeypatch):
+    """Capture what the item-regeneration prompt actually contains."""
+    calls: list[dict] = []
+
+    def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
+        calls.append({"system": system_prompt, "user": user_prompt})
+        return "Regenerated bullet."
+
+    # regen_single_item calls call_llm, which is llm_service.generate_text
+    # re-exported into the parser module.
+    monkeypatch.setattr("promptops_app.parsers.blueprint_parser.call_llm", fake)
+    return calls
+
+
+def _regen_item(client, auth_headers, bp_id, **overrides):
+    body = {
+        "section_key": "Part I — DLU-Wide Information",
+        "section_content": SECTION_WITH_ITEMS,
+        "item_index": 1,
+        "feedback": "why is the ACS alignment N/A",
+        "model_choice": "GPT-5.4",
+    }
+    body.update(overrides)
+    resp = client.post(
+        f"/api/v1/blueprints/{bp_id}/regenerate-item", json=body, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+class TestItemRegenerationIsGroundedToo:
+    def test_it_gets_the_scoped_day_rows_not_a_300_char_slice(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        _regen_item(client, auth_headers, grounded_blueprint.id)
+        prompt = stub_item_llm[0]["user"]
+        assert "Test — Block 2: Final Exam" in prompt
+        assert "Full-block coverage (AM.I.B, AM.I.E, AM.I.G" in prompt
+
+    def test_the_instruction_is_no_longer_polluted_with_document_text(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        # The CDD blob used to be concatenated onto the requester's words, so the
+        # model read "why is the ACS alignment N/A Module: Module 20. CDD
+        # context: # Course Design Doc..." as one instruction.
+        _regen_item(client, auth_headers, grounded_blueprint.id)
+        prompt = stub_item_llm[0]["user"]
+        line = next(l for l in prompt.split("\n") if l.startswith("Instruction:"))
+        assert line.strip() == "Instruction: why is the ACS alignment N/A"
+        assert "CDD context:" not in prompt
+
+    def test_the_module_identity_survives_the_move(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        _regen_item(client, auth_headers, grounded_blueprint.id)
+        assert "Module: Module 20" in stub_item_llm[0]["user"]
+
+    def test_an_item_too_large_to_return_is_refused_before_spending(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        # A markdown table parses to ONE item, so "one item" can be a whole day
+        # table — the case where a spliced fragment silently loses rows.
+        huge = "- " + ("word " * 200_000)
+        resp = client.post(
+            f"/api/v1/blueprints/{grounded_blueprint.id}/regenerate-item",
+            json={"section_key": "Part I", "section_content": huge, "item_index": 0,
+                  "feedback": "tidy", "model_choice": "GPT-5.4"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "REGENERATION_TOO_LARGE"
+        assert stub_item_llm == [], "the model was called despite the refusal"
+
+    def test_a_normal_item_regeneration_still_works(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        body = _regen_item(client, auth_headers, grounded_blueprint.id)
+        assert body["patched_item"] == "Regenerated bullet."
+        # Siblings untouched.
+        assert "First bullet about drawings." in body["updated_content"]
+        assert "Third bullet about corrosion." in body["updated_content"]
+        assert "Second bullet about materials." not in body["updated_content"]

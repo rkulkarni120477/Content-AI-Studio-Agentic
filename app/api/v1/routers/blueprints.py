@@ -1033,6 +1033,7 @@ def regenerate_blueprint_item(
         regen_single_item,
     )
     from promptops_app.services.usage_service import UsageLogContext
+    from app.services import cdd_regen_context as regen_ctx_svc
 
     bp = _get_blueprint_or_404(db, blueprint_id)
 
@@ -1042,12 +1043,30 @@ def regenerate_blueprint_item(
     if not items or item_index < 0 or item_index >= len(items):
         raise NotFoundError("Blueprint item", item_index)
 
-    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=800)
-    context = (
-        f"Module: {bp.module_title}. "
-        f"CDD context: {cdd_summary[:300] if cdd_summary else 'N/A'}."
+    item_text = items[item_index]["text"]
+
+    # parse_items_from_section recognises lists and headings but NOT table rows,
+    # so a markdown table parses to a single item: "one item" can be an entire
+    # ACS coverage or day table. Refuse before spending when that item cannot come
+    # back whole — patch_item_in_section would splice the fragment in and the
+    # commit would succeed with rows missing.
+    regen_ctx_svc.assert_can_emit(
+        item_text, model_choice=request_body.model_choice,
+        label=f'Item {item_index + 1} of "{request_body.section_key}"',
     )
-    instruction = f"{(request_body.feedback or '').strip()} {context}".strip()
+
+    # The same scoped grounding the section route uses. What this replaces put
+    # 300 characters of CDD into the INSTRUCTION field — so the model received
+    # the requester's words with a truncated document blob glued onto them, and
+    # regen_single_item's own `context` parameter (added for exactly this) went
+    # unused. The module identity moves into the context block where it belongs.
+    cdd_context, cdd_provenance = _blueprint_regen_context(
+        db, bp,
+        instruction=request_body.feedback or "",
+        section_key=request_body.section_key,
+        section_content=original,
+    )
+    item_context = f"Module: {bp.module_title}\n\n{cdd_context}" if cdd_context else ""
 
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
@@ -1057,15 +1076,17 @@ def regenerate_blueprint_item(
         section_title=request_body.section_key,
         section_content=original,
         item_index=item_index,
-        item_text=items[item_index]["text"],
-        custom_instruction=instruction,
+        item_text=item_text,
+        custom_instruction=(request_body.feedback or "").strip(),
         model_choice=request_body.model_choice,
         usage_ctx=usage_ctx,
+        context=item_context,
     )
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
-    _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d",
-              current_user.username, blueprint_id, request_body.section_key, item_index)
+    _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d  context=%s",
+              current_user.username, blueprint_id, request_body.section_key, item_index,
+              cdd_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 
