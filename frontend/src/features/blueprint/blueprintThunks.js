@@ -153,10 +153,12 @@ export const regenerateBlueprintItemThunk = createAsyncThunk(
 
 export const regenerateBlueprintSectionThunk = createAsyncThunk(
   'blueprint/regenerateSection',
-  async ({ blueprintId, sectionKey, feedback, modelChoice, teacherMode }, { rejectWithValue }) => {
+  async ({
+    blueprintId, sectionKey, sectionContent, feedback, modelChoice, teacherMode,
+  }, { rejectWithValue }) => {
     try {
       const result = await blueprintService.regenerateSection(blueprintId, {
-        sectionKey, feedback, modelChoice, teacherMode,
+        sectionKey, sectionContent, feedback, modelChoice, teacherMode,
       });
       const usageMsg = formatUsageSummaryMessage(result.usage_summary);
       if (usageMsg) {

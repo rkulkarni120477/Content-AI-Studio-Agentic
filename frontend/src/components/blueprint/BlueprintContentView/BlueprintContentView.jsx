@@ -115,18 +115,17 @@ export default function BlueprintContentView({
   async function handleRegenSection(sec) {
     if (!onRegenerateSection) return;
     const instruction = (reasons[idOf(sec)] || '').trim();
-    // Section regeneration is not given the current text — it drafts from the
-    // section title, the module and the CDD summary. On a whole-document
-    // section that means one click would replace the entire document with an
-    // ungrounded draft, so the instruction is the only steer there is and the
-    // blast radius is spelled out before anything is spent.
+    // The current text IS sent now, so this is a revision rather than a blind
+    // redraft. It still replaces everything in one shot, so a whole-document
+    // regeneration keeps its instruction requirement and its confirmation.
     if (sec.whole) {
       if (!instruction) return;
       const ok = window.confirm(
         'Regenerate the WHOLE document?\n\n'
-        + 'Every part is rewritten from your instruction — the current text is '
-        + 'not sent to the model. The result is saved as a new version, so the '
-        + 'current one stays in the version history.',
+        + 'The model is given the current text and your instruction, and rewrites '
+        + 'the document in one pass — so every part can change, not only the part '
+        + 'you asked about. The result is saved as a new version, so the current '
+        + 'one stays in the version history and can be restored.',
       );
       if (!ok) return;
     }
@@ -134,6 +133,7 @@ export default function BlueprintContentView({
     try {
       await onRegenerateSection({
         sectionTitle: sec.title,
+        sectionContent: sec.content,
         instruction,
         ...shapeOf(sec),
       });
@@ -232,8 +232,8 @@ export default function BlueprintContentView({
                           disabled={saving || sectionBusy || (sec.whole && !instruction)}
                           onClick={() => handleRegenSection(sec)}
                           title={sec.whole
-                            ? 'Rewrite the whole document from the instruction above. '
-                              + 'The current text is not sent to the model.'
+                            ? 'Rewrite the whole document from the current text plus the '
+                              + 'instruction above. Every part can change.'
                             : 'Regenerate this whole section with AI using the instruction above'}
                         >
                           {sec.whole ? '🔄 Regenerate Whole Document' : '🔄 Regenerate Section'}
