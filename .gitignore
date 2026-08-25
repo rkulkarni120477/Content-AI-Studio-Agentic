@@ -107,5 +107,3 @@ claude_plan_platform_hardening/
 *.xlsx
 docs/*
 data/*
-
-.github/*
