@@ -1,6 +1,3 @@
-// @vitest-environment jsdom
-// dashboardThunks -> authSlice reads localStorage at import time.
-//
 // Regression: "Reviewer filter displays users from other tenants in Cengage
 // Workflow". A tenant Admin (role === 'admin', same as isAdmin for a
 // platform admin) opening Workflow directly — never having visited a
@@ -11,7 +8,7 @@
 // platformadmin, ...). authProjectId — the caller's own tenant from their
 // JWT — must be used instead, independent of role.
 import { describe, expect, it } from 'vitest';
-import { resolveReviewerProjectId } from '../WorkflowPage';
+import { resolveReviewerProjectId } from '../reviewerScope';
 
 describe('resolveReviewerProjectId', () => {
   it('uses the tenant Admin\'s own JWT project_id, landing on Workflow with no navigation history', () => {

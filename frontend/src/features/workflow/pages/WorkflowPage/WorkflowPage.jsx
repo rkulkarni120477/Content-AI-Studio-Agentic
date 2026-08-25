@@ -23,6 +23,7 @@ import toast from 'react-hot-toast';
 import { api } from '@services/apiClient';
 import { PROJECTS, USERS } from '@services/endpoints';
 import { workflowService } from '@features/workflow/services/workflowService';
+import { resolveReviewerProjectId } from './reviewerScope';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
@@ -79,21 +80,6 @@ function normalizeList(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.items)) return data.items;
   return [];
-}
-
-// The reviewer/admin dropdown must always be scoped to the CURRENT tenant —
-// unlike buildApiFilters' block-listing filter, this must NOT be gated on
-// isAdmin: isAdmin means "role === 'admin'", true for an ordinary tenant
-// Admin (e.g. Cengage) exactly as much as a platform admin, so gating on it
-// blanks the tenant scope for every tenant Admin. authProjectId (the
-// caller's own tenant, from their JWT) is tried before selProject/
-// selCourse because those only get populated by visiting a Clusters/
-// Courses/Workspace page first, and stay null for a tenant Admin who opens
-// Workflow directly — authProjectId is null only for a genuine platform
-// admin (no single tenant), who falls through to whatever project, if any,
-// they've selected or filtered by.
-export function resolveReviewerProjectId({ filtersProjectId, authProjectId, selProjectId, selCourseProjectId }) {
-  return filtersProjectId ?? authProjectId ?? selProjectId ?? selCourseProjectId ?? null;
 }
 
 function filterBlocks(blocks, filters) {

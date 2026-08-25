@@ -78,11 +78,11 @@ def list_users(
     response_model=list[UserListItem],
     summary="List users eligible to be assigned as reviewers",
     description=(
-        "Returns users with an active 'reviewer' or 'admin' membership in the given "
-        "tenant. Used to populate the reviewer dropdown in the Workflow/Editor pages. "
-        "Pass project_id whenever the caller has tenant context — without it, a "
-        "hard-deleted tenant's former admin/reviewer can never be told apart from a "
-        "current one."
+        "Returns users who can approve content in the caller's own tenant — an "
+        "active membership whose effective role grants 'workflow.approve'. Backs the "
+        "reviewer dropdowns in the Workflow and Editor pages. Only a true platform "
+        "admin may pass project_id to look at another tenant; for everyone else it "
+        "is ignored and the caller's own tenant is used."
     ),
 )
 def list_reviewers(
@@ -93,7 +93,18 @@ def list_reviewers(
     """Return users who can be assigned as block reviewers."""
     from promptops_app.repositories import user_repository
 
-    reviewers = user_repository.list_reviewers_and_admins(db, project_id=project_id)
+    # Tenant isolation: derive the scope from the caller's token, never from a
+    # client-supplied parameter. Only a true platform admin may choose an
+    # arbitrary project via the query param — every tenant-scoped caller,
+    # INCLUDING a tenant-role "admin", is force-scoped to their own tenant.
+    # Mirrors analytics.py's llm_cost_dashboard. Without this, trusting the
+    # frontend to send the right project_id was the whole control: any user
+    # could enumerate another tenant's members by passing its id, or get the
+    # old platform-wide list back just by omitting the param.
+    is_platform_admin = bool(getattr(current_user, "_is_platform_admin", False))
+    scoped_project_id = project_id if is_platform_admin else getattr(current_user, "_project_id", None)
+
+    reviewers = user_repository.list_reviewers_and_admins(db, project_id=scoped_project_id)
     items = []
     for u in reviewers:
         item = UserListItem.model_validate(u)
