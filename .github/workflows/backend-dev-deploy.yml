@@ -1,0 +1,70 @@
+name: Deploy Content AI Backend - DEV
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - "app/**"
+      - "api_server.py"
+      - "promptops_app/**"
+      - "dis_backend/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "requirements.txt"
+      - ".github/workflows/backend-dev-deploy.yml"
+
+jobs:
+  deploy:
+    name: Deploy Backend - DEV
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy Backend to DEV EC2
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEV_EC2_HOST }}
+          username: ${{ secrets.DEV_EC2_USER }}
+          key: ${{ secrets.DEV_EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "===================================="
+            echo "Starting CAS DEV Backend Deployment"
+            echo "===================================="
+
+            cd /opt/content-ai
+
+            echo "Fetching latest code..."
+            git fetch origin
+
+            echo "Switching to develop branch..."
+            git checkout develop
+
+            echo "Syncing with remote..."
+            git reset --hard origin/develop
+
+            echo "Building and starting backend services..."
+            docker compose up -d --build --remove-orphans
+
+            echo "Cleaning unused Docker images..."
+            docker image prune -f
+
+            echo "Waiting for CAS Backend..."
+            until curl -fs https://cas-dev-api.academian.com/docs >/dev/null; do
+              echo "Waiting for CAS DEV API..."
+              sleep 5
+            done
+
+            echo "Waiting for DIS Backend..."
+            until curl -fs http://localhost:8010/docs >/dev/null; do
+              echo "Waiting for DIS..."
+              sleep 5
+            done
+
+            echo "Running containers..."
+            docker compose ps
+
+            echo "===================================="
+            echo "CAS DEV Backend Deployment Successful"
+            echo "===================================="

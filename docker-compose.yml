@@ -155,9 +155,25 @@ services:
       - "${DIS_PORT}:8000"
 
     # Hard memory ceiling (P6.3, F13) — parsing / indexing service.
+    # NOTE (Tier 2, 8 GB host): do NOT raise this without freeing budget elsewhere.
+    # Current limits already total ~7.25 GB against an 8 GB host. Step 1
+    # (not retaining the raw file through the pipeline) is the memory fix here;
+    # a bump would just move an OOM from the container to the whole machine.
     mem_limit: 2g
 
     restart: unless-stopped
+
+    # Tier 2 Step 2 (observability): liveness probe via a Python one-liner —
+    # the DIS image has no curl/wget, so a curl healthcheck would fail forever
+    # and (if ever gated by depends_on: service_healthy) block dependents. /health
+    # is unauthenticated in DIS. This marks health for orchestrators/`docker ps`;
+    # it does NOT gate CAS startup (recovery is handled by dis_client's retry).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 
   phoenix:
