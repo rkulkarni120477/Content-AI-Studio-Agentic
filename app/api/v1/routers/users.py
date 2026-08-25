@@ -77,16 +77,23 @@ def list_users(
     "/reviewers",
     response_model=list[UserListItem],
     summary="List users eligible to be assigned as reviewers",
-    description="Returns all users with 'reviewer' or 'admin' role. Used to populate the reviewer dropdown in the Workflow page.",
+    description=(
+        "Returns users with an active 'reviewer' or 'admin' membership in the given "
+        "tenant. Used to populate the reviewer dropdown in the Workflow/Editor pages. "
+        "Pass project_id whenever the caller has tenant context — without it, a "
+        "hard-deleted tenant's former admin/reviewer can never be told apart from a "
+        "current one."
+    ),
 )
 def list_reviewers(
+    project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> list[UserListItem]:
     """Return users who can be assigned as block reviewers."""
     from promptops_app.repositories import user_repository
 
-    reviewers = user_repository.list_reviewers_and_admins(db)
+    reviewers = user_repository.list_reviewers_and_admins(db, project_id=project_id)
     items = []
     for u in reviewers:
         item = UserListItem.model_validate(u)

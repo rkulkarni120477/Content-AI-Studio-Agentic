@@ -192,13 +192,19 @@ export default function WorkflowPage() {
 
   useEffect(() => {
     if (!canApprove && !isAdmin) return;
-    api.get(USERS.REVIEWERS)
+    // Same project_id derivation as buildApiFilters — the reviewer list must be
+    // scoped to the tenant whose content is being reviewed, not the admin's own
+    // login tenant (isAdmin's is null), or a hard-deleted tenant's leftover
+    // admin/reviewer keeps showing up here forever (its User row survives a
+    // tenant delete; only its TenantMembership is removed).
+    const projectId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
+    api.get(USERS.REVIEWERS, projectId ? { params: { project_id: projectId } } : undefined)
       .then((res) => {
         const list = normalizeList(res);
         setReviewers(list.map((u) => u.username || u).filter(Boolean));
       })
       .catch(() => setReviewers([]));
-  }, [canApprove, isAdmin]);
+  }, [canApprove, isAdmin, filters.projectId, selProject?.id, selCourse?.project_id]);
 
   useEffect(() => {
     const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;

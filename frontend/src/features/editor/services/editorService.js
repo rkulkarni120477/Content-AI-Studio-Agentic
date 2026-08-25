@@ -100,7 +100,7 @@ export const editorService = {
 
   getPlagiarismStatus: (blockId, reportId) => api.get(PLAGIARISM.STATUS(blockId, reportId)),
 
-  listReviewers: () => api.get(USERS.REVIEWERS),
+  listReviewers: (projectId) => api.get(USERS.REVIEWERS, projectId ? { params: { project_id: projectId } } : undefined),
 
   getPromptByName: async (name) => {
     const res = await api.get(PROMPTS.LIST, { params: { search: name, page_size: 20 } });
