@@ -236,6 +236,10 @@ def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     db.commit()
     db.refresh(ci)
     import_id = ci.id
+    # start_import (imports.py) sets this eagerly, before the job is even
+    # enqueued — mirrored here since this test drives the job directly.
+    course.import_id = import_id
+    db.commit()
 
     job_id = job_repository.create_job(
         db,
@@ -295,6 +299,8 @@ def test_import_job_failing_after_reconstruction_leaves_the_course_untouched(db,
     db.commit()
     db.refresh(ci)
     import_id = ci.id
+    course.import_id = import_id
+    db.commit()
 
     import os
     fd, pkg_path = tempfile.mkstemp(prefix="test_imscc_", suffix=".imscc")
@@ -334,7 +340,7 @@ def test_archiving_a_reconstructed_course_does_not_hide_it_alongside_empty_shell
     archive action (only is_active changes), a status-keyed hiding rule would
     wrongly re-catch it the moment it's archived — burying real content
     behind a page it can no longer even be purged from. The content-based
-    rule (course_repository._empty_shell_course_ids) must not care about
+    rule (course_repository._is_empty_import_shell) must not care about
     CourseImport.status at all."""
     from promptops_app.repositories.course_repository import list_courses_for_cluster
 
@@ -351,6 +357,10 @@ def test_archiving_a_reconstructed_course_does_not_hide_it_alongside_empty_shell
     )
     ci = CourseImport(course_id=course_id, project_id=6, status="failed", package_name="x.imscc")
     db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    course = db.query(Course).filter_by(id=course_id).first()
+    course.import_id = ci.id
     db.commit()
 
     # The ordinary archive action — same field the courses.py archive
@@ -391,6 +401,8 @@ def test_retry_on_a_never_reconstructed_import_does_not_resurrect_the_hidden_she
     db.commit()
     db.refresh(ci)
     import_id = ci.id
+    course.import_id = import_id
+    db.commit()
 
     # The initial import job fails outright (no staged package) — same empty
     # shell as test_failed_import_job_hides_the_empty_course_shell.
@@ -430,3 +442,65 @@ def test_retry_on_a_never_reconstructed_import_does_not_resurrect_the_hidden_she
 
     visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
     assert course_id not in visible_ids   # still hidden regardless of the status flip
+
+
+def test_a_scratch_course_archived_before_anything_generated_stays_visible(db):
+    """Round-3 review finding (PROBE-C): "archived + no content" alone also
+    matches a title created from scratch and archived before the user ever
+    generated anything — never imported, no CourseImport row at all. That is
+    a normal, purgeable archived course, not an import shell, and must not
+    disappear from the one list (include_archived=True) permanent-delete is
+    reachable from."""
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
+
+    cluster = Cluster(name="C", project_id=7)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="ScratchNeverGenerated", project_id=7, cluster_id=cluster.id)
+    course_id = course.id
+    assert course.import_id is None   # never an import
+
+    course.is_active = False
+    db.commit()
+
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id in visible_ids
+
+
+def test_a_cdd_and_blueprint_only_course_archived_mid_flow_stays_visible(db):
+    """Round-3 review finding (PROBE-D): a course with a real CDD and
+    Blueprint but no generated blocks yet is a normal waypoint in the
+    CDD -> Blueprint -> generate flow, not an empty import shell. Archiving
+    it at that stage must not make the CDD/Blueprint work disappear from
+    every listing."""
+    from promptops_app.database import CourseDesignDocument, ModuleBlueprint
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
+
+    cluster = Cluster(name="C", project_id=8)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="CddAndBlueprintOnly", project_id=8, cluster_id=cluster.id)
+    course_id = course.id
+    assert course.import_id is None   # never an import
+
+    cdd = CourseDesignDocument(course_id=course_id, project_id=8, title="CDD",
+                              course_title="CddAndBlueprintOnly", created_by="u")
+    db.add(cdd)
+    db.commit()
+    db.refresh(cdd)
+    bp = ModuleBlueprint(title="Module 1", module_title="Module 1", module_number=1,
+                         course_id=course_id, project_id=8, cdd_id=cdd.id, created_by="u")
+    db.add(bp)
+    db.commit()
+
+    assert db.query(Generation).filter_by(course_id=course_id).count() == 0
+
+    course.is_active = False
+    db.commit()
+
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id in visible_ids
