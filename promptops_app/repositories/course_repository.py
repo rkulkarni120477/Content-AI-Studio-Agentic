@@ -73,11 +73,19 @@ def _is_empty_import_shell():
     index instead. generation.course_id is nullable (course-less generations
     exist elsewhere), but a correlated NOT EXISTS has no NULL-in-NOT-IN
     footgun the way a flat subquery does, so no extra filter is needed there.
+
+    ``Course.is_active`` is a nullable column with only a Python-side default,
+    so ``isnot(True)`` (not ``== False``) is used to also catch a NULL row —
+    otherwise a NULL-is_active shell would silently fall through this filter.
+
+    A row this excludes isn't stranded: it's just absent from every listing
+    (including include_archived=True). ``DELETE .../courses/{id}`` still
+    reaches it directly for support/debugging cleanup.
     """
     from sqlalchemy import exists
 
     return (
-        (Course.is_active == False)  # noqa: E712
+        Course.is_active.isnot(True)
         & Course.import_id.isnot(None)
         & ~exists().where(CourseModule.course_id == Course.id)
         & ~exists().where(Generation.course_id == Course.id)

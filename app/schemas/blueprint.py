@@ -43,6 +43,17 @@ class BlueprintGenerateRequest(BaseModel):
         description="Module name/number to generate the blueprint for.",
         examples=["Module 2 — Pharmacology Basics"],
     )
+    document_title: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "Optional label for this blueprint document. Blank → "
+            "'<selected_module> Blueprint'. Stored on the row as-is, so a day "
+            "blueprint given a title without a 'Day N' prefix falls back to its "
+            "module_number for the Generate page's day dropdown."
+        ),
+        examples=["Day 4 — Exploded Views and Assembly Diagrams"],
+    )
     extra_instructions: str = Field(default="", max_length=5000)
     style_id: Optional[int] = None
     model_choice: str = Field(default="GPT-5.4")

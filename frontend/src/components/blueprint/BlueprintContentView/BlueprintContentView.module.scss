@@ -14,6 +14,16 @@
   border-radius: $radius-lg;
 }
 
+.structureNotice {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #92400e;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: $radius-md;
+  padding: $space-2 $space-3;
+}
+
 .section {
   border: 1px solid $color-gray-200;
   border-radius: $radius-lg;
@@ -188,14 +198,4 @@
     border-radius: 3px;
     font-size: 0.72rem;
   }
-}
-
-.fallback {
-  @extend .section__text;
-  padding: $space-4;
-  background: $color-gray-50;
-  border-radius: $radius-lg;
-  max-height: 480px;
-  overflow-y: auto;
-  @include custom-scrollbar;
 }

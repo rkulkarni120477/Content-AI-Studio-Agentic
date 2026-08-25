@@ -32,6 +32,16 @@ const initialState = {
   // and fetchClustersThunk's fulfilled/rejected below.
   coursesRequestId: null,
   clustersRequestId: null,
+  // Project/cluster id whose clusters/courses fetch has actually settled, or
+  // null. `clusters.items`/`courses.items` being empty cannot tell "not
+  // loaded yet" from "this project/cluster has none", and isLoadingClusters/
+  // isLoadingCourses is false until the first pending action lands — one
+  // paint after the component decides to fetch. A page that only checks
+  // those two can render its empty state in that gap. Set inside the
+  // requestId-guarded fulfilled below, so a superseded response can't mark
+  // the wrong project/cluster as loaded either.
+  clustersLoadedFor: null,
+  coursesLoadedFor: null,
 };
 
 const dashboardSlice = createSlice({
@@ -39,31 +49,37 @@ const dashboardSlice = createSlice({
   initialState,
   reducers: {
     setSelectedProject(state, { payload }) {
-      // Only ever clears selectedCluster/selectedCourse — the "current
-      // selection pointer" metadata, which really is stale once the project
-      // changes. Does NOT touch clusters/courses: those lists are owned
-      // exclusively by fetchClustersThunk/fetchCoursesThunk's own pending/
-      // fulfilled reducers below, which already track their real fetch
-      // lifecycle (isLoadingClusters/isLoadingCourses gates the stale-data
-      // flash a page's render logic would otherwise show). This reducer
-      // firing here too was a second, uncoordinated writer: on a hard
-      // refresh, ClustersPage/CoursesPage's own sync effect re-derives
-      // selectedProject/selectedCluster via 1-2 sequential API calls while a
-      // separate effect fetches the real list in a single call — that
-      // fetch's `fulfilled` would win the race and populate the list
-      // correctly, only for this reducer's reset to fire moments later and
-      // wipe it back to empty, rendering "No titles"/"No categories" for
-      // data that was already loaded right.
+      // Only ever clears selectedCluster/selectedCourse and the *LoadedFor
+      // markers — the "current selection pointer" metadata, which really is
+      // stale once the project changes. Does NOT touch clusters/courses
+      // items: those lists are owned exclusively by fetchClustersThunk/
+      // fetchCoursesThunk's own pending/fulfilled reducers below, which
+      // already track their real fetch lifecycle. This reducer firing here
+      // too was a second, uncoordinated writer: on a hard refresh, ClustersPage/
+      // CoursesPage's own sync effect re-derives selectedProject/selectedCluster
+      // via 1-2 sequential API calls while a separate effect fetches the real
+      // list in a single call — that fetch's `fulfilled` would win the race and
+      // populate the list correctly, only for this reducer's reset to fire
+      // moments later and wipe it back to empty, rendering "No titles"/"No
+      // categories" for data that was already loaded right. Clearing the
+      // *LoadedFor markers (not the lists) still lets the page's pending gate
+      // correctly show a loader instead of the old project's stale items.
       const prevId = state.selectedProject?.id;
       state.selectedProject = payload;
       if (!payload || prevId !== payload.id) {
         state.selectedCluster = null;
         state.selectedCourse  = null;
+        state.clustersLoadedFor = null;
+        state.coursesLoadedFor  = null;
       }
     },
     setSelectedCluster(state, { payload }) {
+      const prevId = state.selectedCluster?.id;
       state.selectedCluster = payload;
       state.selectedCourse  = null;
+      if (!payload || prevId !== payload.id) {
+        state.coursesLoadedFor = null;
+      }
     },
     setSelectedCourse(state, { payload }) {
       state.selectedCourse = payload;
@@ -92,9 +108,16 @@ const dashboardSlice = createSlice({
         s.error = null;
       })
       .addCase(fetchClustersThunk.fulfilled, (s, action) => {
+        // A superseded request (the user already navigated on before this one
+        // finished) must not overwrite what the newer, still-in-flight or
+        // already-resolved request put there — including the *LoadedFor marker,
+        // which `meta.arg` (the project id this list was actually fetched for)
+        // keys on so a late response for the previous project can't mark the
+        // new one loaded.
         if (action.meta.requestId !== s.clustersRequestId) return;
         s.isLoadingClusters = false;
         s.clusters = action.payload;
+        s.clustersLoadedFor = Number(action.meta.arg);
       })
       .addCase(fetchClustersThunk.rejected,  (s, action) => {
         if (action.meta.requestId !== s.clustersRequestId) return;
@@ -108,12 +131,10 @@ const dashboardSlice = createSlice({
         s.error = null;
       })
       .addCase(fetchCoursesThunk.fulfilled, (s, action) => {
-        // A superseded request (the user already navigated on before this
-        // one finished) must not overwrite what the newer, still-in-flight
-        // or already-resolved request put there.
         if (action.meta.requestId !== s.coursesRequestId) return;
         s.isLoadingCourses = false;
         s.courses = action.payload;
+        s.coursesLoadedFor = Number(action.meta.arg);
       })
       .addCase(fetchCoursesThunk.rejected,  (s, action) => {
         if (action.meta.requestId !== s.coursesRequestId) return;
@@ -145,7 +166,9 @@ export const selectExpertDomain     = (s) => s.dashboard.expertDomain;
 export const selectTargetAudience   = (s) => s.dashboard.targetAudience;
 export const selectAudienceCategory = (s) => s.dashboard.audienceCategory;
 export const selectIsLoadingClusters = (s) => s.dashboard.isLoadingClusters;
+export const selectClustersLoadedFor = (s) => s.dashboard.clustersLoadedFor;
 export const selectIsLoadingCourses  = (s) => s.dashboard.isLoadingCourses;
+export const selectCoursesLoadedFor  = (s) => s.dashboard.coursesLoadedFor;
 export const selectDashboardError    = (s) => s.dashboard.error;
 export const selectWorkspaceConfig = (s) => ({
   modelChoice:      s.dashboard.modelChoice,
