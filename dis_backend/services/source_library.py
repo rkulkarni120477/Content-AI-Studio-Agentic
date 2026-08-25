@@ -7,11 +7,13 @@ Product rule:
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
+from services.locks import source_index_lock
 
 
 STYLE_DOC_TYPES = {
@@ -344,26 +346,34 @@ def update_source_record_status(
     so already-finalized ("processed") records with real content are never
     disturbed.
     """
-    index = read_source_index(tenant_cfg, client_id)
-    for rec in index.get("sources", []):
-        if str(rec.get("job_id")) == str(job_id):
-            if only_if_status is not None and str(rec.get("status") or "").lower() != only_if_status.lower():
-                return ""
-            rec["status"] = status
-            rec["updated_at"] = datetime.utcnow().isoformat()
-            if extra:
-                rec.update({k: v for k, v in extra.items() if v})
-            return write_source_index(tenant_cfg, client_id, index)
-    return ""
+    # Tier 2 Step 3: the whole read→modify→write is held under a per-client lock so
+    # the API and the (future) worker can't both read version N and clobber each
+    # other's update. No-op today (NullLock until DIS_REDIS_URL is set).
+    with source_index_lock(tenant_cfg.tenant_id, client_id):
+        index = read_source_index(tenant_cfg, client_id)
+        for rec in index.get("sources", []):
+            if str(rec.get("job_id")) == str(job_id):
+                if only_if_status is not None and str(rec.get("status") or "").lower() != only_if_status.lower():
+                    return ""
+                rec["status"] = status
+                rec["updated_at"] = datetime.utcnow().isoformat()
+                if extra:
+                    rec.update({k: v for k, v in extra.items() if v})
+                return write_source_index(tenant_cfg, client_id, index)
+        return ""
 
 
 def upsert_source_record(tenant_cfg: TenantConfig, client_id: str, record: Dict[str, Any]) -> str:
-    index = read_source_index(tenant_cfg, client_id)
-    sources = [s for s in index.get("sources", []) if s.get("job_id") != record.get("job_id")]
-    sources.append(record)
-    sources.sort(key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""), reverse=True)
-    index["sources"] = sources
-    return write_source_index(tenant_cfg, client_id, index)
+    # Tier 2 Step 3: read→modify→write under the per-client index lock (see
+    # update_source_record_status). This is the hot path — both the API's immediate
+    # preview and the worker's ProcessedStorageAgent land here.
+    with source_index_lock(tenant_cfg.tenant_id, client_id):
+        index = read_source_index(tenant_cfg, client_id)
+        sources = [s for s in index.get("sources", []) if s.get("job_id") != record.get("job_id")]
+        sources.append(record)
+        sources.sort(key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""), reverse=True)
+        index["sources"] = sources
+        return write_source_index(tenant_cfg, client_id, index)
 
 
 async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> Dict[str, Any]:
@@ -400,8 +410,18 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
 
     opensearch_result = opensearch_delete_by_job(tenant_cfg, job_id)
 
-    index["sources"] = [r for r in sources if str(r.get("job_id")) != str(job_id)]
-    write_source_index(tenant_cfg, client_id, index)
+    # Tier 2 Step 3: re-read the index UNDER THE LOCK before removing the record —
+    # the `index` read at the top is now stale (slow S3/OpenSearch deletes ran in
+    # between, during which a concurrent writer may have updated the index). Writing
+    # the stale copy would resurrect or drop unrelated records. Run off the event
+    # loop because the lock's acquire is blocking.
+    def _locked_remove() -> None:
+        with source_index_lock(tenant_cfg.tenant_id, client_id):
+            fresh = read_source_index(tenant_cfg, client_id)
+            fresh["sources"] = [r for r in fresh.get("sources", []) if str(r.get("job_id")) != str(job_id)]
+            write_source_index(tenant_cfg, client_id, fresh)
+
+    await asyncio.to_thread(_locked_remove)
 
     return {
         "job_id": job_id,
