@@ -27,7 +27,7 @@ import json
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -520,6 +520,233 @@ def generate_blueprint(
             (llm_result.prompt_tokens or 0) + (llm_result.completion_tokens or 0)
             if llm_result.prompt_tokens else None
         ),
+        auto_pinned=True,
+    )
+
+
+@router.post(
+    "/import",
+    response_model=BlueprintGenerateResponse,
+    status_code=201,
+    summary="Import an existing DLU Outline file (Excel, DOCX, PDF)",
+    description=(
+        "Upload an Outline the user already has (Excel, Word or PDF). The file is "
+        "extracted and normalized into the canonical DLU Outline day shape, then "
+        "saved as a normal blueprint (same tables as a generated one), pinned as "
+        "active, and rendered as the day accordions. The day is read from the file; "
+        "if an Outline already exists for that day it is saved as a NEW VERSION of "
+        "that Outline (history kept), otherwise a fresh Outline is created. "
+        "Already-structured Outlines pass through unchanged; other files are "
+        "reorganized by the LLM under a strict preserve-everything contract."
+    ),
+    responses={
+        201: {"description": "Outline imported, pinned, and rendered as a day Outline."},
+        400: {"description": "Unsupported file type, unreadable content, or undetermined day."},
+        403: {"description": "User does not have the blueprint.generate permission."},
+    },
+)
+def import_outline(
+    file: UploadFile = File(..., description="Outline file (.xlsx, .xls, .docx, .pdf)."),
+    course_id: int = Form(..., description="Course this imported Outline belongs to."),
+    project_id: int = Form(..., description="Parent project id."),
+    course_title: str = Form("", description="Course/block title. Blank → derived from the file."),
+    document_title: str = Form("", description="Outline title. Blank → 'Day N: <topic> Blueprint'."),
+    day_number: int = Form(None, description="Fallback day used only when the file carries no detectable day."),
+    model_choice: str = Form("GPT-5.4", description="Model used only for the LLM restructure path."),
+    cdd_id: int = Form(None, description="Optional CDD to link the imported Outline to."),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.generate")),
+) -> BlueprintGenerateResponse:
+    """Extract → normalize → persist an uploaded Outline as an active blueprint.
+
+    Behaviour confirmed with product (CAS-98): one file = one day; the day is read
+    from the file (``day_number`` is only a fallback); an existing Outline for that
+    day gets a new version (the pinned/active one, else the most recent), otherwise
+    a new Outline is created. Reuses the same persistence primitives the generate
+    path uses, so an imported Outline is indistinguishable downstream — only
+    ``generation_params.prompt_source`` records that it was imported.
+    """
+    from promptops_app.database import BlueprintVersion, ModuleBlueprint
+    from promptops_app.parsers.blueprint_parser import parse_blueprint_components
+    from promptops_app.repositories import blueprint_repository
+    from promptops_app.repositories.course_repository import get_course_by_id, set_active_blueprint
+    from promptops_app.services.audit_service import log_audit_event
+    from promptops_app.services.outline_import_service import normalize_import
+    from promptops_app.services.usage_service import UsageLogContext
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty.")
+
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=project_id,
+        course_id=course_id,
+        entity_type="outline_import",
+    )
+
+    try:
+        result = normalize_import(
+            file.filename or "outline",
+            raw,
+            course_title=course_title,
+            document_title=document_title,
+            day_hint=day_number,
+            model_choice=model_choice,
+            usage_ctx=usage_ctx,
+        )
+    except ValueError as exc:
+        # Content/format problem the user can fix (wrong type, empty file) — a
+        # clean 400, not a 500.
+        raise HTTPException(400, str(exc)) from exc
+
+    day = result.day_number
+    if not day:
+        # No day in the file and none selected in the dropdown — we cannot place
+        # the Outline on a day, so refuse rather than guess. The frontend sends the
+        # selected day as a fallback, so this only fires when neither is available.
+        raise HTTPException(
+            400,
+            "We couldn't tell which day this Outline is for. Please open the day "
+            "dropdown, select the day, and upload the file again.",
+        )
+
+    generation_params = {
+        "prompt_source": "imported",
+        "import_method": result.method,
+        "source_filename": file.filename,
+        "is_dlu": result.is_dlu,
+        "import_warnings": result.warnings,
+        "day_number": day,
+        "topic": result.topic,
+        "cdd_id": cdd_id,
+    }
+    change_reason = f"Imported from {file.filename}"
+
+    # Find a live Outline already covering this day in this course. A DLU day
+    # Outline is titled "Day N: <topic> Blueprint", so an explicit "Day N" title
+    # prefix identifies the day without a dedicated column. The match is title-
+    # prefix only (not the module-number fallback parse_day_and_title also does),
+    # so a same-numbered Module blueprint is never mistaken for a day Outline and
+    # can't have an Outline version grafted onto its history. Prefer the course's
+    # pinned Outline when it is one of the matches, else the most recent (the list
+    # is newest-first).
+    def _title_day(title: str):
+        m = re.match(r"(?i)^\s*day\s+(\d+)\b", title or "")
+        return int(m.group(1)) if m else None
+
+    course = get_course_by_id(db, course_id)
+    pinned_id = course.active_blueprint_id if course else None
+    candidates = [
+        bp for bp in blueprint_repository.list_blueprints_for_course(db, course_id=course_id, project_id=project_id)
+        if _title_day(bp.title) == day
+    ]
+    target = next((bp for bp in candidates if bp.id == pinned_id), None) or (candidates[0] if candidates else None)
+
+    if target is not None:
+        # Existing Outline for this day → append a new version (history kept).
+        version_record = blueprint_repository.create_blueprint_version(
+            db, target,
+            content=result.raw_output,
+            sections_json=json.dumps(result.sections),
+            generation_params_json=json.dumps(generation_params),
+            change_summary=change_reason,
+            created_by=current_user.username,
+        )
+        bp = target
+        bp_title = bp.title
+        was_new = False
+    else:
+        # No Outline for this day yet → create a fresh one at v1.
+        bp_title = result.derived_title
+        bp = ModuleBlueprint(
+            cdd_id=cdd_id,
+            title=bp_title,
+            module_title=f"Module {day}",
+            module_number=day,
+            active_version="v1",
+            project_id=project_id,
+            course_id=course_id,
+            created_by=current_user.username,
+        )
+        db.add(bp)
+        db.commit()
+        db.refresh(bp)
+        version_record = BlueprintVersion(
+            blueprint_id=bp.id,
+            version="v1",
+            full_content=result.raw_output,
+            sections=json.dumps(result.sections),
+            generation_params=json.dumps(generation_params),
+            change_reason=change_reason,
+            is_active=True,
+            created_by=current_user.username,
+        )
+        db.add(version_record)
+        db.commit()
+        db.refresh(version_record)
+        was_new = True
+
+    _log.info(
+        "outline_import  user=%s  course=%d  file=%r  method=%s  dlu=%s  day=%s  "
+        "bp_id=%d  new=%s  version=%s",
+        current_user.username, course_id, file.filename, result.method,
+        result.is_dlu, day, bp.id, was_new, version_record.version,
+    )
+
+    # Copy the imported Outline to DIS/S3 for retrieval and listing, exactly as
+    # the generate path does — a best-effort side effect that never blocks import.
+    try:
+        dis_client.generated_upsert_sync({
+            "generated_doc_id": f"blueprint_{bp.id}",
+            "generated_type": "blueprint",
+            "title": bp_title,
+            "content": result.raw_output,
+            "summary": result.raw_output[:500],
+            "active": True,
+            "metadata": {
+                "selected_module": f"Day {day}",
+                "module_number": day,
+                "course_id": course_id,
+                "project_id": project_id,
+                "cdd_id": cdd_id,
+                "prompt_source": "imported",
+            },
+            "source_documents_used": [],
+            "cas_ref": {"entity": "blueprint", "id": bp.id},
+            "created_by": current_user.username,
+        }, current_user=current_user)
+    except Exception as exc:
+        _log.warning("dis_imported_outline_upsert_failed blueprint_id=%s error=%s", bp.id, exc)
+
+    set_active_blueprint(db, course_id, bp.id)
+
+    components = parse_blueprint_components(version_record)
+    component_list = [BlueprintComponent(**c) for c in components]
+
+    log_audit_event(db, current_user.username, "blueprint.created",
+                    entity_type="blueprint", entity_id=bp.id,
+                    project_id=project_id, course_id=course_id,
+                    metadata={
+                        "title": bp_title,
+                        "prompt_source": "imported",
+                        "import_method": result.method,
+                        "source_filename": file.filename,
+                        "day_number": day,
+                        "new_document": was_new,
+                        "version": version_record.version,
+                        "output": result.raw_output,
+                    })
+
+    return BlueprintGenerateResponse(
+        blueprint_id=bp.id,
+        title=bp_title,
+        version=version_record.version,
+        sections_count=len(result.sections),
+        components=component_list,
+        full_content=result.raw_output,
+        model_used=(model_choice if "llm" in result.method else "import"),
+        tokens_used=None,
         auto_pinned=True,
     )
 

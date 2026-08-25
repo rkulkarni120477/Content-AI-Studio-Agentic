@@ -84,6 +84,33 @@ export const {
     },
   });
 
+/**
+ * Import an existing Outline file. Mirrors generateBlueprintThunk's outcome — the
+ * server persists AND pins the imported Outline (a new version for that day, or a
+ * new Outline), and this returns the full blueprint object so the slice can drop
+ * it into the list and set it active, showing it exactly like a generated one.
+ */
+export const importBlueprintThunk = createAsyncThunk(
+  'blueprint/import',
+  async (payload, { rejectWithValue }) => {
+    try {
+      if (!payload?.projectId) {
+        return rejectWithValue('Select a project before importing an Outline.');
+      }
+      const result = await blueprintService.importBlueprint(payload, payload.onProgress);
+      toast.success('Outline imported and set as active.');
+      return result;
+    } catch (e) {
+      // Non-technical fallback per CAS-98 AC #5 — the server's own 400 message
+      // (unsupported type, empty file, undetermined day) is surfaced when present.
+      return rejectWithValue(
+        extractErrorMessage(e)
+        || "We couldn't process this file. Please check the file format and try again.",
+      );
+    }
+  },
+);
+
 export const setActiveBlueprintThunk = createAsyncThunk(
   'blueprint/setActive',
   async ({ blueprintId, courseId }, { rejectWithValue }) => {
