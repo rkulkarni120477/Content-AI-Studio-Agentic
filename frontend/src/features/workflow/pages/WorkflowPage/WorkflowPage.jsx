@@ -81,6 +81,21 @@ function normalizeList(data) {
   return [];
 }
 
+// The reviewer/admin dropdown must always be scoped to the CURRENT tenant —
+// unlike buildApiFilters' block-listing filter, this must NOT be gated on
+// isAdmin: isAdmin means "role === 'admin'", true for an ordinary tenant
+// Admin (e.g. Cengage) exactly as much as a platform admin, so gating on it
+// blanks the tenant scope for every tenant Admin. authProjectId (the
+// caller's own tenant, from their JWT) is tried before selProject/
+// selCourse because those only get populated by visiting a Clusters/
+// Courses/Workspace page first, and stay null for a tenant Admin who opens
+// Workflow directly — authProjectId is null only for a genuine platform
+// admin (no single tenant), who falls through to whatever project, if any,
+// they've selected or filtered by.
+export function resolveReviewerProjectId({ filtersProjectId, authProjectId, selProjectId, selCourseProjectId }) {
+  return filtersProjectId ?? authProjectId ?? selProjectId ?? selCourseProjectId ?? null;
+}
+
 function filterBlocks(blocks, filters) {
   let list = [...blocks];
   if (filters.status) {
@@ -109,7 +124,7 @@ export default function WorkflowPage() {
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
   const projectsData = useAppSelector(selectProjects);
-  const { user, isAdmin, canApprove, hasPermission } = useAuth();
+  const { user, isAdmin, canApprove, hasPermission, projectId: authProjectId } = useAuth();
 
   const [approvalBlockId, setApprovalBlockId] = useState(null);
   const [reviewerName, setReviewerName] = useState('');
@@ -192,19 +207,19 @@ export default function WorkflowPage() {
 
   useEffect(() => {
     if (!canApprove && !isAdmin) return;
-    // Same project_id derivation as buildApiFilters — the reviewer list must be
-    // scoped to the tenant whose content is being reviewed, not the admin's own
-    // login tenant (isAdmin's is null), or a hard-deleted tenant's leftover
-    // admin/reviewer keeps showing up here forever (its User row survives a
-    // tenant delete; only its TenantMembership is removed).
-    const projectId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
+    const projectId = resolveReviewerProjectId({
+      filtersProjectId: filters.projectId,
+      authProjectId,
+      selProjectId: selProject?.id,
+      selCourseProjectId: selCourse?.project_id,
+    });
     api.get(USERS.REVIEWERS, projectId ? { params: { project_id: projectId } } : undefined)
       .then((res) => {
         const list = normalizeList(res);
         setReviewers(list.map((u) => u.username || u).filter(Boolean));
       })
       .catch(() => setReviewers([]));
-  }, [canApprove, isAdmin, filters.projectId, selProject?.id, selCourse?.project_id]);
+  }, [canApprove, isAdmin, filters.projectId, authProjectId, selProject?.id, selCourse?.project_id]);
 
   useEffect(() => {
     const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
