@@ -106,7 +106,7 @@ def list_courses_for_project(db, project_id: int):
 def list_courses_for_cluster(db, cluster_id: int, *, include_archived: bool = False):
     q = db.query(Course).filter(Course.cluster_id == cluster_id)
     if not include_archived:
-        # The exclusion below only ever matches is_active==False rows, so on
+        # The exclusion below only ever matches non-True is_active rows, so on
         # this default path it can only be a no-op — skip it rather than pay
         # for two correlated subqueries per row that can never change the result.
         q = q.filter(Course.is_active == True)  # noqa: E712
