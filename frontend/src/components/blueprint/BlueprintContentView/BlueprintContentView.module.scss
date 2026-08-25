@@ -14,12 +14,15 @@
   border-radius: $radius-lg;
 }
 
+// Informational, not a warning: nothing is wrong with a document that has no
+// headings — it just has one editable region instead of several. Amber read as
+// "your content is broken" and drew support questions it could not answer.
 .structureNotice {
   margin: 0;
   font-size: 0.78rem;
-  color: #92400e;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
+  color: #1e40af;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
   border-radius: $radius-md;
   padding: $space-2 $space-3;
 }
