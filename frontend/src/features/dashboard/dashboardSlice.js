@@ -23,6 +23,13 @@ const initialState = {
   isLoadingCourses:  false,
   isLoadingModels:   false,
   error: null,
+  // Project id whose cluster fetch has actually settled, or null.
+  //
+  // `clusters.items` being empty cannot tell "not loaded yet" from "this project
+  // has no categories", and `isLoadingClusters` is false until the first pending
+  // action lands — which is one paint after the component decides to fetch. A
+  // page that only checks those two renders its empty state in the gap.
+  clustersLoadedFor: null,
 };
 
 const dashboardSlice = createSlice({
@@ -37,6 +44,7 @@ const dashboardSlice = createSlice({
         state.selectedCourse  = null;
         state.clusters        = { items: [], total: 0 };
         state.courses         = { items: [], total: 0 };
+        state.clustersLoadedFor = null;
         return;
       }
       if (prevId !== payload.id) {
@@ -44,6 +52,10 @@ const dashboardSlice = createSlice({
         state.selectedCourse  = null;
         state.clusters        = { items: [], total: 0 };
         state.courses         = { items: [], total: 0 };
+        // Discarding the list without discarding the "it loaded" marker is what
+        // let a wiped list read as an empty one. A project switch races its own
+        // cluster fetch, so the marker has to go with the data.
+        state.clustersLoadedFor = null;
       }
     },
     setSelectedCluster(state, { payload }) {
@@ -73,7 +85,15 @@ const dashboardSlice = createSlice({
       .addCase(fetchProjectsThunk.rejected,  (s, { payload }) => { s.isLoadingProjects = false; s.error = payload; })
 
       .addCase(fetchClustersThunk.pending,   (s) => { s.isLoadingClusters = true; s.error = null; })
-      .addCase(fetchClustersThunk.fulfilled, (s, { payload }) => { s.isLoadingClusters = false; s.clusters = payload; })
+      // `meta.arg` is the project id the list was fetched for. Recording it (not
+      // a bare boolean) is what makes the marker survive StrictMode's double
+      // dispatch and a project switch mid-flight: a list is only "loaded" for
+      // the project it was actually fetched for.
+      .addCase(fetchClustersThunk.fulfilled, (s, { payload, meta }) => {
+        s.isLoadingClusters = false;
+        s.clusters = payload;
+        s.clustersLoadedFor = Number(meta.arg);
+      })
       .addCase(fetchClustersThunk.rejected,  (s, { payload }) => { s.isLoadingClusters = false; s.error = payload; })
 
       .addCase(fetchCoursesThunk.pending,   (s) => { s.isLoadingCourses = true; s.error = null; })
@@ -104,6 +124,7 @@ export const selectExpertDomain     = (s) => s.dashboard.expertDomain;
 export const selectTargetAudience   = (s) => s.dashboard.targetAudience;
 export const selectAudienceCategory = (s) => s.dashboard.audienceCategory;
 export const selectIsLoadingClusters = (s) => s.dashboard.isLoadingClusters;
+export const selectClustersLoadedFor = (s) => s.dashboard.clustersLoadedFor;
 export const selectIsLoadingCourses  = (s) => s.dashboard.isLoadingCourses;
 export const selectDashboardError    = (s) => s.dashboard.error;
 export const selectWorkspaceConfig = (s) => ({
