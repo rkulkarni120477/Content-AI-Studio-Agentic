@@ -272,3 +272,141 @@ class TestItRefusesRatherThanTruncate:
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["updated_content"] == "### Part I\n\nAll good."
+
+
+# ---------------------------------------------------------------------------
+# Scoped CDD context (replaces the blind 1,500-char prefix)
+# ---------------------------------------------------------------------------
+
+# A worksheet-shaped CDD, the structure real Block CDDs use. The answer to
+# "why does Day 20 read N/A" lives in the DAY-BY-DAY row, which on the real
+# document (CDD 183, 78,189 chars) sits at line 173 of 189 — far past anything
+# a 1,500-char prefix of the document could ever reach.
+WORKSHEET_CDD = {
+    # Padded to mirror the real document's proportions: on CDD 183 the row that
+    # answers the instruction sits at line 173 of 189, so a prefix of the
+    # document cannot reach it however the prefix is sized. Without this padding
+    # the whole fixture fits inside 1,500 chars and the old prefix accidentally
+    # contained the answer — the test would pass against the bug.
+    "WORKSHEET 1: INTRO TO THE BLUEPRINT": (
+        "| The Purpose of the Blueprint | The Block Blueprint is a planning "
+        "document we use to show all the elements of a course. " + ("It is a "
+        "working document that gathers the syllabus and ACS standards in one "
+        "place. ") * 40 + "|\n"
+    ),
+    "WORKSHEET 2: BLOCK OVERVIEW": (
+        "- **Block Number:** 2\n"
+        "- **Block Name:** General Science II\n"
+    ),
+    "WORKSHEET 4: ACS CODE REGISTRY": (
+        "| Code | Subject | Title |\n|---|---|---|\n"
+        "| AM.I.B | B | Aircraft Drawings |\n"
+        "| AM.I.E | E | Materials and Processes |\n"
+        "| AM.I.G | G | Cleaning and Corrosion Control |\n"
+    ),
+    "WORKSHEET 5: DAY-BY-DAY MAP": (
+        "| Day | Topic | Sources | ACS Codes |\n|---|---|---|---|\n"
+        "| Day 1 | Introduction to Aircraft Drawings | FAA-H-8083-30B Ch.4 | AM.I.B |\n"
+        "| Day 19 | Review - Cleaning and Corrosion | AC 43.13-1B Ch.6 | (review) |\n"
+        "| Day 20 | Test — Block 2: Final Exam | N/A - exam day, no handbook reading "
+        "assigned | Full-block coverage (AM.I.B, AM.I.E, AM.I.G — all codes taught "
+        "Days 1–19) |\n"
+    ),
+}
+
+
+@pytest.fixture()
+def worksheet_cdd(db, project, course):
+    """A worksheet-shaped CDD linked to the blueprint under test."""
+    import json
+
+    from promptops_app.database import CourseDesignDocument, CDDVersion
+
+    body = "\n\n".join(f"## {k}\n{v}" for k, v in WORKSHEET_CDD.items())
+    cdd = CourseDesignDocument(
+        project_id=project.id, course_id=course.id,
+        title="Block 02 — CDD", course_title=course.name, created_by="test_admin",
+    )
+    db.add(cdd)
+    db.commit()
+    db.refresh(cdd)
+    ver = CDDVersion(
+        cdd_id=cdd.id, version="v1", is_active=True, full_content=body,
+        sections=json.dumps(WORKSHEET_CDD), created_by="test_admin",
+        change_reason="seed",
+    )
+    db.add(ver)
+    db.commit()
+    return cdd
+
+
+@pytest.fixture()
+def grounded_blueprint(db, blueprint, worksheet_cdd):
+    blueprint.cdd_id = worksheet_cdd.id
+    db.commit()
+    db.refresh(blueprint)
+    return blueprint
+
+
+class TestTheCddContextIsScopedNotClipped:
+    def test_the_fixture_is_out_of_reach_of_a_prefix(self):
+        # Guards the test above: if the fixture ever shrinks back under the old
+        # 1,500-char cap, that test would pass against the unfixed code.
+        body = "\n\n".join(f"## {k}\n{v}" for k, v in WORKSHEET_CDD.items())
+        assert "Final Exam" not in body[:1500]
+
+    def test_the_day_row_that_answers_the_instruction_is_in_the_prompt(
+        self, client, auth_headers, grounded_blueprint, stub_llm,
+    ):
+        _regen(client, auth_headers, grounded_blueprint.id, section_content=CURRENT)
+        prompt = stub_llm[0]["user"]
+        assert "Test — Block 2: Final Exam" in prompt
+        assert "Full-block coverage (AM.I.B, AM.I.E, AM.I.G" in prompt
+
+    def test_the_scope_comes_from_the_blueprint_not_the_instruction(
+        self, client, auth_headers, grounded_blueprint, stub_llm,
+    ):
+        # The instruction names no day at all. The blueprint is Day 20, and the
+        # day is a property of the document — parse_scope only reads the
+        # instruction, so the route has to supply the scope itself.
+        _regen(client, auth_headers, grounded_blueprint.id,
+               feedback="fix the coverage cells", section_content=CURRENT)
+        prompt = stub_llm[0]["user"]
+        assert "Test — Block 2: Final Exam" in prompt, "Day 20 was not scoped in"
+        assert "Introduction to Aircraft Drawings" not in prompt, "Day 1 leaked in"
+
+    def test_the_context_is_labelled_authoritative(
+        self, client, auth_headers, grounded_blueprint, stub_llm,
+    ):
+        _regen(client, auth_headers, grounded_blueprint.id, section_content=CURRENT)
+        assert "authoritative" in stub_llm[0]["user"].lower()
+
+
+class TestContextFallbacks:
+    def test_a_blueprint_with_no_cdd_says_so_rather_than_sending_nothing(
+        self, client, auth_headers, blueprint, stub_llm,
+    ):
+        # `blueprint` has no cdd_id.
+        _regen(client, auth_headers, blueprint.id, section_content=CURRENT)
+        assert "No CDD linked." in stub_llm[0]["user"]
+
+    def test_the_builder_reports_which_path_it_took(self, db, grounded_blueprint):
+        import app.api.v1.routers.blueprints as R
+
+        text, prov = R._blueprint_regen_context(
+            db, grounded_blueprint, instruction="fix it",
+            section_key="Part I", section_content="",
+        )
+        assert prov["grounded"] is True
+        assert prov["scope"] == "days=20"
+        assert "day_rows" in prov["context_sources"]
+        assert text.strip()
+
+    def test_no_cdd_is_reported_as_such(self, db, blueprint):
+        import app.api.v1.routers.blueprints as R
+
+        text, prov = R._blueprint_regen_context(
+            db, blueprint, instruction="", section_key="Part I", section_content="",
+        )
+        assert prov == {"grounded": False, "reason": "no_cdd"}
+        assert text == "No CDD linked."

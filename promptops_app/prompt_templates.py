@@ -645,7 +645,7 @@ BLUEPRINT_SECTION_REGENERATE_PROMPT = """You are an instructional designer. Rege
 **Section to Regenerate:** {section_title}
 **Module Title:** {module_title}
 **Course Title:** {course_title}
-**CDD Summary:** {cdd_summary}
+**Course Design Document context (authoritative):** {cdd_summary}
 **Regeneration Instructions:** {custom_instruction}
 
 **Current content of this section — this is the text you are revising:**
@@ -1013,7 +1013,7 @@ TEACHER_BLUEPRINT_SECTION_REGENERATE_PROMPT = """You are an instructional design
 **Section to Regenerate:** {section_title}
 **Module Title:** {module_title}
 **Course Title:** {course_title}
-**CDD Summary:** {cdd_summary}
+**Course Design Document context (authoritative):** {cdd_summary}
 **Regeneration Instructions:** {custom_instruction}
 
 **Current content of this section — this is the text you are revising:**

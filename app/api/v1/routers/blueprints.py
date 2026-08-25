@@ -954,6 +954,60 @@ def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     return extract_cdd_summary(cdd_version, max_chars=max_chars) or ""
 
 
+def _blueprint_regen_context(db: Session, bp, *, instruction: str,
+                             section_key: str, section_content: str) -> tuple:
+    """Scoped CDD grounding for one blueprint regeneration: ``(text, provenance)``.
+
+    What this replaces was not a summary. ``extract_cdd_summary`` looks for
+    priority keys ("Learning Objectives", "Key Concepts & Terminology", …); a
+    worksheet-shaped CDD has none of them, so it fell through to
+    ``_cap(full_content, 1500)`` — the first 1,500 characters, cut mid-word. For
+    CDD 183 (78,189 chars) that is Worksheet 1's prose explaining what a
+    Blueprint document IS, and none of WORKSHEET 4: ACS CODE REGISTRY or
+    WORKSHEET 5: DAY-BY-DAY MAP. An instruction asking why a day's ACS cells
+    read N/A could not be answered from it, because the row that answers it
+    ("Day 20 | Test — Block 2: Final Exam | … | Full-block coverage (AM.I.B,
+    AM.I.E, AM.I.G — all codes taught Days 1–19)") sits at line 173 of 189.
+
+    ``cdd_regen_context.build_context`` selects whole units instead — block
+    overview, the scoped day's rows, the registry entries for that day's codes —
+    caps each part and the whole by TOKENS, and reports what it used. Nothing is
+    cut mid-word and nothing is dropped unreported.
+
+    The scope comes from the blueprint's own day rather than from whatever the
+    requester typed: the day is a property of the document, and ``parse_scope``
+    only reads the instruction.
+    """
+    if not getattr(bp, "cdd_id", None):
+        return "No CDD linked.", {"grounded": False, "reason": "no_cdd"}
+
+    from promptops_app.repositories import cdd_repository
+    from app.services import cdd_regen_context as regen_ctx_svc
+    from promptops_app.parsers.blueprint_parser import parse_day_and_title
+
+    cdd = cdd_repository.get_cdd_by_id(db, bp.cdd_id)
+    if cdd is None:
+        return "No CDD linked.", {"grounded": False, "reason": "cdd_missing"}
+
+    day, _topic = parse_day_and_title(bp.title, bp.module_number)
+    scoped_instruction = f"Day {day} {instruction}".strip() if day else (instruction or "")
+
+    context = regen_ctx_svc.build_context(
+        db, cdd, section_key=section_key,
+        instruction=scoped_instruction, section_content=section_content,
+    )
+    if context.is_grounded:
+        return context.text, context.provenance()
+
+    # Not every CDD is worksheet-shaped — one authored before that structure has
+    # no rows to scope to. Falling back to the old behaviour is worse context but
+    # it is not nothing, and the provenance says which path was taken.
+    fallback = _blueprint_cdd_summary(db, bp, max_chars=1500)
+    return (fallback or "No CDD linked.",
+            {"grounded": False, "reason": "cdd_not_worksheet_shaped",
+             "fallback_chars": len(fallback)})
+
+
 @router.post(
     "/{blueprint_id}/regenerate-item",
     response_model=BlueprintRegenerateItemResponse,
@@ -1048,7 +1102,12 @@ def regenerate_blueprint_section(
     bp = _get_blueprint_or_404(db, blueprint_id)
     mode = "teacher" if request_body.teacher_mode else "student"
     regen_system, _, regen_template = get_blueprint_prompts(mode)
-    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=1500)
+    cdd_summary, cdd_provenance = _blueprint_regen_context(
+        db, bp,
+        instruction=request_body.feedback or "",
+        section_key=request_body.section_key,
+        section_content=request_body.section_content or "",
+    )
 
     # Refuse before spending anything when the target cannot come back whole.
     # Whole-document regeneration is the case that matters: the model emits what
@@ -1091,8 +1150,10 @@ def regenerate_blueprint_section(
         raise LLMGenerationError("Section regeneration failed. Please try again.")
     _reject_if_truncated(result, "regenerating this section")
 
-    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s",
-              current_user.username, blueprint_id, request_body.section_key, mode)
+    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s  "
+              "grounded=%s  context=%s",
+              current_user.username, blueprint_id, request_body.section_key, mode,
+              bool((request_body.section_content or "").strip()), cdd_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 
