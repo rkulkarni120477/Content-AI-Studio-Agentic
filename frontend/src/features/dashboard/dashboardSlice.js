@@ -23,13 +23,25 @@ const initialState = {
   isLoadingCourses:  false,
   isLoadingModels:   false,
   error: null,
-  // Project id whose cluster fetch has actually settled, or null.
-  //
-  // `clusters.items` being empty cannot tell "not loaded yet" from "this project
-  // has no categories", and `isLoadingClusters` is false until the first pending
-  // action lands — which is one paint after the component decides to fetch. A
-  // page that only checks those two renders its empty state in the gap.
+  // Tracks the requestId of the most recently DISPATCHED courses/clusters
+  // fetch, so a slower/out-of-order response from an earlier, superseded
+  // fetch (e.g. the cluster-A request still in flight when the user has
+  // already navigated to cluster B, whose own fetch resolves first) can't
+  // win the race and clobber the list with the wrong project's/cluster's
+  // items — or an empty one — once it finally lands. See fetchCoursesThunk's
+  // and fetchClustersThunk's fulfilled/rejected below.
+  coursesRequestId: null,
+  clustersRequestId: null,
+  // Project/cluster id whose clusters/courses fetch has actually settled, or
+  // null. `clusters.items`/`courses.items` being empty cannot tell "not
+  // loaded yet" from "this project/cluster has none", and isLoadingClusters/
+  // isLoadingCourses is false until the first pending action lands — one
+  // paint after the component decides to fetch. A page that only checks
+  // those two can render its empty state in that gap. Set inside the
+  // requestId-guarded fulfilled below, so a superseded response can't mark
+  // the wrong project/cluster as loaded either.
   clustersLoadedFor: null,
+  coursesLoadedFor: null,
 };
 
 const dashboardSlice = createSlice({
@@ -37,31 +49,37 @@ const dashboardSlice = createSlice({
   initialState,
   reducers: {
     setSelectedProject(state, { payload }) {
+      // Only ever clears selectedCluster/selectedCourse and the *LoadedFor
+      // markers — the "current selection pointer" metadata, which really is
+      // stale once the project changes. Does NOT touch clusters/courses
+      // items: those lists are owned exclusively by fetchClustersThunk/
+      // fetchCoursesThunk's own pending/fulfilled reducers below, which
+      // already track their real fetch lifecycle. This reducer firing here
+      // too was a second, uncoordinated writer: on a hard refresh, ClustersPage/
+      // CoursesPage's own sync effect re-derives selectedProject/selectedCluster
+      // via 1-2 sequential API calls while a separate effect fetches the real
+      // list in a single call — that fetch's `fulfilled` would win the race and
+      // populate the list correctly, only for this reducer's reset to fire
+      // moments later and wipe it back to empty, rendering "No titles"/"No
+      // categories" for data that was already loaded right. Clearing the
+      // *LoadedFor markers (not the lists) still lets the page's pending gate
+      // correctly show a loader instead of the old project's stale items.
       const prevId = state.selectedProject?.id;
       state.selectedProject = payload;
-      if (!payload) {
+      if (!payload || prevId !== payload.id) {
         state.selectedCluster = null;
         state.selectedCourse  = null;
-        state.clusters        = { items: [], total: 0 };
-        state.courses         = { items: [], total: 0 };
         state.clustersLoadedFor = null;
-        return;
-      }
-      if (prevId !== payload.id) {
-        state.selectedCluster = null;
-        state.selectedCourse  = null;
-        state.clusters        = { items: [], total: 0 };
-        state.courses         = { items: [], total: 0 };
-        // Discarding the list without discarding the "it loaded" marker is what
-        // let a wiped list read as an empty one. A project switch races its own
-        // cluster fetch, so the marker has to go with the data.
-        state.clustersLoadedFor = null;
+        state.coursesLoadedFor  = null;
       }
     },
     setSelectedCluster(state, { payload }) {
+      const prevId = state.selectedCluster?.id;
       state.selectedCluster = payload;
       state.selectedCourse  = null;
-      state.courses         = { items: [], total: 0 };
+      if (!payload || prevId !== payload.id) {
+        state.coursesLoadedFor = null;
+      }
     },
     setSelectedCourse(state, { payload }) {
       state.selectedCourse = payload;
@@ -84,21 +102,45 @@ const dashboardSlice = createSlice({
       .addCase(fetchProjectsThunk.fulfilled, (s, { payload }) => { s.isLoadingProjects = false; s.projects = payload; })
       .addCase(fetchProjectsThunk.rejected,  (s, { payload }) => { s.isLoadingProjects = false; s.error = payload; })
 
-      .addCase(fetchClustersThunk.pending,   (s) => { s.isLoadingClusters = true; s.error = null; })
-      // `meta.arg` is the project id the list was fetched for. Recording it (not
-      // a bare boolean) is what makes the marker survive StrictMode's double
-      // dispatch and a project switch mid-flight: a list is only "loaded" for
-      // the project it was actually fetched for.
-      .addCase(fetchClustersThunk.fulfilled, (s, { payload, meta }) => {
-        s.isLoadingClusters = false;
-        s.clusters = payload;
-        s.clustersLoadedFor = Number(meta.arg);
+      .addCase(fetchClustersThunk.pending,   (s, action) => {
+        s.clustersRequestId = action.meta.requestId;
+        s.isLoadingClusters = true;
+        s.error = null;
       })
-      .addCase(fetchClustersThunk.rejected,  (s, { payload }) => { s.isLoadingClusters = false; s.error = payload; })
+      .addCase(fetchClustersThunk.fulfilled, (s, action) => {
+        // A superseded request (the user already navigated on before this one
+        // finished) must not overwrite what the newer, still-in-flight or
+        // already-resolved request put there — including the *LoadedFor marker,
+        // which `meta.arg` (the project id this list was actually fetched for)
+        // keys on so a late response for the previous project can't mark the
+        // new one loaded.
+        if (action.meta.requestId !== s.clustersRequestId) return;
+        s.isLoadingClusters = false;
+        s.clusters = action.payload;
+        s.clustersLoadedFor = Number(action.meta.arg);
+      })
+      .addCase(fetchClustersThunk.rejected,  (s, action) => {
+        if (action.meta.requestId !== s.clustersRequestId) return;
+        s.isLoadingClusters = false;
+        s.error = action.payload;
+      })
 
-      .addCase(fetchCoursesThunk.pending,   (s) => { s.isLoadingCourses = true; s.error = null; })
-      .addCase(fetchCoursesThunk.fulfilled, (s, { payload }) => { s.isLoadingCourses = false; s.courses = payload; })
-      .addCase(fetchCoursesThunk.rejected,  (s, { payload }) => { s.isLoadingCourses = false; s.error = payload; })
+      .addCase(fetchCoursesThunk.pending,   (s, action) => {
+        s.coursesRequestId = action.meta.requestId;
+        s.isLoadingCourses = true;
+        s.error = null;
+      })
+      .addCase(fetchCoursesThunk.fulfilled, (s, action) => {
+        if (action.meta.requestId !== s.coursesRequestId) return;
+        s.isLoadingCourses = false;
+        s.courses = action.payload;
+        s.coursesLoadedFor = Number(action.meta.arg);
+      })
+      .addCase(fetchCoursesThunk.rejected,  (s, action) => {
+        if (action.meta.requestId !== s.coursesRequestId) return;
+        s.isLoadingCourses = false;
+        s.error = action.payload;
+      })
 
       .addCase(fetchModelsThunk.fulfilled, (s, { payload }) => { s.models = payload; });
   },
@@ -126,6 +168,7 @@ export const selectAudienceCategory = (s) => s.dashboard.audienceCategory;
 export const selectIsLoadingClusters = (s) => s.dashboard.isLoadingClusters;
 export const selectClustersLoadedFor = (s) => s.dashboard.clustersLoadedFor;
 export const selectIsLoadingCourses  = (s) => s.dashboard.isLoadingCourses;
+export const selectCoursesLoadedFor  = (s) => s.dashboard.coursesLoadedFor;
 export const selectDashboardError    = (s) => s.dashboard.error;
 export const selectWorkspaceConfig = (s) => ({
   modelChoice:      s.dashboard.modelChoice,

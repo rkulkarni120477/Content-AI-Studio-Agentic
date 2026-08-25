@@ -74,9 +74,9 @@ export default function ClustersPage() {
   }, [pid, selProj?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
   // Fetch only once the project is the selected one. Firing on mount instead
-  // raced setSelectedProject, which clears the cluster list on a project change
-  // — so a list that had already arrived was thrown away, and the request that
-  // fetched it was wasted. Keyed on selProj?.id, this runs after the clear.
+  // raced setSelectedProject, which clears clustersLoadedFor on a project
+  // change — so a request fired before the clear would land marked for the
+  // wrong project. Keyed on selProj?.id, this runs after that clear.
   useEffect(() => {
     if (pid && selProj?.id === pid) dispatch(fetchClustersThunk(pid));
   }, [pid, selProj?.id, dispatch]);

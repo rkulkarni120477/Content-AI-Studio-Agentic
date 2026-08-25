@@ -194,38 +194,55 @@ describe('dashboardSlice — the loaded marker tracks the project', () => {
     return store.getState().dashboard;
   }
 
-  const fulfilled = (projectId, items) => ({
-    type: fetchClustersThunk.fulfilled.type,
-    payload: { items, total: items.length },
-    meta: { arg: projectId },
-  });
+  // fulfilled must carry the SAME requestId a prior `pending` recorded in
+  // state — the requestId guard (added to stop a superseded fetch response
+  // from clobbering a newer one) drops any fulfilled whose requestId doesn't
+  // match, and the marker is only set inside that guard.
+  const pending = (requestId, projectId) => fetchClustersThunk.pending(requestId, projectId);
+  const fulfilled = (requestId, projectId, items) => (
+    fetchClustersThunk.fulfilled({ items, total: items.length }, requestId, projectId)
+  );
 
   it('starts out having loaded nothing', () => {
     expect(reduce([]).clustersLoadedFor).toBeNull();
   });
 
   it('records the project a list was fetched for', () => {
-    expect(reduce([fulfilled(23, [cluster(1, 'A')])]).clustersLoadedFor).toBe(23);
+    const state = reduce([pending('r1', 23), fulfilled('r1', 23, [cluster(1, 'A')])]);
+    expect(state.clustersLoadedFor).toBe(23);
   });
 
   it('drops the marker with the data when the project changes', () => {
     const state = reduce([
       setSelectedProject(PROJECT),
-      fulfilled(23, [cluster(1, 'A')]),
+      pending('r1', 23),
+      fulfilled('r1', 23, [cluster(1, 'A')]),
       setSelectedProject({ id: 29, name: 'Cengage' }),
     ]);
     // The regression: the list was cleared but still read as "loaded, empty".
-    expect(state.clusters.items).toEqual([]);
     expect(state.clustersLoadedFor).toBeNull();
   });
 
   it('keeps the marker when the same project is re-selected', () => {
     const state = reduce([
       setSelectedProject(PROJECT),
-      fulfilled(23, [cluster(1, 'A')]),
+      pending('r1', 23),
+      fulfilled('r1', 23, [cluster(1, 'A')]),
       setSelectedProject(PROJECT),
     ]);
     expect(state.clusters.items).toHaveLength(1);
     expect(state.clustersLoadedFor).toBe(23);
+  });
+
+  it('a superseded fulfilled cannot set the marker for the wrong project', () => {
+    // request-A (project 23) is still in flight when the user has already
+    // moved on to project 29 (request-B) by the time A's response lands.
+    const state = reduce([
+      pending('request-A', 23),
+      pending('request-B', 29),
+      fulfilled('request-A', 23, [cluster(1, 'A')]),
+    ]);
+    expect(state.clustersLoadedFor).toBeNull();
+    expect(state.isLoadingClusters).toBe(true);
   });
 });
