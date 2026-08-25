@@ -62,6 +62,11 @@ export const blueprintService = {
       project_id: data.project_id,
       cdd_id: data.cdd_id ?? null,
       selected_module: data.selected_module,
+      document_title: data.document_title || undefined,
+      // Dropping this made every course-end item (capstone, appendix) persist
+      // with a module number scraped out of its label instead of the 0 sentinel
+      // the server reserves for them.
+      is_course_end: Boolean(data.is_course_end),
       day_number: data.day_number ?? undefined,
       extra_instructions: data.extra_instructions || '',
       style_id: data.style_id ?? null,

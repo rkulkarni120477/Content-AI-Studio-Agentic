@@ -1,7 +1,11 @@
 /**
  * Blueprint section parsing & UI filtering (Streamlit render_blueprint_content parity).
  */
-import { detectDluBlueprint, parseDluBlueprintSections } from './dluBlueprint';
+import {
+  detectDluBlueprint,
+  firstDluPartLine,
+  parseDluBlueprintSections,
+} from './dluBlueprint';
 
 const BP_UI_HIDDEN_SECTION_KEYS = [
   'step 1 module identification',
@@ -92,7 +96,49 @@ export function normalizeBlueprintSectionTitle(title) {
 }
 
 /**
- * @returns {{ title: string, content: string }[]}
+ * Title of the synthetic section that stands in for a document whose structure
+ * no parser recognised. Sections carrying `whole: true` are the WHOLE document,
+ * so an edit to one replaces the document rather than being spliced into it.
+ */
+export const WHOLE_DOCUMENT_SECTION_TITLE = 'Full Document';
+
+/**
+ * True when a `## ` section starts after `lineIdx`.
+ *
+ * The DLU parser assigns every line after the last part header to that part, so
+ * reshaping a document into DLU parts is only safe when nothing structural
+ * follows them. A blueprint that nests "### 1. TODAY'S MISSION … ### 5. DAY
+ * REFLECTION" under "## SECTION OUTLINES" and then continues with "## OPEN
+ * ITEMS" / "## SUMMARY" is a `## `-sectioned document, not a DLU-shaped one:
+ * treating it as DLU buries those trailing sections inside Day Reflection,
+ * where regenerating Day Reflection deletes them. Real shape — blueprints 223
+ * and 224. The canonical DLU outline puts its own `## ` blocks ABOVE the parts
+ * for this reason, so it passes.
+ */
+function hasSectionHeadingAfter(fullContent, lineIdx) {
+  if (lineIdx < 0) return false;
+  return (fullContent || '')
+    .split('\n')
+    .slice(lineIdx + 1)
+    // Same predicate parseSectionsFromText uses, so the two agree on what a
+    // section heading is ("### " has three hashes and does not match).
+    .some((line) => line.startsWith('## '));
+}
+
+/**
+ * @returns {{ title: string, content: string, dlu?: boolean, whole?: boolean }[]}
+ *
+ * `dlu: true` marks a DLU part — an edit to one is spliced back by
+ * `replaceDluBlueprintSection`. `whole: true` marks the whole document. Callers
+ * must carry these flags into their save/regenerate path rather than re-deriving
+ * the shape, or the splice can disagree with what was displayed.
+ *
+ * Never returns [] for a document that has content: when neither the DLU parser
+ * nor the `## ` parser finds anything, the document is returned as one
+ * whole-document section. The page renders its editing controls per section, so
+ * an empty list used to mean the reader lost Save, Regenerate and per-item
+ * regeneration with nothing on screen saying why — a silent, shape-dependent
+ * loss of every control on the page.
  */
 export function buildBlueprintUiSections(fullContent, sectionsObj) {
   // DLU (day-based) blueprints aren't organised as `## ` sections — they use a
@@ -101,9 +147,10 @@ export function buildBlueprintUiSections(fullContent, sectionsObj) {
   // (no normalize/strip) so the splice-back in BlueprintPage matches exactly.
   // Standard blueprints have no DLU markers -> detectDluBlueprint false -> the
   // existing `## ` logic below runs unchanged.
-  if (detectDluBlueprint(fullContent)) {
+  if (detectDluBlueprint(fullContent)
+      && !hasSectionHeadingAfter(fullContent, firstDluPartLine(fullContent))) {
     const dlu = parseDluBlueprintSections(fullContent)
-      .map((s) => ({ title: s.title, content: (s.content || '').trim() }))
+      .map((s) => ({ title: s.title, content: (s.content || '').trim(), dlu: true }))
       .filter((s) => s.content);
     if (dlu.length) return dlu;
   }
@@ -125,5 +172,12 @@ export function buildBlueprintUiSections(fullContent, sectionsObj) {
       content: stripped,
     });
   });
+  if (items.length === 0) {
+    // Verbatim, not stripped: this content is committed back as the whole
+    // document, so removing the UI-hidden validation lines here would delete
+    // them from the stored blueprint on the first save.
+    const whole = (fullContent || '').trim();
+    if (whole) return [{ title: WHOLE_DOCUMENT_SECTION_TITLE, content: whole, whole: true }];
+  }
   return items;
 }
