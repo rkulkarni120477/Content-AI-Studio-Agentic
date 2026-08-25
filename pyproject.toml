@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=70", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "content-ai-api"
@@ -46,6 +46,15 @@ dependencies = [
     "pypdf>=4.2",
     "openpyxl>=3.1",
 
+    # --- Document extraction ---
+    "python-pptx>=1.0",   # PPTX extraction (dis_backend extractors, file_parser)
+    "pypdfium2>=4.30",    # mandatory PDF path above PDF_LARGE_BYTES; last-resort fallback
+    "tiktoken>=0.8",      # token counting in promptops_app.core.config
+
+    # --- Sanitization / filesystem watch (unguarded top-level imports) ---
+    "nh3>=0.2",           # promptops_app.services.content_sanitizer
+    "watchdog>=4.0",      # dis_backend.deploy.folder_watcher
+
     # --- Utilities ---
     "pandas>=2.2",
 ]
@@ -61,6 +70,14 @@ dev = [
     "mypy>=1.12",
     "pre-commit>=4.0",
 ]
+
+# ---------------------------------------------------------------------------
+# Packaging — flat layout, so name the importable packages explicitly.
+# Without this, setuptools aborts on the sibling asset dirs (logs/, data/,
+# frontend/, node_modules/, …) it discovers at the repo root.
+# ---------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+include = ["app*", "promptops_app*", "config*"]
 
 # ---------------------------------------------------------------------------
 # Ruff — linter and formatter (replaces Black + Flake8 + isort)

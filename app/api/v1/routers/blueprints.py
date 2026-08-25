@@ -411,7 +411,11 @@ def generate_blueprint(
     sections = parse_sections_from_text(raw_output)
 
     # Persist blueprint.
-    bp_title = f"{request_body.selected_module} Blueprint"
+    # The requester's own title wins; the module-derived one is the default, not
+    # the rule. bp.title is not merely a label — it feeds the Generate page's DLU
+    # day dropdown (parse_day_and_title) and the section-regeneration prompt — so
+    # it is stored trimmed and never blank.
+    bp_title = (request_body.document_title or "").strip() or f"{request_body.selected_module} Blueprint"
     if request_body.is_course_end:
         # Sentinel for course-level end items (capstones, etc.) — distinguishes
         # them from real modules, which are always >= 1.
