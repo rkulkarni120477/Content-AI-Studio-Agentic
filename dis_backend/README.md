@@ -4,6 +4,9 @@ This version uses one agent per pipeline step and a config-driven tenant/client 
 
 ## Important design decisions
 
+How: add one line to dis_backend/.env:
+  DIS_MAX_CONCURRENT_PIPELINES=3
+
 - API title: `DIS Ingestion System`
 - Pipeline orchestration: `services/pipeline/graph.py`
 - Agent registry/order: `services/agents/registry.py`

@@ -443,6 +443,18 @@ export default function SourceLibraryPage() {
       setError('Please select one or more files, or a folder.');
       return;
     }
+    // Cap the total size of one upload (folder or multi-file). Keeps DIS memory
+    // bounded and stops accidental huge batches. Nothing is queued/uploaded when
+    // this trips — the user just re-selects a smaller batch.
+    const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB total per upload
+    const totalBytes = entries.reduce((sum, e) => sum + (e.file?.size || 0), 0);
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      const totalMB = Math.round(totalBytes / (1024 * 1024));
+      const msg = `This selection is ${totalMB} MB. You can upload up to 500 MB at once — please upload in smaller batches.`;
+      toast.error(msg);
+      setError(msg);
+      return;
+    }
     const selectedPurpose = String(rawForm.get('purpose') || 'general_reference');
     const selectedDocumentType = String(rawForm.get('document_type') || '').trim();
     const queue = entries.map((entry, idx) => ({
