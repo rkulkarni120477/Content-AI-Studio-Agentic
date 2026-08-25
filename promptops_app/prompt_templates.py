@@ -645,8 +645,21 @@ BLUEPRINT_SECTION_REGENERATE_PROMPT = """You are an instructional designer. Rege
 **Section to Regenerate:** {section_title}
 **Module Title:** {module_title}
 **Course Title:** {course_title}
-**CDD Summary:** {cdd_summary}
+**Course Design Document context (authoritative):** {cdd_summary}
 **Regeneration Instructions:** {custom_instruction}
+
+**Current content of this section — this is the text you are revising:**
+---
+{current_content}
+---
+
+Revise the current content above. It is the source of truth for everything the
+revision instructions do not ask you to change: keep its facts, tables, rows,
+headings, codes and ordering intact, and change only what the instructions call
+for. Do NOT replace it with a fresh draft, do NOT drop detail because you cannot
+verify it, and do NOT invent structure that is neither already present nor asked
+for. If the current content above is empty, draft the section from the CDD
+summary instead.
 
 Return ONLY the content for this section (do not repeat the heading). Be specific and actionable."""
 
@@ -1000,8 +1013,21 @@ TEACHER_BLUEPRINT_SECTION_REGENERATE_PROMPT = """You are an instructional design
 **Section to Regenerate:** {section_title}
 **Module Title:** {module_title}
 **Course Title:** {course_title}
-**CDD Summary:** {cdd_summary}
+**Course Design Document context (authoritative):** {cdd_summary}
 **Regeneration Instructions:** {custom_instruction}
+
+**Current content of this section — this is the text you are revising:**
+---
+{current_content}
+---
+
+Revise the current content above. It is the source of truth for everything the
+revision instructions do not ask you to change: keep its facts, tables, rows,
+headings, codes and ordering intact, and change only what the instructions call
+for. Do NOT replace it with a fresh draft, do NOT drop detail because you cannot
+verify it, and do NOT invent structure that is neither already present nor asked
+for. If the current content above is empty, draft the section from the CDD
+summary instead.
 
 Return ONLY the content for this section. Ensure:
 - clarity for teacher usage

@@ -914,6 +914,34 @@ def create_blueprint_version(blueprint_id: int, request_body: BlueprintVersionCr
 # Regeneration (AI) — ports the Streamlit blueprint regenerate controls
 # ---------------------------------------------------------------------------
 
+def _reject_if_truncated(result, what: str) -> None:
+    """Raise rather than let a fragment overwrite a stored blueprint.
+
+    The model's own output cap is the one bound content may hit, but a reply that
+    hit it is a fragment with nothing to say so: the prose reads as finished and
+    the caller splices it straight back over the section it replaced. Committing
+    that loses the tail silently, which is strictly worse than failing — a
+    failure the user can see, they can act on by narrowing the request or picking
+    a model with more output range.
+
+    Mirrors ``_reject_if_truncated`` in the CDD router. Kept local rather than
+    shared so the log line names the entity, and so hardening this path does not
+    require editing the CDD one.
+    """
+    if not getattr(result, "truncated", False):
+        return
+    _log.error(
+        "blueprint_llm_output_truncated  what=%s  model=%s  stop_reason=%s  completion_tokens=%s",
+        what, getattr(result, "model", "?"), getattr(result, "stop_reason", None),
+        getattr(result, "completion_tokens", None),
+    )
+    raise LLMGenerationError(
+        f"The model ran out of output room part-way through {what}, so the reply "
+        f"is incomplete and was not applied — nothing was changed. Narrow the "
+        f"request, or choose a model with a larger output limit."
+    )
+
+
 def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     """Return a short CDD summary for a blueprint's linked CDD, or '' if none."""
     if not getattr(bp, "cdd_id", None):
@@ -924,6 +952,60 @@ def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     if not cdd_version:
         return ""
     return extract_cdd_summary(cdd_version, max_chars=max_chars) or ""
+
+
+def _blueprint_regen_context(db: Session, bp, *, instruction: str,
+                             section_key: str, section_content: str) -> tuple:
+    """Scoped CDD grounding for one blueprint regeneration: ``(text, provenance)``.
+
+    What this replaces was not a summary. ``extract_cdd_summary`` looks for
+    priority keys ("Learning Objectives", "Key Concepts & Terminology", …); a
+    worksheet-shaped CDD has none of them, so it fell through to
+    ``_cap(full_content, 1500)`` — the first 1,500 characters, cut mid-word. For
+    CDD 183 (78,189 chars) that is Worksheet 1's prose explaining what a
+    Blueprint document IS, and none of WORKSHEET 4: ACS CODE REGISTRY or
+    WORKSHEET 5: DAY-BY-DAY MAP. An instruction asking why a day's ACS cells
+    read N/A could not be answered from it, because the row that answers it
+    ("Day 20 | Test — Block 2: Final Exam | … | Full-block coverage (AM.I.B,
+    AM.I.E, AM.I.G — all codes taught Days 1–19)") sits at line 173 of 189.
+
+    ``cdd_regen_context.build_context`` selects whole units instead — block
+    overview, the scoped day's rows, the registry entries for that day's codes —
+    caps each part and the whole by TOKENS, and reports what it used. Nothing is
+    cut mid-word and nothing is dropped unreported.
+
+    The scope comes from the blueprint's own day rather than from whatever the
+    requester typed: the day is a property of the document, and ``parse_scope``
+    only reads the instruction.
+    """
+    if not getattr(bp, "cdd_id", None):
+        return "No CDD linked.", {"grounded": False, "reason": "no_cdd"}
+
+    from promptops_app.repositories import cdd_repository
+    from app.services import cdd_regen_context as regen_ctx_svc
+    from promptops_app.parsers.blueprint_parser import parse_day_and_title
+
+    cdd = cdd_repository.get_cdd_by_id(db, bp.cdd_id)
+    if cdd is None:
+        return "No CDD linked.", {"grounded": False, "reason": "cdd_missing"}
+
+    day, _topic = parse_day_and_title(bp.title, bp.module_number)
+    scoped_instruction = f"Day {day} {instruction}".strip() if day else (instruction or "")
+
+    context = regen_ctx_svc.build_context(
+        db, cdd, section_key=section_key,
+        instruction=scoped_instruction, section_content=section_content,
+    )
+    if context.is_grounded:
+        return context.text, context.provenance()
+
+    # Not every CDD is worksheet-shaped — one authored before that structure has
+    # no rows to scope to. Falling back to the old behaviour is worse context but
+    # it is not nothing, and the provenance says which path was taken.
+    fallback = _blueprint_cdd_summary(db, bp, max_chars=1500)
+    return (fallback or "No CDD linked.",
+            {"grounded": False, "reason": "cdd_not_worksheet_shaped",
+             "fallback_chars": len(fallback)})
 
 
 @router.post(
@@ -1013,13 +1095,31 @@ def regenerate_blueprint_section(
     Stateless: returns the new section content; the frontend commits a version.
     """
     from promptops_app.parsers.blueprint_parser import get_blueprint_prompts
-    from promptops_app.services.llm_service import generate_text as call_llm
+    from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
+    from app.services import cdd_regen_context as regen_ctx_svc
 
     bp = _get_blueprint_or_404(db, blueprint_id)
     mode = "teacher" if request_body.teacher_mode else "student"
     regen_system, _, regen_template = get_blueprint_prompts(mode)
-    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=1500)
+    cdd_summary, cdd_provenance = _blueprint_regen_context(
+        db, bp,
+        instruction=request_body.feedback or "",
+        section_key=request_body.section_key,
+        section_content=request_body.section_content or "",
+    )
+
+    # Refuse before spending anything when the target cannot come back whole.
+    # Whole-document regeneration is the case that matters: the model emits what
+    # fits, the page splices it in, and the commit succeeds with the tail gone.
+    # The helper is entity-agnostic (text + model + label), so this is the same
+    # guard the CDD path already uses.
+    if (request_body.section_content or "").strip():
+        regen_ctx_svc.assert_can_emit(
+            request_body.section_content,
+            model_choice=request_body.model_choice,
+            label=f'The "{request_body.section_key}" section',
+        )
 
     regen_prompt = regen_template.format(
         section_title=request_body.section_key,
@@ -1027,17 +1127,33 @@ def regenerate_blueprint_section(
         course_title=bp.title,
         cdd_summary=cdd_summary or "No CDD linked.",
         custom_instruction=request_body.feedback or "Improve this section.",
+        # Sent in full, never clipped: the caller is asking for a revision of THIS
+        # text, and a section trimmed to fit is a section the model will silently
+        # finish from its own assumptions.
+        current_content=request_body.section_content or "",
     )
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
         entity_type="blueprint_section_regen", entity_id=str(blueprint_id),
     )
-    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt, usage_ctx)
+    # generate_with_metadata, not generate_text: the latter returns a bare string,
+    # so this route could neither ask for the model's real output ceiling (it
+    # inherited a flat default, capping a 64k model at a quarter of its range) nor
+    # see whether the reply hit that ceiling. Both matter when the reply is about
+    # to overwrite stored content.
+    result = generate_with_metadata(
+        request_body.model_choice, regen_system, regen_prompt, usage_ctx,
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
+    )
+    new_content = f"ERROR: {result.text}" if result.is_error else result.text
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
+    _reject_if_truncated(result, "regenerating this section")
 
-    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s",
-              current_user.username, blueprint_id, request_body.section_key, mode)
+    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s  "
+              "grounded=%s  context=%s",
+              current_user.username, blueprint_id, request_body.section_key, mode,
+              bool((request_body.section_content or "").strip()), cdd_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 

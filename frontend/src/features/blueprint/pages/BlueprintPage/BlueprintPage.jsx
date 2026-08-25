@@ -496,11 +496,17 @@ export default function BlueprintPage() {
     }
   }
 
-  async function onRegenerateBlueprintSection({ sectionTitle, instruction, ...shape }) {
+  async function onRegenerateBlueprintSection({
+    sectionTitle, sectionContent, instruction, ...shape
+  }) {
     if (!displayBp?.id) return;
     const res = await dispatch(regenerateBlueprintSectionThunk({
       blueprintId: displayBp.id,
       sectionKey: sectionTitle,
+      // Ground the regeneration in the text on screen. Without this the model
+      // is handed only a title, a module name and a 1500-char CDD summary, and
+      // what comes back is a plausible replacement rather than a revision.
+      sectionContent,
       feedback: instruction,
       modelChoice,
       teacherMode: viewMode === 'teacher',

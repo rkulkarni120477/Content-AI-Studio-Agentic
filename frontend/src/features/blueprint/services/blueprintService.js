@@ -133,6 +133,9 @@ export const blueprintService = {
   }),
   regenerateSection: (id, data) => api.post(BLUEPRINT.REGENERATE_SECTION(id), {
     section_key: data.sectionKey,
+    // The text being revised. Omitting it is what let "Regenerate Section"
+    // return a fresh draft that had never seen the section it replaced.
+    section_content: data.sectionContent || '',
     feedback: data.feedback || '',
     model_choice: data.modelChoice,
     teacher_mode: Boolean(data.teacherMode),

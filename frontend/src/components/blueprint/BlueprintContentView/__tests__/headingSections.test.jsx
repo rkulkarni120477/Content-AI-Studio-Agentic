@@ -195,3 +195,46 @@ describe('a document with no headings at all', () => {
     expect(arg.headingLocator).toBeUndefined();
   });
 });
+
+describe('regeneration is grounded in the text on screen', () => {
+  // The prompt is built from the section title, the module name and a 1500-char
+  // CDD summary. Without the current text the model cannot revise anything — it
+  // drafts a replacement it has never seen, which is how a Day 20 exam blueprint
+  // came back as generic "Lesson 1/2/3" filler (blueprint_versions 396 -> 397).
+  it('sends the section body when regenerating a section', () => {
+    renderView(H3_DOC);
+    openSection('Screen: Quick Check');
+    fireEvent.click(screen.getByRole('button', { name: /Regenerate Section/ }));
+    expect(onRegenerateSection.mock.calls[0][0].sectionContent).toBe('- Item one\n- Item two');
+  });
+
+  it('sends the whole document when regenerating a whole-document section', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      renderView(NO_HEADINGS);
+      fireEvent.change(screen.getByLabelText(/Edit reason/), { target: { value: 'fix it' } });
+      fireEvent.click(screen.getByRole('button', { name: /Regenerate Whole Document/ }));
+      const arg = onRegenerateSection.mock.calls[0][0];
+      expect(arg.sectionContent).toBe(NO_HEADINGS);
+      expect(arg.isWholeDocument).toBe(true);
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('no longer promises that the current text is withheld', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      renderView(NO_HEADINGS);
+      fireEvent.change(screen.getByLabelText(/Edit reason/), { target: { value: 'fix it' } });
+      fireEvent.click(screen.getByRole('button', { name: /Regenerate Whole Document/ }));
+      const shown = confirmSpy.mock.calls[0][0];
+      expect(shown).toMatch(/given the current text/i);
+      expect(shown).not.toMatch(/not sent to the model/i);
+      // Cancelling must spend nothing.
+      expect(onRegenerateSection).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+});
