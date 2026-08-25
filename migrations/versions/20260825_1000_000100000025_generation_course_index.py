@@ -1,6 +1,6 @@
 """Index generations.course_id.
 
-_empty_shell_course_ids (course_repository.py) runs a correlated
+_is_empty_import_shell (course_repository.py) runs a correlated
 ``NOT EXISTS (SELECT 1 FROM generations WHERE course_id = courses.id)`` per
 candidate course on every Titles-page load (list_courses_for_cluster).
 ``generations`` holds one row per generated block — the highest-volume table
@@ -11,9 +11,17 @@ generations.course_id to parity.
 
 Built CONCURRENTLY: a plain CREATE INDEX takes ACCESS EXCLUSIVE on
 ``generations`` for the whole build, stalling writes to the highest-volume
-table in the schema. CONCURRENTLY needs autocommit (no surrounding
-transaction) and can leave an invalid index behind if it fails, which
-if_not_exists/if_exists (alembic 1.16+) let a rerun clean up.
+table in the schema. CONCURRENTLY needs autocommit, hence the
+``autocommit_block``.
+
+The upgrade drops before it creates rather than using ``if_not_exists``: a
+CREATE INDEX CONCURRENTLY that fails part-way (lock timeout, deadlock,
+cancellation) leaves an *invalid* index behind — one the planner ignores
+entirely. ``IF NOT EXISTS`` resolves by relation name, and an invalid index
+still holds its name, so a rerun would silently skip the rebuild and report
+success while leaving the full table scan this migration exists to remove.
+Dropping first makes the rerun self-healing; on a first run the drop is a
+no-op.
 
 Revision ID: 000100000025
 Revises: 000100000024
@@ -29,9 +37,13 @@ depends_on = None
 
 def upgrade() -> None:
     with op.get_context().autocommit_block():
+        op.drop_index(
+            "ix_generations_course_id", table_name="generations",
+            if_exists=True, postgresql_concurrently=True,
+        )
         op.create_index(
             "ix_generations_course_id", "generations", ["course_id"],
-            if_not_exists=True, postgresql_concurrently=True,
+            postgresql_concurrently=True,
         )
 
 

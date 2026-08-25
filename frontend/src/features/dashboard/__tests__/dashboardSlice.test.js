@@ -15,9 +15,12 @@ import { fetchCoursesThunk, fetchClustersThunk } from '@features/dashboard/dashb
 // moments later and wipe courses/clusters back to empty, rendering
 // "No titles"/"No categories" for data that was already loaded right.
 // These reducers must only ever touch the *selection pointer*
-// (selectedCluster/selectedCourse), never the fetched lists — those are
-// owned exclusively by fetchClustersThunk/fetchCoursesThunk's own
-// pending/fulfilled cases.
+// (selectedCluster/selectedCourse) and the clustersLoadedFor/coursesLoadedFor
+// markers, never the fetched lists — those are owned exclusively by
+// fetchClustersThunk/fetchCoursesThunk's own pending/fulfilled cases.
+// Clearing a marker is what makes a page show its loader instead of the
+// previous project's/cluster's items; clearing the list is what used to
+// wipe correctly-loaded data.
 
 const baseState = {
   projects: { items: [], total: 0 },
