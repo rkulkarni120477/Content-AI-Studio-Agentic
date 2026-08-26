@@ -165,7 +165,7 @@ export default function ClustersPage() {
       </div>
 
       {cpMgrOpen && canManage && (
-        <ClusterPromptManager clusters={clusters?.items || []} />
+        <ClusterPromptManager clusters={clusterItems} />
       )}
 
       {clustersPending ? (

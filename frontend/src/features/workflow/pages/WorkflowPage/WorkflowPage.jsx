@@ -191,8 +191,20 @@ export default function WorkflowPage() {
       .finally(() => setBreakdownLoading(false));
   }, [showAdminBreakdown]); // initial load only
 
+  // hasPermission() is a fresh function every render (not memoized in
+  // useAuth), so it's called here — during render, not inside the effect —
+  // and only the resulting boolean goes in the effect's dependency array.
+  const canSubmitForReview = hasPermission('workflow.submit');
+
   useEffect(() => {
-    if (!canApprove && !isAdmin) return;
+    // Needed by both the Reviewer filter (canApprove/isAdmin, browsing) and
+    // the Assign Reviewer select in Available Actions, which is shown to
+    // whoever holds workflow.submit — usually plain authors. Gating this on
+    // canApprove/isAdmin alone meant the list was never fetched for an
+    // author submitting their own draft, so their Assign Reviewer select
+    // always read "(no reviewers available)" regardless of who the backend
+    // would have returned.
+    if (!canApprove && !isAdmin && !canSubmitForReview) return;
     const projectId = resolveReviewerProjectId({
       filtersProjectId: filters.projectId,
       authProjectId,
@@ -205,7 +217,7 @@ export default function WorkflowPage() {
         setReviewers(list.map((u) => u.username || u).filter(Boolean));
       })
       .catch(() => setReviewers([]));
-  }, [canApprove, isAdmin, filters.projectId, authProjectId, selProject?.id, selCourse?.project_id]);
+  }, [canApprove, isAdmin, canSubmitForReview, filters.projectId, authProjectId, selProject?.id, selCourse?.project_id]);
 
   useEffect(() => {
     const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
