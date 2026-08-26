@@ -13,11 +13,14 @@ supported as overrides for deployment.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -267,19 +270,38 @@ def _membership_clients(current_user: Any) -> list[tuple[str, str]]:
     returns [] so resolution falls back to the previous (config-only) behavior.
     """
     user_id = getattr(current_user, "id", None)
-    if not user_id:
+    username = str(getattr(current_user, "username", "") or "").strip()
+    if user_id is None and not username:
         return []
     try:
-        from promptops_app.database import Project, SessionLocal, TenantMembership
+        uid: int | None = int(user_id)
+    except (TypeError, ValueError):
+        # Not a real id. A background worker rebuilds the caller from the job row and
+        # may only have the name (jobs enqueued before user_id was persisted), and
+        # int()-ing it used to raise straight into the blanket except below — turning
+        # "this user is an AIM member" into "this user has no memberships" and
+        # dropping them onto the default client. Fall back to a lookup by username.
+        uid = None
+    try:
+        from promptops_app.database import Project, SessionLocal, TenantMembership, User
         with SessionLocal() as db:
-            rows = (
+            q = (
                 db.query(Project.client_name, TenantMembership.role)
                 .join(TenantMembership, TenantMembership.project_id == Project.id)
-                .filter(TenantMembership.user_id == int(user_id), Project.is_active == True)  # noqa: E712
-                .order_by(TenantMembership.id.desc())
-                .all()
+                .filter(Project.is_active == True)  # noqa: E712
             )
-    except Exception:
+            if uid is not None:
+                q = q.filter(TenantMembership.user_id == uid)
+            else:
+                q = q.join(User, User.id == TenantMembership.user_id).filter(
+                    User.username == username)
+            rows = q.order_by(TenantMembership.id.desc()).all()
+    except Exception as exc:  # noqa: BLE001 - resolution must not fail the request
+        # Logged, not swallowed silently: every failure here downgrades the caller to
+        # the default client, and a missing tenant_memberships table or a bad id then
+        # looks exactly like "no access", with nothing anywhere saying why.
+        _log.warning("DIS membership lookup failed for user %r (id=%r): %s: %s",
+                     username, user_id, type(exc).__name__, exc)
         return []
     out: list[tuple[str, str]] = []
     for client_name, role in rows:

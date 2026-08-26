@@ -805,6 +805,38 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     # deploy while continuing to serve digests built without them.
     map_guidance_wire = compose_guidance(map_guidance, directives.map_text)
 
+    # The build request carries no client_id on the wire — DIS derives the tenant from
+    # the caller's identity headers (dis_client._headers), and drops a requested client
+    # the caller cannot prove access to. So a resolution failure does not refuse the
+    # request; it quietly points it at the DEFAULT client and enumerates the wrong
+    # Source Library. That surfaced in production as an opaque 502 from DIS
+    # ("Curriculum enumeration is not configured for this tenant") on an AIM course
+    # run by an AIM user. Check it here, where both halves are known and the answer
+    # can be said in words.
+    # Resolved defensively, exactly as cdd_deep_context does: a check that exists to
+    # protect a generation must never be the thing that fails one, and a client object
+    # without the method (or a resolver that raises) means "unknown", never "mismatch".
+    try:
+        resolved_cid = str(getattr(dis_client, "resolved_tenant_id", lambda *_a: "")(
+            current_user, dis_client_id) or "")
+    except Exception:  # noqa: BLE001
+        resolved_cid = ""
+    # getattr on `enabled`: with DIS switched off entirely there is no real tenant to
+    # disagree with, and reporting an access problem there would be a wrong answer.
+    if (dis_client_id and resolved_cid and resolved_cid != dis_client_id
+            and getattr(dis_client, "enabled", True)):
+        _log.error("block_wide_dis_client_mismatch deliverable=%s block=%s user=%s "
+                   "course_client=%s resolved_client=%s — not building",
+                   deliverable, block, getattr(current_user, "username", "?"),
+                   dis_client_id, resolved_cid)
+        _failure_reason.set(
+            f"This course's Source Library is '{dis_client_id}', but this account's DIS "
+            f"access resolves to '{resolved_cid}'. Block {block} was not built, because it "
+            f"would have enumerated the wrong client's content. Grant the account access to "
+            f"'{dis_client_id}' (a project membership, or config/dis_access.json)."
+        )
+        return None, None, directives
+
     # MAP runs inside DIS on its own Bedrock client, so it never passes through CAS's
     # usage/budget choke point in core/llm_client.py. Left alone it is the largest
     # untracked spend in the product — a measured 20-day build is ~176k input tokens
