@@ -30,6 +30,7 @@ from __future__ import annotations
 import io
 import re
 from typing import Any, Dict, List, Optional
+from services.blocks import block_label
 
 NBSP = "\xa0"
 BULLETS = "•▪◦‣·*-–—"
@@ -291,7 +292,7 @@ def build_calendar_structure(content: bytes, filename: str,
         topics_list = _split_list(joined[2])
         rec: Dict[str, Any] = {
             "day_number": day_number,
-            "block": f"Block {block_num}" if block_num else "",
+            "block": block_label(block_num) if block_num else "",
             "block_id": f"B{block_num}" if block_num else "",
             "block_number": block_num,
             "subject_unit": unit,
@@ -325,7 +326,7 @@ def build_calendar_structure(content: bytes, filename: str,
         "processing_profile": "aim_teacher_calendar",
         "profile": "aim_teacher_calendar",
         "course_name": "AIM General",
-        "block": f"Block {block_num}" if block_num else "",
+        "block": block_label(block_num) if block_num else "",
         "block_number": block_num,
         "total_days_detected": len(days),
         "days": days,

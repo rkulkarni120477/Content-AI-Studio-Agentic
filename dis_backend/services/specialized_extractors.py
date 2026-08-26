@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from config.settings import DocumentProcessingConfig, StructurePatternConfig
 
+from services.blocks import block_label
+
 DEFAULT_DOC_RULES = [
     {
         "doc_type": "syllabus",
@@ -131,8 +133,14 @@ def infer_block(filename: str, raw_text: str = "", patterns: Optional[StructureP
     if m:
         for g in m.groups():
             if g and str(g).isdigit():
-                return f"Block {int(g):02d}"
-        return m.group(0)
+                # Canonical unpadded form. This used to emit f"Block {int(g):02d}",
+                # which is where the 'Block 09' half of the split tagging came from:
+                # this writer padded while client_profiles/aim.py did not, so one
+                # block's data ended up under two tags that no `=` could reconcile.
+                # Reads normalize (services/blocks), so old padded rows still match;
+                # writing the canonical form stops the split from growing.
+                return block_label(g)
+        return block_label(m.group(0))
     return ""
 
 

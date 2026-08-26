@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from services.blocks import block_label, block_variants
 from config.settings import TenantConfig, get_settings
 
 log = logging.getLogger(__name__)
@@ -140,7 +141,7 @@ def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any]) -
         INSERT INTO {schema}.dis_course_calendars(calendar_id, document_id, job_id, tenant_id, client_id, course_name, block, total_days, structure_json)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
         ON CONFLICT(calendar_id) DO UPDATE SET structure_json=EXCLUDED.structure_json, total_days=EXCLUDED.total_days
-    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), cal.get("block"), len(cal.get("days", [])), json.dumps(cal)))
+    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), block_label(cal.get("block")), len(cal.get("days", [])), json.dumps(cal)))
     count = 0
     for day in cal.get("days", []):
         day_id = f"{calendar_id}:day_{day.get('day_number', count+1)}"
@@ -148,7 +149,7 @@ def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any]) -
             INSERT INTO {schema}.dis_calendar_days(calendar_day_id, calendar_id, document_id, job_id, tenant_id, client_id, block, day_number, week_number, topic, lesson_title, activities_json, assignments_json, assessments_json, source_text, source_location)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
             ON CONFLICT(calendar_day_id) DO UPDATE SET topic=EXCLUDED.topic, lesson_title=EXCLUDED.lesson_title, source_text=EXCLUDED.source_text
-        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("block"), day.get("day_number"), day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location")))
+        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), block_label(cal.get("block")), day.get("day_number"), day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location")))
         count += 1
     return count
 
@@ -638,9 +639,13 @@ def fetch_digests(tenant_cfg: TenantConfig, block: str, client_id: str) -> List[
     body = {
         "size": 500,
         "_source": {"excludes": ["embedding"]},
+        # terms-over-variants, not a single term: `block` is a keyword field holding
+        # whatever spelling the build was started with, so a cache keyed on the raw
+        # string silently misses (then re-runs every day's MAP, billed again) when the
+        # same block is asked for as 'Block 09' one time and 'Block 9' the next.
         "query": {"bool": {"filter": [
             {"term": {"client_id": client_id}},
-            {"term": {"block": block}},
+            {"terms": {"block": block_variants(block)}},
             {"term": {"unit_type": DIGEST_UNIT_TYPE}},
         ]}},
     }
@@ -666,7 +671,10 @@ def delete_digests(tenant_cfg: TenantConfig, block: str, client_id: str) -> Dict
             index=cfg.index_name,
             body={"query": {"bool": {"filter": [
                 {"term": {"client_id": client_id}},
-                {"term": {"block": block}},
+                # Same variant set as fetch_digests: a force-rebuild that deleted only
+                # one spelling would leave the others behind, and fetch would then
+                # serve the stale ones the rebuild existed to replace.
+                {"terms": {"block": block_variants(block)}},
                 {"term": {"unit_type": DIGEST_UNIT_TYPE}},
             ]}}},
             refresh=True,
