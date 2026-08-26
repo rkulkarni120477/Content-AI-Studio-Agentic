@@ -136,17 +136,20 @@ export const DOCUMENT_HEADER_SECTION_TITLE = 'Overview';
  * Heading levels the section parser falls back to, in preference order, when a
  * document yields no usable `## ` sections.
  *
- * `## ` is absent from the list because reaching the fallback means the `## `
- * parser already ran: either the document has no `## ` heading at all, or every
- * one it has was deliberately hidden (`isBlueprintSectionHidden`) — and
- * re-offering hidden sections through another door would defeat that.
+ * `## ` first because it is the conventional outline level and what the default
+ * blueprint_generation prompt emits ("## Step 1", "## Step 2"), then deeper
+ * levels for a document whose real structure sits below a single `## `.
  *
- * `#` comes first because a document written entirely in `# ` headings is
- * outlined by them; the two-heading floor below means a lone `# Day 9 Blueprint`
- * title line does not win and the real `### ` structure underneath does. Real
- * shape — blueprint_versions 394, a Day 9 outline that is 15 × `### ` and 0 × `## `.
+ * `#` LAST, not first. A document written entirely in `# ` headings is outlined
+ * by them, so the level has to be reachable — but `#` is normally the document
+ * title, and the two-heading floor is not enough to stop it: blueprint_versions
+ * 1 and 191 each carry TWO `# ` headings above a 7-heading and 5-heading `## `
+ * outline, so trying `#` first collapsed both documents from 4 and 3 sections
+ * into 2. Ordering it last makes it the answer only when nothing else sections
+ * the document, which is the case it was added for. Measured over all 258 stored
+ * versions: [1,2,3,4] regressed those two; [2,3,4,1] regressed none.
  */
-const HEADING_FALLBACK_LEVELS = [1, 3, 4];
+const HEADING_SECTION_LEVELS = [2, 3, 4, 1];
 
 /**
  * At least this many headings must survive filtering before a level is accepted.
@@ -263,12 +266,16 @@ export function buildHeadingSectionsAtLevel(fullContent, level) {
  * the document's own outline rather than its deepest subdivision.
  */
 export function buildHeadingFallbackSections(fullContent) {
-  for (const level of HEADING_FALLBACK_LEVELS) {
+  for (const level of HEADING_SECTION_LEVELS) {
     const built = buildHeadingSectionsAtLevel(fullContent, level);
     const headings = built.filter((s) => s.locator.startLine >= 0).length;
     if (headings >= HEADING_FALLBACK_MIN) return built;
   }
-  return [];
+  // Last resort: a single `## ` section. No level clears the two-heading floor,
+  // but one `## ` heading is still what this document offers, and sectioning by
+  // it is what happened before the levels were unified — so the outcome for
+  // these documents is unchanged rather than newly whole-document.
+  return buildHeadingSectionsAtLevel(fullContent, 2);
 }
 
 /**
@@ -374,32 +381,33 @@ export function buildBlueprintUiSections(fullContent, sectionsObj) {
     if (dlu.length) return dlu;
   }
 
-  // `## `-sectioned documents are spliced by line range like every other heading
-  // level, rather than rebuilt from a parts dict.
+  // One heuristic for every heading level, spliced back by line range.
   //
-  // The rebuild was this shape's one remaining special case, and it rewrote the
-  // WHOLE document on every single-section save or regenerate: it emitted
-  // `## <title>` + trimmed body for each dict entry and joined them, so anything
-  // above the first heading was dropped, headings at other levels were flattened
-  // to `## `, order became dict order rather than document order, blank sections
-  // disappeared, and every body was re-trimmed. Editing one section therefore
-  // reformatted the rest — and this is the shape the default
-  // blueprint_generation prompt produces ("## Step 1", "## Step 2"), so it was
-  // the common case, not an edge one.
+  // `## ` used to be special-cased here and rebuilt from a parts dict instead,
+  // which rewrote the WHOLE document on every single-section save: it emitted
+  // `## <title>` + trimmed body per dict entry and joined them, so anything above
+  // the first heading was dropped, other levels were flattened to `## `, order
+  // became key order, blank sections disappeared and every body was re-trimmed.
+  // Editing one section reformatted the rest — and since the default
+  // blueprint_generation prompt emits "## Step 1"/"## Step 2", that was the
+  // common case.
   //
-  // Sections come from fullContent rather than the stored dict because only the
-  // text carries line positions, heading levels and document order. The dict is
-  // still honoured below for a version that has one but no `## ` heading in its
-  // body.
-  const bySection = buildHeadingSectionsAtLevel(fullContent, 2);
-  if (bySection.length) return bySection;
+  // Choosing the level is now the same decision everywhere (see
+  // HEADING_SECTION_LEVELS) rather than "`## ` if present, otherwise think about
+  // it". Taking `## ` unconditionally left 220 of 241 documents with a single
+  // editable section — "Regenerate Section" meaning "regenerate everything" —
+  // even where a `### ` outline sat underneath. Applying the floor at every level
+  // instead sectioned 217 of them properly and regressed none.
+  //
+  // Sections come from fullContent, not the stored dict, because only the text
+  // carries line positions, heading levels and document order.
+  const byHeading = buildHeadingFallbackSections(fullContent);
+  if (byHeading.length) return byHeading;
 
-  let raw = {};
-  if (sectionsObj && typeof sectionsObj === 'object' && Object.keys(sectionsObj).length > 0) {
-    raw = sectionsObj;
-  } else if (fullContent) {
-    raw = parseSectionsFromText(fullContent);
-  }
+  // No heading at any level. The dict is the only remaining source of structure —
+  // a version that carries one whose body has since lost its headings.
+  const raw = (sectionsObj && typeof sectionsObj === 'object'
+               && Object.keys(sectionsObj).length > 0) ? sectionsObj : {};
 
   const items = [];
   Object.entries(raw).forEach(([title, content]) => {
@@ -412,13 +420,6 @@ export function buildBlueprintUiSections(fullContent, sectionsObj) {
     });
   });
   if (items.length === 0) {
-    // Still structured, just not with `## `: a document outlined by `# ` or
-    // `### ` headings gets a section per heading, spliced back by line range.
-    // Without this it fell all the way through to the whole-document fallback,
-    // where a 15-heading day outline could only be regenerated in one piece.
-    const byHeading = buildHeadingFallbackSections(fullContent);
-    if (byHeading.length) return byHeading;
-
     // Verbatim, not stripped: this content is committed back as the whole
     // document, so removing the UI-hidden validation lines here would delete
     // them from the stored blueprint on the first save.

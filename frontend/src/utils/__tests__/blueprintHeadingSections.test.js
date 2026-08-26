@@ -414,3 +414,75 @@ describe('the contract the save path depends on', () => {
     expect(replaceHeadingSection(doc, secs[0].locator, secs[0].content)).toBe(doc);
   });
 });
+
+describe('choosing the heading level is one decision for every document', () => {
+  // Real shape of blueprint_versions 1 and 191: TWO `# ` headings above the real
+  // `## ` outline. Trying `#` first cleared the two-heading floor and collapsed
+  // both documents from 4 and 3 sections into 2 — which is why `#` is ordered
+  // LAST rather than first.
+  const TWO_H1_PLUS_H2 = [
+    '# MODULE 1 BLUEPRINT', '', 'intro', '',
+    '## Step 2: Module Blueprint Overview', '', 'overview body', '',
+    '## Step 3: Lesson-by-Lesson Blueprint', '', 'lessons body', '',
+    '## Step 4: Module-Level Components', '', 'components body', '',
+    '# OUTPUT SCHEMA (User-Facing Format)', '', 'schema body',
+  ].join('\n');
+
+  it('prefers the `## ` outline over two `# ` title headings', () => {
+    const secs = sectionsOf(TWO_H1_PLUS_H2);
+    expect(secs.every((s) => s.locator.level === 2)).toBe(true);
+    expect(secs.map((s) => s.title)).toEqual([
+      DOCUMENT_HEADER_SECTION_TITLE,
+      'Module Blueprint Overview',
+      'Lesson-by-Lesson Blueprint',
+      'Module-Level Components',
+    ]);
+  });
+
+  it('drops to `### ` when a lone `## ` is not an outline', () => {
+    // 220 of 241 stored documents looked like this and rendered as ONE editable
+    // section, so "Regenerate Section" meant "regenerate everything".
+    const doc = [
+      '# Module Blueprint', '', 'preamble', '',
+      '## Module Blueprint Details', '',
+      '### Module Structure', '', 'structure body', '',
+      '### Module Assessment', '', 'assessment body', '',
+      '### Module Components', '', 'components body',
+    ].join('\n');
+    const secs = sectionsOf(doc);
+    expect(secs.every((s) => s.locator.level === 3)).toBe(true);
+    expect(secs.map((s) => s.title)).toEqual([
+      DOCUMENT_HEADER_SECTION_TITLE,
+      'Module Structure', 'Module Assessment', 'Module Components',
+    ]);
+  });
+
+  it('still uses `# ` when nothing else sections the document', () => {
+    const doc = [
+      '# Part One', '', 'body one', '',
+      '# Part Two', '', 'body two',
+    ].join('\n');
+    const secs = sectionsOf(doc);
+    expect(secs.every((s) => s.locator.level === 1)).toBe(true);
+    expect(secs.map((s) => s.title)).toEqual(['Part One', 'Part Two']);
+  });
+
+  it('keeps a single `## ` section rather than falling to whole-document', () => {
+    // No level clears the floor. One `## ` is still what the document offers,
+    // and this is what it did before the levels were unified.
+    const doc = '# Title\n\npre\n\n## Only Section\n\nbody';
+    const secs = sectionsOf(doc);
+    expect(secs.some((s) => s.whole)).toBe(false);
+    expect(secs.map((s) => s.title)).toEqual([
+      DOCUMENT_HEADER_SECTION_TITLE, 'Only Section',
+    ]);
+  });
+
+  it('every level splices back byte-identically when saved unedited', () => {
+    for (const doc of [TWO_H1_PLUS_H2, H3_DOC, STD_H2_DOC]) {
+      for (const sec of sectionsOf(doc)) {
+        expect(replaceHeadingSection(doc, sec.locator, sec.content)).toBe(doc);
+      }
+    }
+  });
+});
