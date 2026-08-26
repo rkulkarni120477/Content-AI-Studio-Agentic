@@ -21,8 +21,9 @@ export default function StreamlitCard({
   canManageUsers = false,
 }) {
   const trimmed = description?.trim();
+  const isTruncated = Boolean(trimmed && trimmed.length > 120);
   const desc = trimmed
-    ? (trimmed.length > 120 ? `${trimmed.slice(0, 120)}…` : trimmed)
+    ? (isTruncated ? `${trimmed.slice(0, 120)}…` : trimmed)
     : (descriptionPlaceholder || null);
   const descIsPlaceholder = !trimmed && Boolean(descriptionPlaceholder);
 
@@ -35,7 +36,14 @@ export default function StreamlitCard({
         </h3>
         {clientLine && <p className={styles.card__client}>Client: {clientLine}</p>}
         {desc && (
-          <p className={cn(styles.card__desc, descIsPlaceholder && styles.card__descPlaceholder)}>
+          <p
+            className={cn(
+              styles.card__desc,
+              descIsPlaceholder && styles.card__descPlaceholder,
+              isTruncated && styles.card__descTruncated,
+            )}
+            title={isTruncated ? trimmed : undefined}
+          >
             {desc}
           </p>
         )}

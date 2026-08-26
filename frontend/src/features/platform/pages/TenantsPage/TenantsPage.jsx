@@ -30,6 +30,35 @@ const EMPTY_FORM = {
   admin_username: '', admin_password: '', admin_display_name: '',
 };
 
+/** Field rules for New Tenant. Messages are built from label + minLength so copy stays in one place. */
+const TENANT_CREATE_FIELDS = [
+  { key: 'slug', label: 'Organization Code', minLength: 2 },
+  { key: 'name', label: 'Client Name', minLength: 1 },
+  { key: 'admin_username', label: 'Username', minLength: 1 },
+  { key: 'admin_password', label: 'Password', minLength: 6, trim: false },
+];
+
+function fieldValue(form, field) {
+  const raw = form[field.key] ?? '';
+  return field.trim === false ? raw : String(raw).trim();
+}
+
+function fieldError(field, value) {
+  const { label, minLength = 1 } = field;
+  if (!value || value.length < minLength) {
+    return minLength <= 1
+      ? `${label} is required.`
+      : `${label} should have at least ${minLength} characters.`;
+  }
+  return null;
+}
+
+function validateTenantCreate(form) {
+  return TENANT_CREATE_FIELDS
+    .map((field) => fieldError(field, fieldValue(form, field)))
+    .filter(Boolean);
+}
+
 const ROLE_COLORS = {
   [ROLES.ADMIN]: '#7c3aed',
   [ROLES.REVIEWER]: '#0f766e',
@@ -92,6 +121,11 @@ export default function TenantsPage() {
 
   async function handleCreate(e) {
     e.preventDefault();
+    const fieldErrors = validateTenantCreate(form);
+    if (fieldErrors.length) {
+      toast.error(fieldErrors.join(' '));
+      return;
+    }
     setSaving(true);
     try {
       const clientName = form.name.trim();
