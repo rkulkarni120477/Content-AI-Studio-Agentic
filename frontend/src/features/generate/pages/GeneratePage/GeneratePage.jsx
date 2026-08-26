@@ -31,7 +31,7 @@ import {
   isModuleLevelComponent,
   shouldShowAssessmentOverride,
 } from '@utils/generationGates';
-import { JOB_STATUSES } from '@utils/constants';
+import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 import { renderMarkdownPreview } from '@utils/markdownPreview';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
@@ -225,8 +225,8 @@ export default function GeneratePage() {
   }, [selectedComponent, effBpId, effCddId, courseId]);
 
   useEffect(() => {
-    if (activeJobId && ['pending', 'queued', 'running'].includes(jobStatus)) {
-      dispatch(pollJobThunk(activeJobId));
+    if (activeJobId && jobStatus && !isTerminalJobStatus(jobStatus)) {
+      dispatch(pollJobThunk({ jobId: activeJobId }));
     }
   }, [activeJobId, jobStatus, dispatch]);
 
@@ -298,7 +298,7 @@ export default function GeneratePage() {
           course_id: Number(courseId),
         }).catch(() => {});
       }
-      if (accepted?.job_id) dispatch(pollJobThunk(accepted.job_id));
+      if (accepted?.job_id) dispatch(pollJobThunk({ jobId: accepted.job_id }));
     } catch {
       /* error in slice */
     }
@@ -312,8 +312,8 @@ export default function GeneratePage() {
     : 'None linked';
   const styleDisp = activeStyle?.name || 'None';
 
-  const jobActive = activeJobId && ['pending', 'queued', 'running'].includes(jobStatus);
-  const jobTerminal = activeJobId && ['completed', 'failed', 'cancelled'].includes(jobStatus);
+  const jobActive = activeJobId && jobStatus && !isTerminalJobStatus(jobStatus);
+  const jobTerminal = activeJobId && jobStatus && isTerminalJobStatus(jobStatus);
   const showJobOnly = jobTerminal && latestBlocks.length === 0 && !generateError;
 
   function handleStartAnother() {
@@ -342,6 +342,7 @@ export default function GeneratePage() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={jobStatus === JOB_STATUSES.CANCELLED}
                   onClick={() => dispatch(cancelJobThunk(activeJobId))}
                 >
                   Cancel

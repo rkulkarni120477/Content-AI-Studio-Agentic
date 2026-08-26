@@ -1,10 +1,27 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { generateService } from './services/generateService';
 import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
-import { JOB_STATUSES } from '@utils/constants';
+import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 import toast from 'react-hot-toast';
 
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
+
+/** Bumped on each new launch or user cancel so in-flight polls stop rescheduling. */
+let pollSession = 0;
+
+export function invalidatePollSession() {
+  pollSession += 1;
+  return pollSession;
+}
+
+function currentPollSession() {
+  return pollSession;
+}
+
+function normalizePollArg(arg) {
+  if (typeof arg === 'string') return { jobId: arg, sessionId: pollSession };
+  return { jobId: arg.jobId, sessionId: arg.sessionId ?? pollSession };
+}
 
 export const launchGenerationThunk = createAsyncThunk(
   'generate/launch',
@@ -23,14 +40,32 @@ export const launchGenerationThunk = createAsyncThunk(
 
 export const pollJobThunk = createAsyncThunk(
   'generate/pollJob',
-  async (jobId, { dispatch, rejectWithValue }) => {
+  async (arg, { dispatch, rejectWithValue, getState }) => {
+    const { jobId, sessionId } = normalizePollArg(arg);
+
+    if (getState().generate.jobStatus === JOB_STATUSES.CANCELLED) {
+      return { status: JOB_STATUSES.CANCELLED, job_id: jobId };
+    }
+
     try {
       const status = await generateService.getJobStatus(jobId);
-      const active = ['pending', 'queued', 'running'].includes(status.status);
-      if (active) {
-        setTimeout(() => dispatch(pollJobThunk(jobId)), POLL_INTERVAL_MS);
+
+      if (sessionId !== currentPollSession()) {
         return status;
       }
+      if (getState().generate.jobStatus === JOB_STATUSES.CANCELLED) {
+        return { status: JOB_STATUSES.CANCELLED, job_id: jobId };
+      }
+
+      if (!isTerminalJobStatus(status.status)) {
+        setTimeout(() => {
+          if (sessionId === currentPollSession()) {
+            dispatch(pollJobThunk({ jobId, sessionId }));
+          }
+        }, POLL_INTERVAL_MS);
+        return status;
+      }
+
       if (status.status === JOB_STATUSES.COMPLETED) {
         const usageMsg = formatUsageSummaryMessage(status.usage_summary);
         const message = usageMsg ? `Generation completed! ${usageMsg}` : 'Generation completed!';
@@ -74,6 +109,7 @@ export const pollJobThunk = createAsyncThunk(
 export const cancelJobThunk = createAsyncThunk(
   'generate/cancelJob',
   async (jobId, { rejectWithValue }) => {
+    invalidatePollSession();
     try {
       const result = await generateService.cancelJob(jobId);
       toast.success('Generation job cancelled.');
