@@ -37,6 +37,10 @@ class ScopeData:
     days: List[Dict[str, Any]] = field(default_factory=list)
     units: List[Dict[str, Any]] = field(default_factory=list)
     duplicate_calendar_ids: List[str] = field(default_factory=list)
+    #: Profile-level observations about the scope it just read, surfaced verbatim
+    #: as enumerate flags (e.g. a block whose stored tags disagree on spelling and
+    #: were merged by key). A profile that has nothing to say leaves this empty.
+    notes: List[str] = field(default_factory=list)
 
 
 class CurriculumProfile:
