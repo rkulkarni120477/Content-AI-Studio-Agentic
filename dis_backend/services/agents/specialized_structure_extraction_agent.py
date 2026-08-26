@@ -23,6 +23,7 @@ from services.indexing import (
     opensearch_upsert as do_opensearch_upsert,
 )
 from services.token_guard import TokenLimitError
+from services.blocks import block_label
 
 
 class SpecializedStructureExtractionAgent(BasePipelineAgent):
@@ -65,12 +66,12 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
         elif doc_type == 'course_calendar':
             state['calendar_structure'] = self._extract_calendar(state, filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'course_calendar'
-            state.setdefault('doc_metadata', {})['block'] = state['calendar_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns)
+            state.setdefault('doc_metadata', {})['block'] = block_label(state['calendar_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns))
             state.setdefault('doc_metadata', {})['calendar_days_detected'] = len(state['calendar_structure'].get('days', []))
         elif doc_type == 'syllabus':
             state['syllabus_structure'] = extract_syllabus_structure(filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'syllabus'
-            state.setdefault('doc_metadata', {})['block'] = state['syllabus_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns)
+            state.setdefault('doc_metadata', {})['block'] = block_label(state['syllabus_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns))
         elif doc_type in {'quiz_exam', 'quiz_answer_key'}:
             state['quiz_structure'] = extract_quiz_structure(filename, text, doc_processing)
             state['specialized_structure_type'] = state['quiz_structure'].get('structure_type', doc_type)
