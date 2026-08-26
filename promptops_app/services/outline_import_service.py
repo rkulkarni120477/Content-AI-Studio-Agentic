@@ -35,10 +35,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
-from promptops_app.parsers.blueprint_parser import (
-    is_dlu_blueprint,
-    parse_day_and_title,
-)
+from promptops_app.parsers.blueprint_parser import is_dlu_blueprint
 from promptops_app.parsers.cdd_parser import parse_sections_from_text
 
 _log = logging.getLogger(__name__)
@@ -63,7 +60,9 @@ class OutlineImportResult:
     raw_output: str                       # DLU Outline markdown → BlueprintVersion.full_content
     sections: dict                        # parse_sections_from_text(raw_output)
     derived_title: str                    # blueprint title ("Day N: <topic> Blueprint")
-    day_number: Optional[int]             # the day this outline is for (None → caller must resolve)
+    day_number: Optional[int]             # the day used for this outline (file day, else caller's hint)
+    file_day: Optional[int]               # day actually found IN the file (None if none) — lets the
+                                          # caller refuse when the file and the picked day disagree
     topic: str                            # day topic, best-effort
     method: str                           # "passthrough" | "llm_restructure" | "raw_fallback"
     is_dlu: bool                          # whether it renders as the DLU day accordions
@@ -97,6 +96,20 @@ def _slug(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
+def _clean_topic(raw: str) -> str:
+    """Sanitize a captured topic. Drops bold/heading markers, stops at a table
+    pipe, and rejects a leftover ``Label: value`` fragment (a stray colon) — the
+    LLM sometimes echoes a bold label line where the topic should be, and that
+    must never end up in the title."""
+    t = _slug(raw or "").replace("*", "").strip()
+    t = re.split(r"\s{2,}|\|", t)[0].strip()
+    t = re.sub(r"(?i)\s*blueprint\s*$", "", t).strip()
+    t = t.strip(":-–— ").strip()
+    if not t or ":" in t:
+        return ""
+    return t[:80]
+
+
 # --------------------------------------------------------------------------- #
 # Extraction — every file type is reduced to one flat markdown string so the
 # detect-or-restructure decision below is uniform across Excel / Word / PDF.
@@ -107,8 +120,14 @@ def _trim_grid(rows: List[List[str]]) -> List[List[str]]:
     round-trips cleanly."""
     cleaned = []
     for r in rows:
-        joined = " ".join(c for c in r if c).strip()
+        nonempty = [c for c in r if (c or "").strip()]
+        joined = " ".join(nonempty).strip()
         if "Content AI Studio" in joined:   # brand/meta row written by xlsx_exporter
+            continue
+        # The CAS xlsx export lays a day out as a "Section | Content" two-column
+        # sheet; that literal header row is decoration, not content — drop it so
+        # it doesn't land in the imported body as noise.
+        if [c.strip().lower() for c in nonempty] == ["section", "content"]:
             continue
         cleaned.append(r)
     while cleaned and not any((c or "").strip() for c in cleaned[0]):
@@ -175,26 +194,70 @@ def _extract_xlsx(data: bytes) -> List[Tuple[str, List[List[str]]]]:
         wb.close()
 
 
+def _sheet_to_markdown(name: str, grid: List[List[str]]) -> str:
+    """One worksheet → markdown, choosing a rendering that never destroys content.
+
+    A cell in a CAS-exported Outline can hold an ENTIRE markdown section — its
+    embedded ``### DLU Outline`` heading, the numbered parts, whole ``|`` tables,
+    all with real newlines. Those must be reproduced VERBATIM, because the
+    frontend parser is line-based: collapse the newlines (the old bug) and the
+    day accordions never appear. So:
+
+      * "Prose" sheet — any cell carries a newline, markdown markers, or a long
+        blob → emit each cell verbatim (newlines and ``|`` kept). A row shaped
+        [short-label, long-body] becomes ``## label`` + body, matching the
+        export's Section|Content layout.
+      * "Grid" sheet — every cell is short and single-line → a genuine data grid,
+        rendered as a sanitized markdown table (2-column key/value → bullets).
+        Only here is per-cell sanitization safe.
+    """
+    cells = [c for r in grid for c in (r or [])]
+    is_prose = any(
+        ("\n" in (c or "")) or len(c or "") > 200 or "###" in (c or "")
+        or "**" in (c or "") or ("|" in (c or "") and "---" in (c or ""))
+        for c in cells
+    )
+    if is_prose:
+        parts: List[str] = []
+        for r in grid:
+            nonempty = [c for c in r if (c or "").strip()]
+            if not nonempty:
+                continue
+            if len(nonempty) >= 2:
+                head = _slug(nonempty[0])
+                body = "\n".join(c.strip() for c in nonempty[1:]).strip()
+                parts.append(f"## {head}\n\n{body}" if body else f"## {head}")
+            else:
+                parts.append(nonempty[0].strip())
+        return "\n\n".join(p for p in parts if p.strip())
+
+    width = max((len(r) for r in grid), default=0)
+    if width <= 2:
+        lines: List[str] = []
+        for r in grid:
+            # Strip a trailing ':' the source may already carry on the label, so a
+            # "Day Number:" cell renders as "**Day Number:** N", not "**Day Number::**"
+            # (the doubled colon broke _detect_day_topic's label match).
+            label = _slug(r[0]).rstrip(":").strip() if r else ""
+            value = _slug(r[1]) if len(r) > 1 else ""
+            if label:
+                lines.append(f"**{label}:** {value}".rstrip())
+        return "\n".join(lines)
+    return _rows_to_markdown_table(grid)
+
+
 def _xlsx_to_markdown(data: bytes) -> str:
-    """Flatten a workbook to markdown: each sheet as a heading + a table. A single
-    2-column sheet is rendered as ``**Label:** value`` lines so a key/value day
-    header survives as label lines the restructure step can read."""
+    """Flatten a workbook to markdown, one ``## sheet`` block per worksheet, with
+    every cell's content preserved faithfully (see _sheet_to_markdown)."""
     sheets = _extract_xlsx(data)
     if not sheets:
         raise ValueError("No readable content found in the uploaded workbook.")
     parts: List[str] = []
     for name, grid in sheets:
-        parts.append(f"## {name}")
-        width = max((len(r) for r in grid), default=0)
-        if width <= 2:
-            for r in grid:
-                label = _cell(r[0]) if r else ""
-                value = _cell(r[1]) if len(r) > 1 else ""
-                if label:
-                    parts.append(f"**{label}:** {value}".rstrip())
-        else:
-            parts.append(_rows_to_markdown_table(grid))
-    return "\n\n".join(p for p in parts if p.strip()).strip()
+        body = _sheet_to_markdown(name, grid)
+        if body.strip():
+            parts.append(body)
+    return "\n\n".join(parts).strip()
 
 
 def _extract_docx(data: bytes) -> str:
@@ -255,31 +318,40 @@ def _extract_pdf(data: bytes) -> str:
 def _detect_day_topic(text: str) -> Tuple[Optional[int], str]:
     """Best-effort (day_number, topic) from extracted content.
 
-    Priority: the canonical title line ``# DLU Outline - Day N: <topic>``, then a
-    ``Day Number: N`` / ``Day: N`` label line, then the first bare ``Day N``. Topic
-    comes from the title line or a ``Topic: ...`` label. Never raises.
+    Every pattern is anchored to the START of a line — a title, a label, or a
+    "Day N" heading. A "Day N" buried mid-sentence (e.g. "continues the work from
+    Day 2") is deliberately NOT matched: taking the first such number anywhere in
+    the file mis-filed outlines onto the wrong day. Returns (None, "") when no
+    anchored day is present, so the caller can require an explicit day instead of
+    guessing. Never raises.
     """
     day: Optional[int] = None
     topic = ""
 
+    # 1. Canonical title line: "# DLU Outline - Day N: <topic>".
     m = re.search(r"(?im)^\s*#\s*DLU\s+Outline\s*[-–—:]\s*Day\s*(\d+)\s*[:\-–—]?\s*(.*)$", text)
     if m:
         day = int(m.group(1))
-        topic = _slug(m.group(2))
+        topic = _clean_topic(m.group(2))
+    # 2. A "Day Number: N" / "Day: N" label line (bold/quote markers optional).
     if day is None:
-        m = re.search(r"(?im)^[\s>*_-]*\**\s*Day\s*(?:Number)?\s*\**\s*[:\-]\s*\**\s*(\d+)", text)
+        m = re.search(r"(?im)^[\s>*_#-]*\**\s*Day(?:\s*Number)?\s*\**\s*[:\-]\s*\**\s*(\d+)", text)
         if m:
             day = int(m.group(1))
+    # 3. A "Day N" heading at the start of a line ("Day 7: Weather Systems",
+    #    "## Day 7") — the CAS export's title row shape. Line-anchored, so prose
+    #    mentions of other days are ignored.
     if day is None:
-        m = re.search(r"(?i)\bday\s*(\d+)\b", text)
+        m = re.search(r"(?im)^[\s>*_#-]*\**\s*Day\s+(\d+)\b\s*[:\-–—]?\s*(.*)$", text)
         if m:
             day = int(m.group(1))
+            if not topic:
+                topic = _clean_topic(m.group(2))
 
     if not topic:
         tm = re.search(r"(?im)^[\s>*_-]*\**\s*Topic\s*\**\s*[:\-]\s*\**\s*(.+?)\s*\**\s*$", text)
         if tm:
-            topic = _slug(tm.group(1))
-            topic = re.split(r"\s{2,}|\|", topic)[0].strip()[:80]
+            topic = _clean_topic(tm.group(1))
     return day, topic
 
 
@@ -292,28 +364,35 @@ def _looks_like_dlu(text: str) -> bool:
 
 def _is_structured_dlu(text: str) -> bool:
     """Stricter than _looks_like_dlu: is the extracted text ALREADY the numbered
-    DLU Outline markdown (so it can be passed through with no LLM)? Requires the
-    explicit ``### DLU Outline`` heading, or at least three bold part headers."""
-    low = (text or "").lower()
-    if "### dlu outline" in low:
+    DLU Outline markdown, laid out on its own lines the way the frontend parser
+    reads it (so it can be passed through with no LLM)?
+
+    Every signal is line-anchored. A blob with the markers collapsed onto one line
+    fails here on purpose and drops to the LLM restructure tier, which rebuilds the
+    line structure — the old substring check let such a blob pass through and the
+    accordions never rendered."""
+    if re.search(r"(?im)^\s{0,3}#{2,4}\s*dlu\s+outline\b", text or ""):
         return True
     bold_parts = re.findall(
-        r"\*\*\s*(?:today'?s mission|learn it(?:\s*\(review content\))?|quick check|"
-        r"up next(?: in class)?|day reflection)\s*\*\*",
-        low,
+        r"(?im)^\s*(?:\d+\.\s*)?\*\*\s*(?:today'?s mission|learn it(?:\s*\(review content\))?|"
+        r"quick check|up next(?: in class)?|day reflection)\s*\*\*",
+        text or "",
     )
     return len(bold_parts) >= 3
 
 
-def _ensure_title(text: str, day: Optional[int], topic: str) -> str:
-    """Prepend the canonical ``# DLU Outline - Day N: <topic>`` title when the
-    passed-through content has no leading title line, so the header reads the same
-    as a generated Outline."""
-    if re.match(r"(?is)^\s*#\s*DLU\s+Outline", text or ""):
-        return text.strip()
+def _stamp_title(body: str, day: Optional[int], topic: str) -> str:
+    """Force the canonical ``# DLU Outline - Day N: <topic>`` title onto *body*,
+    replacing any leading title the source/LLM already carried.
+
+    Stamping (rather than only prepending-if-absent) guarantees the document's
+    stated day equals the day it is actually filed under — the LLM can echo a day
+    it read from a passing mention, and we must never let the header disagree with
+    the resolved day."""
+    b = re.sub(r"(?is)^\s*#\s*DLU\s+Outline[^\n]*\n?", "", (body or "").strip(), count=1).strip()
     label = f"Day {day}" if day else "Day"
     title = f"# DLU Outline - {label}: {topic}".rstrip(": ").strip()
-    return f"{title}\n\n{text.strip()}"
+    return f"{title}\n\n{b}" if b else title
 
 
 # --------------------------------------------------------------------------- #
@@ -378,16 +457,22 @@ def _llm_restructure(content: str, *, model_choice: str, usage_ctx=None) -> str:
     )
     if result.status == "error":
         raise RuntimeError(f"LLM restructure failed: {result.error_type}")
+    # A reply cut off at the output cap (LLMResult.truncated, from the provider's
+    # length/max_tokens stop reason) is missing content — and this path stores the
+    # reply AS the document. Storing a half-finished Outline silently drops
+    # material, so treat truncation as a hard failure; the caller demotes to the
+    # lossless raw wrap. (generate_with_metadata already caps max_tokens to the
+    # model's own ceiling, so this is the real signal, not the constant above.)
+    if getattr(result, "truncated", False):
+        raise RuntimeError("LLM restructure truncated (hit the output cap)")
     return result.text or ""
 
 
-def _raw_wrap(text: str, day: Optional[int], topic: str) -> str:
-    """Last-resort wrap: a title plus the faithful extracted text under one
-    heading. Renders as a single 'Imported Content' section (not the DLU
-    accordions) but loses nothing."""
-    label = f"Day {day}" if day else "Day"
-    title = f"# DLU Outline - {label}: {topic}".rstrip(": ").strip()
-    return f"{title}\n\n## Imported Content\n\n{text.strip()}"
+def _raw_body(text: str) -> str:
+    """Last-resort body: the faithful extracted text under one heading. Renders as
+    a single 'Imported Content' section (not the DLU accordions) but loses nothing.
+    The caller stamps the title via _stamp_title."""
+    return f"## Imported Content\n\n{(text or '').strip()}"
 
 
 # --------------------------------------------------------------------------- #
@@ -399,10 +484,17 @@ def _filename_stem(filename: str) -> str:
 
 
 def _build_title(document_title: str, day: Optional[int], topic: str, stem: str) -> str:
-    """The blueprint title. A DLU day title reads 'Day N: <topic> Blueprint' so
-    parse_day_and_title recovers the day from it (mirrors the generate path)."""
-    if _slug(document_title):
-        return _slug(document_title)
+    """The blueprint title. A DLU day title must read 'Day N: …' so the day stays
+    recoverable from it — the router matches an existing day's Outline by that
+    prefix (to add a new version instead of a duplicate) and parse_day_and_title
+    feeds the Generate dropdown from it."""
+    custom = _slug(document_title)
+    if custom:
+        # Respect the user's label, but keep a "Day N:" prefix so versioning and
+        # day-recovery still work; a title the user already prefixed is left as-is.
+        if day and not re.match(r"(?i)^\s*day\s+\d+\b", custom):
+            return f"Day {day}: {custom}"
+        return custom
     if day and topic:
         return f"Day {day}: {topic} Blueprint"
     if day:
@@ -414,14 +506,16 @@ def _build_title(document_title: str, day: Optional[int], topic: str, stem: str)
 # Public entry point
 # --------------------------------------------------------------------------- #
 def normalize_import(filename: str, data: bytes, *,
-                     course_title: str = "", document_title: str = "",
+                     document_title: str = "",
                      day_hint: Optional[int] = None,
                      model_choice: str = "GPT-5.4", usage_ctx=None) -> OutlineImportResult:
     """Extract *data* and normalize it into the canonical DLU Outline day shape.
 
-    ``day_hint`` is the day the user had selected in the dropdown; it is used only
-    when the file itself carries no detectable day, so the file always wins.
-    ``model_choice`` / ``usage_ctx`` are only used on the LLM restructure path.
+    ``day_hint`` is the day the user confirmed in the dropdown; it is used only
+    when the file itself carries no detectable day, so the file always wins. The
+    result carries ``file_day`` (the day found in the file, or None) separately
+    from ``day_number`` (the day actually used), so the caller can refuse when the
+    two disagree. ``model_choice`` / ``usage_ctx`` are only used on the LLM path.
     """
     ext = os.path.splitext(filename or "")[1].lower()
     if ext not in SUPPORTED_EXTS:
@@ -444,18 +538,35 @@ def normalize_import(filename: str, data: bytes, *,
         if not flat_text:
             raise ValueError("No extractable text found in the uploaded PDF.")
 
-    day, topic = _detect_day_topic(flat_text)
-    if day is None and day_hint:
-        day = int(day_hint)
+    # Resolve the day BEFORE any LLM call — and only from trustworthy sources:
+    #   file_day  = a day anchored to a title/label/heading line in the file
+    #   day_hint  = the day the user confirmed in the dropdown
+    # An LLM-inferred day is never used: the model can echo a day from a passing
+    # mention ("continues from Day 2"), which would silently misfile the Outline.
+    file_day, topic = _detect_day_topic(flat_text)
+    if file_day is not None and day_hint is not None and file_day != int(day_hint):
+        raise ValueError(
+            f"This file looks like Day {file_day}, but Day {int(day_hint)} is selected. "
+            "Please confirm which day this Outline is for and try again."
+        )
+    day = file_day if file_day is not None else (int(day_hint) if day_hint else None)
+    if day is None:
+        # Nothing trustworthy to place it on — refuse rather than guess (and skip
+        # the LLM entirely). The UI shows a day dropdown for exactly this.
+        raise ValueError(
+            "We couldn't tell which day this Outline is for. Please select the day "
+            "from the dropdown and upload the file again."
+        )
 
     # Tier 1 — already the DLU Outline shape → pass through untouched (no LLM).
     if _is_structured_dlu(flat_text):
-        raw_output = _ensure_title(flat_text, day, topic)
+        body = flat_text
         method = "passthrough"
     else:
         # Tier 2 — reorganize into the DLU Outline shape under the preserve-all
-        # contract. Oversized input or an unrecognized result falls back to a raw
-        # wrap so content is never dropped, only shown less structured.
+        # contract. Oversized input, a truncated/failed call, or an unrecognized
+        # result falls back to a raw wrap so content is never dropped, only shown
+        # less structured.
         if len(flat_text) > _LLM_INPUT_CHAR_CAP:
             warnings.append(
                 "The file was too large to auto-structure into the Outline layout, so "
@@ -463,7 +574,7 @@ def normalize_import(filename: str, data: bytes, *,
             )
             _log.warning("outline_import oversize llm bypass file=%r chars=%d",
                          filename, len(flat_text))
-            raw_output = _raw_wrap(flat_text, day, topic)
+            body = _raw_body(flat_text)
             method = "raw_fallback"
         else:
             try:
@@ -471,21 +582,19 @@ def normalize_import(filename: str, data: bytes, *,
                     flat_text, model_choice=model_choice, usage_ctx=usage_ctx,
                 )
                 if _looks_like_dlu(restructured):
-                    raw_output = _ensure_title(restructured, day, topic)
+                    body = restructured
                     method = "llm_restructure"
-                    # A day named in the restructured title is more reliable than
-                    # one scraped from raw extraction — prefer it.
-                    r_day, r_topic = _detect_day_topic(raw_output)
-                    if r_day is not None:
-                        day = r_day
-                    if r_topic:
+                    # Take a nicer topic from the restructured title if we have
+                    # none — but NOT the day (see the day-resolution note above).
+                    _, r_topic = _detect_day_topic(restructured)
+                    if r_topic and not topic:
                         topic = r_topic
                 else:
                     warnings.append(
                         "Automatic Outline structuring did not apply cleanly; the full "
                         "content was imported as a single section."
                     )
-                    raw_output = _raw_wrap(flat_text, day, topic)
+                    body = _raw_body(flat_text)
                     method = "raw_fallback"
             except Exception as exc:
                 _log.warning("outline_import llm restructure failed file=%r error=%s — "
@@ -494,9 +603,12 @@ def normalize_import(filename: str, data: bytes, *,
                     "Automatic Outline structuring was unavailable; the full content "
                     "was imported as a single section."
                 )
-                raw_output = _raw_wrap(flat_text, day, topic)
+                body = _raw_body(flat_text)
                 method = "raw_fallback"
 
+    # Stamp the title to the RESOLVED day so the content's stated day always
+    # matches the day it is filed under.
+    raw_output = _stamp_title(body, day, topic)
     parsed_sections = parse_sections_from_text(raw_output)
     derived_title = _build_title(document_title, day, topic, stem)
 
@@ -505,8 +617,13 @@ def normalize_import(filename: str, data: bytes, *,
         sections=parsed_sections,
         derived_title=derived_title,
         day_number=day,
+        file_day=file_day,
         topic=topic,
         method=method,
-        is_dlu=_looks_like_dlu(raw_output),
+        # Honest flag: only the structured tiers render as the day accordions. A
+        # raw_fallback injects a "# DLU Outline" title but has no parsed parts, so
+        # a substring detector would wrongly call it DLU (and hand the Generate
+        # dropdown a bogus "Full DLU" component).
+        is_dlu=(method != "raw_fallback"),
         warnings=warnings,
     )

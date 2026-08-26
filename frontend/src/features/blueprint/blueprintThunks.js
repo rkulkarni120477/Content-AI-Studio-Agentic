@@ -99,6 +99,11 @@ export const importBlueprintThunk = createAsyncThunk(
       }
       const result = await blueprintService.importBlueprint(payload, payload.onProgress);
       toast.success('Outline imported and set as active.');
+      // Degraded import (e.g. the file couldn't be structured and came in as one
+      // section) — tell the user rather than showing only the success toast.
+      if (result?.importWarnings?.length) {
+        toast(result.importWarnings[0], { icon: '⚠️' });
+      }
       return result;
     } catch (e) {
       // Non-technical fallback per CAS-98 AC #5 — the server's own 400 message

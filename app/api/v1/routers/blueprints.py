@@ -549,11 +549,10 @@ def import_outline(
     file: UploadFile = File(..., description="Outline file (.xlsx, .xls, .docx, .pdf)."),
     course_id: int = Form(..., description="Course this imported Outline belongs to."),
     project_id: int = Form(..., description="Parent project id."),
-    course_title: str = Form("", description="Course/block title. Blank → derived from the file."),
     document_title: str = Form("", description="Outline title. Blank → 'Day N: <topic> Blueprint'."),
-    day_number: int = Form(None, description="Fallback day used only when the file carries no detectable day."),
+    day_number: int | None = Form(None, description="Day the user confirmed in the dropdown; used only when the file carries no day."),
     model_choice: str = Form("GPT-5.4", description="Model used only for the LLM restructure path."),
-    cdd_id: int = Form(None, description="Optional CDD to link the imported Outline to."),
+    cdd_id: int | None = Form(None, description="Optional CDD to link the imported Outline to."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.generate")),
 ) -> BlueprintGenerateResponse:
@@ -589,27 +588,18 @@ def import_outline(
         result = normalize_import(
             file.filename or "outline",
             raw,
-            course_title=course_title,
             document_title=document_title,
             day_hint=day_number,
             model_choice=model_choice,
             usage_ctx=usage_ctx,
         )
     except ValueError as exc:
-        # Content/format problem the user can fix (wrong type, empty file) — a
-        # clean 400, not a 500.
+        # Content/format problem the user can act on — wrong type, empty file, or
+        # an unresolvable/contradictory day. normalize_import raises these (before
+        # any LLM call) with a user-facing message; surface it as a clean 400.
         raise HTTPException(400, str(exc)) from exc
 
-    day = result.day_number
-    if not day:
-        # No day in the file and none selected in the dropdown — we cannot place
-        # the Outline on a day, so refuse rather than guess. The frontend sends the
-        # selected day as a fallback, so this only fires when neither is available.
-        raise HTTPException(
-            400,
-            "We couldn't tell which day this Outline is for. Please open the day "
-            "dropdown, select the day, and upload the file again.",
-        )
+    day = result.day_number   # guaranteed resolved (normalize_import refuses otherwise)
 
     generation_params = {
         "prompt_source": "imported",
@@ -637,8 +627,11 @@ def import_outline(
 
     course = get_course_by_id(db, course_id)
     pinned_id = course.active_blueprint_id if course else None
+    # limit high enough to see every day Outline in the course — the default 100
+    # could miss the match and create a duplicate instead of a new version.
     candidates = [
-        bp for bp in blueprint_repository.list_blueprints_for_course(db, course_id=course_id, project_id=project_id)
+        bp for bp in blueprint_repository.list_blueprints_for_course(
+            db, course_id=course_id, project_id=project_id, limit=10000)
         if _title_day(bp.title) == day
     ]
     target = next((bp for bp in candidates if bp.id == pinned_id), None) or (candidates[0] if candidates else None)
@@ -748,6 +741,9 @@ def import_outline(
         model_used=(model_choice if "llm" in result.method else "import"),
         tokens_used=None,
         auto_pinned=True,
+        # Surfaced so the UI can warn on a degraded import (e.g. content dumped as
+        # one section) instead of showing the same success as a clean one.
+        import_warnings=result.warnings or None,
     )
 
 

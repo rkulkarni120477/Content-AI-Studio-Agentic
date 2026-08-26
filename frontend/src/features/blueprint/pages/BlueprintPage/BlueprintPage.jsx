@@ -364,7 +364,13 @@ export default function BlueprintPage() {
   // the thunk) and shown below like a generated one.
   async function onImportOutline() {
     if (!importFile) return;
-    const dayFallback = selectedModuleOpt?.isDay ? selectedModuleOpt.key : undefined;
+    // Only send a fallback day the user actually confirmed — the day dropdown
+    // auto-defaults to Day 1, so sending it unconfirmed would silently file a
+    // dayless file onto Day 1. Unconfirmed → send nothing; the file's own day is
+    // used, or the backend asks the user to pick one.
+    const dayFallback = (moduleConfirmed && selectedModuleOpt?.isDay)
+      ? selectedModuleOpt.key
+      : undefined;
     const res = await dispatch(importBlueprintThunk({
       file: importFile,
       courseId: Number(courseId),
@@ -386,6 +392,10 @@ export default function BlueprintPage() {
         dispatch(fetchBlueprintVersionsThunk(res.payload.id));
       }
       dispatch(fetchBlueprintsThunk(courseId));
+    } else {
+      // Failed import — clear the stuck progress bar but keep the file selected
+      // so the user can fix the day and retry without re-choosing it.
+      setImportProgress(0);
     }
   }
 
@@ -722,6 +732,7 @@ export default function BlueprintPage() {
                 }}
               />
 
+              {isDluCdd && (
               <div className={styles.uploadBlock}>
                 <div className={styles.uploadLabel}>📤 Upload existing {L.blueprint}</div>
                 <p className={styles.uploadHint}>
@@ -756,6 +767,7 @@ export default function BlueprintPage() {
                   {isImporting ? 'Importing…' : `📤 Import ${L.blueprint}`}
                 </Button>
               </div>
+              )}
 
               {moduleOptions.length > 0 ? (
                 <>

@@ -97,7 +97,11 @@ export const blueprintService = {
     if (modelChoice) form.append('model_choice', modelChoice);
     const created = await api.upload(BLUEPRINT.IMPORT, form, onProgress);
     if (created?.blueprint_id) {
-      return api.get(BLUEPRINT.GET(created.blueprint_id));
+      const full = await api.get(BLUEPRINT.GET(created.blueprint_id));
+      // The reloaded blueprint doesn't carry the import warnings — thread them
+      // through so the thunk can warn on a degraded (e.g. single-section) import.
+      if (created.import_warnings?.length) full.importWarnings = created.import_warnings;
+      return full;
     }
     return created;
   },
