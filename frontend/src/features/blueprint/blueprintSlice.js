@@ -2,7 +2,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import { attachBlockJobReducers } from '@features/shared/blockJob';
 import { attachArchiveReducers } from '@features/shared/documentArchive';
 import {
-  fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintsThunk, generateBlueprintThunk, importBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, fetchBlueprintComponentsThunk,
   activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk, resumeBlueprintJobThunk,
   fetchArchivedBlueprintsThunk, blueprintArchiveThunks,
@@ -16,6 +16,7 @@ const initialState = {
   generationMode: 'student',
   isLoading:      false,
   isGenerating:   false,
+  isImporting:    false,
   error:          null,
   // Block-wide async job tracking (digest pipeline).
   blockJob:       null,  // { jobId, status, progress, currentStep }
@@ -63,6 +64,21 @@ const blueprintSlice = createSlice({
         s.error = payload;
       })
 
+      // Import lands where a generate does: the imported/updated Outline becomes
+      // the selected + active one. It may be a brand-new row or a new version of
+      // an existing day's Outline, so upsert by id rather than always prepending.
+      .addCase(importBlueprintThunk.pending,   (s) => { s.isImporting = true; s.error = null; })
+      .addCase(importBlueprintThunk.fulfilled, (s, { payload }) => {
+        s.isImporting = false;
+        if (payload?.id) {
+          const idx = s.blueprints.findIndex((b) => b.id === payload.id);
+          if (idx >= 0) s.blueprints[idx] = { ...s.blueprints[idx], ...payload };
+          else s.blueprints.unshift(payload);
+          s.activeBlueprint = payload;
+        }
+      })
+      .addCase(importBlueprintThunk.rejected,  (s, { payload }) => { s.isImporting = false; s.error = payload; })
+
       .addCase(setActiveBlueprintThunk.fulfilled, (s, { payload }) => { s.activeBlueprint = payload; })
 
       .addCase(fetchBlueprintVersionsThunk.fulfilled, (s, { payload }) => { s.versions = payload; })
@@ -102,6 +118,7 @@ export const selectBlueprintVersions   = (s) => s.blueprint.versions;
 export const selectBlueprintGenerationMode = (s) => s.blueprint.generationMode;
 export const selectBlueprintLoading    = (s) => s.blueprint.isLoading;
 export const selectBlueprintGenerating = (s) => s.blueprint.isGenerating;
+export const selectBlueprintImporting  = (s) => s.blueprint.isImporting;
 export const selectBlueprintError      = (s) => s.blueprint.error;
 export const selectBlueprintBlockJob   = (s) => s.blueprint.blockJob;
 export const selectArchivedBlueprints  = (s) => s.blueprint.archivedBlueprints;

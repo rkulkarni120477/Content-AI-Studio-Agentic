@@ -273,6 +273,9 @@ class BlueprintGenerateResponse(BaseModel):
     model_used: str
     tokens_used: Optional[int] = None
     auto_pinned: bool = True
+    # Set only by the import path when a file could not be fully structured (e.g.
+    # imported as one unstructured section); None for a normal generation.
+    import_warnings: Optional[list[str]] = None
 
 
 class BlueprintComponentsResponse(BaseModel):
