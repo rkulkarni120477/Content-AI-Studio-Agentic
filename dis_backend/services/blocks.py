@@ -50,7 +50,12 @@ def block_key(value: Any) -> str:
         return ""
     rest = _LEADING_BLOCK.sub("", text).strip()
     if rest.isdigit():
-        return f"block {_LEADING_ZEROS.sub(r'\1', rest)}"
+        # Substitution hoisted out of the f-string on purpose: a backslash inside an
+        # f-string expression is a SyntaxError before Python 3.12, and the DIS image
+        # is python:3.11-slim while the dev venv is 3.12 — so the module imported
+        # fine in every test and could not be imported at all in the container.
+        digits = _LEADING_ZEROS.sub(r"\1", rest)
+        return f"block {digits}"
     return text
 
 
