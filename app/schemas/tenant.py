@@ -38,7 +38,13 @@ class TenantRead(BaseModel):
 
 
 class TenantCreateRequest(BaseModel):
-    slug: str = Field(..., min_length=2, max_length=64, examples=["aim003"])
+    slug: str = Field(
+        ...,
+        min_length=2,
+        max_length=64,
+        examples=["aim003"],
+        description="Organization code. Must be at least 2 characters.",
+    )
     name: str = Field(..., min_length=1, max_length=200, examples=["AIM 16 Block Development"])
     # Required: an org without a client silently falls back to the default client
     # in the Source Library, which confused users before. Values like "AIM",
