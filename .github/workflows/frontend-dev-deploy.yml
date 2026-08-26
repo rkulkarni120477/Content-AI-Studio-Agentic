@@ -27,6 +27,9 @@ jobs:
         working-directory: frontend
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Notify Deployment Started
         run: |
           curl -X POST \
@@ -57,9 +60,6 @@ jobs:
             }' \
             "${{ secrets.TEAMS_WEBHOOK_URL }}"
           
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
