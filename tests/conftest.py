@@ -36,6 +36,21 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-unit-tests-only")
 os.environ.setdefault("APP_ENV", "development")
 
+# Point away from DIS for tests — never reach a real Source Library backend.
+#
+# Without this the suite inherits DIS_API_BASE_URL from the developer's .env,
+# which is the Compose service hostname (http://dis_backend:8000/v1). Tests run
+# outside the container, so every DIS call spent ~12s failing to resolve that
+# name, times three connect retries, times each call a test makes. One 8-test
+# file cost 442s and the full suite could not finish inside 15 minutes.
+#
+# dis_enabled=False makes DISClient.request_sync short-circuit to the same empty
+# result the failure path already produced ("" context, no source units), so the
+# observable behaviour of every caller is unchanged — only the wait disappears.
+# setdefault, not assignment: exporting DIS_ENABLED=true still lets someone run
+# a deliberate live-DIS check against a reachable backend.
+os.environ.setdefault("DIS_ENABLED", "false")
+
 # NOTE: models live on promptops_app.database's Base — app.core.database's
 # Base is an empty DeclarativeBase; create_all on it would create no tables.
 from promptops_app.database import Base
