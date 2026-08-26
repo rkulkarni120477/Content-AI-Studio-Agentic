@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -1017,6 +1018,89 @@ def _reject_if_truncated(result, what: str) -> None:
     )
 
 
+def _generating_prompt_guidance(db: Session, bp, *, model_choice: str,
+                                current_user) -> tuple[str, dict]:
+    """Judgment guidance distilled from the prompt that produced this Blueprint.
+
+    Section regeneration renders BLUEPRINT_SECTION_REGENERATE_PROMPT under
+    BLUEPRINT_SYSTEM_PROMPT — a generic module-authoring constant — no matter
+    which prompt authored the document. The revision template itself is right:
+    it is a fixed contract ("revise this text, keep its facts"). What went
+    missing was the document's own conventions. A DLU day outline written under
+    an AIM prompt with day-type rules and an ACS disposition table was revised by
+    a model that had never been told any of that existed, which is how
+    blueprint_versions 396 came back as 397: a Day 20 exam outline replaced by
+    generic Lesson 1/2/3 filler.
+
+    So: distil, do not substitute. prompt_guidance is the module built for this —
+    it extracts only a prompt's judgment and emphasis instructions, never its
+    structure, precisely so an admin-edited prompt can refine how a fixed
+    contract is filled without redefining it. Appending its output leaves the
+    revision contract authoritative.
+
+    The prompt is the one the document was generated with, read from the version
+    that recorded it (5a6c523), which is why that had to land first. Regenerated
+    versions record no generation_params yet, so the newest version that names a
+    row wins and the search falls back through the lineage to v1.
+
+    With no recorded row — every version predating 5a6c523 — this returns "" and
+    the prompt is byte-identical to what it was before. Falling back to the
+    course's current scope/default instead would be a guess, and the wrong guess
+    is the failure being fixed: course 48's default resolves to a MODULE prompt
+    while the document in question is DLU-shaped, so a legacy day outline would
+    be revised under module conventions. Injecting the wrong conventions is worse
+    than injecting none.
+
+    Returns (guidance_text, provenance). Best-effort: prompt_guidance never
+    raises and degrades to "", so a failure here costs the guidance, not the
+    regeneration. BudgetExceededError is its one deliberate exception and is left
+    to propagate to its 402 handler.
+    """
+    from promptops_app.core.llm_client import safe_json_loads
+    from promptops_app.database import BlueprintVersion
+
+    row_id, row_title, from_version = None, "", None
+    versions = (db.query(BlueprintVersion)
+                  .filter(BlueprintVersion.blueprint_id == bp.id)
+                  .order_by(BlueprintVersion.id.desc())
+                  .all())
+    # Active version first when it names a row, then newest-to-oldest.
+    ordered = sorted(versions, key=lambda v: (not v.is_active, -v.id))
+    for ver in ordered:
+        params = safe_json_loads(ver.generation_params) if ver.generation_params else {}
+        if isinstance(params, dict) and params.get("prompt_row_id"):
+            row_id = params["prompt_row_id"]
+            row_title = params.get("prompt_title") or ""
+            from_version = ver.version
+            break
+
+    if row_id is None:
+        return "", {"applied": False, "reason": "no_recorded_prompt"}
+
+    # _resolve_prompt_text duck-types its input via getattr, so the regeneration
+    # request — which carries no course/project/prompt fields — is adapted here
+    # rather than by widening that function's contract for one caller. No
+    # *_override attributes: an inline override belongs to the request that used
+    # it, not to a later revision of the document it produced.
+    shim = SimpleNamespace(
+        course_id=bp.course_id,
+        project_id=bp.project_id,
+        prompt_id=row_id,
+        model_choice=model_choice,
+    )
+
+    from promptops_app.services.prompt_guidance import resolve_prompt_guidance
+
+    guidance = resolve_prompt_guidance(db, shim, "blueprint", current_user) or ""
+    return guidance, {
+        "applied": bool(guidance.strip()),
+        "prompt_row_id": row_id,
+        "prompt_title": row_title,
+        "from_version": from_version,
+        "chars": len(guidance),
+    }
+
+
 def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     """Return a short CDD summary for a blueprint's linked CDD, or '' if none."""
     if not getattr(bp, "cdd_id", None):
@@ -1228,6 +1312,26 @@ def regenerate_blueprint_section(
         # finish from its own assumptions.
         current_content=request_body.section_content or "",
     )
+
+    # Appended, not substituted. The block above is the revision contract and
+    # stays authoritative; this carries the conventions of the prompt that
+    # authored the document, which the generic system prompt above knows nothing
+    # about. Empty when no prompt is resolvable or the distillation fails, in
+    # which case the prompt is byte-identical to what it was before.
+    guidance, guidance_provenance = _generating_prompt_guidance(
+        db, bp, model_choice=request_body.model_choice, current_user=current_user,
+    )
+    if guidance.strip():
+        regen_prompt = (
+            f"{regen_prompt}\n\n"
+            "---\n"
+            "**Conventions of the prompt this document was written under.** These "
+            "refine how you revise; they never override the instructions above, "
+            "and they never license adding or removing structure the section does "
+            "not already have.\n\n"
+            f"{guidance}\n---\n"
+        )
+
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
         entity_type="blueprint_section_regen", entity_id=str(blueprint_id),
@@ -1247,9 +1351,10 @@ def regenerate_blueprint_section(
     _reject_if_truncated(result, "regenerating this section")
 
     _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s  "
-              "grounded=%s  context=%s",
+              "grounded=%s  context=%s  prompt_guidance=%s",
               current_user.username, blueprint_id, request_body.section_key, mode,
-              bool((request_body.section_content or "").strip()), cdd_provenance)
+              bool((request_body.section_content or "").strip()), cdd_provenance,
+              guidance_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 
