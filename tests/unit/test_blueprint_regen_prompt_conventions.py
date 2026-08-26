@@ -102,7 +102,11 @@ def llm(monkeypatch):
     state = {"distil": "1. Keep the ACS disposition table intact.", "fail": False}
 
     def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
-        calls.append({"system": system_prompt, "user": user_prompt})
+        calls.append({
+            "system": system_prompt, "user": user_prompt,
+            # positional in the section-regen call, keyword in the distillation
+            "usage_ctx": (args[0] if args else kwargs.get("usage_ctx")),
+        })
         is_revision = "Revise the current content above" in (user_prompt or "")
         if is_revision:
             return LLMResult(text="## Revised\n\nRevised.", model="m",
@@ -362,3 +366,49 @@ class TestItDoesNotLoadEveryVersionsDocument:
             assert "full_content" not in q, (
                 "the provenance lookup is still pulling whole documents:\n" + q
             )
+
+
+class TestTheDistillationsCostIsTraceable:
+    def test_it_is_attributed_to_the_blueprint_that_caused_it(
+        self, client, auth_headers, db, blueprint, llm
+    ):
+        """resolve_prompt_guidance builds its UsageLogContext with
+        entity_id=str(request_body.block). The shim had no such attribute, so the
+        distillation's cost logged against an empty entity id — attributable to
+        the project and course, but never traceable to the blueprint."""
+        calls, _ = llm
+        p = _make_prompt(client, auth_headers, "traceable_cost", "Write {{selected_module}}.")
+        _add_version(db, blueprint, version="v1", params={"prompt_row_id": p["id"]})
+
+        _regen(client, auth_headers, blueprint.id)
+
+        # Asserted on the context handed to the LLM call, not on a usage row:
+        # the stub replaces generate_with_metadata, which is the function that
+        # writes those rows, so no row can exist here. What this route controls
+        # is the context it passes.
+        distil = [c for c in calls
+                  if "Revise the current content above" not in (c["user"] or "")]
+        assert distil, "no distillation call was made"
+        ctx = distil[0]["usage_ctx"]
+        assert ctx is not None, "the distillation call was not attributed at all"
+        assert ctx.entity_id == str(blueprint.id), ctx.entity_id
+        assert ctx.entity_type == "blueprint"
+        assert ctx.project_id == blueprint.project_id
+        assert ctx.course_id == blueprint.course_id
+
+
+class TestTheTextOnlyItemVariantDoesNotPretend:
+    def test_it_has_no_max_tokens_parameter(self):
+        """It goes through generate_text, which cannot pass one. Accepting the
+        argument meant silently ignoring it: a caller asking for a 64000-token
+        ceiling got 16384 with no error. A parameter that cannot be honoured is
+        worse than one that does not exist."""
+        import inspect
+        from promptops_app.parsers import blueprint_parser
+
+        text_only = inspect.signature(blueprint_parser.regen_single_item).parameters
+        with_result = inspect.signature(
+            blueprint_parser.regen_single_item_with_result).parameters
+
+        assert "max_tokens" not in text_only
+        assert "max_tokens" in with_result

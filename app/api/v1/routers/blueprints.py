@@ -1122,6 +1122,15 @@ def _generating_prompt_guidance(db: Session, bp, *, model_choice: str,
         project_id=bp.project_id,
         prompt_id=row_id,
         model_choice=model_choice,
+        # resolve_prompt_guidance builds this call's UsageLogContext with
+        # entity_id=str(request_body.block). Without the attribute the
+        # distillation's cost logged against an EMPTY entity id, so it could be
+        # attributed to the project and course but never traced back to the
+        # blueprint that triggered it. The blueprint id alongside
+        # entity_type="blueprint" is the same pairing the regeneration call's own
+        # usage context uses; the attribute is named `block` only because that is
+        # the field the guidance service reads.
+        block=str(bp.id),
     )
 
     from promptops_app.services.prompt_guidance import resolve_prompt_guidance

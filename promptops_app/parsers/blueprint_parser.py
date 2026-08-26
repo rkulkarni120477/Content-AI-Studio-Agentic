@@ -278,15 +278,21 @@ def regen_single_item(
     learning_signals: str = "",
     usage_ctx: Optional["UsageLogContext"] = None,
     context: str = "",
-    max_tokens: Optional[int] = None,
 ) -> str:
     """Regenerate a single item — text only. See regen_single_item_with_result.
 
-    Kept as-is for the callers that only want the string (cdd.py, blocks.py).
-    A caller that splices the reply back over stored content should use
-    ``regen_single_item_with_result`` instead: a bare string cannot say whether
-    the reply hit the output ceiling, and a truncated item reads as a finished
-    one right up to the point it is committed.
+    Kept as-is for the callers that only want the string (cdd.py, regen_jobs.py,
+    core/shared.py). A caller that splices the reply back over stored content
+    should use ``regen_single_item_with_result`` instead: a bare string cannot say
+    whether the reply hit the output ceiling, and a truncated item reads as a
+    finished one right up to the point it is committed.
+
+    No ``max_tokens`` parameter, deliberately. This variant goes through
+    generate_text, which has no way to pass one, so accepting the argument would
+    have meant silently ignoring it — a caller asking for a 64000-token ceiling
+    would have got 16384 with no error and no warning. A parameter that cannot be
+    honoured is worse than one that does not exist; ask for the ceiling on the
+    variant that can request it.
     """
     user_p = _item_regen_user_prompt(
         section_title, section_content, item_index, item_text, custom_instruction,
