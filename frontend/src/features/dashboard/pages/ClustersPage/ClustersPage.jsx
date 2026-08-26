@@ -5,7 +5,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { fetchClustersThunk } from '@features/dashboard/dashboardThunks';
 import {
   selectClusters, selectSelectedProject, setSelectedProject, setSelectedCluster,
-  selectIsLoadingClusters, selectDashboardError,
+  selectIsLoadingClusters, selectClustersLoadedFor, selectDashboardError,
 } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionLayout from '@components/layout/SelectionLayout/SelectionLayout';
@@ -33,6 +33,7 @@ export default function ClustersPage() {
   const clusters = useAppSelector(selectClusters);
   const selProj = useAppSelector(selectSelectedProject);
   const isLoadingClusters = useAppSelector(selectIsLoadingClusters);
+  const clustersLoadedFor = useAppSelector(selectClustersLoadedFor);
   const clustersError = useAppSelector(selectDashboardError);
 
   const [createLoading, setCreateLoading] = useState(false);
@@ -72,9 +73,13 @@ export default function ClustersPage() {
     syncProject();
   }, [pid, selProj?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
+  // Fetch only once the project is the selected one. Firing on mount instead
+  // raced setSelectedProject, which clears clustersLoadedFor on a project
+  // change — so a request fired before the clear would land marked for the
+  // wrong project. Keyed on selProj?.id, this runs after that clear.
   useEffect(() => {
-    if (pid) dispatch(fetchClustersThunk(pid));
-  }, [pid, dispatch]);
+    if (pid && selProj?.id === pid) dispatch(fetchClustersThunk(pid));
+  }, [pid, selProj?.id, dispatch]);
 
   async function handleCreate(data) {
     setCreateLoading(true);
@@ -116,6 +121,14 @@ export default function ClustersPage() {
   }
   if (!selProj) return <Loader size="xl" overlay />;
 
+  // No clusters fetch for THIS project has settled yet, so nothing is known
+  // about whether it has categories. `items: []` means both "not loaded" and
+  // "none exist", and isLoadingClusters is still false for the paint between
+  // selecting the project and the fetch's pending action — which is exactly
+  // when "No categories" used to flash.
+  const clustersPending = isLoadingClusters
+    || (clustersLoadedFor !== pid && !clustersError);
+
   return (
     <SelectionLayout
       sidebarProps={{
@@ -147,7 +160,7 @@ export default function ClustersPage() {
         <ClusterPromptManager clusters={clusters?.items || []} />
       )}
 
-      {isLoadingClusters ? (
+      {clustersPending ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
           <Loader size="sm" /> Loading categories…
         </div>

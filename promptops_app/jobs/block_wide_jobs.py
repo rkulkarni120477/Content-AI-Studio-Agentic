@@ -63,8 +63,21 @@ def _reconstruct_request(params: dict) -> types.SimpleNamespace:
 
 
 def _reconstruct_user(params: dict) -> types.SimpleNamespace:
+    """Rebuild a user-like object the service helpers and DIS client read via getattr.
+
+    ``id`` carries the REAL user id when the enqueuing router recorded one, because
+    DIS access resolution looks the caller's tenant memberships up by id
+    (app.core.dis_access._membership_clients). Filling it with the username — as this
+    did — made that lookup fail for every async job, so a user whose AIM access comes
+    from project membership resolved to the DEFAULT DIS client instead, and the block
+    was built against another client's Source Library. Jobs enqueued before
+    ``user_id`` was persisted fall back to the name; the membership lookup handles
+    that case by username.
+    """
     name = params.get("user_name", "") or "cas-user"
-    return types.SimpleNamespace(username=name, id=name, email=name, role=params.get("role", "user"))
+    user_id = params.get("user_id")
+    return types.SimpleNamespace(username=name, id=name if user_id is None else user_id,
+                                 email=name, role=params.get("role", "user"))
 
 
 def _all_days_failed(coverage: Dict[str, Any]) -> bool:

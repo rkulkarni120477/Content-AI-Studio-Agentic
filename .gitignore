@@ -48,9 +48,19 @@ Thumbs.db
 *:Zone.Identifier
 
 # =============================================================================
+# Node
+# =============================================================================
+# frontend/.gitignore covers frontend/ only; a root-level node_modules/ appears
+# when vitest is run from the repo root, and once leaked a .vite cache file in.
+node_modules/
+
+# =============================================================================
 # Docker
 # =============================================================================
 docker.env
+# Local-only compose override (e.g. pointing containers at an SSM tunnel).
+# Must never be committed or reach an image — it silently overrides deployed config.
+docker-compose.override.yml
 
 # =============================================================================
 # Claude / AI
@@ -62,6 +72,12 @@ CLAUDE.md
 # Local test scripts
 # =============================================================================
 test_copyleaks.py
+
+# =============================================================================
+# Logs
+# =============================================================================
+# logs/ is covered above; this catches stray files elsewhere (matches .dockerignore).
+*.log
 
 # =============================================================================
 # Database dumps / backups
@@ -93,6 +109,7 @@ OPENSEARCH_RETRIEVAL_PLAN.md
 PROMPTS_INVENTORY.md
 PRD-CAS-Reverse-Pipeline.md
 RUN_CAS_DIS_LOCAL.md
+LOCAL_DB_ACCESS.md
 reverse_cas.md
 Technical-Requirements-Reverse-Pipeline-v2.md
 CDD_CONTEXT_REDESIGN_PLAN.md

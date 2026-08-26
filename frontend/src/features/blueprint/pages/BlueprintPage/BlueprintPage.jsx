@@ -37,8 +37,8 @@ import {
   existingModuleNumbersForCdd,
   buildExtraInstructionsBlock,
 } from '@utils/blueprintModules';
-import { parseSectionsFromText } from '@utils/blueprintContent';
-import { detectDluBlueprint, replaceDluBlueprintSection } from '@utils/dluBlueprint';
+import { parseSectionsFromText, replaceHeadingSection } from '@utils/blueprintContent';
+import { replaceDluBlueprintSection } from '@utils/dluBlueprint';
 import { buildPromptDownloadMd } from '@utils/promptDefaults';
 import { commitVersionSchema } from '@utils/validation';
 import { GENERATION_MODES } from '@utils/constants';
@@ -304,19 +304,19 @@ export default function BlueprintPage() {
       extraInstructions,
     });
 
-    let titleHint = '';
-    if (documentTitle.trim()) {
-      titleHint = `Preferred blueprint title: ${documentTitle.trim()}\n\n`;
-    }
-
     const payload = {
       course_id: Number(courseId),
       project_id: selProject.id,
       cdd_id: linkedCddId || null,
       selected_module: moduleRef,
+      // The document's own title, persisted on the row — not a hint in the
+      // prompt. It used to be prepended to extra_instructions as "Preferred
+      // blueprint title: …", which no code read and the model was free to
+      // ignore, so the field looked like it took input and did nothing.
+      document_title: documentTitle.trim() || undefined,
       day_number: mod.isDay ? mod.key : undefined,
       is_course_end: Boolean(mod.isCourseEnd),
-      extra_instructions: titleHint + extraBlock,
+      extra_instructions: extraBlock,
       style_id: activeStyle?.id || null,
       model_choice: modelChoice,
       teacher_mode: genMode === GENERATION_MODES.TEACHER,
@@ -405,18 +405,57 @@ export default function BlueprintPage() {
     return tag.length <= 20 ? tag : `v${maxNum + 1}`;
   }
 
-  function patchBlueprintSection(sectionTitle, newContent) {
+  /**
+   * Rebuild the document around one edited/regenerated section.
+   *
+   * `shape` is the flag set buildBlueprintUiSections put on the section that was
+   * displayed. It is passed in rather than re-derived here: this function used to
+   * ask detectDluBlueprint again, which could answer differently from the view
+   * (a document with the "### DLU Outline" marker but no parseable parts is
+   * displayed as `## ` sections, yet took the DLU splice — and that splice
+   * returns the document UNCHANGED when it finds no parts, so the edit was
+   * silently dropped while the save reported success).
+   */
+  function patchBlueprintSection(sectionTitle, newContent, shape = {}) {
     const fullContent = versionDetail?.full_content
       || displayBp.active_content?.full_content
       || '';
+    // A whole-document section IS the document, so it is committed verbatim. The
+    // `## ` rebuild below would wrap it in a heading, nesting again every save.
+    if (shape.isWholeDocument) {
+      return { updatedSections: {}, newFull: (newContent || '').trim() };
+    }
     // DLU (day-based) blueprints: splice the edited/regenerated part back into the
     // numbered DLU structure instead of rebuilding as `## ` sections (which would
     // flatten and renumber the day blueprint). Standard blueprints skip this.
-    if (detectDluBlueprint(fullContent)) {
+    if (shape.isDluSection) {
       return {
         updatedSections: {},
         newFull: replaceDluBlueprintSection(fullContent, sectionTitle, newContent),
       };
+    }
+    // A document outlined by `# `/`### ` headings instead of `## ` is spliced by
+    // the line range the section occupied when it was rendered, so its heading
+    // line, its heading level, the preamble and every other section come back
+    // byte-identical. The `## ` rebuild below cannot be used for these: it would
+    // rewrite every heading to `## `, drop anything above the first heading, and
+    // reorder the document to match object key order.
+    if (shape.headingLocator) {
+      const spliced = replaceHeadingSection(fullContent, shape.headingLocator, newContent);
+      // null means the section could not be re-found in the document being
+      // saved — the version changed under the editor. Failing the save is the
+      // only safe answer: splicing a stale range overwrites the wrong lines and
+      // would report success.
+      if (spliced === null) {
+        const msg = `Could not locate the "${sectionTitle}" section in the version `
+          + 'being saved. Nothing was saved — reload the page and try the edit again.';
+        // Toast as well as throw: no caller of this page's save handlers catches a
+        // rejection, so a bare throw would clear the spinner and say nothing —
+        // the silent success/failure confusion this guard exists to prevent.
+        toast.error(msg);
+        throw new Error(msg);
+      }
+      return { updatedSections: {}, newFull: spliced };
     }
     let sections = versionDetail?.sections;
     if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
@@ -430,8 +469,8 @@ export default function BlueprintPage() {
     return { updatedSections, newFull };
   }
 
-  async function commitBlueprintSection(sectionTitle, newContent, reason, tagPrefix) {
-    const { updatedSections, newFull } = patchBlueprintSection(sectionTitle, newContent);
+  async function commitBlueprintSection(sectionTitle, newContent, reason, tagPrefix, shape) {
+    const { updatedSections, newFull } = patchBlueprintSection(sectionTitle, newContent, shape);
     await dispatch(commitBlueprintVersionThunk({
       blueprintId: displayBp.id,
       data: {
@@ -445,21 +484,29 @@ export default function BlueprintPage() {
     dispatch(fetchBlueprintsThunk(courseId));
   }
 
-  async function onSaveBlueprintSection({ sectionTitle, content, reason }) {
+  async function onSaveBlueprintSection({ sectionTitle, content, reason, ...shape }) {
     if (!displayBp?.id) return;
     setSavingSection(true);
     try {
-      await commitBlueprintSection(sectionTitle, content, reason || `Edited ${sectionTitle}`, 'edit');
+      await commitBlueprintSection(
+        sectionTitle, content, reason || `Edited ${sectionTitle}`, 'edit', shape,
+      );
     } finally {
       setSavingSection(false);
     }
   }
 
-  async function onRegenerateBlueprintSection({ sectionTitle, instruction }) {
+  async function onRegenerateBlueprintSection({
+    sectionTitle, sectionContent, instruction, ...shape
+  }) {
     if (!displayBp?.id) return;
     const res = await dispatch(regenerateBlueprintSectionThunk({
       blueprintId: displayBp.id,
       sectionKey: sectionTitle,
+      // Ground the regeneration in the text on screen. Without this the model
+      // is handed only a title, a module name and a 1500-char CDD summary, and
+      // what comes back is a plausible replacement rather than a revision.
+      sectionContent,
       feedback: instruction,
       modelChoice,
       teacherMode: viewMode === 'teacher',
@@ -468,11 +515,13 @@ export default function BlueprintPage() {
       const reason = instruction
         ? `AI regenerated ${sectionTitle}: ${instruction}`
         : `AI regenerated ${sectionTitle}`;
-      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen');
+      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen', shape);
     }
   }
 
-  async function onRegenerateBlueprintItem({ sectionTitle, sectionContent, itemIndex, instruction }) {
+  async function onRegenerateBlueprintItem({
+    sectionTitle, sectionContent, itemIndex, instruction, ...shape
+  }) {
     if (!displayBp?.id) return;
     const res = await dispatch(regenerateBlueprintItemThunk({
       blueprintId: displayBp.id,
@@ -486,7 +535,7 @@ export default function BlueprintPage() {
       const reason = instruction
         ? `AI regenerated ${sectionTitle} item ${itemIndex + 1}: ${instruction}`
         : `AI regenerated ${sectionTitle} item ${itemIndex + 1}`;
-      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen');
+      await commitBlueprintSection(sectionTitle, res.updated_content, reason, 'regen', shape);
     }
   }
 

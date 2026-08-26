@@ -43,6 +43,17 @@ class BlueprintGenerateRequest(BaseModel):
         description="Module name/number to generate the blueprint for.",
         examples=["Module 2 — Pharmacology Basics"],
     )
+    document_title: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "Optional label for this blueprint document. Blank → "
+            "'<selected_module> Blueprint'. Stored on the row as-is, so a day "
+            "blueprint given a title without a 'Day N' prefix falls back to its "
+            "module_number for the Generate page's day dropdown."
+        ),
+        examples=["Day 4 — Exploded Views and Assembly Diagrams"],
+    )
     extra_instructions: str = Field(default="", max_length=5000)
     style_id: Optional[int] = None
     model_choice: str = Field(default="GPT-5.4")
@@ -130,6 +141,16 @@ class BlueprintRegenerateSectionRequest(BaseModel):
     """Body for POST /blueprints/{id}/regenerate-section — regenerate a section."""
 
     section_key: str = Field(description="Section to regenerate, e.g. 'Learning Objectives'.")
+    section_content: str = Field(
+        default="",
+        description=(
+            "Current markdown of that section — the text being revised. Without it the "
+            "model never sees what it is regenerating and drafts a replacement from the "
+            "title and the CDD summary alone, which is how a Day 20 exam blueprint "
+            "(ACS tables, open items) came back as generic 'Lesson 1/2/3' filler. Blank "
+            "keeps the old draft-from-scratch behaviour for callers that cannot supply it."
+        ),
+    )
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
     model_choice: str = Field(default="GPT-5.4")
     teacher_mode: bool = Field(default=False, description="Use teacher-facing prompts when true.")

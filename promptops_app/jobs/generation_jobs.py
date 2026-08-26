@@ -62,6 +62,7 @@ from promptops_app.jobs.job_status import (
     STAGE_PROMPT,
     STAGE_SAVE,
     STAGE_SPLIT,
+    is_job_cancelled,
     set_completed,
     set_failed,
     set_running,
@@ -227,6 +228,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         # ── Stage 1 — Context ─────────────────────────────────────────
         set_running(db, job, *STAGE_CONTEXT)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled during context preparation", job_id)
+            return
 
         context = ""
 
@@ -298,6 +302,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         # ── Stage 2 — Prompt assembly ─────────────────────────────────
         set_running(db, job, *STAGE_PROMPT)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled during prompt assembly", job_id)
+            return
 
         ctx_injection, used_cdd_label, used_bp_label = build_context_injection(
             db, eff_cdd_id, eff_bp_id, target_audience=target_audience
@@ -438,6 +445,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         # ── Stage 3 — LLM call ────────────────────────────────────────
         set_running(db, job, *STAGE_LLM)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled before LLM call", job_id)
+            return
         # usage_ctx passed straight into the call — _llm_call (generate_with_metadata)
         # logs it at the choke point itself now (see llm_client.py's _log_and_trace).
         # A separate manual log_llm_usage() call here would double-count this call's
@@ -474,8 +484,15 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         out = re.sub(r'  +', ' ', out)
         out = re.sub(r'(?m)^ +$', '', out)
 
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled after LLM call", job_id)
+            return
+
         # ── Stage 4 — CE Validation ───────────────────────────────────
         set_running(db, job, *STAGE_CE_VALIDATION)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled before CE validation", job_id)
+            return
         try:
             from promptops_app.services.ce_validation_service import run_ce_validation
             out = run_ce_validation(
@@ -493,6 +510,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         # ── Stage 5 — Split into blocks ───────────────────────────────
         set_running(db, job, *STAGE_SPLIT)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled before block split", job_id)
+            return
         blocks = (
             split_into_blocks(out)
             if b_type in ("full_course", "Full Course")
@@ -501,6 +521,9 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
 
         # ── Stage 6 — Persist ─────────────────────────────────────────
         set_running(db, job, *STAGE_SAVE)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled before save", job_id)
+            return
 
         used_cdd_ver = None
         used_bp_ver  = None
