@@ -455,7 +455,15 @@ export default function BlueprintPage() {
         toast.error(msg);
         throw new Error(msg);
       }
-      return { updatedSections: {}, newFull: spliced };
+      // The spliced text is authoritative; the sections dict is a denormalised
+      // copy of it, so re-derive it rather than sending {}. Several server-side
+      // readers look a labelled snippet up in that dict with no full_content
+      // fallback (promptops_app/core/shared.py's _find_section and _find), so an
+      // empty one silently starves downstream generation of, among others, the
+      // blueprint's Learning Objectives. A `## `-sectioned document yields the
+      // same dict the old rebuild stored; a document outlined by other levels
+      // yields {} exactly as it did before it was sectioned at all.
+      return { updatedSections: parseSectionsFromText(spliced), newFull: spliced };
     }
     let sections = versionDetail?.sections;
     if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {

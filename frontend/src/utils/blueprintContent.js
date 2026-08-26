@@ -237,6 +237,26 @@ function parseHeadingSections(fullContent, level) {
 }
 
 /**
+ * Every section at one heading level, filtered for display, or [].
+ *
+ * Shared by the primary `## ` path and the `# `/`### `/`#### ` fallback so both
+ * produce the same shape: a locator per section, spliced back by line range.
+ */
+export function buildHeadingSectionsAtLevel(fullContent, level) {
+  const parsed = parseHeadingSections(fullContent, level);
+  if (!parsed) return [];
+  return parsed.sections
+    .filter((s) => !isBlueprintSectionHidden(s.rawTitle) && s.content)
+    .map(({ title, content, key, locator }) => ({
+      title,
+      content,
+      key,
+      locator,
+      heading: true,
+    }));
+}
+
+/**
  * Sections for a document with no usable `## ` sections, or [].
  *
  * The shallowest level that yields enough headings wins, so the sections follow
@@ -244,21 +264,9 @@ function parseHeadingSections(fullContent, level) {
  */
 export function buildHeadingFallbackSections(fullContent) {
   for (const level of HEADING_FALLBACK_LEVELS) {
-    const parsed = parseHeadingSections(fullContent, level);
-    if (!parsed) continue;
-    const visible = parsed.sections.filter(
-      (s) => !isBlueprintSectionHidden(s.rawTitle) && s.content,
-    );
-    const headings = visible.filter((s) => s.locator.startLine >= 0).length;
-    if (headings >= HEADING_FALLBACK_MIN) {
-      return visible.map(({ title, content, key, locator }) => ({
-        title,
-        content,
-        key,
-        locator,
-        heading: true,
-      }));
-    }
+    const built = buildHeadingSectionsAtLevel(fullContent, level);
+    const headings = built.filter((s) => s.locator.startLine >= 0).length;
+    if (headings >= HEADING_FALLBACK_MIN) return built;
   }
   return [];
 }
@@ -365,6 +373,26 @@ export function buildBlueprintUiSections(fullContent, sectionsObj) {
       .filter((s) => s.content);
     if (dlu.length) return dlu;
   }
+
+  // `## `-sectioned documents are spliced by line range like every other heading
+  // level, rather than rebuilt from a parts dict.
+  //
+  // The rebuild was this shape's one remaining special case, and it rewrote the
+  // WHOLE document on every single-section save or regenerate: it emitted
+  // `## <title>` + trimmed body for each dict entry and joined them, so anything
+  // above the first heading was dropped, headings at other levels were flattened
+  // to `## `, order became dict order rather than document order, blank sections
+  // disappeared, and every body was re-trimmed. Editing one section therefore
+  // reformatted the rest — and this is the shape the default
+  // blueprint_generation prompt produces ("## Step 1", "## Step 2"), so it was
+  // the common case, not an edge one.
+  //
+  // Sections come from fullContent rather than the stored dict because only the
+  // text carries line positions, heading levels and document order. The dict is
+  // still honoured below for a version that has one but no `## ` heading in its
+  // body.
+  const bySection = buildHeadingSectionsAtLevel(fullContent, 2);
+  if (bySection.length) return bySection;
 
   let raw = {};
   if (sectionsObj && typeof sectionsObj === 'object' && Object.keys(sectionsObj).length > 0) {

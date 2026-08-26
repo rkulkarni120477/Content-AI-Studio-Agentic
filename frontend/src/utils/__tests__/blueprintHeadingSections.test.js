@@ -4,6 +4,7 @@ import {
   WHOLE_DOCUMENT_SECTION_TITLE,
   buildBlueprintUiSections,
   buildHeadingFallbackSections,
+  parseSectionsFromText,
   replaceHeadingSection,
 } from '../blueprintContent';
 
@@ -142,11 +143,56 @@ describe('heading fallback — which level wins', () => {
     expect(secs.every((s) => s.locator.level === 4)).toBe(true);
   });
 
-  it('leaves `## ` documents to the existing parser', () => {
+  it('splices `## ` documents by line range too, not by rebuilding them', () => {
+    // This used to assert the opposite. `## ` was the one shape still rebuilt
+    // from a parts dict on save, which rewrote the whole document — dropping the
+    // preamble, flattening other heading levels and reordering sections — every
+    // time one section was edited. It is also the shape the default
+    // blueprint_generation prompt emits, so the common case carried the worst
+    // save path. Titles are unchanged; only the write mechanism is.
     const secs = sectionsOf(STD_H2_DOC);
-    expect(secs.some((s) => s.heading)).toBe(false);
+    expect(secs.every((s) => s.heading)).toBe(true);
+    expect(secs.every((s) => s.locator.level === 2)).toBe(true);
     expect(secs.some((s) => s.whole)).toBe(false);
     expect(secs.map((s) => s.title)).toEqual(['Module Goal', 'Lesson Structure (Topics)']);
+  });
+
+  it('keeps a `## ` document byte-identical when a section is saved unedited', () => {
+    // The property the rebuild could not have: an unedited save is a no-op.
+    const secs = sectionsOf(STD_H2_DOC);
+    secs.forEach((sec) => {
+      expect(replaceHeadingSection(STD_H2_DOC, sec.locator, sec.content)).toBe(STD_H2_DOC);
+    });
+  });
+
+  it('leaves a `## ` document with a re-derivable sections dict after a splice', () => {
+    // BlueprintPage stores parseSectionsFromText(spliced) alongside the text.
+    // It must not come back empty: promptops_app/core/shared.py looks labelled
+    // snippets (Learning Objectives among them) up in that dict with no
+    // full_content fallback, so an empty one silently starves downstream
+    // generation. Verified across all 238 stored `## ` versions.
+    const secs = sectionsOf(STD_H2_DOC);
+    const spliced = replaceHeadingSection(STD_H2_DOC, secs[0].locator, 'NEW BODY');
+    expect(Object.keys(parseSectionsFromText(spliced)))
+      .toEqual(Object.keys(parseSectionsFromText(STD_H2_DOC)));
+    expect(Object.keys(parseSectionsFromText(spliced)).length).toBeGreaterThan(0);
+  });
+
+  it('keeps text above the first `## ` heading editable and intact', () => {
+    const doc = [
+      '# Day 4 Blueprint', '', 'Generated 2026-08-26.', '',
+      '## Module Goal', '', 'goal body', '',
+      '## Lesson Structure', '', 'lesson body',
+    ].join('\n');
+    const secs = sectionsOf(doc);
+    expect(secs[0].title).toBe(DOCUMENT_HEADER_SECTION_TITLE);
+    // Editing a later section must not disturb the preamble — the rebuild
+    // dropped everything above the first `## ` outright.
+    const out = replaceHeadingSection(doc, secs[2].locator, 'new lesson body');
+    expect(out).toContain('# Day 4 Blueprint');
+    expect(out).toContain('Generated 2026-08-26.');
+    expect(out).toContain('goal body');
+    expect(out).toContain('new lesson body');
   });
 
   it('never re-offers `## ` sections the UI deliberately hides', () => {
