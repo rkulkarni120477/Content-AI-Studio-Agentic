@@ -1060,22 +1060,57 @@ def _generating_prompt_guidance(db: Session, bp, *, model_choice: str,
     from promptops_app.database import BlueprintVersion
 
     row_id, row_title, from_version = None, "", None
-    versions = (db.query(BlueprintVersion)
-                  .filter(BlueprintVersion.blueprint_id == bp.id)
-                  .order_by(BlueprintVersion.id.desc())
-                  .all())
-    # Active version first when it names a row, then newest-to-oldest.
-    ordered = sorted(versions, key=lambda v: (not v.is_active, -v.id))
-    for ver in ordered:
-        params = safe_json_loads(ver.generation_params) if ver.generation_params else {}
+    # Four columns, not the entity. Every row here carries full_content and
+    # sections, and blueprint 239 already has 12 versions holding 194 KB of them
+    # between them — all of it loaded on every regeneration to read one JSON
+    # field. Ordered in SQL (active first, then newest) and broken out at the
+    # first match, so the common case reads one row.
+    rows = (db.query(BlueprintVersion.id,
+                     BlueprintVersion.version,
+                     BlueprintVersion.is_active,
+                     BlueprintVersion.generation_params)
+              .filter(BlueprintVersion.blueprint_id == bp.id)
+              .order_by(BlueprintVersion.is_active.desc(), BlueprintVersion.id.desc())
+              .all())
+    for _id, ver_name, _active, gen_params in rows:
+        params = safe_json_loads(gen_params) if gen_params else {}
         if isinstance(params, dict) and params.get("prompt_row_id"):
             row_id = params["prompt_row_id"]
             row_title = params.get("prompt_title") or ""
-            from_version = ver.version
+            from_version = ver_name
             break
 
     if row_id is None:
         return "", {"applied": False, "reason": "no_recorded_prompt"}
+
+    # The recorded row has to still BE that row. prompt_id resolution falls
+    # through to the normal scope/default chain on a miss — a prompt deleted,
+    # moved to another project, or belonging to another tenant — and that chain
+    # ends at the file tier, whose blueprint_generation.md is the generic
+    # module-level template. Distilling that would inject module conventions into
+    # a document authored by something else: the exact failure this helper exists
+    # to prevent, arrived at from the opposite direction. Verified against the
+    # resolved template's own prompt_row_id, which is why 5a6c523 put it there.
+    from promptops_app.prompts.prompt_loader import load_template
+
+    try:
+        resolved = load_template(
+            "blueprint_generation", db=db, prompt_id=row_id,
+            project_id=bp.project_id, course_id=bp.course_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — a miss must cost the guidance only
+        _log.warning("blueprint_regen_prompt_unresolvable  bp_id=%s  row_id=%s  error=%s",
+                     bp.id, row_id, exc)
+        return "", {"applied": False, "reason": "recorded_prompt_unresolvable",
+                    "prompt_row_id": row_id}
+    if getattr(resolved, "prompt_row_id", None) != row_id:
+        _log.warning(
+            "blueprint_regen_prompt_no_longer_resolves  bp_id=%s  recorded=%s  got=%s "
+            "— revising without its conventions rather than borrowing another prompt's",
+            bp.id, row_id, getattr(resolved, "prompt_row_id", None),
+        )
+        return "", {"applied": False, "reason": "recorded_prompt_no_longer_resolves",
+                    "prompt_row_id": row_id, "prompt_title": row_title}
 
     # _resolve_prompt_text duck-types its input via getattr, so the regeneration
     # request — which carries no course/project/prompt fields — is adapted here

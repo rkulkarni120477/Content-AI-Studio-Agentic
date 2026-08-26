@@ -235,3 +235,130 @@ class TestItDegradesInsteadOfBreaking:
         _regen(client, auth_headers, blueprint.id)
 
         assert "never override the instructions above" not in _revision(calls)["user"]
+
+
+class TestItRefusesToBorrowAnotherPromptsConventions:
+    """A recorded row that no longer resolves must inject nothing.
+
+    prompt_id resolution falls through to the normal scope/default chain on a
+    miss, and that chain ends at the file tier — whose blueprint_generation.md is
+    the generic MODULE-level template. So a deleted, moved, or cross-tenant row
+    silently produced guidance distilled from the wrong prompt: module conventions
+    injected into a document authored by something else, which is the same failure
+    this feature exists to prevent, reached from the opposite direction.
+
+    Caught by review after the feature was written, not by the original tests.
+    """
+
+    def test_a_deleted_prompt_injects_nothing(
+        self, client, auth_headers, db, blueprint, llm
+    ):
+        calls, _ = llm
+        _add_version(db, blueprint, version="v1", params={
+            "prompt_row_id": 987654, "prompt_title": "deleted_prompt",
+        })
+
+        _regen(client, auth_headers, blueprint.id)
+
+        assert "never override the instructions above" not in _revision(calls)["user"]
+
+    def test_it_does_not_even_pay_for_the_distillation(
+        self, client, auth_headers, db, blueprint, llm
+    ):
+        """Refusing before the LLM call, not after: an unresolvable row is known
+        from the database alone."""
+        calls, _ = llm
+        _add_version(db, blueprint, version="v1", params={"prompt_row_id": 987654})
+
+        _regen(client, auth_headers, blueprint.id)
+
+        distillations = [c for c in calls
+                         if "Revise the current content above" not in (c["user"] or "")]
+        assert distillations == []
+
+    def test_another_tenants_prompt_injects_nothing(
+        self, client, auth_headers, db, blueprint, llm
+    ):
+        """Tenant safety asserted rather than inherited.
+
+        _from_db gates prompt_id on visible_to_tenant, but before this guard a
+        rejection degraded to distilling the file-tier template instead of to
+        nothing — so the tenant check held while its consequence did not.
+        """
+        from promptops_app.database import Project, Prompt
+
+        calls, _ = llm
+        other = Project(name="Other Tenant", created_by="test_admin")
+        db.add(other)
+        db.commit()
+        db.refresh(other)
+
+        p = _make_prompt(client, auth_headers, "other_tenant_prompt",
+                         "Write {{selected_module}}.")
+        # Re-home it so it belongs to a project this blueprint's own does not see.
+        row = db.query(Prompt).filter(Prompt.id == p["id"]).one()
+        row.project_id = other.id
+        db.commit()
+
+        _add_version(db, blueprint, version="v1", params={"prompt_row_id": p["id"]})
+
+        _regen(client, auth_headers, blueprint.id)
+
+        assert "never override the instructions above" not in _revision(calls)["user"]
+
+    def test_a_resolvable_prompt_is_still_applied(
+        self, client, auth_headers, db, blueprint, llm
+    ):
+        """Control: the identity check must not reject everything."""
+        calls, _ = llm
+        p = _make_prompt(client, auth_headers, "resolvable_one",
+                         "Write {{selected_module}}.")
+        _add_version(db, blueprint, version="v1", params={"prompt_row_id": p["id"]})
+
+        _regen(client, auth_headers, blueprint.id)
+
+        assert "Keep the ACS disposition table intact." in _revision(calls)["user"]
+
+
+class TestItDoesNotLoadEveryVersionsDocument:
+    def test_the_provenance_lookup_never_selects_full_content(
+        self, client, auth_headers, db, blueprint, llm
+    ):
+        """Reading one JSON field must not drag every version's document with it.
+
+        The first implementation queried the BlueprintVersion entity, so each row
+        arrived carrying full_content and sections. Blueprint 239 in dev already
+        has 12 versions holding 194 KB of them between them, all loaded on every
+        regeneration to find generation_params. Asserted on the emitted SQL rather
+        than on timing, so it cannot pass by being merely fast.
+        """
+        from sqlalchemy import event
+        from promptops_app.database import BlueprintVersion
+
+        p = _make_prompt(client, auth_headers, "no_bulk_load", "Write {{selected_module}}.")
+        _add_version(db, blueprint, version="v1", params={"prompt_row_id": p["id"]})
+
+        statements: list[str] = []
+        engine = db.get_bind()
+
+        def record(conn, cursor, statement, params, context, executemany):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            _regen(client, auth_headers, blueprint.id)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+
+        vt = BlueprintVersion.__tablename__
+        version_selects = [
+            q for q in statements
+            if vt in q.lower() and q.lstrip().lower().startswith("select")
+        ]
+        assert version_selects, "no blueprint_versions query was observed"
+        provenance = [q for q in version_selects if "generation_params" in q]
+        assert provenance, "the provenance lookup was not observed"
+        for q in provenance:
+            assert "full_content" not in q, (
+                "the provenance lookup is still pulling whole documents:\n" + q
+            )
