@@ -3,13 +3,8 @@ import { styleService } from './services/styleService';
 import { analyticsService } from '@features/analytics/services/analyticsService';
 import { computeDocumentRegistryStats } from '@utils/documentRegistry';
 import { extractErrorMessage } from '@utils/helpers';
-import { buildLabels, FALLBACK_LABELS } from '@config/tenantLabels';
+import { labelsFromState } from '@config/tenantLabels';
 import toast from 'react-hot-toast';
-
-function labelsFromState(getState) {
-  const overrides = getState()?.dashboard?.selectedProject?.ui_labels;
-  return overrides ? buildLabels(overrides) : FALLBACK_LABELS;
-}
 
 async function loadDocumentRegistry() {
   const [documents, summary, uploadHistory] = await Promise.all([

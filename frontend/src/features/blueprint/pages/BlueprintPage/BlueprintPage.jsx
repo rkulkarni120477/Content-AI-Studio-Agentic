@@ -309,6 +309,7 @@ export default function BlueprintPage() {
       isDay: mod.isDay,
       dayTitle: mod.title,
       extraInstructions,
+      blueprintLabel: L.blueprint,
     });
 
     const payload = {
@@ -610,6 +611,7 @@ export default function BlueprintPage() {
       isDay: mod?.isDay,
       dayTitle: mod?.title,
       extraInstructions,
+      blueprintLabel: L.blueprint,
     });
     const md = buildPromptDownloadMd({
       projectName: selProject?.name,
@@ -621,6 +623,7 @@ export default function BlueprintPage() {
       systemPrompt: promptConfig.systemPrompt,
       userPromptTemplate: promptConfig.userPromptTemplate,
       extraInstructions: extraBlock,
+      labels: L,
     });
     downloadBlob(new Blob([md], { type: 'application/msword' }), 'prompt_blueprint_active.doc');
   }

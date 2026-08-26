@@ -1,5 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { extractErrorMessage } from '@utils/helpers';
+import { labelsFromState } from '@config/tenantLabels';
 import toast from 'react-hot-toast';
 
 /**
@@ -57,22 +58,31 @@ function isPinRefusal(e) {
  * Build the four thunks for one document kind.
  *
  * @param {string}   name     slice name, e.g. 'cdd' — only used for action types
- * @param {string}   label    user-facing noun for toasts, e.g. 'CDD'
+ * @param {string}   [label]     static user-facing noun for toasts, e.g. 'CDD'
+ * @param {string}   [labelKey]  tenant label key ('blueprint' | 'cdd' | …) — preferred when set
  * @param {object}   api      { archive, restore, purge, bulkArchive }
  * @param {Function} refetch  thunk creator run after every successful change,
  *                            called with the course id
  */
-export function createArchiveThunks({ name, label, api, refetch }) {
+export function createArchiveThunks({ name, label, labelKey, api, refetch }) {
+  const resolveLabel = (getState) => {
+    if (labelKey) {
+      const L = labelsFromState(getState);
+      return L[labelKey] || label || name;
+    }
+    return label || name;
+  };
+
   const reload = async (dispatch, courseId) => {
     if (refetch) await dispatch(refetch(courseId));
   };
 
   const archiveThunk = createAsyncThunk(
     `${name}/archive`,
-    async ({ id, courseId, unpin = false }, { dispatch, rejectWithValue }) => {
+    async ({ id, courseId, unpin = false }, { dispatch, getState, rejectWithValue }) => {
       try {
         const res = await api.archive(id, { unpin });
-        toast.success(res?.message || `${label} archived.`);
+        toast.success(res?.message || `${resolveLabel(getState)} archived.`);
         await reload(dispatch, courseId);
         return { id, ...res };
       } catch (e) {
@@ -96,10 +106,10 @@ export function createArchiveThunks({ name, label, api, refetch }) {
 
   const restoreThunk = createAsyncThunk(
     `${name}/restore`,
-    async ({ id, courseId }, { dispatch, rejectWithValue }) => {
+    async ({ id, courseId }, { dispatch, getState, rejectWithValue }) => {
       try {
         const res = await api.restore(id);
-        toast.success(res?.message || `${label} restored.`);
+        toast.success(res?.message || `${resolveLabel(getState)} restored.`);
         await reload(dispatch, courseId);
         return { id, ...res };
       } catch (e) {
@@ -112,10 +122,10 @@ export function createArchiveThunks({ name, label, api, refetch }) {
 
   const purgeThunk = createAsyncThunk(
     `${name}/purge`,
-    async ({ id, courseId }, { dispatch, rejectWithValue }) => {
+    async ({ id, courseId }, { dispatch, getState, rejectWithValue }) => {
       try {
         const res = await api.purge(id);
-        toast.success(res?.message || `${label} permanently deleted.`);
+        toast.success(res?.message || `${resolveLabel(getState)} permanently deleted.`);
         await reload(dispatch, courseId);
         return { id, ...res };
       } catch (e) {
@@ -130,18 +140,19 @@ export function createArchiveThunks({ name, label, api, refetch }) {
 
   const bulkArchiveThunk = createAsyncThunk(
     `${name}/bulkArchive`,
-    async ({ ids, courseId, projectId, unpin = false }, { dispatch, rejectWithValue }) => {
+    async ({ ids, courseId, projectId, unpin = false }, { dispatch, getState, rejectWithValue }) => {
       try {
         const res = await api.bulkArchive({ ids, unpin, courseId, projectId });
         const archived = res?.archived ?? 0;
         const skipped = res?.skipped ?? 0;
+        const noun = resolveLabel(getState);
         // Reported together on purpose. Rounding a partial result to "done"
         // hides the ones that were left behind, and the skipped ones are
         // precisely the ones that needed a human decision.
         toast.success(
           skipped
             ? `Archived ${archived}; skipped ${skipped}. Open the archived list to review.`
-            : `Archived ${archived} ${label}${archived === 1 ? '' : 's'}.`,
+            : `Archived ${archived} ${noun}${archived === 1 ? '' : 's'}.`,
         );
         await reload(dispatch, courseId);
         return res;

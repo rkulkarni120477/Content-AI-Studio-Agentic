@@ -126,6 +126,55 @@ export function buildLabels(overrides) {
 /** Default label set, for components rendered outside any tenant context. */
 export const FALLBACK_LABELS = buildLabels({});
 
+/** Build labels from a project row (or null → defaults). */
+export function labelsFromProject(project) {
+  return buildLabels(project?.ui_labels);
+}
+
+/** Build labels from Redux state (thunks / non-React code). */
+export function labelsFromState(getState) {
+  try {
+    return labelsFromProject(getState()?.dashboard?.selectedProject);
+  } catch {
+    return FALLBACK_LABELS;
+  }
+}
+
+/**
+ * Soft-replace default product terms in display/generated text with the tenant's
+ * wording. Word-boundary only — does not touch identifiers like blueprint_id.
+ * Pass `keys` to limit which vocabulary is rewritten (e.g. ['blueprint']).
+ */
+export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS) {
+  if (!text || typeof text !== 'string') return text;
+  let out = text;
+  const all = {
+    title: [
+      ['Titles', L.titles], ['Title', L.title],
+      ['titles', L.titlesLower], ['title', L.titleLower],
+    ],
+    style: [
+      ['Styles', L.styles], ['Style', L.style],
+      ['styles', L.stylesLower], ['style', L.styleLower],
+    ],
+    cdd: [
+      ['CDDs', L.cdds], ['CDD', L.cdd],
+      ['cdds', L.cddsLower], ['cdd', L.cddLower],
+    ],
+    blueprint: [
+      ['Blueprints', L.blueprints], ['Blueprint', L.blueprint],
+      ['blueprints', L.blueprintsLower], ['blueprint', L.blueprintLower],
+    ],
+  };
+  for (const key of keys) {
+    for (const [from, to] of (all[key] || [])) {
+      if (!to || to === from) continue;
+      out = out.replace(new RegExp(`\\b${from}\\b`, 'g'), to);
+    }
+  }
+  return out;
+}
+
 /**
  * "Title → Block, Style → Design Guide" for the Configuration tenant list.
  * Returns [] when the tenant uses default wording.
