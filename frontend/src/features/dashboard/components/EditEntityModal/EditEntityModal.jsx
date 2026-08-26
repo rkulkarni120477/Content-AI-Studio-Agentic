@@ -4,6 +4,7 @@ import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
+import { useLabels } from '@hooks/useLabels';
 import { extractErrorMessage } from '@utils/helpers';
 
 const CLIENT_OPTIONS = [
@@ -20,6 +21,7 @@ export default function EditEntityModal({
   entity,
   onSaved,
 }) {
+  const L = useLabels();
   const [name, setName]           = useState('');
   const [clientName, setClientName] = useState('');
   const [description, setDescription] = useState('');
@@ -92,7 +94,11 @@ export default function EditEntityModal({
     }
   }
 
-  const titles = { project: 'Edit Project', cluster: 'Edit Category', course: 'Edit Title' };
+  const titles = {
+    project: 'Edit Project',
+    cluster: 'Edit Category',
+    course: `Edit ${L.title}`,
+  };
 
   return (
     <Modal
