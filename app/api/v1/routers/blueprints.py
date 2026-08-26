@@ -76,22 +76,48 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
+                       client_id: str = "") -> tuple[str, list, str]:
+    """Retrieved Source Library context, its units, and why there is none.
+
+    Best-effort by design: a Source Library that cannot be reached degrades
+    generation to CDD-and-style grounding rather than failing it (the same
+    contract cdd.py documents at its own second-pass retrieval). That part is
+    deliberate and unchanged.
+
+    What was wrong is that the degradation was invisible. A blueprint generated
+    with no source grounding was byte-indistinguishable to the requester from
+    one fully grounded in the library, and nothing about it was recorded on the
+    version either — so after the fact there was no way to tell which of the two
+    a stored document had been. The only trace was a server log line nobody
+    reads while looking at a document that seems fine.
+
+    The third return value is that trace: "" when DIS answered — INCLUDING when
+    it answered with nothing, which is the ordinary shape for a course whose
+    library holds no matching material — and a short reason when the lookup
+    itself failed. Callers record it with the version and tell the requester.
+    """
     try:
         result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
-        ctx = str(result.get("combined_context") or "").strip()
-        units = result.get("source_units") or result.get("sources") or []
-        if ctx:
-            return (
-                f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
-                "Use this as source grounding only. Follow approved CDD, active style, selected module, and requested mode first. "
-                "Do not expose internal DIS metadata.\n\n"
-                f"{ctx}\n---\n",
-                units,
-            )
     except Exception as exc:
         _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
-    return "", []
+        # The class name, not str(exc): this is stored on the version and shown
+        # to the requester, and an upstream message can carry a URL, a token or
+        # a stack fragment.
+        return "", [], type(exc).__name__
+    ctx = str(result.get("combined_context") or "").strip()
+    units = result.get("source_units") or result.get("sources") or []
+    if ctx:
+        return (
+            f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
+            "Use this as source grounding only. Follow approved CDD, active style, selected module, and requested mode first. "
+            "Do not expose internal DIS metadata.\n\n"
+            f"{ctx}\n---\n",
+            units,
+            "",
+        )
+    # DIS answered, with nothing to add. Not a failure, and not reported as one.
+    return "", [], ""
 
 
 def _get_blueprint_or_404(db: Session, blueprint_id: int):
@@ -258,9 +284,9 @@ def generate_blueprint(
     # unconditionally, paying for a real 12k-token retrieval call whose
     # results mostly duplicated what the day bundle already provided.
     if day_context_block:
-        dis_context_block, dis_source_units = "", []
+        dis_context_block, dis_source_units, dis_unavailable = "", [], ""
     else:
-        dis_context_block, dis_source_units = _dis_context_block(
+        dis_context_block, dis_source_units, dis_unavailable = _dis_context_block(
             "blueprint",
             {
                 "purpose": "blueprint",
@@ -387,6 +413,18 @@ def generate_blueprint(
             prompt_provenance.get("prompt_source"),
         )
         prompt_provenance["source_context_dropped"] = True
+
+    # Companion to the flag above. That one means the prompt had no slot for the
+    # context we retrieved; this one means there was no context to put anywhere,
+    # because the Source Library could not be reached. Both leave a document
+    # grounded in less than the caller asked for, and neither is visible in the
+    # document itself, so both are recorded on the version.
+    if dis_unavailable:
+        prompt_provenance["source_context_unavailable"] = dis_unavailable
+        _log.warning(
+            "blueprint_generated_without_source_grounding  user=%s  course=%s  reason=%s",
+            current_user.username, request_body.course_id, dis_unavailable,
+        )
 
     # Call LLM.
     #
@@ -542,6 +580,7 @@ def generate_blueprint(
             if llm_result.prompt_tokens else None
         ),
         auto_pinned=True,
+        source_context_unavailable=dis_unavailable or None,
     )
 
 

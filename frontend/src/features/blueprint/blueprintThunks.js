@@ -50,6 +50,21 @@ export const generateBlueprintThunk = createAsyncThunk(
       }
       const result = await blueprintService.generateBlueprint(payload);
       toast.success('Blueprint generated and set as active.');
+      if (result?.source_context_unavailable) {
+        // Generation degrades rather than failing when the Source Library is
+        // unreachable, so the document does exist and is active — the user just
+        // has to be told it was written without its sources. Without this the
+        // two outcomes are indistinguishable: same success toast, same-looking
+        // document, and the only trace is a server log line. toast.error is
+        // this codebase's idiom for a non-blocking caution — the same call the
+        // Blueprint page already makes for "Link a CDD for best results".
+        toast.error(
+          'Generated without Source Library grounding: the library could not be '
+          + 'reached, so this Blueprint used only the CDD and the active style. '
+          + 'Regenerate once it is available if you need source-grounded content.',
+          { duration: 9000 },
+        );
+      }
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
