@@ -185,6 +185,10 @@ export const BLUEPRINT = {
   LIST:             '/api/v1/blueprints',
   GET:              (id)       => `/api/v1/blueprints/${id}`,
   GENERATE:         '/api/v1/blueprints/generate',
+  // Upload an existing DLU Outline file (Excel/DOCX/PDF) → extracted, normalized
+  // into the day-Outline shape, saved as a blueprint (new version for that day if
+  // one exists, else new), and pinned active. Multipart. See CDD.IMPORT.
+  IMPORT:           '/api/v1/blueprints/import',
   // Block-wide (digest-pipeline) async generation — see CDD.GENERATE_BLOCK.
   GENERATE_BLOCK:   '/api/v1/blueprints/generate-block',
   VERSIONS:         (id)       => `/api/v1/blueprints/${id}/versions`,

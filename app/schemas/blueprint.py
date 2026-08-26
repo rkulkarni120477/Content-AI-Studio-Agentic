@@ -141,6 +141,16 @@ class BlueprintRegenerateSectionRequest(BaseModel):
     """Body for POST /blueprints/{id}/regenerate-section — regenerate a section."""
 
     section_key: str = Field(description="Section to regenerate, e.g. 'Learning Objectives'.")
+    section_content: str = Field(
+        default="",
+        description=(
+            "Current markdown of that section — the text being revised. Without it the "
+            "model never sees what it is regenerating and drafts a replacement from the "
+            "title and the CDD summary alone, which is how a Day 20 exam blueprint "
+            "(ACS tables, open items) came back as generic 'Lesson 1/2/3' filler. Blank "
+            "keeps the old draft-from-scratch behaviour for callers that cannot supply it."
+        ),
+    )
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
     model_choice: str = Field(default="GPT-5.4")
     teacher_mode: bool = Field(default=False, description="Use teacher-facing prompts when true.")
@@ -263,6 +273,9 @@ class BlueprintGenerateResponse(BaseModel):
     model_used: str
     tokens_used: Optional[int] = None
     auto_pinned: bool = True
+    # Set only by the import path when a file could not be fully structured (e.g.
+    # imported as one unstructured section); None for a normal generation.
+    import_warnings: Optional[list[str]] = None
 
 
 class BlueprintComponentsResponse(BaseModel):

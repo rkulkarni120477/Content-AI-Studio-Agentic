@@ -82,3 +82,14 @@ def set_cancelled(db, job) -> None:
     job.updated_at   = now
     job.completed_at = now
     db.commit()
+
+
+def is_job_cancelled(db, job_id: str) -> bool:
+    """Re-read the job row; return True if the user cancelled while we were working."""
+    from promptops_app.database import GenerationJob
+
+    row = db.get(GenerationJob, job_id)
+    if row is None:
+        return False
+    db.refresh(row)
+    return row.status == JobStatus.CANCELLED

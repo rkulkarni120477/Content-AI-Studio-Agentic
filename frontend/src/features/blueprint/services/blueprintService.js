@@ -84,6 +84,34 @@ export const blueprintService = {
   },
 
   /**
+   * Import an existing DLU Outline file. Multipart upload → the server extracts,
+   * normalizes into the day-Outline shape, then either appends a new version to
+   * the existing Outline for that day or creates a fresh one, and pins it. Reloads
+   * the full blueprint by id (like generateBlueprint) so the display gets the same
+   * shape a generated Outline has. `dayNumber` is only a fallback — the file wins.
+   */
+  importBlueprint: async ({ file, courseId, projectId, courseTitle, documentTitle, dayNumber, cddId, modelChoice }, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('course_id', String(courseId));
+    form.append('project_id', String(projectId));
+    if (courseTitle) form.append('course_title', courseTitle);
+    if (documentTitle) form.append('document_title', documentTitle);
+    if (dayNumber != null && dayNumber !== '') form.append('day_number', String(dayNumber));
+    if (cddId != null) form.append('cdd_id', String(cddId));
+    if (modelChoice) form.append('model_choice', modelChoice);
+    const created = await api.upload(BLUEPRINT.IMPORT, form, onProgress);
+    if (created?.blueprint_id) {
+      const full = await api.get(BLUEPRINT.GET(created.blueprint_id));
+      // The reloaded blueprint doesn't carry the import warnings — thread them
+      // through so the thunk can warn on a degraded (e.g. single-section) import.
+      if (created.import_warnings?.length) full.importWarnings = created.import_warnings;
+      return full;
+    }
+    return created;
+  },
+
+  /**
    * Enqueue a block-wide Block Blueprint build (digest pipeline, async). Returns
    * a job handle {job_id, status, poll_url}; poll getJobStatus until terminal,
    * then reload the blueprint by the job's result entity id.
@@ -133,6 +161,9 @@ export const blueprintService = {
   }),
   regenerateSection: (id, data) => api.post(BLUEPRINT.REGENERATE_SECTION(id), {
     section_key: data.sectionKey,
+    // The text being revised. Omitting it is what let "Regenerate Section"
+    // return a fresh draft that had never seen the section it replaced.
+    section_content: data.sectionContent || '',
     feedback: data.feedback || '',
     model_choice: data.modelChoice,
     teacher_mode: Boolean(data.teacherMode),

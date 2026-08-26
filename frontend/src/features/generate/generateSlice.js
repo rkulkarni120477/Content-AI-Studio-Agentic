@@ -1,6 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
-import { launchGenerationThunk, pollJobThunk, cancelJobThunk } from './generateThunks';
-import { JOB_STATUSES } from '@utils/constants';
+import { launchGenerationThunk, pollJobThunk, cancelJobThunk, invalidatePollSession } from './generateThunks';
+import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 
 const initialState = {
   activeJobId:         null,
@@ -33,6 +33,7 @@ const generateSlice = createSlice({
   extraReducers: (b) => {
     b
       .addCase(launchGenerationThunk.pending, (s) => {
+        invalidatePollSession();
         s.isGenerating = true;
         s.error = null;
         s.jobErrorDetail = null;
@@ -51,6 +52,13 @@ const generateSlice = createSlice({
       })
 
       .addCase(pollJobThunk.fulfilled, (s, { payload }) => {
+        if (
+          s.jobStatus === JOB_STATUSES.CANCELLED
+          && payload?.status
+          && !isTerminalJobStatus(payload.status)
+        ) {
+          return;
+        }
         s.jobStatus = payload.status;
         s.jobProgressPct = payload.progress ?? s.jobProgressPct;
         if (payload.current_step && !s.jobProgress.includes(payload.current_step)) {
@@ -68,7 +76,7 @@ const generateSlice = createSlice({
           s.jobErrorDetail = payload.error_message || payload.error || null;
           s.isGenerating = false;
         }
-        if (payload.status === 'cancelled') {
+        if (payload.status === JOB_STATUSES.CANCELLED || payload.status === 'cancelled') {
           s.isGenerating = false;
         }
       })
@@ -77,9 +85,19 @@ const generateSlice = createSlice({
         s.error = payload;
       })
 
-      .addCase(cancelJobThunk.fulfilled, (s) => {
-        s.jobStatus = 'cancelled';
+      .addCase(cancelJobThunk.pending, (s) => {
+        invalidatePollSession();
+        s.jobStatus = JOB_STATUSES.CANCELLED;
         s.isGenerating = false;
+      })
+      .addCase(cancelJobThunk.fulfilled, (s) => {
+        s.jobStatus = JOB_STATUSES.CANCELLED;
+        s.isGenerating = false;
+      })
+      .addCase(cancelJobThunk.rejected, (s, { payload }) => {
+        s.error = payload;
+        s.jobStatus = JOB_STATUSES.RUNNING;
+        s.isGenerating = true;
       });
   },
 });

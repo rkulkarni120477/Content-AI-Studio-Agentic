@@ -27,7 +27,7 @@ import json
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -529,6 +529,229 @@ def generate_blueprint(
 
 
 @router.post(
+    "/import",
+    response_model=BlueprintGenerateResponse,
+    status_code=201,
+    summary="Import an existing DLU Outline file (Excel, DOCX, PDF)",
+    description=(
+        "Upload an Outline the user already has (Excel, Word or PDF). The file is "
+        "extracted and normalized into the canonical DLU Outline day shape, then "
+        "saved as a normal blueprint (same tables as a generated one), pinned as "
+        "active, and rendered as the day accordions. The day is read from the file; "
+        "if an Outline already exists for that day it is saved as a NEW VERSION of "
+        "that Outline (history kept), otherwise a fresh Outline is created. "
+        "Already-structured Outlines pass through unchanged; other files are "
+        "reorganized by the LLM under a strict preserve-everything contract."
+    ),
+    responses={
+        201: {"description": "Outline imported, pinned, and rendered as a day Outline."},
+        400: {"description": "Unsupported file type, unreadable content, or undetermined day."},
+        403: {"description": "User does not have the blueprint.generate permission."},
+    },
+)
+def import_outline(
+    file: UploadFile = File(..., description="Outline file (.xlsx, .xls, .docx, .pdf)."),
+    course_id: int = Form(..., description="Course this imported Outline belongs to."),
+    project_id: int = Form(..., description="Parent project id."),
+    document_title: str = Form("", description="Outline title. Blank → 'Day N: <topic> Blueprint'."),
+    day_number: int | None = Form(None, description="Day the user confirmed in the dropdown; used only when the file carries no day."),
+    model_choice: str = Form("GPT-5.4", description="Model used only for the LLM restructure path."),
+    cdd_id: int | None = Form(None, description="Optional CDD to link the imported Outline to."),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.generate")),
+) -> BlueprintGenerateResponse:
+    """Extract → normalize → persist an uploaded Outline as an active blueprint.
+
+    Behaviour confirmed with product (CAS-98): one file = one day; the day is read
+    from the file (``day_number`` is only a fallback); an existing Outline for that
+    day gets a new version (the pinned/active one, else the most recent), otherwise
+    a new Outline is created. Reuses the same persistence primitives the generate
+    path uses, so an imported Outline is indistinguishable downstream — only
+    ``generation_params.prompt_source`` records that it was imported.
+    """
+    from promptops_app.database import BlueprintVersion, ModuleBlueprint
+    from promptops_app.parsers.blueprint_parser import parse_blueprint_components
+    from promptops_app.repositories import blueprint_repository
+    from promptops_app.repositories.course_repository import get_course_by_id, set_active_blueprint
+    from promptops_app.services.audit_service import log_audit_event
+    from promptops_app.services.outline_import_service import normalize_import
+    from promptops_app.services.usage_service import UsageLogContext
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty.")
+
+    usage_ctx = UsageLogContext(
+        user_name=current_user.username,
+        project_id=project_id,
+        course_id=course_id,
+        entity_type="outline_import",
+    )
+
+    try:
+        result = normalize_import(
+            file.filename or "outline",
+            raw,
+            document_title=document_title,
+            day_hint=day_number,
+            model_choice=model_choice,
+            usage_ctx=usage_ctx,
+        )
+    except ValueError as exc:
+        # Content/format problem the user can act on — wrong type, empty file, or
+        # an unresolvable/contradictory day. normalize_import raises these (before
+        # any LLM call) with a user-facing message; surface it as a clean 400.
+        raise HTTPException(400, str(exc)) from exc
+
+    day = result.day_number   # guaranteed resolved (normalize_import refuses otherwise)
+
+    generation_params = {
+        "prompt_source": "imported",
+        "import_method": result.method,
+        "source_filename": file.filename,
+        "is_dlu": result.is_dlu,
+        "import_warnings": result.warnings,
+        "day_number": day,
+        "topic": result.topic,
+        "cdd_id": cdd_id,
+    }
+    change_reason = f"Imported from {file.filename}"
+
+    # Find a live Outline already covering this day in this course. A DLU day
+    # Outline is titled "Day N: <topic> Blueprint", so an explicit "Day N" title
+    # prefix identifies the day without a dedicated column. The match is title-
+    # prefix only (not the module-number fallback parse_day_and_title also does),
+    # so a same-numbered Module blueprint is never mistaken for a day Outline and
+    # can't have an Outline version grafted onto its history. Prefer the course's
+    # pinned Outline when it is one of the matches, else the most recent (the list
+    # is newest-first).
+    def _title_day(title: str):
+        m = re.match(r"(?i)^\s*day\s+(\d+)\b", title or "")
+        return int(m.group(1)) if m else None
+
+    course = get_course_by_id(db, course_id)
+    pinned_id = course.active_blueprint_id if course else None
+    # limit high enough to see every day Outline in the course — the default 100
+    # could miss the match and create a duplicate instead of a new version.
+    candidates = [
+        bp for bp in blueprint_repository.list_blueprints_for_course(
+            db, course_id=course_id, project_id=project_id, limit=10000)
+        if _title_day(bp.title) == day
+    ]
+    target = next((bp for bp in candidates if bp.id == pinned_id), None) or (candidates[0] if candidates else None)
+
+    if target is not None:
+        # Existing Outline for this day → append a new version (history kept).
+        version_record = blueprint_repository.create_blueprint_version(
+            db, target,
+            content=result.raw_output,
+            sections_json=json.dumps(result.sections),
+            generation_params_json=json.dumps(generation_params),
+            change_summary=change_reason,
+            created_by=current_user.username,
+        )
+        bp = target
+        bp_title = bp.title
+        was_new = False
+    else:
+        # No Outline for this day yet → create a fresh one at v1.
+        bp_title = result.derived_title
+        bp = ModuleBlueprint(
+            cdd_id=cdd_id,
+            title=bp_title,
+            module_title=f"Module {day}",
+            module_number=day,
+            active_version="v1",
+            project_id=project_id,
+            course_id=course_id,
+            created_by=current_user.username,
+        )
+        db.add(bp)
+        db.commit()
+        db.refresh(bp)
+        version_record = BlueprintVersion(
+            blueprint_id=bp.id,
+            version="v1",
+            full_content=result.raw_output,
+            sections=json.dumps(result.sections),
+            generation_params=json.dumps(generation_params),
+            change_reason=change_reason,
+            is_active=True,
+            created_by=current_user.username,
+        )
+        db.add(version_record)
+        db.commit()
+        db.refresh(version_record)
+        was_new = True
+
+    _log.info(
+        "outline_import  user=%s  course=%d  file=%r  method=%s  dlu=%s  day=%s  "
+        "bp_id=%d  new=%s  version=%s",
+        current_user.username, course_id, file.filename, result.method,
+        result.is_dlu, day, bp.id, was_new, version_record.version,
+    )
+
+    # Copy the imported Outline to DIS/S3 for retrieval and listing, exactly as
+    # the generate path does — a best-effort side effect that never blocks import.
+    try:
+        dis_client.generated_upsert_sync({
+            "generated_doc_id": f"blueprint_{bp.id}",
+            "generated_type": "blueprint",
+            "title": bp_title,
+            "content": result.raw_output,
+            "summary": result.raw_output[:500],
+            "active": True,
+            "metadata": {
+                "selected_module": f"Day {day}",
+                "module_number": day,
+                "course_id": course_id,
+                "project_id": project_id,
+                "cdd_id": cdd_id,
+                "prompt_source": "imported",
+            },
+            "source_documents_used": [],
+            "cas_ref": {"entity": "blueprint", "id": bp.id},
+            "created_by": current_user.username,
+        }, current_user=current_user)
+    except Exception as exc:
+        _log.warning("dis_imported_outline_upsert_failed blueprint_id=%s error=%s", bp.id, exc)
+
+    set_active_blueprint(db, course_id, bp.id)
+
+    components = parse_blueprint_components(version_record)
+    component_list = [BlueprintComponent(**c) for c in components]
+
+    log_audit_event(db, current_user.username, "blueprint.created",
+                    entity_type="blueprint", entity_id=bp.id,
+                    project_id=project_id, course_id=course_id,
+                    metadata={
+                        "title": bp_title,
+                        "prompt_source": "imported",
+                        "import_method": result.method,
+                        "source_filename": file.filename,
+                        "day_number": day,
+                        "new_document": was_new,
+                        "version": version_record.version,
+                        "output": result.raw_output,
+                    })
+
+    return BlueprintGenerateResponse(
+        blueprint_id=bp.id,
+        title=bp_title,
+        version=version_record.version,
+        sections_count=len(result.sections),
+        components=component_list,
+        full_content=result.raw_output,
+        model_used=(model_choice if "llm" in result.method else "import"),
+        tokens_used=None,
+        auto_pinned=True,
+        # Surfaced so the UI can warn on a degraded import (e.g. content dumped as
+        # one section) instead of showing the same success as a clean one.
+        import_warnings=result.warnings or None,
+    )
+
+
+@router.post(
     "/generate-block",
     response_model=BlockWideJobResponse,
     status_code=202,
@@ -577,6 +800,11 @@ def generate_blueprint_block(
     params = request_body.model_dump()
     params["deliverable"] = "blueprint"
     params["user_name"] = current_user.username
+    # The id, not just the name: the worker rebuilds this caller to resolve DIS
+    # access, and that resolution looks up tenant memberships by user id. Without
+    # it the lookup fails and the caller is silently downgraded to the default DIS
+    # client, which then builds a DIFFERENT client's block (see dis_access).
+    params["user_id"] = getattr(current_user, "id", None)
     # Persist role so the async worker keeps the caller's DIS privilege.
     params["role"] = getattr(current_user, "role", "user")
     params["dis_client_id"] = dis_client_id
@@ -914,6 +1142,34 @@ def create_blueprint_version(blueprint_id: int, request_body: BlueprintVersionCr
 # Regeneration (AI) — ports the Streamlit blueprint regenerate controls
 # ---------------------------------------------------------------------------
 
+def _reject_if_truncated(result, what: str) -> None:
+    """Raise rather than let a fragment overwrite a stored blueprint.
+
+    The model's own output cap is the one bound content may hit, but a reply that
+    hit it is a fragment with nothing to say so: the prose reads as finished and
+    the caller splices it straight back over the section it replaced. Committing
+    that loses the tail silently, which is strictly worse than failing — a
+    failure the user can see, they can act on by narrowing the request or picking
+    a model with more output range.
+
+    Mirrors ``_reject_if_truncated`` in the CDD router. Kept local rather than
+    shared so the log line names the entity, and so hardening this path does not
+    require editing the CDD one.
+    """
+    if not getattr(result, "truncated", False):
+        return
+    _log.error(
+        "blueprint_llm_output_truncated  what=%s  model=%s  stop_reason=%s  completion_tokens=%s",
+        what, getattr(result, "model", "?"), getattr(result, "stop_reason", None),
+        getattr(result, "completion_tokens", None),
+    )
+    raise LLMGenerationError(
+        f"The model ran out of output room part-way through {what}, so the reply "
+        f"is incomplete and was not applied — nothing was changed. Narrow the "
+        f"request, or choose a model with a larger output limit."
+    )
+
+
 def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     """Return a short CDD summary for a blueprint's linked CDD, or '' if none."""
     if not getattr(bp, "cdd_id", None):
@@ -924,6 +1180,60 @@ def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     if not cdd_version:
         return ""
     return extract_cdd_summary(cdd_version, max_chars=max_chars) or ""
+
+
+def _blueprint_regen_context(db: Session, bp, *, instruction: str,
+                             section_key: str, section_content: str) -> tuple:
+    """Scoped CDD grounding for one blueprint regeneration: ``(text, provenance)``.
+
+    What this replaces was not a summary. ``extract_cdd_summary`` looks for
+    priority keys ("Learning Objectives", "Key Concepts & Terminology", …); a
+    worksheet-shaped CDD has none of them, so it fell through to
+    ``_cap(full_content, 1500)`` — the first 1,500 characters, cut mid-word. For
+    CDD 183 (78,189 chars) that is Worksheet 1's prose explaining what a
+    Blueprint document IS, and none of WORKSHEET 4: ACS CODE REGISTRY or
+    WORKSHEET 5: DAY-BY-DAY MAP. An instruction asking why a day's ACS cells
+    read N/A could not be answered from it, because the row that answers it
+    ("Day 20 | Test — Block 2: Final Exam | … | Full-block coverage (AM.I.B,
+    AM.I.E, AM.I.G — all codes taught Days 1–19)") sits at line 173 of 189.
+
+    ``cdd_regen_context.build_context`` selects whole units instead — block
+    overview, the scoped day's rows, the registry entries for that day's codes —
+    caps each part and the whole by TOKENS, and reports what it used. Nothing is
+    cut mid-word and nothing is dropped unreported.
+
+    The scope comes from the blueprint's own day rather than from whatever the
+    requester typed: the day is a property of the document, and ``parse_scope``
+    only reads the instruction.
+    """
+    if not getattr(bp, "cdd_id", None):
+        return "No CDD linked.", {"grounded": False, "reason": "no_cdd"}
+
+    from promptops_app.repositories import cdd_repository
+    from app.services import cdd_regen_context as regen_ctx_svc
+    from promptops_app.parsers.blueprint_parser import parse_day_and_title
+
+    cdd = cdd_repository.get_cdd_by_id(db, bp.cdd_id)
+    if cdd is None:
+        return "No CDD linked.", {"grounded": False, "reason": "cdd_missing"}
+
+    day, _topic = parse_day_and_title(bp.title, bp.module_number)
+    scoped_instruction = f"Day {day} {instruction}".strip() if day else (instruction or "")
+
+    context = regen_ctx_svc.build_context(
+        db, cdd, section_key=section_key,
+        instruction=scoped_instruction, section_content=section_content,
+    )
+    if context.is_grounded:
+        return context.text, context.provenance()
+
+    # Not every CDD is worksheet-shaped — one authored before that structure has
+    # no rows to scope to. Falling back to the old behaviour is worse context but
+    # it is not nothing, and the provenance says which path was taken.
+    fallback = _blueprint_cdd_summary(db, bp, max_chars=1500)
+    return (fallback or "No CDD linked.",
+            {"grounded": False, "reason": "cdd_not_worksheet_shaped",
+             "fallback_chars": len(fallback)})
 
 
 @router.post(
@@ -1013,13 +1323,31 @@ def regenerate_blueprint_section(
     Stateless: returns the new section content; the frontend commits a version.
     """
     from promptops_app.parsers.blueprint_parser import get_blueprint_prompts
-    from promptops_app.services.llm_service import generate_text as call_llm
+    from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
+    from app.services import cdd_regen_context as regen_ctx_svc
 
     bp = _get_blueprint_or_404(db, blueprint_id)
     mode = "teacher" if request_body.teacher_mode else "student"
     regen_system, _, regen_template = get_blueprint_prompts(mode)
-    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=1500)
+    cdd_summary, cdd_provenance = _blueprint_regen_context(
+        db, bp,
+        instruction=request_body.feedback or "",
+        section_key=request_body.section_key,
+        section_content=request_body.section_content or "",
+    )
+
+    # Refuse before spending anything when the target cannot come back whole.
+    # Whole-document regeneration is the case that matters: the model emits what
+    # fits, the page splices it in, and the commit succeeds with the tail gone.
+    # The helper is entity-agnostic (text + model + label), so this is the same
+    # guard the CDD path already uses.
+    if (request_body.section_content or "").strip():
+        regen_ctx_svc.assert_can_emit(
+            request_body.section_content,
+            model_choice=request_body.model_choice,
+            label=f'The "{request_body.section_key}" section',
+        )
 
     regen_prompt = regen_template.format(
         section_title=request_body.section_key,
@@ -1027,17 +1355,33 @@ def regenerate_blueprint_section(
         course_title=bp.title,
         cdd_summary=cdd_summary or "No CDD linked.",
         custom_instruction=request_body.feedback or "Improve this section.",
+        # Sent in full, never clipped: the caller is asking for a revision of THIS
+        # text, and a section trimmed to fit is a section the model will silently
+        # finish from its own assumptions.
+        current_content=request_body.section_content or "",
     )
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
         entity_type="blueprint_section_regen", entity_id=str(blueprint_id),
     )
-    new_content = call_llm(request_body.model_choice, regen_system, regen_prompt, usage_ctx)
+    # generate_with_metadata, not generate_text: the latter returns a bare string,
+    # so this route could neither ask for the model's real output ceiling (it
+    # inherited a flat default, capping a 64k model at a quarter of its range) nor
+    # see whether the reply hit that ceiling. Both matter when the reply is about
+    # to overwrite stored content.
+    result = generate_with_metadata(
+        request_body.model_choice, regen_system, regen_prompt, usage_ctx,
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
+    )
+    new_content = f"ERROR: {result.text}" if result.is_error else result.text
     if not new_content or new_content.startswith("ERROR"):
         raise LLMGenerationError("Section regeneration failed. Please try again.")
+    _reject_if_truncated(result, "regenerating this section")
 
-    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s",
-              current_user.username, blueprint_id, request_body.section_key, mode)
+    _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s  "
+              "grounded=%s  context=%s",
+              current_user.username, blueprint_id, request_body.section_key, mode,
+              bool((request_body.section_content or "").strip()), cdd_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 

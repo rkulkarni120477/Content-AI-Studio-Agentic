@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintsThunk, generateBlueprintThunk, importBlueprintThunk, setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   fetchArchivedBlueprintsThunk, archiveBlueprintThunk, restoreBlueprintThunk,
@@ -13,7 +13,7 @@ import {
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
   selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
-  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintError,
+  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintImporting, selectBlueprintError,
   selectBlueprintGenerationMode, setGenerationMode,
   selectArchivedBlueprints, selectBlueprintArchiving, selectBlueprintArchiveRefusal,
   clearArchiveRefusal,
@@ -79,6 +79,7 @@ export default function BlueprintPage() {
   const isAdmin = useAppSelector(selectIsAdmin);
   const isLoading = useAppSelector(selectBlueprintLoading);
   const isGenerating = useAppSelector(selectBlueprintGenerating);
+  const isImporting = useAppSelector(selectBlueprintImporting);
   const error = useAppSelector(selectBlueprintError);
   const archivedBlueprints = useAppSelector(selectArchivedBlueprints);
   const isArchiving = useAppSelector(selectBlueprintArchiving);
@@ -103,6 +104,12 @@ export default function BlueprintPage() {
   const [moduleConfirmed, setModuleConfirmed] = useState(false);
   const [showSaveVersion, setShowSaveVersion] = useState(false);
   const [savingSection, setSavingSection] = useState(false);
+
+  // Upload-existing-Outline control (Excel/DOCX/PDF → imported as an active
+  // day Outline). Mirrors the CddPage uploader; see onImportOutline.
+  const importFileRef = useRef(null);
+  const [importFile, setImportFile] = useState(null);
+  const [importProgress, setImportProgress] = useState(0);
 
   const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
 
@@ -346,6 +353,52 @@ export default function BlueprintPage() {
     }
   }
 
+  function onImportFileChange(e) {
+    setImportFile(e.target.files?.[0] || null);
+    setImportProgress(0);
+  }
+
+  // Import an existing Outline file. The day is read from the file; the currently
+  // selected day (when the source CDD is day-based) is sent only as a fallback for
+  // a file that carries no day. On success the imported Outline is set active (by
+  // the thunk) and shown below like a generated one.
+  async function onImportOutline() {
+    if (!importFile) return;
+    // Only send a fallback day the user actually confirmed — the day dropdown
+    // auto-defaults to Day 1, so sending it unconfirmed would silently file a
+    // dayless file onto Day 1. Unconfirmed → send nothing; the file's own day is
+    // used, or the backend asks the user to pick one.
+    const dayFallback = (moduleConfirmed && selectedModuleOpt?.isDay)
+      ? selectedModuleOpt.key
+      : undefined;
+    const res = await dispatch(importBlueprintThunk({
+      file: importFile,
+      courseId: Number(courseId),
+      projectId: selProject?.id ?? projectId,
+      documentTitle: documentTitle || '',
+      dayNumber: dayFallback,
+      cddId: linkedCddId || undefined,
+      modelChoice,
+      onProgress: setImportProgress,
+    }));
+    if (importBlueprintThunk.fulfilled.match(res)) {
+      setImportFile(null);
+      setImportProgress(0);
+      if (importFileRef.current) importFileRef.current.value = '';
+      if (res.payload?.id) {
+        setViewBpId(res.payload.id);
+        setSelectedBpId(res.payload.id);
+        setViewBpDetail(res.payload);
+        dispatch(fetchBlueprintVersionsThunk(res.payload.id));
+      }
+      dispatch(fetchBlueprintsThunk(courseId));
+    } else {
+      // Failed import — clear the stuck progress bar but keep the file selected
+      // so the user can fix the day and retry without re-choosing it.
+      setImportProgress(0);
+    }
+  }
+
   async function onPin(bpId) {
     await dispatch(setActiveBlueprintThunk({ blueprintId: bpId, courseId: Number(courseId) }));
     setViewBpId(bpId);
@@ -496,11 +549,17 @@ export default function BlueprintPage() {
     }
   }
 
-  async function onRegenerateBlueprintSection({ sectionTitle, instruction, ...shape }) {
+  async function onRegenerateBlueprintSection({
+    sectionTitle, sectionContent, instruction, ...shape
+  }) {
     if (!displayBp?.id) return;
     const res = await dispatch(regenerateBlueprintSectionThunk({
       blueprintId: displayBp.id,
       sectionKey: sectionTitle,
+      // Ground the regeneration in the text on screen. Without this the model
+      // is handed only a title, a module name and a 1500-char CDD summary, and
+      // what comes back is a plausible replacement rather than a revision.
+      sectionContent,
       feedback: instruction,
       modelChoice,
       teacherMode: viewMode === 'teacher',
@@ -721,6 +780,43 @@ export default function BlueprintPage() {
                   setModuleConfirmed(false);
                 }}
               />
+
+              {isDluCdd && (
+              <div className={styles.uploadBlock}>
+                <div className={styles.uploadLabel}>📤 Upload existing {L.blueprint}</div>
+                <p className={styles.uploadHint}>
+                  Upload an {L.blueprint} (Excel, Word, PDF). The day is read from the file;
+                  an existing day is saved as a new version.
+                </p>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".xlsx,.xls,.docx,.pdf"
+                  onChange={onImportFileChange}
+                  disabled={isImporting}
+                />
+                {importFile && (
+                  <div className={styles.uploadBanner}>
+                    📄 <strong>{importFile.name}</strong> selected
+                  </div>
+                )}
+                {importProgress > 0 && importProgress < 100 && (
+                  <div className={styles.uploadBanner}>Uploading… {importProgress}%</div>
+                )}
+                {isImporting && importProgress >= 100 && (
+                  <div className={styles.uploadBanner}>Processing the file…</div>
+                )}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  onClick={onImportOutline}
+                  disabled={!importFile || isImporting}
+                >
+                  {isImporting ? 'Importing…' : `📤 Import ${L.blueprint}`}
+                </Button>
+              </div>
+              )}
 
               {moduleOptions.length > 0 ? (
                 <>
