@@ -1189,7 +1189,7 @@ def regenerate_blueprint_item(
     from promptops_app.parsers.blueprint_parser import (
         parse_items_from_section,
         patch_item_in_section,
-        regen_single_item,
+        regen_single_item_with_result,
     )
     from promptops_app.services.usage_service import UsageLogContext
     from app.services import cdd_regen_context as regen_ctx_svc
@@ -1231,7 +1231,7 @@ def regenerate_blueprint_item(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
         entity_type="blueprint_item_regen", entity_id=str(blueprint_id),
     )
-    new_item_text = regen_single_item(
+    new_item_text, item_result = regen_single_item_with_result(
         section_title=request_body.section_key,
         section_content=original,
         item_index=item_index,
@@ -1240,7 +1240,16 @@ def regenerate_blueprint_item(
         model_choice=request_body.model_choice,
         usage_ctx=usage_ctx,
         context=item_context,
+        # The same ceiling assert_can_emit sized the item against a few lines
+        # above. Without it the call inherited a flat 16384 while the guard
+        # allowed up to 64000, so an item between the two passed the check and
+        # truncated anyway.
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
     )
+    # The reply is about to be patched over a line of the stored document, and a
+    # truncated item reads as a finished one. Refuse instead — the same guard the
+    # section path applies, for the same reason.
+    _reject_if_truncated(item_result, "regenerating this item")
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
     _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d  context=%s",

@@ -444,16 +444,35 @@ SECTION_WITH_ITEMS = (
 
 @pytest.fixture()
 def stub_item_llm(monkeypatch):
-    """Capture what the item-regeneration prompt actually contains."""
+    """Capture what the item-regeneration prompt actually contains.
+
+    Patches ``generate_with_metadata``, which is what the item path calls now:
+    it needs the result object to request the model's real output ceiling and to
+    see whether the reply hit it. This fixture used to patch ``call_llm`` (the
+    parser's re-export of ``generate_text``); left alone after that switch it
+    would have stopped intercepting anything and quietly made real API calls.
+    """
+    from promptops_app.core.llm_client import LLMResult
+
     calls: list[dict] = []
 
     def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
-        calls.append({"system": system_prompt, "user": user_prompt})
-        return "Regenerated bullet."
+        calls.append({
+            "system": system_prompt, "user": user_prompt,
+            "max_tokens": kwargs.get("max_tokens"),
+        })
+        return LLMResult(
+            text="Regenerated bullet.", model="mock-model",
+            prompt_tokens=10, completion_tokens=20, stop_reason="end_turn",
+        )
 
-    # regen_single_item calls call_llm, which is llm_service.generate_text
-    # re-exported into the parser module.
-    monkeypatch.setattr("promptops_app.parsers.blueprint_parser.call_llm", fake)
+    # Patched on the PARSER's own binding, not llm_service's. blueprint_parser
+    # does `from ... import generate_with_metadata` at module scope, so it holds
+    # its own reference and patching the source module would not reach it — the
+    # section path's fixture can patch llm_service only because its import is
+    # inside the request handler and re-read per call.
+    monkeypatch.setattr(
+        "promptops_app.parsers.blueprint_parser.generate_with_metadata", fake)
     return calls
 
 
@@ -525,3 +544,124 @@ class TestItemRegenerationIsGroundedToo:
         assert "First bullet about drawings." in body["updated_content"]
         assert "Third bullet about corrosion." in body["updated_content"]
         assert "Second bullet about materials." not in body["updated_content"]
+
+
+class TestItemRegenerationRefusesATruncatedReply:
+    """The item path could not see truncation at all.
+
+    It went through ``regen_single_item``, which returned a bare string via
+    ``generate_text`` — so a reply cut off at the output ceiling was patched over
+    a line of the stored document and committed as if finished. Worse, the
+    pre-flight ``assert_can_emit`` sized the item against ``output_budget``
+    (64000 on three catalog models) while the call itself passed no max_tokens
+    and inherited 16384: an item between those two figures passed the guard and
+    then truncated anyway, which is precisely what the guard exists to stop.
+    """
+
+    def _truncating_stub(self, monkeypatch, stop_reason="length"):
+        from promptops_app.core.llm_client import LLMResult
+
+        calls: list[dict] = []
+
+        def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
+            calls.append({"max_tokens": kwargs.get("max_tokens")})
+            return LLMResult(
+                text="Half an ans", model="mock-model", prompt_tokens=10,
+                completion_tokens=20, stop_reason=stop_reason,
+            )
+
+        monkeypatch.setattr(
+            "promptops_app.parsers.blueprint_parser.generate_with_metadata", fake)
+        return calls
+
+    @pytest.mark.parametrize("stop_reason", ["length", "max_tokens"])
+    def test_a_truncated_item_is_refused(
+        self, client, auth_headers, grounded_blueprint, monkeypatch, stop_reason
+    ):
+        self._truncating_stub(monkeypatch, stop_reason)
+
+        resp = client.post(
+            f"/api/v1/blueprints/{grounded_blueprint.id}/regenerate-item",
+            json={
+                "section_key": "Part I — DLU-Wide Information",
+                "section_content": SECTION_WITH_ITEMS,
+                "item_index": 1,
+                "feedback": "why is the ACS alignment N/A",
+                "model_choice": "GPT-5.4",
+            },
+            headers=auth_headers,
+        )
+
+        assert resp.status_code >= 400, resp.text
+        assert "output room" in resp.text
+
+    def test_the_call_asks_for_the_ceiling_the_guard_checked_against(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm
+    ):
+        """GPT-5.4's catalog ceiling is 16384 and Claude Sonnet 5's is 64000.
+        The point is that max_tokens is now requested at all — inherited, it was
+        flat 16384 regardless of the model the guard had sized against."""
+        from promptops_app.core.models import resolve_model
+
+        _regen_item(client, auth_headers, grounded_blueprint.id,
+                    model_choice="Claude Sonnet 5 (Bedrock)")
+
+        expected = resolve_model("Claude Sonnet 5 (Bedrock)").max_output_tokens
+        assert expected == 64000, "catalog changed; update this test"
+        assert stub_item_llm[0]["max_tokens"] == expected
+
+    def test_a_complete_item_still_goes_through(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm
+    ):
+        """Control: the guard must not be passing by refusing everything."""
+        out = _regen_item(client, auth_headers, grounded_blueprint.id)
+
+        assert "Regenerated bullet." in out["updated_content"]
+
+
+class TestTheTextOnlyWrapperStillWorks:
+    def test_regen_single_item_returns_a_string(self, monkeypatch):
+        """cdd.py, regen_jobs.py and core/shared.py all unpack a bare string.
+
+        Stubbed at ``call_llm`` on purpose: the text-only wrapper deliberately
+        still goes through generate_text, so those three callers' behaviour is
+        untouched and their own tests keep stubbing the name they always did.
+        Only the blueprint item route takes the with-result path.
+        """
+        from promptops_app.parsers import blueprint_parser
+
+        monkeypatch.setattr(blueprint_parser, "call_llm",
+                            lambda *a, **k: "- Fixed item.")
+
+        out = blueprint_parser.regen_single_item(
+            "Section", "- a\n- b", 1, "- b", "improve",
+        )
+
+        assert isinstance(out, str)
+        assert out == "Fixed item."
+
+    def test_both_variants_send_the_same_prompt(self, monkeypatch):
+        """The two paths share _item_regen_user_prompt, so they cannot drift."""
+        from promptops_app.core.llm_client import LLMResult
+        from promptops_app.parsers import blueprint_parser
+
+        seen = {}
+
+        def fake_text(model, system, user, usage_ctx=None):
+            seen["text_only"] = user
+            return "x"
+
+        def fake_meta(model, system, user, usage_ctx=None, **kwargs):
+            seen["with_result"] = user
+            return LLMResult(text="x", model="m", prompt_tokens=1,
+                             completion_tokens=1, stop_reason="end_turn")
+
+        monkeypatch.setattr(blueprint_parser, "call_llm", fake_text)
+        monkeypatch.setattr(blueprint_parser, "generate_with_metadata", fake_meta)
+
+        args = ("Section", "- a\n- b", 1, "- b", "improve")
+        blueprint_parser.regen_single_item(*args, context="GROUNDING")
+        blueprint_parser.regen_single_item_with_result(*args, context="GROUNDING")
+
+        assert seen["text_only"] == seen["with_result"]
+        assert "GROUNDING" in seen["text_only"]
