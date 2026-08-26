@@ -129,6 +129,14 @@ export default function ClustersPage() {
   const clustersPending = isLoadingClusters
     || (clustersLoadedFor !== pid && !clustersError);
 
+  // Render only what the marker says was fetched for THIS project. `state.error`
+  // is shared by every dashboard fetch, so an unrelated failure can already be
+  // set on arrival and trip the `!clustersError` escape hatch above before this
+  // project's own fetch has settled — and the grid branch below is evaluated
+  // before the error branch. Reading `clusters.items` directly there would paint
+  // the previous project's categories under this one's header.
+  const clusterItems = clustersLoadedFor === pid ? (clusters?.items ?? []) : [];
+
   return (
     <SelectionLayout
       sidebarProps={{
@@ -157,16 +165,16 @@ export default function ClustersPage() {
       </div>
 
       {cpMgrOpen && canManage && (
-        <ClusterPromptManager clusters={clusters?.items || []} />
+        <ClusterPromptManager clusters={clusterItems} />
       )}
 
       {clustersPending ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
           <Loader size="sm" /> Loading categories…
         </div>
-      ) : clusters?.items?.length ? (
+      ) : clusterItems.length ? (
         <div className={gridStyles.grid}>
-          {clusters?.items?.map((cluster) => (
+          {clusterItems.map((cluster) => (
             <StreamlitCard
               key={cluster.id}
               title={`🗂️ ${cluster.name}`}

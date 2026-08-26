@@ -16,7 +16,7 @@
 // were no categories. In dev StrictMode's second dispatch covered it up a
 // moment later; in a production build the wrong answer could have stuck.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
@@ -47,8 +47,9 @@ vi.mock('@hooks/useAuth', () => ({
 vi.mock('@components/layout/SelectionLayout/SelectionLayout', () => ({
   default: ({ children }) => <div>{children}</div>,
 }));
+const clusterPromptManagerCalls = [];
 vi.mock('@components/cluster/ClusterPromptManager/ClusterPromptManager', () => ({
-  default: () => null,
+  default: ({ clusters }) => { clusterPromptManagerCalls.push(clusters); return null; },
 }));
 vi.mock('@features/dashboard/components/EditEntityModal/EditEntityModal', () => ({
   default: () => null,
@@ -70,7 +71,7 @@ vi.mock('@components/common/EmptyState/EmptyState', () => ({
 }));
 
 const { default: dashboardReducer, setSelectedProject } = await import('@features/dashboard/dashboardSlice');
-const { fetchClustersThunk } = await import('@features/dashboard/dashboardThunks');
+const { fetchClustersThunk, fetchCoursesThunk } = await import('@features/dashboard/dashboardThunks');
 const { default: ClustersPage } = await import('../ClustersPage');
 
 const PROJECT = { id: 23, name: 'AIM' };
@@ -104,6 +105,7 @@ beforeEach(() => {
   getProject.mockReset();
   listClusters.mockReset();
   emptyStatesRendered.length = 0;
+  clusterPromptManagerCalls.length = 0;
 });
 
 /** Assert the "No categories" empty state was never committed, even briefly. */
@@ -184,6 +186,64 @@ describe('ClustersPage — the empty state waits for an answer', () => {
 
     project.resolve(PROJECT);
     await waitFor(() => expect(listClusters).toHaveBeenCalledWith(23));
+  });
+});
+
+// Round-4 PR review: the CoursesPage half of this paint-through fix got a
+// stale-error regression test (coursesLoading.test.jsx); this is its
+// ClustersPage mirror — the code on both pages is line-for-line identical,
+// so the gap applied here too.
+describe('ClustersPage — stale state cannot paint under a new project', () => {
+  it('a stale error from an unrelated fetch does not let a previous project´s categories paint', async () => {
+    // `state.error` is shared by every dashboard fetch, so a courses-fetch
+    // failure elsewhere can still be set when this project's own clusters
+    // fetch is still in flight — tripping the `!clustersError` escape hatch
+    // in `clustersPending` before `clustersLoadedFor` catches up.
+    getProject.mockResolvedValue(PROJECT);
+    const clusters = deferred();
+    listClusters.mockReturnValueOnce(clusters.promise);
+
+    renderPage([
+      setSelectedProject({ id: 99, name: 'Other Project' }),
+      fetchClustersThunk.pending('r1', 99),
+      fetchClustersThunk.fulfilled({ items: [cluster(1, 'Stale Category')], total: 1 }, 'r1', 99),
+      setSelectedProject(PROJECT), // navigate to project 23; clears the marker, not the list
+      fetchCoursesThunk.pending('rX', 5),
+      fetchCoursesThunk.rejected(new Error('boom'), 'rX', 5, 'boom'),
+    ]);
+
+    expect(screen.queryByText('Stale Category')).toBeNull();
+
+    clusters.resolve({ items: [cluster(2, 'Fresh Category')], total: 1 });
+    await waitFor(() => expect(screen.getByText(/Fresh Category/)).toBeTruthy());
+    expect(screen.queryByText('Stale Category')).toBeNull();
+  });
+
+  it('never passes a previous project´s stale categories to ClusterPromptManager', async () => {
+    // Review finding 1: ClusterPromptManager read `clusters?.items` directly,
+    // three lines below the marker-gated `clusterItems` derivation. A manager
+    // with the Category Prompt panel open across a project switch would see
+    // the PREVIOUS project's categories in the assign-cluster select — not
+    // just a cosmetic paint, since that value is what create/assign posts to.
+    getProject.mockResolvedValue(PROJECT);
+    const clusters = deferred();
+    listClusters.mockReturnValueOnce(clusters.promise);
+
+    renderPage([
+      setSelectedProject({ id: 99, name: 'Other Project' }),
+      fetchClustersThunk.pending('r1', 99),
+      fetchClustersThunk.fulfilled({ items: [cluster(1, 'Stale Category')], total: 1 }, 'r1', 99),
+      setSelectedProject(PROJECT),
+    ]);
+
+    fireEvent.click(screen.getByText('➕ Category Prompt'));
+    // Project 23's own fetch is still in flight (clustersLoadedFor is still
+    // 99, not 23) — the manager must never have been handed project 99's list.
+    expect(clusterPromptManagerCalls.some((c) => c.some((x) => x.name === 'Stale Category'))).toBe(false);
+    expect(clusterPromptManagerCalls.at(-1)).toEqual([]);
+
+    clusters.resolve({ items: [cluster(2, 'Fresh Category')], total: 1 });
+    await waitFor(() => expect(clusterPromptManagerCalls.at(-1)).toEqual([cluster(2, 'Fresh Category')]));
   });
 });
 

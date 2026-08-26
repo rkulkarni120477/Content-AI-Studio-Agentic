@@ -29,7 +29,14 @@ export default function ManageUsersModal({
       setLoading(true);
       setError(null);
       try {
-        const usersRes = await dashboardService.listUsers();
+        // The tenant this picker's candidates must be scoped to: the project
+        // being managed directly (scope 'project'), or the course's own
+        // project (scope 'course' — projectId is passed in for exactly this).
+        // GET /users force-scopes server-side regardless, but a platform
+        // admin (who has no tenant of their own) needs this to see anyone at
+        // all — see users.py's list_users.
+        const scopedProjectId = scope === 'project' ? entityId : projectId;
+        const usersRes = await dashboardService.listUsers(scopedProjectId);
         const nonAdmin = (usersRes?.items ?? []).filter((u) => u.role !== 'admin' && u.is_active);
         const assignedRes = scope === 'project'
           ? await dashboardService.listProjectUsers(entityId)
