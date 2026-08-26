@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from services.blocks import block_label, block_variants
 from config.settings import TenantConfig, get_settings
 
 log = logging.getLogger(__name__)
@@ -140,17 +141,38 @@ def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any]) -
         INSERT INTO {schema}.dis_course_calendars(calendar_id, document_id, job_id, tenant_id, client_id, course_name, block, total_days, structure_json)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
         ON CONFLICT(calendar_id) DO UPDATE SET structure_json=EXCLUDED.structure_json, total_days=EXCLUDED.total_days
-    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), cal.get("block"), len(cal.get("days", [])), json.dumps(cal)))
+    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), block_label(cal.get("block")), len(cal.get("days", [])), json.dumps(cal)))
+    # Day rows are keyed by day_number, so two parsed days claiming the same number
+    # overwrite each other. That is how a Block 13 calendar whose every row parsed as
+    # "day 1" stored 2 rows for 11 days and reported success: the collapse is the
+    # ON CONFLICT working exactly as written, and nothing counted what it ate.
+    seen_days: set = set()
+    collapsed: List[int] = []
     count = 0
     for day in cal.get("days", []):
-        day_id = f"{calendar_id}:day_{day.get('day_number', count+1)}"
+        day_number = day.get("day_number", count + 1)
+        if day_number in seen_days:
+            collapsed.append(day_number)
+        seen_days.add(day_number)
+        day_id = f"{calendar_id}:day_{day_number}"
         cur.execute(f"""
             INSERT INTO {schema}.dis_calendar_days(calendar_day_id, calendar_id, document_id, job_id, tenant_id, client_id, block, day_number, week_number, topic, lesson_title, activities_json, assignments_json, assessments_json, source_text, source_location)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
             ON CONFLICT(calendar_day_id) DO UPDATE SET topic=EXCLUDED.topic, lesson_title=EXCLUDED.lesson_title, source_text=EXCLUDED.source_text
-        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("block"), day.get("day_number"), day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location")))
+        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), block_label(cal.get("block")), day_number, day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location")))
         count += 1
-    return count
+    if collapsed:
+        # Loud, and carried in the state the pipeline reports: a calendar that stored
+        # a third of its days is not a successful ingest, and the downstream symptom
+        # (a Blueprint covering 2 of 11 days) gives no hint that the loss happened here.
+        log.error("calendar %s: %s of %s parsed days collapsed onto duplicate day "
+                  "numbers %s — the stored calendar is INCOMPLETE; the source almost "
+                  "certainly did not parse (check the extractor that produced it)",
+                  calendar_id, len(collapsed), count, sorted(set(collapsed)))
+        state.setdefault("errors", []).append(
+            f"calendar {calendar_id}: {len(collapsed)} of {count} parsed days shared a "
+            f"day_number and were overwritten; stored {len(seen_days)} distinct days")
+    return len(seen_days)
 
 
 def upsert_syllabus(cur, schema: str, document_id: str, state: Dict[str, Any]) -> int:
@@ -638,9 +660,13 @@ def fetch_digests(tenant_cfg: TenantConfig, block: str, client_id: str) -> List[
     body = {
         "size": 500,
         "_source": {"excludes": ["embedding"]},
+        # terms-over-variants, not a single term: `block` is a keyword field holding
+        # whatever spelling the build was started with, so a cache keyed on the raw
+        # string silently misses (then re-runs every day's MAP, billed again) when the
+        # same block is asked for as 'Block 09' one time and 'Block 9' the next.
         "query": {"bool": {"filter": [
             {"term": {"client_id": client_id}},
-            {"term": {"block": block}},
+            {"terms": {"block": block_variants(block)}},
             {"term": {"unit_type": DIGEST_UNIT_TYPE}},
         ]}},
     }
@@ -666,7 +692,10 @@ def delete_digests(tenant_cfg: TenantConfig, block: str, client_id: str) -> Dict
             index=cfg.index_name,
             body={"query": {"bool": {"filter": [
                 {"term": {"client_id": client_id}},
-                {"term": {"block": block}},
+                # Same variant set as fetch_digests: a force-rebuild that deleted only
+                # one spelling would leave the others behind, and fetch would then
+                # serve the stale ones the rebuild existed to replace.
+                {"terms": {"block": block_variants(block)}},
                 {"term": {"unit_type": DIGEST_UNIT_TYPE}},
             ]}}},
             refresh=True,

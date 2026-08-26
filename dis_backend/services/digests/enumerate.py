@@ -250,6 +250,9 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
             unattributed.append(u)
 
     flags: List[str] = []
+    # Profile notes first: they describe the scope every later flag is computed
+    # from, so a reader sees "these tags were merged" before the day counts.
+    flags.extend(n for n in getattr(scope, "notes", []) if n)
     if total_days and enumerated_days != total_days:
         flags.append(f"BLOCK_INCOMPLETE — enumerated {enumerated_days} days != total_days {total_days}")
     if dup_ids:
