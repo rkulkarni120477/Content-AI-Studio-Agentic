@@ -647,6 +647,11 @@ def generate_blueprint_block(
     params = request_body.model_dump()
     params["deliverable"] = "blueprint"
     params["user_name"] = current_user.username
+    # The id, not just the name: the worker rebuilds this caller to resolve DIS
+    # access, and that resolution looks up tenant memberships by user id. Without
+    # it the lookup fails and the caller is silently downgraded to the default DIS
+    # client, which then builds a DIFFERENT client's block (see dis_access).
+    params["user_id"] = getattr(current_user, "id", None)
     # Persist role so the async worker keeps the caller's DIS privilege.
     params["role"] = getattr(current_user, "role", "user")
     params["dis_client_id"] = dis_client_id

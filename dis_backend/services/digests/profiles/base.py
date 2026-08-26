@@ -57,10 +57,15 @@ class CurriculumProfile:
         ``LookupError`` when the block/scope does not exist, and
         ``RuntimeError`` when the tenant's enumeration source is not defined.
         """
+        # Names the client and block it was actually asked for. Without them this
+        # reads as "some tenant is misconfigured" and gives the reader no way to see
+        # that the request simply arrived under the wrong client — which is how it
+        # reaches this branch in practice.
         raise RuntimeError(
-            f"Curriculum enumeration is not configured for this tenant "
-            f"(profile={type(self).__name__}). Define a CurriculumProfile "
-            f"(plan §5.5 / D8) before enabling the digest pipeline for it."
+            f"Curriculum enumeration is not configured for client "
+            f"{(client_id or '?')!r} (block={block!r}, profile={type(self).__name__}). "
+            f"Either the request reached the wrong client, or this one needs a "
+            f"CurriculumProfile (plan §5.5 / D8) before its digest pipeline is enabled."
         )
 
     # -- coverage_semantics() -------------------------------------------------
