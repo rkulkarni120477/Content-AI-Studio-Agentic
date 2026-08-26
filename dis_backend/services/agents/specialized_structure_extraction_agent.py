@@ -121,8 +121,17 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
                 if looks_like_aim_teacher_calendar(raw_bytes):
                     block_hint = (state.get('doc_metadata') or {}).get('block')
                     return build_calendar_structure(raw_bytes, filename, block_hint)
-            except Exception:
-                pass  # any parsing issue -> safe generic fallback below
+                state.setdefault('errors', []).append(
+                    f'course_calendar: {filename} is a spreadsheet but not in the AIM '
+                    'teacher-calendar layout; parsed with the generic row extractor')
+            except Exception as exc:  # noqa: BLE001 -> safe generic fallback below
+                # Recorded, not swallowed: the generic extractor numbers every row
+                # day 1 on an AIM layout, so "the AIM parser raised" and "this is not
+                # an AIM calendar" have wildly different consequences and used to be
+                # the same silent `pass`.
+                state.setdefault('errors', []).append(
+                    f'course_calendar: AIM parser failed on {filename} '
+                    f'({type(exc).__name__}: {exc}); fell back to the generic extractor')
         return extract_calendar_structure(filename, text, tables, doc_processing)
 
         # =============================================================================

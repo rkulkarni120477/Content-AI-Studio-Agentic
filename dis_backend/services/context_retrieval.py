@@ -16,6 +16,7 @@ from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.source_library import read_source_index, source_filter_options as compact_filter_options
 from services.generated_documents import GeneratedDocumentService
+from services.blocks import same_block
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
@@ -306,6 +307,12 @@ class ContextRetrievalService:
                 return True
             if str(value).strip().lower() in {"all", "*", "any"}:
                 return True
+            if field == "block":
+                # Not a string compare: the same block is tagged 'Block 09' by one
+                # writer and 'Block 9' by another (services/blocks), so filtering a
+                # library of 61 Block 9 units by "Block 9" used to show 19 of them
+                # and read as "that is all there is".
+                return same_block(src.get(field), value)
             return str(src.get(field) or "").lower() == str(value).lower()
         for field in ("document_type", "source_file_type", "block", "course_name", "day", "chapter", "module_name", "lesson_name", "visibility", "status"):
             if not eq(field, filters.get(field)):
