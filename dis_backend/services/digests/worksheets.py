@@ -23,6 +23,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from services.aim_calendar import parse_handbook
+from services.blocks import BLOCK_KEY_SQL, block_key
 from services.digests import attribution
 
 log = logging.getLogger(__name__)
@@ -333,6 +334,7 @@ def _aktr_missed_codes(en, cur, schema: str) -> Dict[str, Dict[str, Any]]:
     m = re.search(r"(\d+)", str(en.block or ""))
     if m:
         block_number = str(int(m.group(1)))
+    bk = BLOCK_KEY_SQL.format(col="cu.metadata_json->>'block'")
     try:
         cur.execute(
             f"""SELECT cu.metadata_json, cu.text_content
@@ -340,9 +342,9 @@ def _aktr_missed_codes(en, cur, schema: str) -> Dict[str, Dict[str, Any]]:
                  JOIN {schema}.dis_documents doc ON doc.document_id = cu.document_id
                 WHERE cu.client_id = %s
                   AND doc.document_type = 'knowledge_test_report'
-                  AND (cu.metadata_json->>'block' = %s
+                  AND ({bk} = %s
                        OR (%s <> '' AND cu.metadata_json->>'block_number' = %s))""",
-            (en.client_id, en.block, block_number, block_number),
+            (en.client_id, block_key(en.block), block_number, block_number),
         )
         rows = cur.fetchall()
     except Exception as exc:  # best-effort; a failed lookup must never sink the caller
