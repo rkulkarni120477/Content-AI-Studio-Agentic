@@ -35,5 +35,5 @@ export const dashboardService = {
     const res = await api.get(MODELS.LIST);
     return { items: res.models || [], default: res.default };
   },
-  listUsers:       ()             => api.get(USERS.LIST),
+  listUsers:       (projectId)    => api.get(USERS.LIST, projectId ? { params: { project_id: projectId } } : undefined),
 };

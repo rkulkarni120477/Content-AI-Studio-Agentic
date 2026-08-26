@@ -303,7 +303,7 @@ def _mark_failed(db, job, course_import, message: str, *, course_id: int | None 
         # "Imported" in the Titles list (same is_active flag the archive
         # endpoint uses; the course row + any partial content stay in place
         # for support/debugging, just no longer listed — see
-        # course_repository._failed_import_course_ids for the list-side
+        # course_repository._is_empty_import_shell for the list-side
         # exclusion, since the Titles page itself fetches with
         # include_archived=true). A separate commit so this write can't be
         # lost to, or roll back, the course_import status write above.

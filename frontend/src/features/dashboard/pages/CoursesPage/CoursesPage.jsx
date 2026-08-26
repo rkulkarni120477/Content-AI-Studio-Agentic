@@ -166,9 +166,18 @@ export default function CoursesPage() {
   // No courses fetch for THIS cluster has settled yet, so nothing is known
   // about whether it has titles yet — `items: []` means both "not loaded" and
   // "none exist", and isLoadingCourses is still false for the paint between
-  // selecting the cluster and the fetch's pending action.
+  // selecting the cluster and the fetch's pending action. The `!coursesError`
+  // escape hatch keeps a genuinely failed fetch from spinning forever.
   const coursesPending = isLoadingCourses
     || (coursesLoadedFor !== cid && !coursesError);
+
+  // Render only what the marker says was fetched for THIS cluster. `state.error`
+  // is shared by every dashboard fetch, so an unrelated failure can already be
+  // set on arrival and trip the escape hatch above before this cluster's own
+  // fetch has settled — and the grid branch below is evaluated before the error
+  // branch. Reading `courses.items` directly there would paint the previous
+  // cluster's titles under this one's header.
+  const courseItems = coursesLoadedFor === cid ? (courses?.items ?? []) : [];
 
   return (
     <SelectionLayout
@@ -193,9 +202,9 @@ export default function CoursesPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
           <Loader size="sm" /> Loading {L.titlesLower}…
         </div>
-      ) : courses?.items?.length ? (
+      ) : courseItems.length ? (
         <div className={gridStyles.grid}>
-          {courses?.items?.map((course) => {
+          {courseItems.map((course) => {
             const archived = course.is_active === false;
             return (
               <StreamlitCard
