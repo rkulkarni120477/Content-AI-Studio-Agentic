@@ -3,7 +3,13 @@ import { styleService } from './services/styleService';
 import { analyticsService } from '@features/analytics/services/analyticsService';
 import { computeDocumentRegistryStats } from '@utils/documentRegistry';
 import { extractErrorMessage } from '@utils/helpers';
+import { buildLabels, FALLBACK_LABELS } from '@config/tenantLabels';
 import toast from 'react-hot-toast';
+
+function labelsFromState(getState) {
+  const overrides = getState()?.dashboard?.selectedProject?.ui_labels;
+  return overrides ? buildLabels(overrides) : FALLBACK_LABELS;
+}
 
 async function loadDocumentRegistry() {
   const [documents, summary, uploadHistory] = await Promise.all([
@@ -58,7 +64,8 @@ export const createStyleThunk = createAsyncThunk(
         project_id: projectId ?? null,
       });
 
-      toast.success(`Style "${result.name}" created and activated for this title.`);
+      const L = labelsFromState(getState);
+      toast.success(`${L.style} "${result.name}" created and activated for this ${L.titleLower}.`);
       await dispatch(fetchStylesThunk());
       await dispatch(fetchDocumentsThunk());
       return result;
@@ -81,8 +88,13 @@ export const activateStyleThunk = createAsyncThunk(
       }
       // scope === 'global' → empty body activates globally (admin only in UI)
       const result = await styleService.activateStyle(styleId, body);
-      const scopeLabel = scope === 'global' ? 'globally' : scope === 'project' ? 'for this project' : 'for this title';
-      toast.success(`Style activated ${scopeLabel}.`);
+      const L = labelsFromState(getState);
+      const scopeLabel = scope === 'global'
+        ? 'globally'
+        : scope === 'project'
+          ? 'for this project'
+          : `for this ${L.titleLower}`;
+      toast.success(`${L.style} activated ${scopeLabel}.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -139,7 +151,7 @@ export const regenerateStyleThunk = createAsyncThunk(
         project_id: state?.dashboard?.selectedProject?.id ?? null,
         prompt_id: promptId ?? undefined,
       });
-      toast.success('Style understanding generated.');
+      toast.success(`${labelsFromState(getState).style} understanding generated.`);
       return result;
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -160,7 +172,7 @@ export const refineStyleThunk = createAsyncThunk(
         course_id: state?.dashboard?.selectedCourse?.id ?? null,
         project_id: state?.dashboard?.selectedProject?.id ?? null,
       });
-      toast.success('Refined Style Intelligence Layer saved.');
+      toast.success(`Refined ${labelsFromState(getState).style} Intelligence Layer saved.`);
       return result;
     } catch (e) {
       toast.error(extractErrorMessage(e));
@@ -171,10 +183,10 @@ export const refineStyleThunk = createAsyncThunk(
 
 export const deleteStyleThunk = createAsyncThunk(
   'style/delete',
-  async (styleId, { rejectWithValue }) => {
+  async (styleId, { getState, rejectWithValue }) => {
     try {
       await styleService.deleteStyle(styleId);
-      toast.success('Style deleted.');
+      toast.success(`${labelsFromState(getState).style} deleted.`);
       return { id: styleId };
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -182,10 +194,10 @@ export const deleteStyleThunk = createAsyncThunk(
 
 export const updateStyleThunk = createAsyncThunk(
   'style/update',
-  async ({ styleId, data }, { rejectWithValue }) => {
+  async ({ styleId, data }, { getState, rejectWithValue }) => {
     try {
       const result = await styleService.updateStyle(styleId, data);
-      toast.success('Style updated.');
+      toast.success(`${labelsFromState(getState).style} updated.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
