@@ -29,7 +29,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    pass  # avoid circular imports in type hints
+    from promptops_app.prompts.prompt_loader import PromptTemplate
 
 # Matches {{identifier}} — one or more word chars, underscores, digits
 _VAR_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
@@ -122,7 +122,22 @@ def render_safe(template: str, variables: dict) -> str:
 
 # ── High-level builder ────────────────────────────────────────────────────────
 
-def build_prompt(
+def build_prompt(template_name: str, variables: dict, **kwargs) -> tuple[str, str, str, str]:
+    """Render a named template. See ``build_prompt_resolved`` for the parameters.
+
+    Returns ``(system_prompt, user_prompt, template_name, resolved_version)``.
+
+    Name and version are what a caller can store, but they do NOT identify the
+    prompt: every blueprint prompt in the library resolves under the logical name
+    "blueprint_generation" and versions restart per row, so a caller recording
+    provenance should use ``build_prompt_resolved`` and take the row id off the
+    returned template instead.
+    """
+    system, user, tmpl = build_prompt_resolved(template_name, variables, **kwargs)
+    return system, user, tmpl.name, tmpl.version
+
+
+def build_prompt_resolved(
     template_name: str,
     variables: dict,
     *,
@@ -135,7 +150,7 @@ def build_prompt(
     variant=None,
     require_variant: bool = False,
     prompt_id=None,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, "PromptTemplate"]:
     """Load a named template, optionally validate variables, and render both parts.
 
     Parameters
@@ -173,9 +188,10 @@ def build_prompt(
 
     Returns
     -------
-    (system_prompt, user_prompt, template_name, resolved_version)
-        The rendered strings plus the name and version actually used
-        (for storing in Generation.prompt_name / prompt_version).
+    (system_prompt, user_prompt, template)
+        The rendered strings plus the resolved ``PromptTemplate`` itself, so a
+        caller storing provenance can record ``prompt_row_id`` / ``prompt_title``
+        and not only the ambiguous name+version pair.
     """
     from promptops_app.prompts.prompt_loader import load_template  # deferred to break circular
 
@@ -201,7 +217,7 @@ def build_prompt(
     system = render(tmpl.system_template, variables, strict=strict)
     user   = render(tmpl.user_template,   variables, strict=strict)
 
-    return system, user, tmpl.name, tmpl.version
+    return system, user, tmpl
 
 
 # ── Context builder helpers ───────────────────────────────────────────────────

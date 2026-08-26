@@ -210,7 +210,7 @@ def generate_blueprint(
         parse_blueprint_components, get_blueprint_prompts,
     )
     from promptops_app.parsers.cdd_parser import extract_cdd_summary, extract_module_section
-    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt
+    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt_resolved
     from promptops_app.repositories import blueprint_repository, cdd_repository, style_repository
     from promptops_app.repositories.course_repository import set_active_blueprint
     from promptops_app.services.audit_service import log_audit_event
@@ -363,7 +363,7 @@ def generate_blueprint(
             "block":              getattr(request_body, "block", None) or "",
         }
         try:
-            system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
+            system_prompt, user_prompt, _tpl = build_prompt_resolved(
                 "blueprint_generation", variables, db=db,
                 project_id=course.project_id if course else request_body.project_id,
                 cluster_id=course.cluster_id if course else None,
@@ -395,8 +395,22 @@ def generate_blueprint(
         else:
             prompt_provenance = {
                 "prompt_source": "registry",
-                "prompt_name": _tpl_name,
-                "prompt_version": _tpl_version,
+                "prompt_name": _tpl.name,
+                "prompt_version": _tpl.version,
+                # The row, not just the logical name. Twelve library prompts
+                # resolve as "blueprint_generation" and each numbers its versions
+                # from v1, so name+version cannot say which one ran: identifying
+                # the prompt behind a stored blueprint previously meant full-text
+                # searching every prompt version against the document. None when
+                # the file tier served the template, which has no row.
+                "prompt_row_id": _tpl.prompt_row_id,
+                "prompt_title": _tpl.prompt_title,
+                "prompt_tier": _tpl.source,
+                # What the requester asked for, kept separately from what
+                # resolution actually returned — a dropdown choice that missed
+                # and fell through to the default is otherwise indistinguishable
+                # from never having chosen.
+                "prompt_id_requested": request_body.prompt_id,
             }
 
     # Same guard the CDD router applies, for the same reason: this path stores the
