@@ -389,6 +389,14 @@ def generate_blueprint(
         prompt_provenance["source_context_dropped"] = True
 
     # Call LLM.
+    #
+    # max_tokens is the chosen model's own ceiling rather than the 16384 default
+    # that omitting it inherits. Three models in the catalog return up to 64000,
+    # so a blueprint generated on one of them was being held to a quarter of its
+    # range for no reason — the same cap output_budget was introduced to lift on
+    # the regeneration paths.
+    from app.services import cdd_regen_context as regen_ctx_svc
+
     llm_result = generate_with_metadata(
         request_body.model_choice, system_prompt, user_prompt,
         usage_ctx=UsageLogContext(
@@ -397,12 +405,21 @@ def generate_blueprint(
             course_id=request_body.course_id,
             entity_type="blueprint",
         ),
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
     )
 
     if llm_result.status == "error":
         raise LLMGenerationError(
             f"Blueprint generation failed. Error type: {llm_result.error_type}"
         )
+
+    # A reply that hit the output ceiling is a fragment, and this path stores the
+    # reply AS the document: it becomes v1, is auto-pinned as the active version
+    # below, and is what every later regeneration and downstream generation reads
+    # as the blueprint. Nothing downstream can tell a complete document from one
+    # that stops mid-table, so the only honest outcome is to fail visibly. Same
+    # guard, for the same reason, as cdd.py's generation path.
+    _reject_if_truncated(llm_result, "generating this Blueprint")
 
     raw_output = llm_result.text
 
