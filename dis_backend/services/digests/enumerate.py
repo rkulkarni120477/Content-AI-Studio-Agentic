@@ -194,8 +194,14 @@ def _resolve_dsn(cfg) -> str:
 
 
 def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
-                    extra_document_ids: Optional[List[str]] = None) -> EnumerateResult:
+                    extra_document_ids: Optional[List[str]] = None,
+                    compose_items: bool = True) -> EnumerateResult:
     """Enumerate + attribute one block. Read-only; raises on misconfiguration.
+
+    ``compose_items`` runs the per-day item read (worksheets.compose_day_items),
+    one LLM call for the block. Callers that only want the day/unit placement —
+    day-scoped retrieval does, on every request — pass False and skip it; the
+    composed items feed worksheet columns those callers never render.
 
     ``extra_document_ids`` are Source Library document (job) ids the requester
     pinned on the generation form. They are ADDITIVE: their units join the
@@ -242,7 +248,8 @@ def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     if pinned:
         scope.units = list(scope.units) + pinned
 
-    result = _assemble(block, cid, profile, scope, tenant_cfg)
+    result = _assemble(block, cid, profile, scope,
+                       tenant_cfg if compose_items else None)
     result.pinned_document_ids = pinned_ids
     result.pinned_unit_count = len(pinned)
     if pinned_ids:
