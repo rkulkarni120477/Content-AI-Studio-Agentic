@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from app.core.dis_client import dis_client
+from promptops_app.services.deliverable_labels import label, long_label
 from promptops_app.services.budget_service import BudgetExceededError
 from promptops_app.services.user_directives import (
     compose_guidance,
@@ -505,13 +506,14 @@ def _day_table_from_rows(rows: list[dict], extension_columns: list[str] | None =
     return out
 
 
-def render_cdd_markdown(course_title: str, block: Optional[str], result) -> str:
+def render_cdd_markdown(course_title: str, block: Optional[str], result,
+                        deliverable_label: str = "Course Design Document") -> str:
     """CDD markdown — same 6-worksheet shape as the Block Blueprint (per the
     2026-08-06 decision to give both deliverables the AIM-sample shape), just a
     different title line. is_dlu_cdd/split_cdd_worksheets detect this shape by
     heading pattern alone, so the existing DLU-CDD parsing/XLSX-export machinery
     picks this up unchanged."""
-    intro = [f"# Course Design Document — {course_title}"]
+    intro = [f"# {deliverable_label} — {course_title}"]
     if block:
         intro.append(f"**Block:** {block}")
     return _render_worksheets(result, intro)
@@ -1303,7 +1305,9 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
     # same way COVERAGE & REVIEW is. A report with no findings appends nothing, so an
     # aligned prompt still produces byte-identical output.
     raw_output = append_section(
-        render_cdd_markdown(request_body.course_title, request_body.block, result), capability)
+        render_cdd_markdown(request_body.course_title, request_body.block, result,
+                            long_label(db, getattr(request_body, "project_id", None))),
+        capability)
     sections = parse_sections_from_text(raw_output)
     for key, value in parse_cdd_flat(raw_output).items():
         if not key.startswith("_") and value.strip():
@@ -1341,7 +1345,14 @@ def persist_cdd_and_respond(db, request_body, current_user, *, raw_output, secti
     from promptops_app.repositories.course_repository import set_active_cdd
     from promptops_app.services.audit_service import log_audit_event
 
-    document_title = request_body.document_title or f"{request_body.course_title} — CDD"
+    # The tenant's own word for the deliverable. AIM calls this a Blueprint and
+    # has said so in projects.ui_labels for some time; the server had never read
+    # the column, so the stored title said "- CDD" and that title is what the
+    # exporter stamps across the top of every worksheet and into the download
+    # filename. A tenant with no override is unaffected.
+    document_title = (request_body.document_title
+                      or f"{request_body.course_title} \u2014 "
+                         f"{label(db, getattr(request_body, 'project_id', None))}")
 
     new_cdd = CourseDesignDocument(
         title=document_title,
