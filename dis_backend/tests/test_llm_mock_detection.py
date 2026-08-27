@@ -11,6 +11,11 @@ reported success.
 ``preflight_extractor`` exists to stop exactly that, and it did not fire: it refuses
 a build when the probe reports zero input tokens, and the mock claimed 400. These
 tests pin both halves — the mock is detectable, and it reports zero.
+
+They also pin the other direction, which cost dev a day on 2026-08-27: "no explicit
+key in settings" is NOT "no credentials". With only a region in the Bedrock kwargs,
+boto3 resolves the instance role, so a box that invokes Bedrock perfectly well must
+never be flipped onto canned replies for holding its credentials somewhere else.
 """
 from __future__ import annotations
 
@@ -32,6 +37,20 @@ def _settings(*, environment="development", anthropic=None, bedrock_kwargs=None,
     )
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_credentials(monkeypatch, request):
+    """No instance role / ~/.aws by default.
+
+    Autouse because the answer would otherwise depend on the machine running the
+    tests: a developer laptop with ~/.aws, or CI on an EC2 runner, resolves real
+    credentials and every "is mocked" assertion below would invert. Tests that
+    exercise the probe itself opt out with @pytest.mark.real_ambient_probe.
+    """
+    if request.node.get_closest_marker("real_ambient_probe"):
+        return
+    monkeypatch.setattr(common, "ambient_aws_credentials", lambda: False)
+
+
 def test_no_credentials_anywhere_is_mocked():
     assert common.llm_is_mocked(_settings()) is True
 
@@ -47,6 +66,63 @@ def test_the_bedrock_only_credential_pair_counts_as_real_credentials():
 def test_shared_aws_credentials_also_count():
     s = _settings(bedrock_kwargs={"aws_access_key_id": "AKIA-shared"}, aws_key="AKIA-shared")
     assert common.llm_is_mocked(s) is False
+
+
+def test_an_instance_role_counts_as_real_credentials(monkeypatch):
+    """The dev box's shape: no keys in dis_backend/.env, ENVIRONMENT=development, and
+    Bedrock reached through the EC2 instance role. Treating that as "no model" refused
+    credentials that work and served canned filler in their place."""
+    monkeypatch.setattr(common, "ambient_aws_credentials", lambda: True)
+    assert common.llm_is_mocked(_settings()) is False
+
+
+def test_region_only_kwargs_still_consult_the_ambient_chain(monkeypatch):
+    """bedrock_client_kwargs() returns region_name alone when no key is configured —
+    which is 'let boto3 resolve it', not 'there is nothing to resolve'."""
+    monkeypatch.setattr(common, "ambient_aws_credentials", lambda: True)
+    s = _settings(bedrock_kwargs={"region_name": "us-east-1"})
+    assert common.llm_is_mocked(s) is False
+
+
+@pytest.mark.real_ambient_probe
+def test_the_ambient_probe_is_resolved_once_per_process(monkeypatch):
+    """It costs an IMDS round trip on EC2 and llm_is_mocked runs on every call_llm."""
+    common.reset_ambient_credential_probe()
+    calls = []
+
+    class _Session:
+        def get_credentials(self):
+            calls.append(1)
+            return object()
+
+    # Patched as an attribute of the package, not in sys.modules: `import
+    # botocore.session` resolves `botocore.session` through the already-imported
+    # parent package, so a sys.modules entry alone is ignored.
+    import botocore
+    import botocore.session  # noqa: F401 — ensure the real submodule is bound first
+    monkeypatch.setattr(botocore, "session",
+                        types.SimpleNamespace(get_session=lambda: _Session()))
+    try:
+        assert common.ambient_aws_credentials() is True
+        assert common.ambient_aws_credentials() is True
+        assert len(calls) == 1
+    finally:
+        common.reset_ambient_credential_probe()
+
+
+@pytest.mark.real_ambient_probe
+def test_an_unresolvable_chain_counts_as_absent(monkeypatch):
+    """A probe that raises must not read as 'credentials present' — the mock exists
+    for a box that genuinely cannot call a model."""
+    common.reset_ambient_credential_probe()
+    import botocore
+    import botocore.session  # noqa: F401
+    monkeypatch.setattr(botocore, "session", types.SimpleNamespace(
+        get_session=lambda: (_ for _ in ()).throw(RuntimeError("no IMDS"))))
+    try:
+        assert common.ambient_aws_credentials() is False
+    finally:
+        common.reset_ambient_credential_probe()
 
 
 def test_production_is_never_mocked_even_without_credentials():
@@ -89,7 +165,10 @@ def test_preflight_refuses_a_build_when_replies_are_mocked(monkeypatch):
     msg = str(excinfo.value)
     assert "MOCK" in msg, "the operator must be told no model was contacted"
     assert "dis_backend/.env" in msg, "naming the env file it actually reads is the fix"
-    assert "ENVIRONMENT=production" in msg
+    assert "ENVIRONMENT" in msg
+    # The message must not send an operator hunting for keys that are already there:
+    # an instance role is a real credential source and has to be named as one.
+    assert "instance role" in msg
 
 
 def test_a_real_model_failure_keeps_its_own_distinct_message(monkeypatch):

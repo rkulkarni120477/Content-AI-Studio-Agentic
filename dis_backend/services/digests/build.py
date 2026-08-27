@@ -184,13 +184,16 @@ def preflight_extractor(model: str) -> None:
         if llm_is_mocked():
             raise ExtractorUnavailable(
                 "DIS is serving MOCK LLM replies, so no model was contacted and every "
-                "digest would be canned filler. This happens when environment is "
-                "'development' (its default) AND no model credentials are visible to "
-                "this process. Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or "
-                "DIS_BEDROCK_ACCESS_KEY_ID/DIS_BEDROCK_SECRET_ACCESS_KEY), and set "
-                "ENVIRONMENT=production, in the env file this container actually reads "
-                "— for the dis_backend service that is dis_backend/.env, NOT the root "
-                ".env."
+                "digest would be canned filler. This needs BOTH: environment is "
+                "'development' (its default), AND no credentials reach Bedrock at all "
+                "— no DIS_BEDROCK_ACCESS_KEY_ID/DIS_BEDROCK_SECRET_ACCESS_KEY, no "
+                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, and nothing for boto3 to "
+                "resolve on its own (EC2 instance role, ~/.aws, SSO). An instance role "
+                "counts, so a box that can invoke Bedrock is never mocked. Set the "
+                "credentials in the env file this container actually reads — for the "
+                "dis_backend service that is dis_backend/.env, NOT the root .env — or "
+                "set ENVIRONMENT to anything other than 'development', which makes an "
+                "uncredentialled box fail loudly instead of faking output."
             )
         raise ExtractorUnavailable(_unavailable_msg(model, reply[:160]))
     _PREFLIGHT_OK.add(model)

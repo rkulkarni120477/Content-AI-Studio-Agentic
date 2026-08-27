@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import threading
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter, write_step_artifact
