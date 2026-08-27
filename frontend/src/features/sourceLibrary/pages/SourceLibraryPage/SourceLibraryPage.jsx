@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
+import RetrievalStatus from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
@@ -777,7 +778,7 @@ export default function SourceLibraryPage() {
             </div>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
-                <thead><tr><th>Document</th><th>Type</th><th>Size</th><th>Purpose</th><th>Status</th><th /></tr></thead>
+                <thead><tr><th>Document</th><th>Type</th><th>Size</th><th>Purpose</th><th>Retrieval status</th><th /></tr></thead>
                 <tbody>
                   {displayedDocuments.map((doc) => (
                     <tr key={doc.job_id || doc.document_id}>
@@ -791,7 +792,7 @@ export default function SourceLibraryPage() {
                       <td>{doc.document_type || '—'}</td>
                       <td>{formatFileSize(doc)}</td>
                       <td>{doc.purpose || '—'}</td>
-                      <td>{doc.status || 'processed'}</td>
+                      <td><RetrievalStatus doc={doc} /></td>
                       <td>
                         <div className={styles.rowActions}>
                           <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button>

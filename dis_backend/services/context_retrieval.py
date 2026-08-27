@@ -291,15 +291,59 @@ class ContextRetrievalService:
         total = len(sources)
         limit = max(1, min(int(limit or 50), 500))
         offset = max(0, int(offset or 0))
+        page = sources[offset:offset+limit]
+        self._attach_indexed_units(page)
         return {
             "tenant_id": self.tenant_cfg.tenant_id,
             "client_id": client_id,
             "total": total,
             "limit": limit,
             "offset": offset,
-            "sources": sources[offset:offset+limit],
+            "sources": page,
             "filter_options": compact_filter_options(records),
         }
+
+    def _attach_indexed_units(self, page: List[Dict[str, Any]]) -> None:
+        """Add ``indexed_units`` — how many units of each document retrieval can
+        actually find — to one page of Source Library records, in place.
+
+        WHY THIS IS NOT ``total_units``. ``total_units`` counts what extraction
+        produced; it is written from the processed payload and never revisited. A
+        document can therefore report 36 units and be entirely unfindable, because
+        generation reads the vector index and nothing reconciles the two. Measured
+        on the AIM corpus 2026-08-27: 127 documents held 5,841 extracted units that
+        the index did not have — every Block 2 slide deck among them — while the
+        Source Library displayed all of them as "Processed". Nothing anywhere said
+        otherwise, which is why it went unnoticed for a month.
+
+        One aggregation for the whole page, not a query per row. Fail-soft: on any
+        error every value is left None, which the UI must render as "unknown"
+        rather than as a healthy count — claiming searchable when we could not
+        check is the exact failure this exists to end.
+        """
+        for src in page:
+            src["indexed_units"] = None
+        job_ids = [str(s.get("job_id")) for s in page if s.get("job_id")]
+        if not job_ids:
+            return
+        cfg = self.tenant_cfg.vector_store
+        if not getattr(cfg, "enabled", False):
+            return
+        try:
+            from services.indexing import _vector_store_read_client
+
+            client = _vector_store_read_client(cfg)
+            res = client.search(index=cfg.index_name, body={
+                "size": 0,
+                "query": {"terms": {"job_id": job_ids}},
+                "aggs": {"per_job": {"terms": {"field": "job_id", "size": len(job_ids)}}},
+            })
+            counts = {b["key"]: b["doc_count"]
+                      for b in res["aggregations"]["per_job"]["buckets"]}
+            for src in page:
+                src["indexed_units"] = int(counts.get(str(src.get("job_id")), 0))
+        except Exception as exc:  # noqa: BLE001 — the library must still render
+            log.warning("indexed-unit counts unavailable: %s", exc)
 
     def _source_matches(self, src: Dict[str, Any], filters: Dict[str, Any]) -> bool:
         def eq(field: str, value: Any) -> bool:
