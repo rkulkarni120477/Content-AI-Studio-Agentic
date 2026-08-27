@@ -699,7 +699,7 @@ def test_supplement_gate_blocks_restricted_and_answer_key(monkeypatch):
 
     days = [{"day_number": 1, "topic": "T", "lesson_title": "L", "source_text": ""}]
     monkeypatch.setattr(day_scoped, "enumerate_block",
-                        lambda cfg, block, client_id="": EnumerateResult(
+                        lambda cfg, block, client_id="", **kw: EnumerateResult(
                             block=block, client_id="aim", calendar_id="c", total_days=1,
                             enumerated_days=1, days=days, units_by_day={1: []},
                             acs_by_day={1: ["1a"]}, declared_acs=["1a"]))

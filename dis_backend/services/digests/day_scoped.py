@@ -109,7 +109,10 @@ def day_context(
     except (TypeError, ValueError):
         raise ValueError(f"day must be an integer day_number, got {day!r}")
 
-    result = enumerate_block(tenant_cfg, block, client_id)
+    # No item composition here: this runs on every day-scoped retrieval and the
+    # composed Projects/Assessment/Hangar cells feed worksheet columns this path
+    # never renders.
+    result = enumerate_block(tenant_cfg, block, client_id, compose_items=False)
     cid = result.client_id
 
     day_units = result.units_by_day.get(day, [])

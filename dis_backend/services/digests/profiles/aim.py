@@ -46,22 +46,39 @@ def _is_row_restatement(text: str) -> bool:
 #: A header row captured as data: the spreadsheet's own column titles. Seen live
 #: on Block 9 day 1, whose assignments cell held "Day | Learning Objectives |
 #: Corresponding Assignment".
-_HEADER_ROW_RE = re.compile(r"^\s*Day\s*\|", re.IGNORECASE)
+#: ``Days?`` — the plural is what these sheets actually use ("Days |
+#: Subject/Day | Topics Covered | ACS"), and requiring the singular let the
+#: header row through as a value on four of Block 2's twenty days.
+_HEADER_ROW_RE = re.compile(r"^\s*Days?\s*\|", re.IGNORECASE)
 
 
 #: The assignment/assessment items a pasted-in row can still be mined for. AIM
 #: writes projects as "Project P30" / "Project 9-1" / "Project 14-2", quizzes as
 #: "Quiz 3" or "Quiz #3", and the block exam by one of the three names
 #: attribution._FINAL_EXAM already reconciles.
-_ITEM_RES = (
-    re.compile(r"\bProject\s+[A-Z]?\d+(?:-\d+)?\b", re.IGNORECASE),
+#: A project label runs "Project 9-1", "Project P30", "Project A27" or the paired
+#: form "Project 4 A52", where the trailing code is the task the project covers.
+#: Capturing only "Project 4" there dropped the half that identifies WHICH project
+#: — and "Project 4" alone collides across days, so a delivered Block 9 workbook
+#: showed "Project 2" on three separate days that cite three different tasks.
+_PROJECT_RE = re.compile(
+    r"\bProject\s+[A-Z]?\d+(?:-\d+)?(?:\s+[A-Z]\d+)?\b", re.IGNORECASE)
+_QUIZ_RES = (
     re.compile(r"\bQuiz\s*#?\s*\d+\b", re.IGNORECASE),
     re.compile(r"\b(?:Final|Cumulative)(?:\s+Cumulative)?\s+Exam\b", re.IGNORECASE),
     re.compile(r"\bReview\s+Quiz\b", re.IGNORECASE),
 )
+#: Which patterns a field may be mined for. Mining every pattern regardless of the
+#: column being filled is what put "Quiz #2" in Day 4's Projects Today and "Quiz
+#: #8" in Days 16 and 17's — the pasted row names both kinds of item, and an
+#: assignments cell filled from it took the assessments too.
+_ITEM_RES_BY_FIELD = {
+    "assignments_json": (_PROJECT_RE,),
+    "assessments_json": _QUIZ_RES,
+}
 
 
-def _mine_row_items(text: str) -> List[str]:
+def _mine_row_items(text: str, fieldname: str = "") -> List[str]:
     """The assignment/assessment items named inside a pasted-in table row.
 
     Blanking a row-restatement cell outright was wrong, and only a whole-corpus
@@ -78,7 +95,10 @@ def _mine_row_items(text: str) -> List[str]:
     """
     body = _JSON_ESCAPE_IN_CELL.sub(" ", str(text or ""))
     out: List[str] = []
-    for pattern in _ITEM_RES:
+    patterns = _ITEM_RES_BY_FIELD.get(fieldname)
+    if patterns is None:
+        patterns = (_PROJECT_RE,) + _QUIZ_RES
+    for pattern in patterns:
         for m in pattern.findall(body):
             item = " ".join(str(m).split())
             if item and item.lower() not in {o.lower() for o in out}:
@@ -132,14 +152,112 @@ def _usable(value: Any, fieldname: str = "") -> bool:
     return True
 
 
+#: A day-topic word, for judging whether two calendars describe the SAME day.
+#: Four letters or more, so "the"/"and"/"of" cannot manufacture agreement.
+_TOPIC_WORD_RE = re.compile(r"[a-z]{4,}")
+
+#: Jaccard overlap at which two calendars' descriptions of one day are taken to
+#: be the same lesson. Real matches on this corpus score near 1.0 (the Instructor
+#: and Student copies of a calendar are the same text); real mismatches score
+#: below 0.2 ("Aircraft tires and tubes" against "Aircraft Brakes" shares only
+#: "aircraft"). Nothing lands near the middle, so the threshold is not delicate.
+_DAY_TOPIC_AGREEMENT = 0.5
+
+#: Fraction of judgeable shared days that must agree before two calendars are
+#: treated as extractions of one schedule.
+_SCHEDULE_AGREEMENT = 0.7
+
+#: Below this many judgeable shared days there is not enough evidence either way,
+#: and the answer is no — see _same_schedule.
+_MIN_SCHEDULE_OVERLAP = 3
+
+
+def _topic_words(row: Dict[str, Any]) -> set:
+    """The content words describing one calendar day."""
+    text = " ".join(str(row.get(k) or "") for k in ("lesson_title", "topic"))
+    return set(_TOPIC_WORD_RE.findall(text.lower()))
+
+
+def _same_schedule(canonical: Dict[int, Dict[str, Any]],
+                   other: Dict[int, Dict[str, Any]]) -> bool:
+    """Whether *other* is an extraction of the same schedule as *canonical*.
+
+    Field-level merging across a block's calendars is only sound when they are
+    different EXTRACTIONS of one schedule — then a cell one of them missed can
+    honestly be taken from another. Block 9 has five calendars and they are two
+    different schedules: three come from ``Block 09-Instructor/Student Copy- ACS
+    Course Calendar.docx``, two from ``Block 9 Calendar Day and Night.xlsx``, and
+    the documents do not agree about what is taught when — day 7 is "Aircraft
+    tires and tubes" in one and "Aircraft Brakes" in the other, day 9 is
+    "Projects / AC 43.13-1B" against "Aircraft Tires & Tubes", day 16 is "Ice
+    control systems" against "Review & Final Exam".
+
+    Merging across that produced rows no source ever asserted: the delivered
+    workbook's Day 9 carried the .docx's lesson and reading beside the .xlsx's
+    "Quiz 8", while the .docx's own row for that day says Quiz #6. A whole column
+    of the Day-by-Day Map was two incompatible numbering systems interleaved.
+
+    Judged on the days both carry, by topic-word overlap. Absent evidence the
+    answer is NO: refusing to merge costs at most a cell that stays empty, and
+    an empty cell is recoverable by a reviewer in a way an invented one is not.
+    """
+    shared = sorted(set(canonical) & set(other))
+    judged = agreed = 0
+    for dn in shared:
+        a, b = _topic_words(canonical[dn]), _topic_words(other[dn])
+        if not a or not b:
+            continue  # one side says nothing about this day — no evidence, not agreement
+        judged += 1
+        if len(a & b) / len(a | b) >= _DAY_TOPIC_AGREEMENT:
+            agreed += 1
+    if judged < _MIN_SCHEDULE_OVERLAP:
+        return False
+    return agreed / judged >= _SCHEDULE_AGREEMENT
+
+
+def _reconcile_total_days(declared: int, days: List[Dict[str, Any]]) -> tuple[int, str]:
+    """How many days the block has, and a note when the stored count disagrees.
+
+    ``dis_course_calendars.total_days`` is NOT a figure any document declares —
+    no extractor reads a "total days" statement. It is ``len(days)`` as that
+    extractor's own parse counted them, so a parse that picked up one extra row
+    stores a length the calendar does not have. The generic ``aviation_academic``
+    extractor does exactly this on every 20-day AIM calendar it handled: blocks
+    5, 7, 8, 9, 10, 14 and 15 all store ``total_days=21`` beside 20 day rows
+    numbered 1..20, and Block 9's delivered workbook reported "Total Days 21",
+    "Days represented 20/21" and a BLOCK_INCOMPLETE flag sending a reviewer to
+    look for a 21st day that has never existed.
+
+    The day rows are the evidence. The block runs to the HIGHEST day number they
+    carry — not to how many rows there are — so a calendar holding days 1-9 and
+    20 is 20 days long with a genuine gap, which is the case BLOCK_INCOMPLETE
+    exists to report and the one this must not paper over. The stored count is
+    kept only as something to report when it disagrees.
+    """
+    numbers = sorted({int(d["day_number"]) for d in days
+                      if d.get("day_number") is not None})
+    observed = numbers[-1] if numbers else 0
+    if not observed:
+        return int(declared or 0), ""
+    if declared and declared != observed:
+        return observed, (
+            f"CALENDAR_TOTAL_DAYS_CORRECTED — the calendar record stores "
+            f"total_days={declared}, but its day rows are numbered "
+            f"{numbers[0]}-{observed}; the rows are authoritative and the block "
+            f"is treated as {observed} days long")
+    return observed, ""
+
+
 class AIMCurriculumProfile(CurriculumProfile):
     coverage_label = "ACS"
 
     def load_scope(self, cur, schema: str, client_id: str, block: str) -> ScopeData:
         self._extra_duplicate_days: List[int] = []
-        calendar_id, dup_ids, total_days, cal_spellings = self._pick_calendar(
+        self._foreign_schedule_ids: List[str] = []
+        calendar_id, dup_ids, declared_days, cal_spellings = self._pick_calendar(
             cur, schema, client_id, block)
         days = self._load_days(cur, schema, calendar_id, dup_ids)
+        total_days, total_days_note = _reconcile_total_days(declared_days, days)
         units, unit_spellings = self._load_units(cur, schema, client_id, block)
         # Surfaced, not just survived: matching through the key is what makes the
         # lookup work at all on data written by two disagreeing writers, but the
@@ -147,6 +265,16 @@ class AIMCurriculumProfile(CurriculumProfile):
         # get it fixed. See services/blocks.spelling_note.
         note = spelling_note(block, list(cal_spellings) + list(unit_spellings))
         notes = [note] if note else []
+        if total_days_note:
+            notes.append(total_days_note)
+        if getattr(self, "_foreign_schedule_ids", None):
+            notes.append(
+                f"CALENDAR_SCHEDULE_MISMATCH — {len(self._foreign_schedule_ids)} other "
+                f"calendar(s) for this block describe a DIFFERENT schedule (their day "
+                f"topics do not match the canonical calendar's): "
+                f"{self._foreign_schedule_ids}. They are reported, not merged — a cell "
+                f"borrowed across two different schedules would state something no "
+                f"source says. Confirm which calendar this block is actually taught to")
         if getattr(self, "_extra_duplicate_days", None):
             notes.append(
                 f"DUPLICATE_CALENDAR_EXTRA_DAYS — a lower-ranked calendar for this "
@@ -268,6 +396,36 @@ class AIMCurriculumProfile(CurriculumProfile):
             (ids,),
         )
         rows = cur.fetchall()
+
+        # Only calendars describing the SAME schedule may fill each other's gaps.
+        # See _same_schedule: this block's five calendars are two different
+        # documents with different lesson orders, and borrowing between them
+        # assembled rows that neither source asserts.
+        rows_by_cal: Dict[str, Dict[int, Dict[str, Any]]] = {}
+        for r in rows:
+            # A row carrying no calendar_id belongs to the canonical calendar:
+            # it came back from a query filtered to this block's calendars, and
+            # attributing it anywhere else would drop it. (The column is
+            # nullable and some older rows have it unset.)
+            rows_by_cal.setdefault(r.get("calendar_id") or calendar_id,
+                                   {})[int(r["day_number"])] = r
+        canonical_rows = rows_by_cal.get(calendar_id, {})
+        mergeable = [calendar_id]
+        self._foreign_schedule_ids = []
+        for cid in ids[1:]:
+            if cid not in rows_by_cal:
+                continue
+            # With no canonical rows to compare against there is no evidence
+            # either way, and the pre-existing merge behaviour stands rather
+            # than a filter that would empty the block.
+            if not canonical_rows or _same_schedule(canonical_rows, rows_by_cal[cid]):
+                mergeable.append(cid)
+            else:
+                self._foreign_schedule_ids.append(cid)
+        allowed = set(mergeable)
+        rows = [r for r in rows if (r.get("calendar_id") or calendar_id) in allowed]
+
+        ids = mergeable
         rank = {cid: i for i, cid in enumerate(ids)}
         by_day: Dict[int, List[Dict[str, Any]]] = {}
         for r in rows:
@@ -311,7 +469,7 @@ class AIMCurriculumProfile(CurriculumProfile):
                     # No calendar has a clean cell for this field. Before giving
                     # up, mine the row itself — it names the project or quiz even
                     # when the extractor pasted the whole line around it.
-                    mined = _mine_row_items(row.get(fieldname) or "")
+                    mined = _mine_row_items(row.get(fieldname) or "", fieldname)
                     if mined:
                         replacement = json.dumps(mined)
                 # Cleared, not left as-is, when no calendar can supply the field.

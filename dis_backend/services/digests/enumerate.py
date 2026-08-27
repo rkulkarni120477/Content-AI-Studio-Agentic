@@ -67,6 +67,11 @@ class EnumerateResult:
     #: 40 units added" cannot distinguish both landing from one landing twice.
     pinned_applied_ids: List[str] = field(default_factory=list)
     pinned_unit_count: int = 0
+    #: day_number -> {"projects"/"assessments"/"hangar": [...]} read out of each
+    #: day's own calendar row by a model and checked back against that row
+    #: (worksheets.compose_day_items). Supplements the pattern extraction, which
+    #: can only find items shaped like a pattern someone thought to write.
+    composed_day_items: Dict[int, Dict[str, List[str]]] = field(default_factory=dict)
 
     def to_summary(self, include_units: bool = False) -> Dict[str, Any]:
         """JSON-safe projection for the HTTP endpoint.
@@ -95,7 +100,8 @@ class EnumerateResult:
                         getattr(self.references_by_day.get(d["day_number"]), "units", []) or []),
                     "acs_codes": self.acs_by_day.get(d["day_number"], []),
                     **_day_worksheet_fields(d, self.units_by_day.get(d["day_number"], []),
-                                            self.references_by_day.get(d["day_number"])),
+                                            self.references_by_day.get(d["day_number"]),
+                                            self.composed_day_items.get(d["day_number"])),
                 }
                 for d in self.days
             ],
@@ -123,9 +129,10 @@ class EnumerateResult:
 
 
 def _day_worksheet_fields(day: Dict[str, Any], units: List[Dict[str, Any]],
-                          day_references: Any = None) -> Dict[str, Any]:
+                          day_references: Any = None,
+                          composed: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
     from services.digests import worksheets  # lazy: worksheets stays a leaf module
-    return worksheets.build_day_fields(day, units, day_references)
+    return worksheets.build_day_fields(day, units, day_references, composed)
 
 
 def _unit_descriptor(u: Dict[str, Any]) -> Dict[str, Any]:
@@ -187,8 +194,14 @@ def _resolve_dsn(cfg) -> str:
 
 
 def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
-                    extra_document_ids: Optional[List[str]] = None) -> EnumerateResult:
+                    extra_document_ids: Optional[List[str]] = None,
+                    compose_items: bool = True) -> EnumerateResult:
     """Enumerate + attribute one block. Read-only; raises on misconfiguration.
+
+    ``compose_items`` runs the per-day item read (worksheets.compose_day_items),
+    one LLM call for the block. Callers that only want the day/unit placement —
+    day-scoped retrieval does, on every request — pass False and skip it; the
+    composed items feed worksheet columns those callers never render.
 
     ``extra_document_ids`` are Source Library document (job) ids the requester
     pinned on the generation form. They are ADDITIVE: their units join the
@@ -235,7 +248,8 @@ def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     if pinned:
         scope.units = list(scope.units) + pinned
 
-    result = _assemble(block, cid, profile, scope)
+    result = _assemble(block, cid, profile, scope,
+                       tenant_cfg if compose_items else None)
     result.pinned_document_ids = pinned_ids
     result.pinned_unit_count = len(pinned)
     if pinned_ids:
@@ -336,7 +350,7 @@ def _days_phrase(day_numbers: List[int]) -> str:
     return f"{text} and {rest} other(s)" if rest > 0 else text
 
 
-def _assemble(block, client_id, profile, scope) -> EnumerateResult:
+def _assemble(block, client_id, profile, scope, tenant_cfg=None) -> EnumerateResult:
     calendar_id = scope.calendar_id
     dup_ids = scope.duplicate_calendar_ids
     total_days = scope.total_days
@@ -414,7 +428,18 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
     # from, so a reader sees "these tags were merged" before the day counts.
     flags.extend(n for n in getattr(scope, "notes", []) if n)
     if total_days and enumerated_days < total_days:
-        flags.append(f"BLOCK_INCOMPLETE — enumerated {enumerated_days} days != total_days {total_days}")
+        # Name the gap. "enumerated 9 days != total_days 20" tells a reviewer a
+        # number is wrong; the missing day numbers tell them which rows to go and
+        # find. total_days is now the highest day number the calendar's own rows
+        # carry (see profiles.aim._reconcile_total_days), so a shortfall here is
+        # always a genuine hole in the day sequence rather than an extractor's
+        # miscount, and the holes are enumerable.
+        missing = [d for d in range(1, total_days + 1) if d not in day_numbers]
+        flags.append(
+            f"BLOCK_INCOMPLETE — enumerated {enumerated_days} of {total_days} days; "
+            f"the calendar has no row for day(s) {missing}"
+            if missing else
+            f"BLOCK_INCOMPLETE — enumerated {enumerated_days} days != total_days {total_days}")
     elif total_days and enumerated_days > total_days:
         # Distinct from BLOCK_INCOMPLETE, and newly reachable: day rows are now
         # merged across a block's duplicate calendars, so a day number present
@@ -426,8 +451,17 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
         flags.append(f"CALENDAR_DAYS_EXCEED_DECLARED — enumerated {enumerated_days} days "
                      f"but the canonical calendar declares total_days {total_days}; "
                      f"the block's calendars disagree on how many days it has")
-    if dup_ids:
-        flags.append(f"DUPLICATE_CALENDAR — {len(dup_ids)} other calendar(s) for this block: {dup_ids}")
+    # Only the calendars that were actually available to merge from. The ones
+    # describing a different schedule get their own CALENDAR_SCHEDULE_MISMATCH
+    # note from the profile, which says something a reader can act on; listing
+    # them here as well made a Block 9 report say "4 other calendars" and "3 of
+    # them are a different schedule" in two flags a line apart, leaving the
+    # fourth unaccounted for.
+    foreign = set(getattr(profile, "_foreign_schedule_ids", None) or [])
+    merged_dups = [c for c in dup_ids if c not in foreign]
+    if merged_dups:
+        flags.append(f"DUPLICATE_CALENDAR — {len(merged_dups)} other calendar(s) for this "
+                     f"block hold the same schedule and were used to fill gaps: {merged_dups}")
     for dn in sorted(day_numbers):
         day_units = units_by_day.get(dn, [])
         refs = references_by_day.get(dn)
@@ -489,6 +523,14 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
         "total_units": len(units),
     }
 
+    # Read every day's own row for the projects, assessments and hangar activities
+    # it names. One call for the block, checked back against each row — see
+    # worksheets.compose_day_items. Placed here, after the flags list exists, so a
+    # row that did not fit the budget or an item that failed its check is reported
+    # rather than quietly absent.
+    from services.digests import worksheets as _worksheets
+    composed_day_items = _worksheets.compose_day_items(days, tenant_cfg, flags)
+
     return EnumerateResult(
         block=block,
         client_id=client_id,
@@ -499,6 +541,7 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
         units_by_day=dict(units_by_day),
         unattributed=unattributed,
         references_by_day=references_by_day,
+        composed_day_items=composed_day_items,
         declared_acs=sorted(declared, key=attribution.acs_sort_key),
         acs_by_day={dn: sorted(codes, key=attribution.acs_sort_key) for dn, codes in acs_by_day.items()},
         duplicate_calendar_ids=dup_ids,

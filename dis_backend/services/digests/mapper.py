@@ -27,9 +27,12 @@ from services.digests.prompt_template import render as prompt_template_render
 
 log = logging.getLogger(__name__)
 
-DIGEST_SCHEMA_VERSION = "v7"
+DIGEST_SCHEMA_VERSION = "v8"
 # Every bump here is a structural change to what a digest CONTAINS, which cache_key
 # cannot infer on its own — so the version must move for existing digests to rebuild.
+#   v8: added assigned_reading (label/unit_count/files) and made THIN_DAY /
+#       MISSING_SOURCE account for it — a day taught from its assigned handbook
+#       reading is no longer reported as having no source material.
 #   v7: added concept_scope — the AIM reference's Worksheet 4 "Concept Scope" column:
 #       the specific sub-topics/tools/materials covered that day, grounded in that
 #       day's own sources rather than a restatement of the Day Title.
@@ -763,6 +766,17 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     acs = sorted({c for u in units for c in _acs_codes(u)}, key=attribution.acs_sort_key)
     substantive = [u for u in units if u.get("unit_type") in SUBSTANTIVE_UNIT_TYPES]
     has_visual_asset = any(u.get("unit_type") in _VISUAL_ASSET_UNIT_TYPES for u in units)
+    # The handbook passages this day's calendar row assigns, already resolved by
+    # ENUMERATE. Only the units whose text may actually reach the prompt count —
+    # a reading that resolves entirely to withheld material fed the extractor
+    # nothing, and calling such a day "not thin" would be the same lie in reverse.
+    reading_units = [u for u in (list(getattr(references, "units", None) or []))
+                     if text_allowed_for_digest(u, "instructor")]
+    reading_files = []
+    for u in reading_units:
+        name = str((u.get("metadata_json") or {}).get("source_file_name") or "")
+        if name and name not in reading_files:
+            reading_files.append(name)
 
     digest: Dict[str, Any] = {
         "digest_id": f"{client_id}:{block}:day{dn}",
@@ -794,6 +808,15 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
         "map_guidance_applied": bool((map_guidance or "").strip()),
         "digest_status": "ok",
         "review_flags": [],
+        # Provenance for the assigned reading, so the deliverable can name the
+        # handbook a reading-only day was actually taught from instead of
+        # rendering an em dash under "Source Files" for a day whose digest was
+        # built from 70k characters of chapter text.
+        "assigned_reading": {
+            "label": (getattr(references, "label", lambda: "")() or "") if references else "",
+            "unit_count": len(reading_units),
+            "files": reading_files,
+        },
     }
 
     # The LLM sees only text-allowed units; metadata above already used all units.
@@ -858,7 +881,17 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
                 digest["extractor_model"] = exc.model
 
     # Structural review flags.
-    if not substantive:
+    #
+    # Assigned reading counts as material. It is not one of the block's own units
+    # — it is a handbook passage the calendar names for this day — but it is real
+    # ingested text that reached the extractor, and every consumer of THIN_DAY
+    # treats the flag as "this day has nothing to teach from". Omitting reading
+    # here is what made a live Block 9 build report 18 of 20 days thin while
+    # ENUMERATE, which DOES account for reading, flagged only one: the two halves
+    # of the same judgment disagreed, and the workbook rendered the wrong one into
+    # High Risk Days, Production Readiness and an Academian Question on every one
+    # of those days asking whether source material was missing.
+    if not substantive and not reading_units:
         digest["review_flags"].append("THIN_DAY — calendar row only")
     # A day with ANY real ingested unit (even one typed outside the "substantive"
     # set above, e.g. a generic 'chunk' unit — the same criterion the Source Files
@@ -871,7 +904,7 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     # non-calendar_day unit) is what actually reflects what the user can see.
     has_other_units = any(u.get("unit_type") != "calendar_day" for u in units)
     for s in ("slide", "guide_section"):
-        if availability.get(s) == "missing" and not has_other_units:
+        if availability.get(s) == "missing" and not (has_other_units or reading_units):
             digest["review_flags"].append(f"MISSING_SOURCE — {s}")
 
     return digest

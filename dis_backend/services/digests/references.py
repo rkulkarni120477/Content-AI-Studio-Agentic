@@ -157,6 +157,32 @@ def normalize_handbook(text: str) -> str:
     return f"AC{m.group(2).upper()}"
 
 
+def edition_designator(handbook: str) -> str:
+    """The handbook's official designator, from its normalised code.
+
+    ``8083-31B`` -> ``FAA-H-8083-31B``; ``AC43.13-1B`` -> ``AC 43.13-1B``.
+    The Day-by-Day Map's Handbook Edition column wants what the document calls
+    itself, not the abbreviated form the citation matcher works in.
+    """
+    code = (handbook or "").strip().upper()
+    if not code:
+        return ""
+    if code.startswith("AC"):
+        return f"AC {code[2:]}"
+    return f"FAA-H-{code}"
+
+
+def edition_series(designator: str) -> str:
+    """The revision-independent identity of a handbook designator.
+
+    ``FAA-H-8083-31B`` and ``FAA-H-8083-31A`` are the SAME handbook at two
+    revisions and citing both in one block is a real conflict; ``FAA-H-8083-31B``
+    and ``AC 43.13-1B`` are two different documents and citing both is ordinary.
+    Returns the designator with any trailing revision letter removed.
+    """
+    return re.sub(r"[A-Z]$", "", (designator or "").strip().upper())
+
+
 def parse_citations(source_text: str) -> List[Citation]:
     """Every assigned reading on one calendar day row, in order.
 
