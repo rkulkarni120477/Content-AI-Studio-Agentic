@@ -38,7 +38,63 @@ def get_course_by_id(db, course_id: int):
     return db.query(Course).filter(Course.id == course_id).first()
 
 
+def _is_empty_import_shell():
+    """Boolean condition: an archived course that is an import's shell and
+    has NO reconstructed content at all — the shell an import job never got
+    to build anything into. Excluded even from ``include_archived=True``
+    views: unlike a course a user chose to archive, this was never a real
+    course to manage, and its own CourseImport row already keeps the
+    failure's audit trail.
+
+    Scoped to ``Course.import_id.isnot(None)`` — without it this also caught
+    every OTHER archived-and-contentless course: a scratch title archived
+    before anything was generated, or a normal CDD-→Blueprint-→generate
+    waypoint (CDD + Blueprint done, no blocks generated yet) archived mid-flow.
+    Neither of those has a CourseImport behind it; only an import shell does,
+    and ``start_import`` sets ``import_id`` before the job is ever enqueued,
+    so it can't be left unset by a race.
+
+    Content-keyed, not CourseImport.status or GenerationJob status — those
+    are mutable by unrelated paths and both over- and under-fire if reused
+    here. Concretely: (a) a course that DID reconstruct before a later stage
+    failed keeps CourseImport.status=="failed" forever, so a status-based
+    rule would wrongly re-catch it the moment a user archives it through the
+    normal archive action; (b) POST .../retry unconditionally flips
+    CourseImport.status to "completed" even when it rebuilt nothing (no
+    modules to work with), so a status-based rule would wrongly stop
+    excluding an empty shell the instant someone retries it. "Zero
+    CourseModule/Generation rows" can't be un-set by anything except real
+    reconstruction, so neither case can happen here.
+
+    Correlated NOT EXISTS rather than a flat NOT IN subquery: the previous
+    ``~Course.id.in_(db.query(Generation.course_id)...)`` shape builds the
+    full list of every course_id in the (highest-row-count) generations table
+    before comparing — a NOT EXISTS lets the planner use the per-course_id
+    index instead. generation.course_id is nullable (course-less generations
+    exist elsewhere), but a correlated NOT EXISTS has no NULL-in-NOT-IN
+    footgun the way a flat subquery does, so no extra filter is needed there.
+
+    ``Course.is_active`` is a nullable column with only a Python-side default,
+    so ``isnot(True)`` (not ``== False``) is used to also catch a NULL row —
+    otherwise a NULL-is_active shell would silently fall through this filter.
+
+    A row this excludes isn't stranded: it's just absent from every listing
+    (including include_archived=True). ``DELETE .../courses/{id}`` still
+    reaches it directly for support/debugging cleanup.
+    """
+    from sqlalchemy import exists
+
+    return (
+        Course.is_active.isnot(True)
+        & Course.import_id.isnot(None)
+        & ~exists().where(CourseModule.course_id == Course.id)
+        & ~exists().where(Generation.course_id == Course.id)
+    )
+
+
 def list_courses_for_project(db, project_id: int):
+    # No include_archived option here, so is_active==True alone already
+    # excludes a failed import shell — no need for the extra join.
     return (
         db.query(Course)
         .filter(Course.project_id == project_id, Course.is_active == True)  # noqa: E712
@@ -50,7 +106,12 @@ def list_courses_for_project(db, project_id: int):
 def list_courses_for_cluster(db, cluster_id: int, *, include_archived: bool = False):
     q = db.query(Course).filter(Course.cluster_id == cluster_id)
     if not include_archived:
+        # The exclusion below only ever matches non-True is_active rows, so on
+        # this default path it can only be a no-op — skip it rather than pay
+        # for two correlated subqueries per row that can never change the result.
         q = q.filter(Course.is_active == True)  # noqa: E712
+    else:
+        q = q.filter(~_is_empty_import_shell())
     return q.order_by(Course.created_at.asc()).all()
 
 

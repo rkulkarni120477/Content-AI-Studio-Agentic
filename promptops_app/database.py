@@ -565,7 +565,7 @@ class Generation(Base):
     blueprint_id = Column(Integer, ForeignKey("module_blueprints.id"), nullable=True)
     blueprint_version = Column(String(20), nullable=True)
     project_id = Column(Integer, nullable=True)   # FK to projects.id
-    course_id  = Column(Integer, nullable=True)   # FK to courses.id
+    course_id  = Column(Integer, nullable=True, index=True)   # FK to courses.id
     created_by = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
     # Idempotency key for background generation (P4.1). Stamped with the

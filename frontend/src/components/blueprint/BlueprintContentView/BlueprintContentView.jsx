@@ -3,6 +3,7 @@ import { buildBlueprintUiSections } from '@utils/blueprintContent';
 import { renderMarkdownPreview, renderInlineMarkdown } from '@utils/markdownPreview';
 import { parseItemsFromSection } from '@utils/blockItems';
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import styles from './BlueprintContentView.module.scss';
@@ -185,14 +186,16 @@ export default function BlueprintContentView({
               onClick={() => toggle(id)}
               aria-expanded={open}
             >
-              <span>{sec.title}</span>
+              <span>{applyTerminology(sec.title, L, ['blueprint'])}</span>
               <span aria-hidden="true">{open ? '▾' : '▸'}</span>
             </button>
             {open && (
               <div className={styles.section__body}>
                 <div
                   className={`${styles.section__text} markdown-content`}
-                  dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(sec.content) }}
+                  dangerouslySetInnerHTML={{
+                    __html: renderMarkdownPreview(applyTerminology(sec.content, L, ['blueprint'])),
+                  }}
                 />
                 {editable && (
                   <>

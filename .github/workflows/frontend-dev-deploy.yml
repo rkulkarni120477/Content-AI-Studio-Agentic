@@ -15,6 +15,13 @@ permissions:
 env:
   AWS_REGION: us-east-1
   S3_BUCKET: content-ai-studio-dev
+  # Scopes `--delete` below to this prefix, mirroring frontend-deploy.yml (prod).
+  # Without it, `aws s3 sync --delete` targets the bucket ROOT: the first deploy
+  # after DIS started sharing this bucket (raw/processed uploads live under
+  # DIS/) would have deleted every DIS upload on the next push to `develop`.
+  # Requires the CloudFront distribution's S3 origin Origin Path to be set to
+  # /CAS to match — see DIS_ENV_BIFURCATION_WORKFLOW.txt phase 2.
+  S3_PREFIX: CAS
   CLOUDFRONT_DISTRIBUTION_ID: E142R1AI8LOAMH
 
 jobs:
@@ -29,6 +36,37 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Notify Deployment Started
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "message",
+              "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "type": "AdaptiveCard",
+                  "version": "1.2",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "🚀 CAS DEV Frontend Deployment Started",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Branch: develop\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "wrap": true
+                    }
+                  ]
+                }
+              }]
+            }' \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"
+          
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -53,13 +91,13 @@ jobs:
 
       - name: Deploy to S3
         run: |
-          aws s3 sync dist/ s3://${{ env.S3_BUCKET }}/ \
+          aws s3 sync dist/ s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/ \
             --delete \
             --cache-control "public,max-age=31536000,immutable" \
             --exclude "index.html"
 
           aws s3 cp dist/index.html \
-            s3://${{ env.S3_BUCKET }}/index.html \
+            s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/index.html \
             --cache-control "no-cache,no-store,must-revalidate"
 
       - name: Invalidate CloudFront Cache
@@ -67,9 +105,74 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
             --paths "/*"
+          
+
+      - name: Notify Deployment Success
+        if: success()
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "message",
+              "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "type": "AdaptiveCard",
+                  "version": "1.2",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "✅ CAS DEV Frontend Deployment Successful",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Branch: develop\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "wrap": true
+                    }
+                  ]
+                }
+              }]
+            }' \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"
+          
+
+      - name: Notify Deployment Failure
+        if: failure()
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "message",
+              "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "type": "AdaptiveCard",
+                  "version": "1.2",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "❌ CAS DEV Frontend Deployment Failed",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Branch: develop\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "wrap": true
+                    }
+                  ]
+                }
+              }]
+            }' \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"
 
       - name: Deployment Summary
         run: |
           echo "CAS DEV Frontend deployment completed successfully."
           echo "Bucket: $S3_BUCKET"
+          echo "Folder: $S3_PREFIX"
           echo "CloudFront: $CLOUDFRONT_DISTRIBUTION_ID"

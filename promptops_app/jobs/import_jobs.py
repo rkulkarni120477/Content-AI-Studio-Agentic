@@ -68,6 +68,8 @@ def run_import_job(job_id: str) -> None:
     job = None
     course_import = None
     package_path = None
+    course_id = None
+    reconstructed = False
     try:
         job = db.query(GenerationJob).filter(GenerationJob.id == job_id).first()
         if not job:
@@ -123,6 +125,7 @@ def run_import_job(job_id: str) -> None:
             user_name=user_name,
             progress_cb=_progress,
         )
+        reconstructed = True   # Editor has real content — never hide/archive past this point
 
         # ── Stages 5–7 — Reverse-generate design artifacts (non-fatal) ─
         # Runs only after reconstruction succeeded. Any failure here leaves the
@@ -141,10 +144,15 @@ def run_import_job(job_id: str) -> None:
 
     except PackageValidationError as exc:
         _log.warning("Import job %s: invalid package: %s", job_id, exc)
-        _mark_failed(db, job, course_import, f"Invalid IMSCC package: {exc}")
+        _mark_failed(db, job, course_import, f"Invalid IMSCC package: {exc}",
+                     course_id=None if reconstructed else course_id)
     except Exception as exc:  # noqa: BLE001 - background boundary; log full, expose clean
         _log.exception("Import job %s failed: %s", job_id, exc)
-        _mark_failed(db, job, course_import, "Import failed while reconstructing the course.")
+        # A failure after the Editor was actually built (e.g. _finalize/
+        # set_completed hitting a transient DB error) leaves a fully usable
+        # course — must not be archived alongside a genuinely empty shell.
+        _mark_failed(db, job, course_import, "Import failed while reconstructing the course.",
+                     course_id=None if reconstructed else course_id)
     finally:
         _cleanup_package(package_path)
         db.close()
@@ -282,13 +290,30 @@ def _finalize(db, course_id: int, course_import, import_id: int, result) -> None
     db.commit()
 
 
-def _mark_failed(db, job, course_import, message: str) -> None:
+def _mark_failed(db, job, course_import, message: str, *, course_id: int | None = None) -> None:
     try:
         if course_import is not None:
             course_import.status = "failed"
             db.commit()
     except Exception:  # pragma: no cover - best-effort status write
         db.rollback()
+    if course_id is not None:
+        # The initial reconstruction never produced a usable Editor — hide
+        # the empty shell rather than leaving a broken title badged
+        # "Imported" in the Titles list (same is_active flag the archive
+        # endpoint uses; the course row + any partial content stay in place
+        # for support/debugging, just no longer listed — see
+        # course_repository._is_empty_import_shell for the list-side
+        # exclusion, since the Titles page itself fetches with
+        # include_archived=true). A separate commit so this write can't be
+        # lost to, or roll back, the course_import status write above.
+        try:
+            course_row = db.get(Course, course_id)
+            if course_row is not None:
+                course_row.is_active = False
+                db.commit()
+        except Exception:  # pragma: no cover - best-effort archive
+            db.rollback()
     if job is not None:
         set_failed(db, job, message)
 

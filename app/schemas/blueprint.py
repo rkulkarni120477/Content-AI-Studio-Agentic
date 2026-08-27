@@ -279,6 +279,9 @@ class BlueprintGenerateResponse(BaseModel):
     #: Generation deliberately degrades rather than failing here, so this is the
     #: only thing that distinguishes the two outcomes for the requester.
     source_context_unavailable: Optional[str] = None
+    # Set only by the import path when a file could not be fully structured (e.g.
+    # imported as one unstructured section); None for a normal generation.
+    import_warnings: Optional[list[str]] = None
 
 
 class BlueprintComponentsResponse(BaseModel):

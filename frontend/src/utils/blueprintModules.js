@@ -244,15 +244,17 @@ export function buildExtraInstructionsBlock({
   isDay,
   dayTitle,
   extraInstructions,
+  blueprintLabel = 'Blueprint',
 }) {
   const extra = (extraInstructions || '').trim();
   const extraPart = extra ? `\n\n**Additional Instructions:**\n${extra}` : '';
+  const bp = blueprintLabel || 'Blueprint';
 
   if (isDay) {
     const titlePart = dayTitle ? ` (${dayTitle})` : '';
     return (
       `**This is Day ${moduleNum}${titlePart} of the block.**\n`
-      + `Generate the DLU (Daily Learning Unit) blueprint specifically for Day ${moduleNum}.`
+      + `Generate the DLU (Daily Learning Unit) ${bp.toLowerCase()} specifically for Day ${moduleNum}.`
       + extraPart
     );
   }
@@ -260,14 +262,14 @@ export function buildExtraInstructionsBlock({
   if (isCourseEnd && courseEndLabel) {
     return (
       `**This is a Title-Level End item: '${courseEndLabel}'.**\n`
-      + 'Generate the Blueprint specifically for this title-end item. '
+      + `Generate the ${bp} specifically for this title-end item. `
       + 'It should align to all modules in the title.'
       + extraPart
     );
   }
   return (
     `**This is Module ${moduleNum} of the title.**\n`
-    + `Generate the Blueprint specifically for Module ${moduleNum}. `
+    + `Generate the ${bp} specifically for Module ${moduleNum}. `
     + 'Lesson numbering should start from Lesson 1 within this module.'
     + extraPart
   );

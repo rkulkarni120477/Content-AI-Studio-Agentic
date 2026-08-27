@@ -223,15 +223,69 @@ export function downloadText(content, filename, mimeType = 'text/plain') {
 }
 
 // ─── Error Normalization ──────────────────────────────────────────────────────
+const API_FIELD_LABELS = {
+  slug: 'Organization Code',
+  name: 'Client Name',
+  client_name: 'Client Name',
+  admin_username: 'Username',
+  admin_password: 'Password',
+  admin_display_name: 'Display name',
+  max_users: 'Max users',
+  username: 'Username',
+  password: 'Password',
+};
+
+function humanizeFieldKey(key) {
+  if (!key || typeof key !== 'string') return null;
+  if (API_FIELD_LABELS[key]) return API_FIELD_LABELS[key];
+  if (/^\d+$/.test(key)) return null;
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function fieldLabelFromLoc(loc) {
+  if (!Array.isArray(loc) || loc.length === 0) return null;
+  const skip = new Set(['body', 'query', 'path', 'header']);
+  const parts = loc.filter((p) => !skip.has(p));
+  const key = parts[parts.length - 1];
+  return humanizeFieldKey(key);
+}
+
+function formatValidationItem(entry) {
+  if (entry == null) return '';
+  if (typeof entry !== 'object') return String(entry);
+  const raw = (entry.msg || entry.message || JSON.stringify(entry)).replace(/^Value error,\s*/i, '');
+  const label = fieldLabelFromLoc(entry.loc);
+  const minMatch = /^String should have at least (\d+) character/i.exec(raw);
+  if (minMatch) {
+    const n = minMatch[1];
+    const unit = n === '1' ? 'character' : 'characters';
+    return label
+      ? `${label} should have at least ${n} ${unit}.`
+      : `This field should have at least ${n} ${unit}.`;
+  }
+  const maxMatch = /^String should have at most (\d+) character/i.exec(raw);
+  if (maxMatch) {
+    const n = maxMatch[1];
+    return label
+      ? `${label} should have at most ${n} characters.`
+      : `This field should have at most ${n} characters.`;
+  }
+  if (label && !raw.toLowerCase().includes(label.toLowerCase())) {
+    return `${label}: ${raw}`;
+  }
+  return raw;
+}
+
 function formatApiDetail(detail) {
   if (detail == null) return null;
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) {
-    return detail
-      .map((e) => (typeof e === 'object' ? (e.msg || e.message || JSON.stringify(e)) : String(e)))
-      .join('; ');
+    return [...new Set(detail.map(formatValidationItem).filter(Boolean))].join('; ');
   }
   if (typeof detail === 'object') {
+    if (Array.isArray(detail.loc) || detail.msg || detail.message) {
+      return formatValidationItem(detail);
+    }
     return detail.msg || detail.message || JSON.stringify(detail);
   }
   return String(detail);

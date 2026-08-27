@@ -6,7 +6,7 @@ import { fetchCoursesThunk, fetchWorkspaceConfigThunk } from '@features/dashboar
 import {
   selectCourses, selectSelectedProject, selectSelectedCluster,
   setSelectedProject, setSelectedCluster, setSelectedCourse,
-  selectIsLoadingCourses, selectDashboardError,
+  selectIsLoadingCourses, selectCoursesLoadedFor, selectDashboardError,
 } from '@features/dashboard/dashboardSlice';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import SelectionLayout from '@components/layout/SelectionLayout/SelectionLayout';
@@ -36,6 +36,7 @@ export default function CoursesPage() {
   const selProj = useAppSelector(selectSelectedProject);
   const selCluster = useAppSelector(selectSelectedCluster);
   const isLoadingCourses = useAppSelector(selectIsLoadingCourses);
+  const coursesLoadedFor = useAppSelector(selectCoursesLoadedFor);
   const coursesError = useAppSelector(selectDashboardError);
 
   const [createLoading, setCreateLoading] = useState(false);
@@ -83,9 +84,16 @@ export default function CoursesPage() {
     sync();
   }, [pid, cid, selProj?.id, selCluster?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
+  // Fetch only once the cluster is the selected one. Firing on mount instead
+  // races the sync effect above: on a cluster A -> B navigation, `courses`
+  // still holds A's items (setSelectedCluster no longer clears them) and
+  // isLoadingCourses is still false for the paint before this effect's
+  // pending action lands, so the page would render A's titles under B's
+  // header. Keyed on selCluster?.id, this runs after the cluster pointer
+  // actually points at cid.
   useEffect(() => {
-    if (cid) dispatch(fetchCoursesThunk(cid));
-  }, [cid, dispatch]);
+    if (cid && selCluster?.id === cid) dispatch(fetchCoursesThunk(cid));
+  }, [cid, selCluster?.id, dispatch]);
 
   // Probe the reverse-pipeline flag: /imports/health 404s when the router isn't
   // mounted (flag off), in which case Import stays disabled.
@@ -155,6 +163,22 @@ export default function CoursesPage() {
 
   if (!selProj || !selCluster) return <Loader size="xl" overlay />;
 
+  // No courses fetch for THIS cluster has settled yet, so nothing is known
+  // about whether it has titles yet — `items: []` means both "not loaded" and
+  // "none exist", and isLoadingCourses is still false for the paint between
+  // selecting the cluster and the fetch's pending action. The `!coursesError`
+  // escape hatch keeps a genuinely failed fetch from spinning forever.
+  const coursesPending = isLoadingCourses
+    || (coursesLoadedFor !== cid && !coursesError);
+
+  // Render only what the marker says was fetched for THIS cluster. `state.error`
+  // is shared by every dashboard fetch, so an unrelated failure can already be
+  // set on arrival and trip the escape hatch above before this cluster's own
+  // fetch has settled — and the grid branch below is evaluated before the error
+  // branch. Reading `courses.items` directly there would paint the previous
+  // cluster's titles under this one's header.
+  const courseItems = coursesLoadedFor === cid ? (courses?.items ?? []) : [];
+
   return (
     <SelectionLayout
       sidebarProps={{
@@ -174,13 +198,13 @@ export default function CoursesPage() {
         subtitle={`Choose a ${L.titleLower} to enter the workspace.`}
       />
 
-      {isLoadingCourses ? (
+      {coursesPending ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
           <Loader size="sm" /> Loading {L.titlesLower}…
         </div>
-      ) : courses?.items?.length ? (
+      ) : courseItems.length ? (
         <div className={gridStyles.grid}>
-          {courses?.items?.map((course) => {
+          {courseItems.map((course) => {
             const archived = course.is_active === false;
             return (
               <StreamlitCard

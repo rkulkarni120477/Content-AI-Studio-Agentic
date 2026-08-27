@@ -74,9 +74,9 @@ export default function ClustersPage() {
   }, [pid, selProj?.id, dispatch, navigate, isPlatformAdmin, authProjectId]);
 
   // Fetch only once the project is the selected one. Firing on mount instead
-  // raced setSelectedProject, which clears the cluster list on a project change
-  // — so a list that had already arrived was thrown away, and the request that
-  // fetched it was wasted. Keyed on selProj?.id, this runs after the clear.
+  // raced setSelectedProject, which clears clustersLoadedFor on a project
+  // change — so a request fired before the clear would land marked for the
+  // wrong project. Keyed on selProj?.id, this runs after that clear.
   useEffect(() => {
     if (pid && selProj?.id === pid) dispatch(fetchClustersThunk(pid));
   }, [pid, selProj?.id, dispatch]);
@@ -129,6 +129,14 @@ export default function ClustersPage() {
   const clustersPending = isLoadingClusters
     || (clustersLoadedFor !== pid && !clustersError);
 
+  // Render only what the marker says was fetched for THIS project. `state.error`
+  // is shared by every dashboard fetch, so an unrelated failure can already be
+  // set on arrival and trip the `!clustersError` escape hatch above before this
+  // project's own fetch has settled — and the grid branch below is evaluated
+  // before the error branch. Reading `clusters.items` directly there would paint
+  // the previous project's categories under this one's header.
+  const clusterItems = clustersLoadedFor === pid ? (clusters?.items ?? []) : [];
+
   return (
     <SelectionLayout
       sidebarProps={{
@@ -157,16 +165,16 @@ export default function ClustersPage() {
       </div>
 
       {cpMgrOpen && canManage && (
-        <ClusterPromptManager clusters={clusters?.items || []} />
+        <ClusterPromptManager clusters={clusterItems} />
       )}
 
       {clustersPending ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2rem 0', color: '#64748b' }}>
           <Loader size="sm" /> Loading categories…
         </div>
-      ) : clusters?.items?.length ? (
+      ) : clusterItems.length ? (
         <div className={gridStyles.grid}>
-          {clusters?.items?.map((cluster) => (
+          {clusterItems.map((cluster) => (
             <StreamlitCard
               key={cluster.id}
               title={`🗂️ ${cluster.name}`}

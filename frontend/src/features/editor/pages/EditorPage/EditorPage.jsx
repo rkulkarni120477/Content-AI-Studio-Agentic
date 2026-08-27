@@ -175,12 +175,13 @@ export default function EditorPage() {
   }, [selectedGenId, courseId, dispatch]);
 
   useEffect(() => {
-    editorService.listReviewers().then((list) => {
+    const projectId = selProject?.id ?? selCourse?.project_id;
+    editorService.listReviewers(projectId).then((list) => {
       const arr = Array.isArray(list) ? list : (list?.items || []);
       const names = arr.map((u) => (typeof u === 'string' ? u : u.username)).filter(Boolean);
       setReviewers(names);
     }).catch(() => setReviewers([]));
-  }, []);
+  }, [selProject?.id, selCourse?.project_id]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {

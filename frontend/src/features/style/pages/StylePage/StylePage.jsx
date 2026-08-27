@@ -450,7 +450,7 @@ export default function StylePage() {
                   onChange={(e) => setStyleStateFilter(e.target.value)}
                 />
                 <div className={styles.docSearch}>
-                  <label className={styles.docSearch__label}>Search style</label>
+                  <label className={styles.docSearch__label}>Search {L.styleLower}</label>
                   <SearchBar
                     value={styleSearch}
                     onChange={setStyleSearch}
@@ -836,10 +836,10 @@ export default function StylePage() {
         size="sm"
         footer={<Button variant="ghost" onClick={() => { setScopeStyleId(null); setScopeStyleName(''); }}>Cancel</Button>}
       >
-        <p className={styles.scopeIntro}>Where should this style be active?</p>
+        <p className={styles.scopeIntro}>Where should this {L.styleLower} be active?</p>
         <div className={styles.scopeActions}>
           <Button variant="primary" fullWidth onClick={() => onActivateScope('course')}>
-            For This Title
+            For This {L.title}
           </Button>
           <Button variant="secondary" fullWidth onClick={() => onActivateScope('project')}>
             For This Project

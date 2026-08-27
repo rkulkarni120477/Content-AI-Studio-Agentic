@@ -23,6 +23,7 @@ import toast from 'react-hot-toast';
 import { api } from '@services/apiClient';
 import { PROJECTS, USERS } from '@services/endpoints';
 import { workflowService } from '@features/workflow/services/workflowService';
+import { resolveReviewerProjectId } from './reviewerScope';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
@@ -109,7 +110,7 @@ export default function WorkflowPage() {
   const selProject = useAppSelector(selectSelectedProject);
   const selCourse = useAppSelector(selectSelectedCourse);
   const projectsData = useAppSelector(selectProjects);
-  const { user, isAdmin, canApprove, hasPermission } = useAuth();
+  const { user, isAdmin, canApprove, hasPermission, projectId: authProjectId } = useAuth();
 
   const [approvalBlockId, setApprovalBlockId] = useState(null);
   const [reviewerName, setReviewerName] = useState('');
@@ -190,15 +191,33 @@ export default function WorkflowPage() {
       .finally(() => setBreakdownLoading(false));
   }, [showAdminBreakdown]); // initial load only
 
+  // hasPermission() is a fresh function every render (not memoized in
+  // useAuth), so it's called here — during render, not inside the effect —
+  // and only the resulting boolean goes in the effect's dependency array.
+  const canSubmitForReview = hasPermission('workflow.submit');
+
   useEffect(() => {
-    if (!canApprove && !isAdmin) return;
-    api.get(USERS.REVIEWERS)
+    // Needed by both the Reviewer filter (canApprove/isAdmin, browsing) and
+    // the Assign Reviewer select in Available Actions, which is shown to
+    // whoever holds workflow.submit — usually plain authors. Gating this on
+    // canApprove/isAdmin alone meant the list was never fetched for an
+    // author submitting their own draft, so their Assign Reviewer select
+    // always read "(no reviewers available)" regardless of who the backend
+    // would have returned.
+    if (!canApprove && !isAdmin && !canSubmitForReview) return;
+    const projectId = resolveReviewerProjectId({
+      filtersProjectId: filters.projectId,
+      authProjectId,
+      selProjectId: selProject?.id,
+      selCourseProjectId: selCourse?.project_id,
+    });
+    api.get(USERS.REVIEWERS, projectId ? { params: { project_id: projectId } } : undefined)
       .then((res) => {
         const list = normalizeList(res);
         setReviewers(list.map((u) => u.username || u).filter(Boolean));
       })
       .catch(() => setReviewers([]));
-  }, [canApprove, isAdmin]);
+  }, [canApprove, isAdmin, canSubmitForReview, filters.projectId, authProjectId, selProject?.id, selCourse?.project_id]);
 
   useEffect(() => {
     const projId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;

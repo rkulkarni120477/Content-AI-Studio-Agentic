@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { promptsService } from '@features/prompts/services/promptsService';
-import { COMPONENT_LABELS, buildPromptDownloadMd } from '@utils/promptDefaults';
+import { componentLabel, buildPromptDownloadMd } from '@utils/promptDefaults';
 import { downloadBlob } from '@utils/helpers';
 import { useLabels } from '@hooks/useLabels';
 import Modal from '@components/common/Modal/Modal';
@@ -33,7 +33,7 @@ export default function PromptDetailsModal({
   const [loading, setLoading] = useState(false);
   const L = useLabels();
 
-  const compLabel = COMPONENT_LABELS[component] || component;
+  const compLabel = componentLabel(component, L);
 
   useEffect(() => {
     if (!open || !promptMeta?.id) {
@@ -79,6 +79,7 @@ export default function PromptDetailsModal({
       userPromptTemplate: userPrompt || detail?.user_prompt_template,
       extraInstructions: viewExtra,
       isAiOverride,
+      labels: L,
     });
     const safeVer = (version || 'v1').replace(/\//g, '-');
     downloadBlob(
