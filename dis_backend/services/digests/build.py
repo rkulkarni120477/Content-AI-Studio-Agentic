@@ -356,7 +356,8 @@ def context_bundle(tenant_cfg: TenantConfig, block: str, client_id: str = "",
             conn.read_only = True
             with conn.cursor() as cur:
                 block_overview = worksheets.build_block_overview(en, cur, schema,
-                                                                 flags=worksheet_flags)
+                                                                 flags=worksheet_flags,
+                                                                 tenant_cfg=tenant_cfg)
                 source_file_inventory = worksheets.build_source_file_inventory(en, tenant_cfg, cur, schema)
                 acs_registry = worksheets.build_acs_registry(en, cur, schema)
     except Exception as exc:  # best-effort; the overview must never sink the bundle
