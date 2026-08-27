@@ -738,13 +738,112 @@ SYLLABUS_NOT_SEARCHABLE = ("syllabus not searchable for this block — the looku
                            "block number and this block's label has none")
 
 
-def _extract_syllabus_fields(text: str) -> Dict[str, str]:
-    """Verbatim marker-anchored slicing (mirrors cdd_parser.parse_cdd_flat's
-    position-based approach) — no LLM, so these fields can never be paraphrased.
-    Each marker's content runs until wherever the syllabus's OWN next labeled
-    heading actually starts (_next_heading_start), not a fixed character count —
-    see that function's docstring for why a hardcoded cutoff is wrong in both
-    directions."""
+#: The syllabus fields an extractor is asked for, with the plain-language
+#: description the model is given. Keyed the same as _SYLLABUS_KEY_BY_MARKER so
+#: the LLM and marker paths are interchangeable field-for-field.
+_SYLLABUS_LLM_FIELDS = {
+    "course_description": "the paragraph describing what this course/block covers",
+    "course_objectives": "what a student will be able to do on completion",
+    "grading_policy": "how the grade is composed, including any percentage breakdown",
+}
+
+
+def _normalized(text: str) -> str:
+    """Whitespace-collapsed, case-folded — the form verbatim checks compare in."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _verbatim_only(candidate: str, source: str) -> str:
+    """*candidate* if it genuinely appears in *source*, else "".
+
+    This is what lets an LLM read these cells without giving up the property the
+    marker-slicing version had for free: a syllabus field is a quotation, never a
+    summary. The model is asked for verbatim spans, and this checks rather than
+    trusts — a paraphrase, a merged sentence or an invented policy fails the
+    substring test and the field falls back to the marker path.
+
+    Compared whitespace-collapsed because the ingested syllabus is one flattened
+    line and any extractor will re-wrap it; that is a rendering difference, not a
+    change of words.
+    """
+    text = " ".join(str(candidate or "").split())
+    if not text:
+        return ""
+    return text if _normalized(text) in _normalized(source) else ""
+
+
+def _llm_syllabus_fields(text: str, tenant_cfg: Any) -> Dict[str, str]:
+    """Marker-free extraction of the syllabus fields. {} when unavailable.
+
+    The marker path (:func:`_extract_syllabus_fields`) can only find a field
+    whose heading it already knows and whose punctuation matches, and this
+    module's own history is a list of the ways that fails on real documents: a
+    citation truncated at "Ch.", a heading matched mid-parenthetical, a grading
+    breakdown physically separated from its own prose. A model reads the
+    document instead of pattern-matching its punctuation.
+
+    What it is NOT allowed to do is write. Every returned value is checked back
+    against the source by :func:`_verbatim_only`, so this can add coverage but
+    can never add words — a field the model paraphrased is discarded exactly as
+    if it had not been found.
+    """
+    if not text or tenant_cfg is None:
+        return {}
+    try:
+        from services.pipeline.common import call_llm, safe_json
+        model = tenant_cfg.pipeline.models.digest_extraction
+    except Exception:  # noqa: BLE001 — extraction is additive; never sink the worksheet
+        return {}
+
+    wanted = "\n".join(f"  {k}: {desc}" for k, desc in _SYLLABUS_LLM_FIELDS.items())
+    prompt = (
+        "Extract fields from the course syllabus below.\n\n"
+        "Rules:\n"
+        "- Copy the text EXACTLY as it appears. Do not paraphrase, summarize, "
+        "reorder or correct it.\n"
+        "- If a field is not stated in the document, return an empty string for it. "
+        "Never infer or invent one.\n"
+        "- Return ONLY a JSON object with exactly these keys:\n"
+        f"{wanted}\n\n"
+        f"SYLLABUS:\n{text}\n"
+    )
+    try:
+        reply, _ti, _to = call_llm(model, prompt, 4000)
+        data = safe_json(reply) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("syllabus LLM extraction failed (%s); using marker extraction", exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key in _SYLLABUS_LLM_FIELDS:
+        value = _verbatim_only(data.get(key, ""), text)
+        if value:
+            out[key] = value
+        elif str(data.get(key) or "").strip():
+            # Answered, but not with words from the document. Worth a line in the
+            # log: it is the signal that the model is drifting toward summary, and
+            # the cell it would have filled now silently falls back instead.
+            log.warning("syllabus LLM returned non-verbatim %s; discarded", key)
+    return out
+
+
+def _extract_syllabus_fields(text: str, tenant_cfg: Any = None) -> Dict[str, str]:
+    """Verbatim marker-anchored slicing, with an LLM pass for what it misses.
+
+    Position-based slicing (mirrors cdd_parser.parse_cdd_flat) still runs first
+    and still wins wherever it finds a field: it is exact by construction, needs
+    no model, and cannot be affected by an outage. The LLM pass only fills fields
+    the markers did NOT find — a syllabus that names its sections differently, or
+    punctuates them in a way _HEADING_RE does not admit, previously rendered
+    "NOT AVAILABLE — not found in syllabus text" while the content sat in the
+    document.
+
+    The no-paraphrase guarantee survives, and is now enforced rather than
+    structural: every LLM-supplied value is checked back against the source by
+    _verbatim_only, so a summarized field is discarded and the honest
+    NOT AVAILABLE placeholder stands.
+    """
     keys = tuple(_SYLLABUS_KEY_BY_MARKER.values())
     if not text:
         # The lookup ran and returned nothing — the one case where blaming ingestion
@@ -756,6 +855,11 @@ def _extract_syllabus_fields(text: str) -> Dict[str, str]:
         if m:
             end = _next_heading_start(text, m.end())
             out[key] = text[m.end():end].strip()
+    if any(not out.get(k) for k in keys):
+        # Only pay for a model call when a marker actually came up empty.
+        for key, value in _llm_syllabus_fields(text, tenant_cfg).items():
+            if not out.get(key):
+                out[key] = value
     grading_table = _grading_percentage_table(text)
     if grading_table:
         out["grading_policy"] = f"{out.get('grading_policy', '')} {grading_table}".strip()
@@ -790,13 +894,29 @@ def _json_list(value: Any) -> List[str]:
     return [" ".join(str(item).split()) for item in items]
 
 
-def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[str, Any]:
+def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]],
+                     day_references: Any = None) -> Dict[str, Any]:
     """Per-day fields for the Day-by-Day Map that need the raw calendar row /
-    day's units — not derivable from the projected day summary alone."""
+    day's units — not derivable from the projected day summary alone.
+
+    ``day_references`` (optional) is this day's parsed reading assignment from
+    ``services.digests.references``. When present it supplies the Handbook
+    Reference cell, because it parses the citation the calendars actually carry.
+    The local regex below is kept only as the fallback for a caller that has no
+    resolved references, and it is why that cell was wrong in delivered work:
+    it required the literal "Reference reading:", matching 84 of the 350 AIM day
+    rows that carry a citation, and its line-bounded capture returned the bare
+    handbook code with the chapter and page range dropped — "FAA-H-8083-31B"
+    where the calendar said "FAA-H-8083-31B Ch. 13 pgs. 13-1 to 13-14".
+    """
     projects = _json_list(day.get("assignments_json"))
     assessments = _json_list(day.get("assessments_json"))
-    m = _REFERENCE_READING_RE.search(day.get("source_text") or "")
-    handbook_reference = m.group(1).strip() if m else ""
+    citations = list(getattr(day_references, "citations", None) or [])
+    if citations:
+        handbook_reference = "; ".join(c.describe() for c in citations)
+    else:
+        m = _REFERENCE_READING_RE.search(day.get("source_text") or "")
+        handbook_reference = m.group(1).strip() if m else ""
     hb_match = _HANDBOOK_RE.search(handbook_reference)
 
     def _fname(u: Dict[str, Any]):
@@ -824,7 +944,8 @@ def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[s
 
 
 def build_block_overview(en, cur=None, schema: str = "dis",
-                         flags: Optional[List[str]] = None) -> Dict[str, Any]:
+                         flags: Optional[List[str]] = None,
+                         tenant_cfg: Any = None) -> Dict[str, Any]:
     """Block-level summary: totals, ACS subjects, handbook/supplemental-reference
     citations, web resources, and verbatim syllabus fields where the source is
     available. ``schema`` must be the tenant's own structure_store.schema_name —
@@ -863,7 +984,7 @@ def build_block_overview(en, cur=None, schema: str = "dis",
                                  "number for the filename match; the syllabus fields are "
                                  "unknown, not known-absent")
             else:
-                syllabus_fields = _extract_syllabus_fields(text)
+                syllabus_fields = _extract_syllabus_fields(text, tenant_cfg)
         except Exception as exc:  # noqa: BLE001 — overview must never fail the build
             # Was `except Exception: pass`, which left the pre-set "not ingested"
             # placeholders in place: a query failure rendered, in the delivered

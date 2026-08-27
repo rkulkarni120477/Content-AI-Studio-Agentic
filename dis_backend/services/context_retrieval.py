@@ -316,6 +316,13 @@ class ContextRetrievalService:
                     "size_bytes": src.get("size_bytes"),
                     "page_count": src.get("page_count"),
                     "total_units": src.get("total_units", 0),
+                    # How much text the file actually yielded. total_units cannot
+                    # answer that: build_clean_content_document falls back to one
+                    # unit holding reading_content when chunking produced nothing,
+                    # so a file the extractor could not read still records
+                    # total_units = 1. None means the record predates this field —
+                    # the UI must treat that as "not measured", never as zero.
+                    "extracted_chars": src.get("extracted_chars"),
                     "created_at": src.get("created_at"),
                     "updated_at": src.get("updated_at"),
                     "course_name": src.get("course_name", ""),

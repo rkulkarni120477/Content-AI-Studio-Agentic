@@ -342,6 +342,18 @@ class DigestBuildRequest(BaseModel):
         description="Override the fan-out strategy: true = LangGraph Send fan-out, "
                     "false = sequential. None ⇒ tenant/global config default (D4).",
     )
+    extra_document_ids: list[str] = Field(
+        default_factory=list,
+        description="Source Library document (job) ids the requester pinned on the "
+                    "generation form. ADDITIVE ONLY: their units join the block's own "
+                    "and are day-attributed by the same rules, so a pin can only add "
+                    "material. This endpoint never narrows a block to a document "
+                    "subset — a block-wide deliverable built from a subset would "
+                    "silently drop days the requester can see in the panel. The "
+                    "response echoes extra_documents_applied, because a server that "
+                    "IGNORED this field would otherwise answer identically to one "
+                    "that honoured it.",
+    )
     map_guidance: str = Field(
         "", description="Optional generation guidance appended to every day's MAP "
                         "extraction call and folded into the digest cache key. CAS "
@@ -415,6 +427,7 @@ async def build_block_digests(request: Request, body: DigestBuildRequest):
         use_graph=use_graph, checkpointer=checkpointer,
         max_concurrency=getattr(pipe, "digest_fanout_max_concurrency", 5),
         map_guidance=body.map_guidance,
+        extra_document_ids=list(body.extra_document_ids or []),
     )
 
     if not body.wait:
@@ -493,6 +506,14 @@ async def get_block_digests(
     request: Request,
     block: str = Query(..., description="Block label, e.g. 'Block 2'."),
     client_id: str = Query("", description="Super admin only. Inspect another client/workspace."),
+    extra_document_ids: list[str] = Query(
+        default_factory=list,
+        description="Source Library document (job) ids pinned on the generation form. "
+                    "ADDITIVE — see DigestBuildRequest.extra_document_ids. Must match "
+                    "what /digests/build was given, or the bundle's enumerate summary "
+                    "will describe a different unit set than the digests were built "
+                    "from.",
+    ),
 ):
     """Return the enumerate summary + persisted digest bodies for a block — the
     bundle the app-side REDUCE consumes. Read-only (does not build); call
@@ -501,7 +522,8 @@ async def get_block_digests(
     answer keys)."""
     tenant, resolved_client_id, role = _resolve_block_scope(request, client_id or None)
     try:
-        return context_bundle(tenant, block, client_id=resolved_client_id)
+        return context_bundle(tenant, block, client_id=resolved_client_id,
+                              extra_document_ids=list(extra_document_ids or []))
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     except RuntimeError as exc:
