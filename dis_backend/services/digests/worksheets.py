@@ -790,13 +790,29 @@ def _json_list(value: Any) -> List[str]:
     return [" ".join(str(item).split()) for item in items]
 
 
-def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[str, Any]:
+def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]],
+                     day_references: Any = None) -> Dict[str, Any]:
     """Per-day fields for the Day-by-Day Map that need the raw calendar row /
-    day's units — not derivable from the projected day summary alone."""
+    day's units — not derivable from the projected day summary alone.
+
+    ``day_references`` (optional) is this day's parsed reading assignment from
+    ``services.digests.references``. When present it supplies the Handbook
+    Reference cell, because it parses the citation the calendars actually carry.
+    The local regex below is kept only as the fallback for a caller that has no
+    resolved references, and it is why that cell was wrong in delivered work:
+    it required the literal "Reference reading:", matching 84 of the 350 AIM day
+    rows that carry a citation, and its line-bounded capture returned the bare
+    handbook code with the chapter and page range dropped — "FAA-H-8083-31B"
+    where the calendar said "FAA-H-8083-31B Ch. 13 pgs. 13-1 to 13-14".
+    """
     projects = _json_list(day.get("assignments_json"))
     assessments = _json_list(day.get("assessments_json"))
-    m = _REFERENCE_READING_RE.search(day.get("source_text") or "")
-    handbook_reference = m.group(1).strip() if m else ""
+    citations = list(getattr(day_references, "citations", None) or [])
+    if citations:
+        handbook_reference = "; ".join(c.describe() for c in citations)
+    else:
+        m = _REFERENCE_READING_RE.search(day.get("source_text") or "")
+        handbook_reference = m.group(1).strip() if m else ""
     hb_match = _HANDBOOK_RE.search(handbook_reference)
 
     def _fname(u: Dict[str, Any]):

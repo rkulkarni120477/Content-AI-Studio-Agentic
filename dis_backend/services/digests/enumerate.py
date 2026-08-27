@@ -45,11 +45,23 @@ class EnumerateResult:
     # resolved_day -> units (full rows; kept in-process for MAP in Slice B).
     units_by_day: Dict[int, List[Dict[str, Any]]] = field(default_factory=dict)
     unattributed: List[Dict[str, Any]] = field(default_factory=list)
+    #: resolved_day -> the handbook/textbook passages that day's calendar row
+    #: assigns as reading (services.digests.references). Separate from
+    #: ``units_by_day`` because these units belong to no block and must never be
+    #: counted as the block's own material — they are shared works the day cites.
+    references_by_day: Dict[int, Any] = field(default_factory=dict)
     declared_acs: List[str] = field(default_factory=list)
     acs_by_day: Dict[int, List[str]] = field(default_factory=dict)
     duplicate_calendar_ids: List[str] = field(default_factory=list)
     attribution: Dict[str, Any] = field(default_factory=dict)
     flags: List[str] = field(default_factory=list)
+    #: Source Library document (job) ids the requester pinned on the form, and how
+    #: many units they contributed after de-duplication. Echoed back to CAS so a
+    #: pinned document that reached the server can be distinguished from one that
+    #: was dropped in transit — the caller cannot otherwise tell, because a server
+    #: that ignores the field answers exactly like one that honoured it.
+    pinned_document_ids: List[str] = field(default_factory=list)
+    pinned_unit_count: int = 0
 
     def to_summary(self, include_units: bool = False) -> Dict[str, Any]:
         """JSON-safe projection for the HTTP endpoint.
@@ -70,8 +82,15 @@ class EnumerateResult:
                     "topic": d.get("topic"),
                     "lesson_title": d.get("lesson_title"),
                     "unit_count": len(self.units_by_day.get(d["day_number"], [])),
+                    # Counted separately from unit_count: these are shared works
+                    # the day cites, not the block's own material, and conflating
+                    # the two would make a day taught entirely from the handbook
+                    # look as though the block had ingested content for it.
+                    "reference_unit_count": len(
+                        getattr(self.references_by_day.get(d["day_number"]), "units", []) or []),
                     "acs_codes": self.acs_by_day.get(d["day_number"], []),
-                    **_day_worksheet_fields(d, self.units_by_day.get(d["day_number"], [])),
+                    **_day_worksheet_fields(d, self.units_by_day.get(d["day_number"], []),
+                                            self.references_by_day.get(d["day_number"])),
                 }
                 for d in self.days
             ],
@@ -80,6 +99,13 @@ class EnumerateResult:
             "duplicate_calendar_ids": self.duplicate_calendar_ids,
             "attribution": self.attribution,
             "flags": self.flags,
+            # The acknowledgement CAS checks for. Present even when empty so the
+            # caller can tell "this server understands pinning and none was asked
+            # for" from "this server predates the field".
+            "extra_documents_applied": {
+                "requested": self.pinned_document_ids,
+                "units_added": self.pinned_unit_count,
+            },
         }
         if include_units:
             summary["units_by_day"] = {
@@ -90,9 +116,10 @@ class EnumerateResult:
         return summary
 
 
-def _day_worksheet_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _day_worksheet_fields(day: Dict[str, Any], units: List[Dict[str, Any]],
+                          day_references: Any = None) -> Dict[str, Any]:
     from services.digests import worksheets  # lazy: worksheets stays a leaf module
-    return worksheets.build_day_fields(day, units)
+    return worksheets.build_day_fields(day, units, day_references)
 
 
 def _unit_descriptor(u: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,8 +180,17 @@ def _resolve_dsn(cfg) -> str:
     return cfg.url or get_settings().db_url.replace("postgresql+asyncpg://", "postgresql://")
 
 
-def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "") -> EnumerateResult:
-    """Enumerate + attribute one block. Read-only; raises on misconfiguration."""
+def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
+                    extra_document_ids: Optional[List[str]] = None) -> EnumerateResult:
+    """Enumerate + attribute one block. Read-only; raises on misconfiguration.
+
+    ``extra_document_ids`` are Source Library document (job) ids the requester
+    pinned on the generation form. They are ADDITIVE: their units join the
+    block's own and are day-attributed by the same rules, so a pinned document
+    can only ever add material. Nothing here filters the block down to them —
+    a block-wide deliverable narrowed to a document subset would silently drop
+    days the requester can see in the panel.
+    """
     import psycopg
     from psycopg.rows import dict_row
 
@@ -172,12 +208,116 @@ def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "") -
     # assembler below never touches dis_calendar_days / acs_codes directly (§5.5).
     profile = get_curriculum_profile(cid, tenant_cfg)
 
+    pinned_ids = [str(d).strip() for d in (extra_document_ids or []) if str(d).strip()]
+    pinned: List[Dict[str, Any]] = []
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         conn.read_only = True  # belt-and-suspenders; only SELECTs are issued
         with conn.cursor() as cur:
             scope = profile.load_scope(cur, schema, cid, block)
+            if pinned_ids:
+                pinned = _load_pinned_units(cur, schema, cid, pinned_ids, scope.units)
 
-    return _assemble(block, cid, profile, scope)
+    if pinned:
+        scope.units = list(scope.units) + pinned
+
+    result = _assemble(block, cid, profile, scope)
+    result.pinned_document_ids = pinned_ids
+    result.pinned_unit_count = len(pinned)
+    if pinned_ids:
+        found = {str((u.get("metadata_json") or {}).get("job_id") or "") for u in pinned}
+        missing = [d for d in pinned_ids if d not in found]
+        if missing:
+            # Named, not counted: a pinned document that contributed nothing is a
+            # document the requester believes is in their deliverable and is not.
+            result.flags.append(
+                f"PINNED_DOCUMENT_EMPTY:{len(missing)} — pinned document(s) "
+                f"{', '.join(missing[:_UNRESOLVED_CITATIONS_IN_FLAG])} contributed no "
+                f"content units to this block (already part of it, not ingested for "
+                f"this client, or ingested with no extractable text)")
+    return result
+
+
+def _load_pinned_units(cur, schema: str, client_id: str, document_ids: List[str],
+                       already: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Units of explicitly pinned Source Library documents, minus any already loaded.
+
+    ``document_ids`` are job ids — the same identifier the Source Library lists and
+    the sync path pins with (``filters.document_ids`` in context_retrieval, where
+    job_ids/document_ids are one field). Generic across tenants, so this lives in the
+    shared assembler rather than a CurriculumProfile.
+
+    De-duplicated against the block's own units by ``content_unit_id``: pinning a
+    document that the block tag already covers must not double its text in the MAP
+    prompt, which would both waste budget and over-weight it in the extraction.
+    """
+    seen = {u.get("content_unit_id") for u in already}
+    cur.execute(
+        f"""SELECT content_unit_id, unit_type, title, text_content, content_hash,
+                   metadata_json
+              FROM {schema}.dis_content_units
+             WHERE client_id = %s AND metadata_json->>'job_id' = ANY(%s)""",
+        (client_id, document_ids),
+    )
+    return [r for r in cur.fetchall() if r.get("content_unit_id") not in seen]
+
+
+#: How many distinct unresolved citations a flag names before saying "and others".
+#: Same legibility bound, and same reason, as _UNRESOLVED_NAMES_IN_FLAG.
+_UNRESOLVED_CITATIONS_IN_FLAG = 6
+
+
+def _resolve_references(days: List[Dict[str, Any]], scope):
+    """Place each day's assigned reading, and report every citation that missed.
+
+    Returns ``(references_by_day, flags)``. Never raises: a block whose reference
+    works cannot be indexed must still enumerate, because the block's own units
+    and its calendar are unaffected by that failure.
+
+    Every unresolved citation reaches a flag. A day that cites a handbook this
+    corpus has not ingested is a coverage gap the reviewer can act on — 48 AIM day
+    rows cite 8083-32B, which is not ingested at all — and it is invisible in the
+    delivered document, where such a day simply reads a little thinner than its
+    neighbours.
+    """
+    from services.digests import references as refs_mod
+
+    references_by_day: Dict[int, Any] = {}
+    flags: List[str] = []
+    reference_units = list(getattr(scope, "reference_units", None) or [])
+    if not reference_units:
+        return references_by_day, flags
+
+    try:
+        by_file = refs_mod.index_by_file(reference_units)
+        for day in days:
+            resolved = refs_mod.resolve_day(day, by_file)
+            if resolved.citations:
+                references_by_day[day["day_number"]] = resolved
+    except Exception as exc:  # noqa: BLE001 — reading is additive; never sink enumerate
+        log.warning("assigned-reading resolution failed: %s", exc, exc_info=True)
+        return {}, [f"ASSIGNED_READING_FAILED — {type(exc).__name__}: {exc}; no day "
+                    f"received the handbook reading its calendar assigns"]
+
+    missing: Dict[str, List[int]] = defaultdict(list)
+    approximate: Dict[str, List[int]] = defaultdict(list)
+    for dn, resolved in references_by_day.items():
+        for citation, reason in resolved.unresolved:
+            (missing if not resolved.units else approximate)[reason].append(dn)
+    for reason, dns in sorted(missing.items()):
+        flags.append(f"READING_NOT_INGESTED — {reason} — cited on day(s) "
+                     f"{_days_phrase(dns)}")
+    for reason, dns in sorted(approximate.items()):
+        flags.append(f"READING_APPROXIMATE — {reason} — day(s) {_days_phrase(dns)}")
+    return references_by_day, flags
+
+
+def _days_phrase(day_numbers: List[int]) -> str:
+    """``1, 2, 3 and 4 others`` — bounded so one bad handbook can't flood a flag."""
+    ordered = sorted(set(day_numbers))
+    head = ordered[:_UNRESOLVED_CITATIONS_IN_FLAG]
+    rest = len(ordered) - len(head)
+    text = ", ".join(str(d) for d in head)
+    return f"{text} and {rest} other(s)" if rest > 0 else text
 
 
 def _assemble(block, client_id, profile, scope) -> EnumerateResult:
@@ -249,6 +389,10 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
                 u["attribution_signal"] = "unplaced:day-not-in-calendar"
             unattributed.append(u)
 
+    # ASSIGNED READING — resolved before the flags below so THIN_DAY accounts for
+    # the handbook passages a day was given, not just the block's own units.
+    references_by_day, reference_flags = _resolve_references(days, scope)
+
     flags: List[str] = []
     # Profile notes first: they describe the scope every later flag is computed
     # from, so a reader sees "these tags were merged" before the day counts.
@@ -259,8 +403,20 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
         flags.append(f"DUPLICATE_CALENDAR — {len(dup_ids)} other calendar(s) for this block: {dup_ids}")
     for dn in sorted(day_numbers):
         day_units = units_by_day.get(dn, [])
-        if not any((u.get("unit_type") in SUBSTANTIVE) for u in day_units):
-            flags.append(f"THIN_DAY:{dn} — no substantive source units")
+        refs = references_by_day.get(dn)
+        if any((u.get("unit_type") in SUBSTANTIVE) for u in day_units):
+            continue
+        if refs and refs.units:
+            # The block ingested nothing of its own for this day, but the calendar
+            # assigned reading and that reading resolved — so the day is NOT thin,
+            # it is taught from the handbook. Reported anyway, because a day with
+            # no lesson material of its own is a real content gap even when the
+            # digest is well fed.
+            flags.append(f"READING_ONLY_DAY:{dn} — no ingested block material; "
+                         f"taught from the assigned reading ({refs.label()})")
+            continue
+        flags.append(f"THIN_DAY:{dn} — no substantive source units")
+    flags.extend(reference_flags)
     # Only substantive units that SHOULD map to a day but couldn't are actionable.
     # Non-substantive unplaced units (syllabus sections, answer keys, loose chunks)
     # legitimately have no single day and are surfaced, not counted as a gap.
@@ -315,6 +471,7 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
         days=days,
         units_by_day=dict(units_by_day),
         unattributed=unattributed,
+        references_by_day=references_by_day,
         declared_acs=sorted(declared, key=attribution.acs_sort_key),
         acs_by_day={dn: sorted(codes, key=attribution.acs_sort_key) for dn, codes in acs_by_day.items()},
         duplicate_calendar_ids=dup_ids,

@@ -7,7 +7,7 @@ import { POLL_REQUEST_CONFIG } from '@features/shared/blockJob';
 /**
  * Payload for block-wide (digest-pipeline) async generation. Narrower than the
  * sync path — the digest pipeline builds its own context from DIS
- * enumerate/digests, so reference-doc and *_prompt_override fields don't apply.
+ * enumerate/digests, so the *_prompt_override fields don't apply.
  *
  * Narrower is NOT the same as "drops what the page sent". This mapper is a
  * whitelist, so a field the page adds reaches the server only when it is also
@@ -25,6 +25,15 @@ import { POLL_REQUEST_CONFIG } from '@features/shared/blockJob';
  * The guard against this recurring is behavioural, in blockWidePayload.test.js:
  * the previous test grepped the PAGE's source for these field names and passed
  * throughout, because the page did send them.
+ *
+ * reference_document_ids joined the list on 2026-08-27, and is the same shape of
+ * bug caught one step earlier. The page rendered a fully enabled document picker
+ * over a request that could not carry a document selection at all: the field was
+ * absent from BlockWideGenerateRequest, absent here, and the panel's own hint said
+ * the selection "does not apply". It now applies, ADDITIVELY — the pinned documents
+ * are digested on top of every unit the block enumerates, never instead of them, so
+ * a selection can only add context and can never narrow a block-wide deliverable.
+ * An empty array is the default and reproduces the previous request exactly.
  */
 function mapBlockPayload(data) {
   return {
@@ -48,6 +57,12 @@ function mapBlockPayload(data) {
     // falls through every DB resolution tier to the generic shipped file template.
     // An id that doesn't resolve to a pipeline row is ignored server-side.
     prompt_id: data.prompt_id || undefined,
+    // Documents pinned in the "Reference Documents" picker, added to the block's
+    // own enumerated sources server-side. Always sent (as [] when nothing is
+    // picked) rather than omitted, so the server can tell "nothing selected" from
+    // "this client is too old to send a selection" — the same distinction style_id
+    // preserves above.
+    reference_document_ids: data.reference_document_ids || [],
   };
 }
 

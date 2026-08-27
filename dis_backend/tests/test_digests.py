@@ -409,7 +409,7 @@ def test_build_digests_lazy_cache(monkeypatch, stub_llm):
                          "metadata_json": {"acs_codes": [f"{n}a"]}}] for n in (1, 2, 3)}
     days = [{"day_number": n, "topic": f"T{n}", "lesson_title": f"L{n}"} for n in (1, 2, 3)]
 
-    def fake_enumerate(tenant_cfg, block, client_id=""):
+    def fake_enumerate(tenant_cfg, block, client_id="", **kwargs):
         return EnumerateResult(block=block, client_id="aim", calendar_id="c",
                                total_days=3, enumerated_days=3, days=days,
                                units_by_day=units_by_day, declared_acs=["1a", "2a", "3a"])
@@ -452,7 +452,7 @@ def test_build_digests_rebuilds_all_days_when_map_guidance_changes(monkeypatch, 
                          "metadata_json": {}}] for n in (1, 2)}
     days = [{"day_number": n, "topic": f"T{n}", "lesson_title": f"L{n}"} for n in (1, 2)]
 
-    def fake_enumerate(tenant_cfg, block, client_id=""):
+    def fake_enumerate(tenant_cfg, block, client_id="", **kwargs):
         return EnumerateResult(block=block, client_id="aim", calendar_id="c",
                                total_days=2, enumerated_days=2, days=days,
                                units_by_day=units_by_day, declared_acs=[])
@@ -506,7 +506,7 @@ def test_day_context_structured_fetch(monkeypatch):
         ],
     }
 
-    def fake_enumerate(tenant_cfg, block, client_id=""):
+    def fake_enumerate(tenant_cfg, block, client_id="", **kwargs):
         return EnumerateResult(block=block, client_id="aim", calendar_id="c",
                                total_days=2, enumerated_days=2, days=days,
                                units_by_day=units_by_day,
@@ -645,7 +645,7 @@ def test_build_digests_graph_fanout(monkeypatch, stub_llm):
                          "metadata_json": {"acs_codes": [f"{n}a"]}}] for n in (1, 2, 3, 4)}
     days = [{"day_number": n, "topic": f"T{n}", "lesson_title": f"L{n}"} for n in (1, 2, 3, 4)]
 
-    def fake_enumerate(tenant_cfg, block, client_id=""):
+    def fake_enumerate(tenant_cfg, block, client_id="", **kwargs):
         return EnumerateResult(block=block, client_id="aim", calendar_id="c",
                                total_days=4, enumerated_days=4, days=days,
                                units_by_day=units_by_day, declared_acs=["1a", "2a", "3a", "4a"])

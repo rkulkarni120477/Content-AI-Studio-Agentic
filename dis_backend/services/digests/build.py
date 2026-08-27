@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 
 
 def day_is_cached(day: Dict[str, Any], units: List[Dict[str, Any]], model: str,
-                  existing: Dict[Any, Dict[str, Any]], force: bool, map_guidance: str = "") -> bool:
+                  existing: Dict[Any, Dict[str, Any]], force: bool, map_guidance: str = "",
+                  references: Any = None) -> bool:
     """Whether a fresh, ok cached digest already covers this day (cache_key match).
     The single source of truth for the lazy-cache decision, shared by both the
     sequential loop and the fan-out graph. Uses the SAME cache_key inputs as
@@ -43,7 +44,8 @@ def day_is_cached(day: Dict[str, Any], units: List[Dict[str, Any]], model: str,
     if not prev:
         return False
     ck = mapper.cache_key(day["day_number"], units, model, day_meta=mapper.day_signature(day),
-                          map_guidance=map_guidance)
+                          map_guidance=map_guidance,
+                          reference_units=list(getattr(references, "units", None) or []))
     if prev.get("cache_key") != ck or prev.get("digest_status") != "ok":
         return False
     if not mapper.has_extraction(prev):
@@ -60,7 +62,8 @@ def day_is_cached(day: Dict[str, Any], units: List[Dict[str, Any]], model: str,
 
 
 def build_one_day(tenant_cfg: TenantConfig, day: Dict[str, Any], units: List[Dict[str, Any]],
-                  model: str, client_id: str, block: str, map_guidance: str = "") -> Dict[str, Any]:
+                  model: str, client_id: str, block: str, map_guidance: str = "",
+                  references: Any = None) -> Dict[str, Any]:
     """Build + upsert one day's digest. Pure per-day: returns its OWN token counts
     under ``budget`` so concurrent fan-out has no shared-state race. Never raises —
     a MAP/store failure is captured as ``status='failed'``."""
@@ -68,7 +71,7 @@ def build_one_day(tenant_cfg: TenantConfig, day: Dict[str, Any], units: List[Dic
     budget: Dict[str, int] = {"calls": 0, "tok_in": 0, "tok_out": 0}
     digest = mapper.build_digest(day, units, tenant_cfg, model=model,
                                  client_id=client_id, block=block, budget=budget,
-                                 map_guidance=map_guidance)
+                                 map_guidance=map_guidance, references=references)
     store_res = indexing.upsert_digest(tenant_cfg, digest)
     ok = digest.get("digest_status") == "ok" and store_res.get("status") == "completed"
     return {
@@ -103,6 +106,13 @@ def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
         "strategy": strategy,
         "attribution": en.attribution,
         "flags": en.flags,
+        # Echoed so CAS can verify a pinned document actually reached this server.
+        # Without it a build that silently dropped the ids is indistinguishable from
+        # one that honoured them.
+        "extra_documents_applied": {
+            "requested": en.pinned_document_ids,
+            "units_added": en.pinned_unit_count,
+        },
         "per_day": sorted(per_day, key=lambda p: p["day_number"]),
     }
 
@@ -226,7 +236,8 @@ def run_tracked_build(tenant_cfg: TenantConfig, block: str, client_id: str = "",
 def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
                   force: bool = False,
                   use_graph: bool = False, checkpointer: Any = None,
-                  max_concurrency: int = 5, map_guidance: str = "") -> Dict[str, Any]:
+                  max_concurrency: int = 5, map_guidance: str = "",
+                  extra_document_ids: Any = None) -> Dict[str, Any]:
     """Build (or reuse) every day's digest for a block. Returns a build report.
 
     Digests are always built for the instructor audience (see mapper.build_digest).
@@ -246,7 +257,8 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     model = tenant_cfg.pipeline.models.digest_extraction
     preflight_extractor(model)
 
-    en = enumerate_block(tenant_cfg, block, client_id)
+    en = enumerate_block(tenant_cfg, block, client_id,
+                         extra_document_ids=extra_document_ids)
 
     if force:
         indexing.delete_digests(tenant_cfg, block, en.client_id)
@@ -278,11 +290,14 @@ def build_digests(tenant_cfg: TenantConfig, block: str, client_id: str = "",
         for day in en.days:
             dn = day["day_number"]
             units = en.units_by_day.get(dn, [])
-            if day_is_cached(day, units, model, existing, force, map_guidance=map_guidance):
+            refs = en.references_by_day.get(dn)
+            if day_is_cached(day, units, model, existing, force, map_guidance=map_guidance,
+                             references=refs):
                 per_day.append({"day_number": dn, "status": "cached"})
                 progress.record(en.client_id, block, "cached")
                 continue
-            res = build_one_day(tenant_cfg, day, units, model, en.client_id, block, map_guidance=map_guidance)
+            res = build_one_day(tenant_cfg, day, units, model, en.client_id, block,
+                                map_guidance=map_guidance, references=refs)
             for k in budget:
                 budget[k] += res["budget"].get(k, 0)
             per_day.append({"day_number": dn, "status": res["status"], "error": res.get("error")})
@@ -309,14 +324,16 @@ def _ensure_digest_index(tenant_cfg: TenantConfig) -> None:
         log.debug("digest index pre-create skipped: %s", exc)
 
 
-def context_bundle(tenant_cfg: TenantConfig, block: str, client_id: str = "") -> Dict[str, Any]:
+def context_bundle(tenant_cfg: TenantConfig, block: str, client_id: str = "",
+                   extra_document_ids: Any = None) -> Dict[str, Any]:
     """Everything the app-side REDUCE needs in one payload: the enumerate summary
     (days, declared ACS, flags), the persisted digest bodies, and the block-level
     worksheet aggregates (overview / source inventory / ACS registry). Read-only —
     does NOT build; call build_digests first to ensure freshness."""
     from services.digests import worksheets
 
-    en = enumerate_block(tenant_cfg, block, client_id)
+    en = enumerate_block(tenant_cfg, block, client_id,
+                         extra_document_ids=extra_document_ids)
     digests = indexing.fetch_digests(tenant_cfg, block, en.client_id)
     digests = sorted(digests, key=lambda d: d.get("day_number") or 0)
 
@@ -401,7 +418,9 @@ def digest_status(tenant_cfg: TenantConfig, block: str, client_id: str = "") -> 
     for day in en.days:
         dn = day["day_number"]
         units = en.units_by_day.get(dn, [])
-        ck = mapper.cache_key(dn, units, model, day_meta=mapper.day_signature(day))
+        ck = mapper.cache_key(dn, units, model, day_meta=mapper.day_signature(day),
+                              reference_units=list(
+                                  getattr(en.references_by_day.get(dn), "units", None) or []))
         prev = existing.get(dn)
         if prev is None:
             state = "missing"; missing += 1

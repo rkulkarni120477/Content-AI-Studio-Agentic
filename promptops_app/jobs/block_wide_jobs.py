@@ -59,6 +59,13 @@ def _reconstruct_request(params: dict) -> types.SimpleNamespace:
         # anything omitted here is indistinguishable from "not supplied". style_id
         # was the field this rebuild was missing (see user_directives).
         style_id=params.get("style_id"),
+        # The documents pinned in the Reference Documents picker. The router stores
+        # the whole request body (model_dump) in request_json, so the field is
+        # present in the row either way — omitting it HERE is what would turn an
+        # explicit selection into a no-op on the async path, which is the only path
+        # the UI uses. Additive on top of the block's enumerated units; see
+        # block_wide_service._selected_document_ids.
+        reference_document_ids=params.get("reference_document_ids") or [],
     )
 
 

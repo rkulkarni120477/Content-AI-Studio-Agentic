@@ -267,7 +267,8 @@ def has_extraction(digest: Dict[str, Any]) -> bool:
 def cache_key(day_number: int, units: List[Dict[str, Any]], model: str,
               schema_version: str = DIGEST_SCHEMA_VERSION,
               prompt_version: str = "",
-              day_meta: str = "", map_guidance: str = "") -> str:
+              day_meta: str = "", map_guidance: str = "",
+              reference_units: Optional[List[Dict[str, Any]]] = None) -> str:
     """Content-addressed digest key (§4.4).
 
     Invalidates automatically when the digest schema, extractor model, prompt
@@ -286,8 +287,17 @@ def cache_key(day_number: int, units: List[Dict[str, Any]], model: str,
     """
     prompt_version = prompt_version or current_prompt_version()
     unit_hashes = ",".join(sorted((u.get("content_hash") or _est_hash(u)) for u in units))
+    # Hashed as a count plus digest rather than inline with `unit_hashes`, so a
+    # stored digest built before assigned reading existed keys identically when
+    # no reading resolves — an empty reference list must not invalidate every
+    # cached digest in the store on deploy.
+    refs = list(reference_units or [])
+    ref_part = ""
+    if refs:
+        ref_hashes = ",".join(sorted((u.get("content_hash") or _est_hash(u)) for u in refs))
+        ref_part = f"|ref{len(refs)}:{hashlib.sha256(ref_hashes.encode()).hexdigest()[:16]}"
     raw = (f"{schema_version}|{model}|{prompt_version}|day{day_number}|{day_meta}"
-           f"|mg:{map_guidance}|{unit_hashes}")
+           f"|mg:{map_guidance}|{unit_hashes}{ref_part}")
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -517,8 +527,52 @@ def _source_body(llm_units: List[Dict[str, Any]],
     return body, dropped
 
 
+def _reading_body(references: Any, limit: Optional[int] = None) -> tuple[str, Dict[str, int]]:
+    """The ASSIGNED READING block: the handbook passages this day's calendar cites.
+
+    Kept out of ``_source_body`` and labelled separately because the two are
+    different kinds of evidence and the model must not conflate them. The day's
+    own units are what the block teaches; this is a shared reference work the
+    calendar points the day at, and a digest that reported handbook prose as the
+    block's own material would be wrong in a way nothing downstream could detect.
+
+    Trims from the END rather than by rank: this is book prose in reading order,
+    so the first pages of the assigned range are the ones the day actually opens
+    on, and dropping the tail keeps a contiguous passage where dropping the
+    lowest-ranked chunks would leave holes mid-argument.
+    """
+    units = list(getattr(references, "units", None) or [])
+    if not units:
+        return "", {}
+    label = getattr(references, "label", lambda: "")() or "assigned reading"
+    header = (f"\n\n=== ASSIGNED READING — {label} ===\n"
+              f"(Shared reference work cited by this day's calendar row. It is what the "
+              f"day reads FROM, not material this block authored.)\n")
+    kept: List[str] = []
+    used = len(header)
+    dropped_units = dropped_chars = 0
+    for u in units:
+        text = u.get("text_content") or ""
+        if MAP_MAX_UNIT_CHARS:
+            text = text[:MAP_MAX_UNIT_CHARS]
+        if not text.strip():
+            continue
+        if limit and used + len(text) > limit and kept:
+            dropped_units += 1
+            dropped_chars += len(text)
+            continue
+        kept.append(text)
+        used += len(text)
+    if not kept:
+        return "", ({"reading_units": dropped_units, "reading_chars": dropped_chars}
+                    if dropped_units else {})
+    dropped = ({"reading_units": dropped_units, "reading_chars": dropped_chars}
+               if dropped_units else {})
+    return header + "\n\n".join(kept), dropped
+
+
 def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: str,
-                 call_llm, safe_json, map_guidance: str = ""
+                 call_llm, safe_json, map_guidance: str = "", references: Any = None
                  ) -> tuple[Dict[str, Any], int, int, Dict[str, int], str, Optional[str]]:
     """Call the extractor and return (fields, tokens_in, tokens_out, dropped,
     model_used, escalation_note).
@@ -536,11 +590,26 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     # escalating keeps all of the day's evidence, trimming silently discards the very
     # material the extraction is supposed to rest on.
     full_body, _ = _source_body(llm_units, limit=0)
-    model, escalation = select_model_for(model, len(full_body))
+    full_reading, _ = _reading_body(references, limit=0)
+    model, escalation = select_model_for(model, len(full_body) + len(full_reading))
 
     budget = context_budget_chars(model)
     body, dropped = _source_body(llm_units, limit=budget)
-    if dropped:
+    # The block's own material is sized first and the assigned reading fills what
+    # is left. Deliberately in that order: a handbook chapter is an order of
+    # magnitude larger than a day's lesson units, so sizing them together would let
+    # book prose evict the very material the digest is meant to be about.
+    reading, reading_dropped = _reading_body(references, limit=max(0, budget - len(body)))
+    if reading:
+        body = f"{body}{reading}" if body.strip() else reading.lstrip("\n")
+    dropped = {**dropped, **reading_dropped}
+    if reading_dropped:
+        log.warning("digest MAP day %s: ASSIGNED READING truncated for model %s — "
+                    "dropped %d passage(s) (%d chars) of %s",
+                    day.get("day_number"), model, reading_dropped["reading_units"],
+                    reading_dropped["reading_chars"],
+                    getattr(references, "label", lambda: "?")())
+    if dropped.get("units"):
         log.warning("digest MAP day %s: SOURCES truncated to %d chars for model %s — "
                     "dropped %d lowest-confidence unit(s) (%d chars). No larger model "
                     "was available; see DIS_MAP_ESCALATION_MODELS.",
@@ -633,7 +702,8 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
 
 def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
                  model: Optional[str] = None, client_id: str = "", block: str = "",
-                 budget: Optional[Dict[str, int]] = None, map_guidance: str = "") -> Dict[str, Any]:
+                 budget: Optional[Dict[str, int]] = None, map_guidance: str = "",
+                 references: Any = None) -> Dict[str, Any]:
     """Build one per-day digest. Per-day failures are isolated (digest_status=failed),
     never propagated, so one bad day can't sink the block build.
 
@@ -680,7 +750,13 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
         # incident is exactly when this field is needed.
         "prompt_version": current_prompt_version(),
         "extractor_model": model,
-        "cache_key": cache_key(dn, units, model, day_meta=day_signature(day), map_guidance=map_guidance),
+        # Reference units are folded into the SAME hash as the day's own: a day
+        # whose assigned reading resolves differently (a handbook ingested, a
+        # chapter now locatable, a corrected citation) is a different extraction
+        # and must not be served from the cache built before it.
+        "cache_key": cache_key(dn, units, model, day_meta=day_signature(day),
+                               map_guidance=map_guidance,
+                               reference_units=list(getattr(references, "units", None) or [])),
         "map_guidance_applied": bool((map_guidance or "").strip()),
         "digest_status": "ok",
         "review_flags": [],
@@ -692,7 +768,8 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     digest["text_withheld_units"] = len(units) - len(llm_units)
     try:
         fields, ti, to, dropped, model_used, escalation = _llm_extract(
-            day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance)
+            day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance,
+            references=references)
         digest.update(fields)
         # Record the model that actually ran, not the one configured — an escalated
         # day is a different extraction and the cache key is keyed on the model, so

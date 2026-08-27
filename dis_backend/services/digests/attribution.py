@@ -62,7 +62,17 @@ _PROJECT = re.compile(r"project[:\s#]*?(\d+-\d+)", re.I)
 _QUIZ = re.compile(r"quiz[:\s#]*?(\d+)", re.I)
 #: A block's culminating graded exam, as the calendar names it in assessments_json
 #: (e.g. "Block 2: Final Exam"). Distinct from a numbered per-day quiz.
-_FINAL_EXAM = re.compile(r"\bfinal\s+exam\b", re.I)
+#: AIM's calendars name the block's culminating exam three ways and the naming is
+#: not consistent even between two calendars for the SAME block: Block 9's older
+#: calendar row says "Block 9: Final Exam", its richer one says "Cumulative Exam",
+#: and the exam documents themselves are filed as "Block 9 Final Cumulative Exam".
+#: Matching only "final exam" meant the richer calendar left the block's 18 exam
+#: items unattributed — the exam existed, the calendar scheduled it, and no day
+#: received it, so the Summative Exam Item Cluster column read "REVIEW NEEDED — no
+#: summative exam blueprint in source" on all 20 days of a block that has two.
+#: "Review quiz" is deliberately NOT included: those are per-day and are placed by
+#: the numbered-quiz rule below.
+_FINAL_EXAM = re.compile(r"\b(?:final|cumulative)(?:\s+cumulative)?\s+exam\b", re.I)
 
 #: Document types whose unit is the block's final exam. Such a unit has exactly one
 #: correct day — the one the CALENDAR schedules the exam on — so it must never be
@@ -71,6 +81,28 @@ _FINAL_EXAM = re.compile(r"\bfinal\s+exam\b", re.I)
 #: Block 2, where the calendar puts the final exam on day 20 and S3 had placed its
 #: questions on days 8 and 10.
 _FINAL_EXAM_DOC_TYPES = frozenset({"final_exam", "final_exam_answer_key"})
+
+#: A backslash-escape as it appears in a JSONB column read with ``::text`` — the
+#: two characters ``\`` and ``n``, not a newline. ``_load_days`` selects the
+#: assessment/assignment columns that way, so every embedded line break in a
+#: calendar cell arrives glued to the words either side of it.
+_JSON_ESCAPE_RE = re.compile(r"\\[nrt]")
+
+
+def _unescaped(text: str) -> str:
+    """Calendar cell text with ``::text`` escape sequences turned back into spaces.
+
+    Without this the word-boundary anchors in this module silently fail on any
+    cell whose value spans lines. Measured on Block 9: the day-20 cell reads
+    ``"... | Reading: None\\n\\n\\n\\nCumulative Exam"``, so the character
+    immediately before "Cumulative" is the letter ``n`` — no word boundary
+    exists, ``_FINAL_EXAM`` cannot match, and the block's 18 final-exam items
+    were left unattributed on a block whose calendar schedules the exam plainly.
+    Replaced with a space rather than removed so the words either side stay
+    separate tokens.
+    """
+    return _JSON_ESCAPE_RE.sub(" ", text or "")
+
 _DAY_TOKENS = [
     re.compile(r"\bB\d+D(\d+)\b", re.I),
     re.compile(r"\bdays?\s*(\d+)\s*(?:--|-|to|through|thru)\s*(\d+)\b", re.I),  # range
@@ -94,8 +126,13 @@ def build_calendar_refs(days: List[Dict[str, Any]]) -> Tuple[Dict[str, int], Dic
         dn = d.get("day_number")
         if dn is None:
             continue
-        blob = " ".join(str(d.get(k) or "") for k in
-                        ("assignments_json", "assessments_json", "source_text"))
+        # Unescaped for the same reason final_exam_day is: a cell reading
+        # "Project\n9-1" arrives with a literal backslash between the word and the
+        # number, and the separator class in _PROJECT does not admit one, so the
+        # calendar's own project reference is missed on exactly the rows that
+        # wrap.
+        blob = _unescaped(" ".join(str(d.get(k) or "") for k in
+                                   ("assignments_json", "assessments_json", "source_text")))
         for m in _PROJECT.findall(blob):
             proj_ref.setdefault(m, dn)          # first day that references it
         for m in _QUIZ.findall(blob):
@@ -229,10 +266,13 @@ def final_exam_day(days: List[Dict[str, Any]]) -> int | None:
         dn = d.get("day_number")
         if dn is None:
             continue
-        blob = " ".join(str(d.get(k) or "") for k in ("assessments_json", "assignments_json"))
+        blob = _unescaped(" ".join(str(d.get(k) or "")
+                                   for k in ("assessments_json", "assignments_json")))
         if _FINAL_EXAM.search(blob):
             return dn
     return None
+
+
 
 
 def _is_block_wide_reference(md: Dict[str, Any]) -> bool:

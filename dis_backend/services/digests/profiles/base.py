@@ -36,6 +36,14 @@ class ScopeData:
     total_days: int
     days: List[Dict[str, Any]] = field(default_factory=list)
     units: List[Dict[str, Any]] = field(default_factory=list)
+    #: Shared reference works (handbooks, textbooks) the block's days cite but
+    #: which belong to no single block, so ``units`` — filtered by block tag —
+    #: can never contain them. Kept apart rather than merged in because they must
+    #: NOT be day-attributed by term overlap: a handbook overlaps every day of
+    #: the block and would land wholesale on whichever day scored highest.
+    #: ``services.digests.references`` places them from the calendar's own
+    #: per-day "Reading:" citation instead. Empty for a profile that has none.
+    reference_units: List[Dict[str, Any]] = field(default_factory=list)
     duplicate_calendar_ids: List[str] = field(default_factory=list)
     #: Profile-level observations about the scope it just read, surfaced verbatim
     #: as enumerate flags (e.g. a block whose stored tags disagree on spelling and

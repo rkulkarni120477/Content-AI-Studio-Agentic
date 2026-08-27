@@ -119,7 +119,9 @@ export const blueprintService = {
    * style_id/prompt_id are carried for the same reason as the CDD twin — see
    * cddService.mapBlockPayload, where omitting them meant every block-wide
    * generation silently distilled its MAP guidance from the shipped file
-   * template rather than the prompt the user selected.
+   * template rather than the prompt the user selected. reference_document_ids is
+   * carried for the same reason and is additive: pinned documents are digested on
+   * top of the block's enumerated units, never instead of them.
    */
   generateBlueprintBlock: (data) => api.post(BLUEPRINT.GENERATE_BLOCK, {
     deliverable: 'blueprint',
@@ -137,6 +139,7 @@ export const blueprintService = {
     estimated_duration_hours: data.estimated_duration_hours ?? undefined,
     style_id: data.style_id ?? null,
     prompt_id: data.prompt_id || undefined,
+    reference_document_ids: data.reference_document_ids || [],
   }),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
   getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId), POLL_REQUEST_CONFIG),
