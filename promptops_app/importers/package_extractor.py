@@ -18,11 +18,13 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
 
-# Caps. IMSCC packages can legitimately be large (PRD allows ~2 GB), but the
-# validate path streams to a temp dir, so we cap total uncompressed bytes and the
-# compression ratio to stop zip bombs. Tune via callers if needed.
-MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024      # 2 GB total
-MAX_SINGLE_FILE_BYTES = 512 * 1024 * 1024            # 512 MB per entry
+# Caps. Not a product-facing size limit — real course packages should never get
+# close to these. This exists only to stop a zip bomb (a small, valid archive that
+# claims to decompress to an absurd size) from hanging or OOM-killing the process;
+# entry count and compression ratio catch that pattern directly, the byte ceilings
+# below are a generous backstop in case a package is huge but honest.
+MAX_UNCOMPRESSED_BYTES = 20 * 1024 * 1024 * 1024     # 20 GB total
+MAX_SINGLE_FILE_BYTES = 4 * 1024 * 1024 * 1024       # 4 GB per entry
 MAX_ENTRY_COUNT = 50_000
 MAX_COMPRESSION_RATIO = 200                            # uncompressed/compressed per entry
 

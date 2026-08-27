@@ -153,6 +153,10 @@ def test_run_import_job_end_to_end(db, monkeypatch, mock_llm):
 
     course = _new_course(db, name="ViaJob", project_id=2)
     course_id = course.id
+    # start_import (imports.py) creates the shell invisible — mirrored here
+    # since this test drives the job directly, bypassing the router.
+    course.is_active = False
+    db.commit()
     ci = CourseImport(course_id=course_id, project_id=2, status="queued", package_name="x.imscc")
     db.add(ci)
     db.commit()
@@ -185,6 +189,7 @@ def test_run_import_job_end_to_end(db, monkeypatch, mock_llm):
     course = db.query(Course).filter_by(id=course_id).first()
     assert course.source_type == "imscc"
     assert course.import_id == import_id
+    assert course.is_active is True   # unhidden the moment reconstruction succeeded
 
     record = db.query(CourseImport).filter_by(id=import_id).first()
     assert record.status == "completed"
@@ -204,11 +209,11 @@ def test_run_import_job_end_to_end(db, monkeypatch, mock_llm):
 
 
 def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
-    """A course row is created eagerly (API layer) before the job runs, so the
-    user can watch progress. If the job then fails outright, nothing about
-    that Course row itself changes on its own — it must be the job's failure
-    handler that archives it, or the empty, content-less shell stays visible
-    in the Titles list forever, badged "Imported".
+    """A course row is created eagerly (API layer), invisible from the start
+    (is_active=False — see start_import), so the user can watch progress
+    without the empty shell ever being badged "Imported" in the Titles list.
+    If the job then fails outright, it stays exactly as invisible as it
+    started — this test proves that path too, not just "nothing changed it".
 
     Asserted against list_courses_for_cluster(..., include_archived=True) —
     the exact call CoursesPage makes (dashboardThunks.js fetchCoursesThunk) —
@@ -236,9 +241,10 @@ def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     db.commit()
     db.refresh(ci)
     import_id = ci.id
-    # start_import (imports.py) sets this eagerly, before the job is even
+    # start_import (imports.py) sets these eagerly, before the job is even
     # enqueued — mirrored here since this test drives the job directly.
     course.import_id = import_id
+    course.is_active = False
     db.commit()
 
     job_id = job_repository.create_job(
@@ -266,6 +272,50 @@ def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     course = db.query(Course).filter_by(id=course_id).first()
     assert course.is_active is False
 
+    visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
+    assert course_id not in visible_ids
+
+
+def test_the_title_is_not_shown_until_the_job_has_actually_run(db):
+    """The reported bug: a tester blocked the import request in DevTools and
+    the title still showed up as "Imported" with no content. Whether or not
+    THAT specific request reaches the backend, run_import_job never even
+    starting — a crashed worker, a lost dispatch, the process dying between
+    the course commit and the job being enqueued — must not leave a visible,
+    content-less "Imported" title either. Simulates exactly that: the course
+    + import + job rows exist (mirroring start_import), but the job has never
+    been run at all — no failure, no success, just never-happened."""
+    from promptops_app.repositories import job_repository
+    from promptops_app.repositories.course_repository import list_courses_for_cluster
+
+    cluster = Cluster(name="C", project_id=9)
+    db.add(cluster)
+    db.commit()
+    db.refresh(cluster)
+
+    course = _new_course(db, name="JobNeverRan", project_id=9, cluster_id=cluster.id)
+    course_id = course.id
+    ci = CourseImport(course_id=course_id, project_id=9, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    # The exact sequence start_import commits before dispatch.submit() is even
+    # called — this is the state the row sits in for however long the job
+    # takes to actually start running.
+    course.import_id = ci.id
+    course.is_active = False
+    db.commit()
+    job_repository.create_job(
+        db, user_name="u",
+        request_params={
+            "import_id": ci.id, "course_id": course_id, "project_id": 9,
+            "user_name": "u", "package_path": "/nonexistent", "package_name": "x.imscc",
+        },
+        project_id=9, course_id=course_id, job_type="import",
+    )
+    # No import_jobs.run_import_job(job_id) call — the job is never run.
+
+    assert db.query(Generation).filter_by(course_id=course_id).count() == 0
     visible_ids = {c.id for c in list_courses_for_cluster(db, cluster.id, include_archived=True)}
     assert course_id not in visible_ids
 
@@ -299,7 +349,11 @@ def test_import_job_failing_after_reconstruction_leaves_the_course_untouched(db,
     db.commit()
     db.refresh(ci)
     import_id = ci.id
+    # start_import (imports.py) creates the shell invisible; only reconstruction
+    # succeeding unhides it. Starting True here would let this test pass even
+    # without that unhide step actually running.
     course.import_id = import_id
+    course.is_active = False
     db.commit()
 
     import os
@@ -324,7 +378,7 @@ def test_import_job_failing_after_reconstruction_leaves_the_course_untouched(db,
     assert job.status == "failed"   # _finalize did blow up — the job itself must say so
 
     course = db.query(Course).filter_by(id=course_id).first()
-    assert course.is_active is True   # ...but the real, built content must not be hidden
+    assert course.is_active is True   # reconstruction unhid it; the later failure must not re-hide it
 
     gens = db.query(Generation).filter_by(course_id=course_id).all()
     assert len(gens) == 3   # reconstruction really did complete before the failure
@@ -402,6 +456,7 @@ def test_retry_on_a_never_reconstructed_import_does_not_resurrect_the_hidden_she
     db.refresh(ci)
     import_id = ci.id
     course.import_id = import_id
+    course.is_active = False
     db.commit()
 
     # The initial import job fails outright (no staged package) — same empty
