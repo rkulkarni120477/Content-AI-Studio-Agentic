@@ -381,7 +381,18 @@ class ContextRetrievalService:
             for src in page:
                 src["indexed_units"] = int(counts.get(str(src.get("job_id")), 0))
         except Exception as exc:  # noqa: BLE001 — the library must still render
-            log.warning("indexed-unit counts unavailable: %s", exc)
+            # `logger`, not `log`. This handler is the whole point of the method —
+            # every value stays None so the UI says "unknown" rather than claiming
+            # a document is searchable when we could not check — and it raised
+            # NameError instead, turning a degraded listing into a 500. It only
+            # fires when the vector store cannot be queried, which is never true
+            # in the environment it was written in, so nothing caught it until a
+            # deployment pointed at an index that does not exist yet.
+            logger.warning("indexed-unit counts unavailable for %d documents "
+                           "(index=%s): %s: %s — the Source Library will show "
+                           "them as unknown rather than searchable",
+                           len(job_ids), getattr(cfg, "index_name", "?"),
+                           type(exc).__name__, exc)
 
     def _source_matches(self, src: Dict[str, Any], filters: Dict[str, Any]) -> bool:
         def eq(field: str, value: Any) -> bool:
