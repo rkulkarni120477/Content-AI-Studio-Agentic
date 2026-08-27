@@ -364,11 +364,13 @@ export default function BlueprintPage() {
   // the thunk) and shown below like a generated one.
   async function onImportOutline() {
     if (!importFile) return;
-    // Only send a fallback day the user actually confirmed — the day dropdown
-    // auto-defaults to Day 1, so sending it unconfirmed would silently file a
-    // dayless file onto Day 1. Unconfirmed → send nothing; the file's own day is
-    // used, or the backend asks the user to pick one.
-    const dayFallback = (moduleConfirmed && selectedModuleOpt?.isDay)
+    // The kind (day vs module) follows the source's type; the file overrides it
+    // when it names a unit. Only send a fallback unit the user actually confirmed —
+    // the dropdown auto-defaults to the first option, so sending it unconfirmed
+    // could silently file onto the wrong unit. Unconfirmed → send nothing; the
+    // file's own unit is used, or the backend asks the user to pick one.
+    const unitKind = isDluCdd ? 'day' : 'module';
+    const unitNumber = (moduleConfirmed && selectedModuleOpt)
       ? selectedModuleOpt.key
       : undefined;
     const res = await dispatch(importBlueprintThunk({
@@ -376,7 +378,8 @@ export default function BlueprintPage() {
       courseId: Number(courseId),
       projectId: selProject?.id ?? projectId,
       documentTitle: documentTitle || '',
-      dayNumber: dayFallback,
+      unitKind,
+      unitNumber,
       cddId: linkedCddId || undefined,
       modelChoice,
       onProgress: setImportProgress,
@@ -732,12 +735,11 @@ export default function BlueprintPage() {
                 }}
               />
 
-              {isDluCdd && (
               <div className={styles.uploadBlock}>
                 <div className={styles.uploadLabel}>📤 Upload existing {L.blueprint}</div>
                 <p className={styles.uploadHint}>
-                  Upload an {L.blueprint} (Excel, Word, PDF). The day is read from the file;
-                  an existing day is saved as a new version.
+                  Upload an {L.blueprint} (Excel, Word, PDF). The {isDluCdd ? 'day' : 'module'} is
+                  read from the file; an existing {isDluCdd ? 'day' : 'module'} is saved as a new version.
                 </p>
                 <input
                   ref={importFileRef}
@@ -767,7 +769,6 @@ export default function BlueprintPage() {
                   {isImporting ? 'Importing…' : `📤 Import ${L.blueprint}`}
                 </Button>
               </div>
-              )}
 
               {moduleOptions.length > 0 ? (
                 <>
