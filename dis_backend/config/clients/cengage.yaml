@@ -271,7 +271,13 @@ embedding:
   model_id: amazon.titan-embed-text-v2:0
   dimension: 1024
   region: us-east-1
-  max_input_chars: 50000
+  # Titan v2's hard limit is 8,192 TOKENS. 50000 chars is roughly 12,500 tokens, so
+  # a long unit was rejected with "Too many input tokens" — and because a failed
+  # embedding fell through to indexing the unit with an empty vector, the document
+  # landed in the index unfindable by semantic search, with the job reporting
+  # success. 24000 keeps the worst realistic ratio (~3 chars/token) under the limit.
+  # Clipping is logged; see generate_embeddings.
+  max_input_chars: 24000
 
 document_processing:
   profile: cengage_publishing

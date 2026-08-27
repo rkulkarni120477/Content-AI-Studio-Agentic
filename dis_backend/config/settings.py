@@ -267,7 +267,10 @@ class EmbeddingConfig(BaseModel):
     model_id: str = "amazon.titan-embed-text-v2:0"
     dimension: int = 1024
     region: str = "us-east-1"
-    max_input_chars: int = 50000
+    # See the client YAMLs: Titan v2 accepts 8,192 tokens, and the old 50000
+    # exceeded that for long units — which failed the embedding and then indexed
+    # the unit with an empty vector rather than failing the job.
+    max_input_chars: int = 24000
 
 # ---------------------------------------------------------------------------
 # Environment-driven store location

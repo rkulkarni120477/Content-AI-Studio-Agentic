@@ -42,6 +42,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dis_backend"))
@@ -54,6 +55,10 @@ def main() -> int:
     ap.add_argument("--client", default="aim")
     ap.add_argument("--block", default="", help="limit to one block label, e.g. 'Block 2'")
     ap.add_argument("--limit", type=int, default=0, help="stop after N documents (proving run)")
+    ap.add_argument("--batch-size", type=int, default=100,
+                    help="units per bulk request (default 100)")
+    ap.add_argument("--embed-max-chars", type=int, default=20000,
+                    help="per-unit character cap sent to the embedding model (default 20000)")
     args = ap.parse_args()
 
     import psycopg2
@@ -172,20 +177,52 @@ def main() -> int:
             "content_units": units,
         }
 
-        emb = generate_embeddings(tenant_cfg, state)
-        if emb.get("status") != "completed":
-            print(f"  ! embeddings failed for {d['source_file_name']}: {emb.get('error')}")
+        # Titan v2 accepts 8,192 TOKENS; every client config sets max_input_chars
+        # 50000, which is roughly 12,500 tokens, so a long unit is rejected with
+        # "Too many input tokens" — and generate_embeddings then returns [] and
+        # opensearch_upsert quietly indexes the document with an EMPTY embedding
+        # vector, present but unfindable by semantic search. Clamped here rather
+        # than relying on that config, and anything actually clipped is reported.
+        clipped = [u["content_unit_id"] for u in units
+                   if len(u["title"]) + 1 + len(u["text"]) > args.embed_max_chars]
+        tenant_cfg.embedding.max_input_chars = args.embed_max_chars
+
+        doc_ok = True
+        n = 0
+        # Bulk in batches: a single request carrying every unit of a large
+        # handbook (8083-31B is 1,233 units x 1024 float dims) is megabytes of
+        # JSON, and the endpoint answered with an SSL drop or a 429 rather than
+        # indexing it. Batching plus backoff is what makes the big files land.
+        for i in range(0, len(units), args.batch_size):
+            batch = units[i:i + args.batch_size]
+            batch_state = {**state, "content_units": batch}
+            for attempt in range(4):
+                emb = generate_embeddings(tenant_cfg, batch_state)
+                if emb.get("status") != "completed":
+                    print(f"  ! embeddings failed for {d['source_file_name']} "
+                          f"[units {i}-{i+len(batch)}]: {emb.get('error')}")
+                    doc_ok = False
+                    break
+                up = opensearch_upsert(tenant_cfg, batch_state)
+                if up.get("status") == "completed":
+                    n += int(up.get("documents_indexed") or 0)
+                    break
+                if attempt == 3:
+                    print(f"  ! indexing failed for {d['source_file_name']} "
+                          f"[units {i}-{i+len(batch)}]: {up.get('error')}")
+                    doc_ok = False
+                    break
+                time.sleep(2 ** attempt)   # 1s, 2s, 4s — 429s are transient
+            if not doc_ok:
+                break
+
+        if not doc_ok:
             failed += 1
             continue
-        up = opensearch_upsert(tenant_cfg, state)
-        if up.get("status") != "completed":
-            print(f"  ! indexing failed for {d['source_file_name']}: {up.get('error')}")
-            failed += 1
-            continue
-        n = int(up.get("documents_indexed") or 0)
         units_written += n
         ok += 1
-        print(f"  {n:>4} units  {d['source_file_name']}")
+        note = f"  ({len(clipped)} unit(s) clipped to {args.embed_max_chars} chars)" if clipped else ""
+        print(f"  {n:>4} units  {d['source_file_name']}{note}")
 
     conn.close()
     print(f"\ndone: {ok} documents re-indexed ({units_written} units), {failed} failed.")
