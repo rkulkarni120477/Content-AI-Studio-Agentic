@@ -80,6 +80,9 @@ def test_a_broken_lookup_never_breaks_the_upload():
 # door costs the user one re-save; a silent empty ingestion cost weeks of blocks
 # built against content nobody could see was missing.
 # ---------------------------------------------------------------------------
+import pathlib
+import tempfile
+
 import pytest
 from fastapi import HTTPException
 
@@ -122,8 +125,37 @@ def test_a_file_with_no_extension_is_refused_rather_than_guessed():
     assert "unknown" in _refusal(["READMEfile"])
 
 
-def test_extension_matching_ignores_case_and_path():
+def test_a_blocked_type_is_still_blocked_in_upper_case():
     assert "not accepted yet" in _refusal(["Landing Gear Projects/PROJECT A27.DOC"])
+
+
+@pytest.mark.parametrize("name", [
+    "REPORT.PDF", "Deck.PPTX", "Sheet.XLSX", "Guide.DocX", "Block 9.Pdf", "SCAN.JPG",
+])
+def test_a_supported_type_is_accepted_whatever_case_the_extension_arrives_in(name):
+    """The dangerous direction. Windows scanners and older exports routinely emit
+    .PDF and .DOCX; matching those literally against a lowercase list would refuse
+    perfectly good documents with a message insisting PDFs are supported."""
+    _reject_unsupported([name])
+
+
+def test_a_hand_edited_config_with_capitals_or_dots_still_matches():
+    import json
+    from app.core import upload_formats as uf
+
+    # The config is maintained by hand, so it will eventually contain ".PDF".
+    cfg = pathlib.Path(tempfile.mkdtemp()) / "upload_formats.json"
+    cfg.write_text(json.dumps({
+        "supported_extensions": [".PDF", "DocX"],
+        "blocked_extensions": {".DOC": "Re-save as .docx and upload that instead."},
+    }))
+    original = uf._config_path
+    uf._config_path = lambda: cfg
+    try:
+        assert uf.unsupported_reasons(["a.pdf", "b.DOCX"]) == []
+        assert "Re-save" in uf.unsupported_reasons(["c.Doc"])[0]
+    finally:
+        uf._config_path = original
 
 
 def test_every_blocked_type_carries_a_reason_and_is_not_also_listed_supported():

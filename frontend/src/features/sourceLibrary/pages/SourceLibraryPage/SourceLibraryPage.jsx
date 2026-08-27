@@ -6,6 +6,7 @@ import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import RetrievalStatus from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
+import { acceptAttribute, rejectionReason as policyRejectionReason } from '@features/sourceLibrary/utils/uploadPolicy';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
@@ -584,23 +585,13 @@ export default function SourceLibraryPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const acceptAttr = useMemo(
-    () => (uploadPolicy?.supported_extensions || []).map((e) => `.${e}`).join(','),
+  const acceptAttr = useMemo(() => acceptAttribute(uploadPolicy), [uploadPolicy]);
+
+  /** Why this file cannot be uploaded, or '' if it can. Tested in utils/uploadPolicy. */
+  const rejectionReason = useCallback(
+    (filename) => policyRejectionReason(uploadPolicy, filename),
     [uploadPolicy],
   );
-
-  /** Why this file cannot be uploaded, or '' if it can. Mirrors unsupported_reasons. */
-  const rejectionReason = useCallback((filename) => {
-    if (!uploadPolicy) return '';   // unknown policy -> let the server decide
-    const ext = String(filename || '').toLowerCase().split('.').pop();
-    const blocked = uploadPolicy.blocked_extensions || {};
-    if (blocked[ext]) return blocked[ext];
-    const supported = uploadPolicy.supported_extensions || [];
-    if (!supported.includes(ext)) {
-      return `.${ext || 'unknown'} is not a supported document type. Supported: ${supported.map((e) => `.${e}`).join(', ')}.`;
-    }
-    return '';
-  }, [uploadPolicy]);
 
   const statusOptions = useMemo(() => unique([...(filterOptions.statuses || []), ...(documents || []).map((doc) => doc.status || 'processed'), ...(uploadQueue || []).map((item) => item.status)]), [filterOptions, documents, uploadQueue]);
   const uploadStatusItems = useMemo(() => {
