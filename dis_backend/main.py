@@ -187,11 +187,41 @@ async def docs_client_admin():
 async def docs_user():
     return get_swagger_ui_html(openapi_url="/openapi-user.json", title="DIS Ingestion System")
 
+#: External binaries an extractor shells out to. A missing one does not crash
+#: anything — the extractor logs and returns empty text, the pipeline indexes the
+#: document as a success, and the content is silently gone. 110 of AIM's 121 .doc
+#: files were lost exactly that way, undetected for a month, because nothing ever
+#: asked whether the binary was there. Reported here so the answer is one request
+#: away instead of buried per-file in ingestion logs.
+_EXTRACTOR_BINARIES = {
+    "antiword": "pre-2007 binary .doc (OLE2) text extraction",
+}
+
+
+def _extractor_dependencies() -> dict:
+    import shutil
+    return {name: {"present": shutil.which(name) is not None, "used_for": why}
+            for name, why in _EXTRACTOR_BINARIES.items()}
+
+
 @app.get("/health")
 async def health():
     registry = get_tenant_registry()
-    return {"status": "ok", "version": settings.app_version,
-            "environment": settings.environment, "clients": len(registry.all_tenants())}
+    deps = _extractor_dependencies()
+    missing = [n for n, d in deps.items() if not d["present"]]
+    return {
+        # Degraded, not ok: the service answers requests, but any upload of an
+        # affected type will be accepted and silently yield nothing.
+        "status": "ok" if not missing else "degraded",
+        "version": settings.app_version,
+        "environment": settings.environment,
+        "clients": len(registry.all_tenants()),
+        "extractor_dependencies": deps,
+        "degraded_reason": (
+            f"missing extractor binaries: {', '.join(missing)} — uploads of the "
+            f"affected types will extract to empty text"
+        ) if missing else None,
+    }
 
 @app.get("/")
 async def root():

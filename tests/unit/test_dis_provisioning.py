@@ -57,6 +57,12 @@ def test_add_to_available_clients_preserves_existing_entries(_isolate):
 
 
 def test_provision_dis_client_never_raises_when_dis_unreachable(_isolate, monkeypatch):
+    # Enabled explicitly: this test is about an ENABLED DIS that cannot be
+    # reached, which is a different path from a DIS switched off (covered
+    # below). It used to inherit the flag from whatever .env the developer
+    # happened to have, so it silently asserted nothing wherever DIS was off.
+    monkeypatch.setattr(dis_provisioning.settings, "dis_enabled", True)
+
     def _boom(*args, **kwargs):
         raise ConnectionError("dis is down")
 
@@ -71,6 +77,9 @@ def test_provision_dis_client_never_raises_when_dis_unreachable(_isolate, monkey
 
 
 def test_provision_dis_client_never_raises_on_filesystem_error(monkeypatch):
+    # Same reason as above — without this the call returns at the disabled
+    # guard and "did not raise" becomes true for the wrong reason.
+    monkeypatch.setattr(dis_provisioning.settings, "dis_enabled", True)
     monkeypatch.setattr(dis_provisioning, "_CLIENTS_DIR", "/proc/impossible/path/for/a/directory")
 
     dis_provisioning.provision_dis_client("nova-publishing", "Nova Publishing")  # must not raise

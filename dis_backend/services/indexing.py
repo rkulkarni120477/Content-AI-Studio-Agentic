@@ -264,14 +264,27 @@ def generate_embeddings(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict
         import boto3
         client = boto3.client("bedrock-runtime", region_name=cfg.region or tenant_cfg.storage.s3.region or get_settings().aws_region)
         embedded = []
+        clipped = 0
         for unit in state.get("content_units", []) or []:
-            text = (unit.get("title", "") + "\n" + unit.get("text", ""))[:cfg.max_input_chars]
+            full = unit.get("title", "") + "\n" + unit.get("text", "")
+            if len(full) > cfg.max_input_chars:
+                # The model's own ceiling, so clipping is legitimate — but it must
+                # not be silent: the clipped tail is content the semantic index will
+                # never represent, and nothing downstream can tell it was dropped.
+                clipped += 1
+            text = full[:cfg.max_input_chars]
             body = json.dumps({"inputText": text, "dimensions": cfg.dimension, "normalize": True})
             resp = client.invoke_model(modelId=cfg.model_id, body=body)
             data = json.loads(resp["body"].read())
             embedded.append({**unit, "embedding": data.get("embedding", [])})
         state["embedding_ready_chunks"] = embedded
-        return {"status": "completed", "embeddings_created": len(embedded), "model_id": cfg.model_id, "dimension": cfg.dimension}
+        if clipped:
+            log.warning("embedding_input_clipped units=%d cap=%d model=%s — the clipped "
+                        "tail is not represented in the semantic index",
+                        clipped, cfg.max_input_chars, cfg.model_id)
+        return {"status": "completed", "embeddings_created": len(embedded),
+                "model_id": cfg.model_id, "dimension": cfg.dimension,
+                "units_clipped": clipped}
     except Exception as exc:
         state["embedding_ready_chunks"] = []
         return {"status": "failed", "error": str(exc)}
@@ -332,11 +345,27 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
     try:
         if getattr(cfg, "provider", "opensearch") != "opensearch":
             return {"status": "skipped", "reason": f"Unsupported vector store provider: {cfg.provider}. Add adapter in services/adapters/vector_store.py"}
+        # Decided BEFORE any connection is opened: if this document cannot be
+        # indexed correctly there is nothing to gain from a TLS handshake first.
+        #
+        # An empty embedding_ready_chunks means one of two very different things:
+        # embeddings are switched off (fine — index the text and rely on keyword
+        # search), or generate_embeddings FAILED. Falling back to the raw units in
+        # the second case indexes every unit with "embedding": [] — present in the
+        # index, unreachable by the kNN search that block-wide generation depends
+        # on, and reported as a completed job. 60 AIM units reached prod that way.
+        ready = state.get("embedding_ready_chunks")
+        raw = state.get("content_units", []) or []
+        if getattr(tenant_cfg.embedding, "enabled", False) and raw and not ready:
+            return {"status": "failed", "error":
+                    "embeddings are enabled but none were produced for this document; "
+                    "refusing to index unembedded units, which would be invisible to "
+                    "semantic retrieval while reporting success"}
         # Reuse the OpenSearch write client (P4.3/F7) instead of building a new
         # one — and a fresh TLS handshake / AWS4Auth signing setup — per upsert.
         client = _vector_store_write_client(cfg)
         ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
-        units = state.get("embedding_ready_chunks") or state.get("content_units", []) or []
+        units = ready or raw
 
         # Issue a single batched request (helpers.bulk) instead of one
         # client.index() call per content unit (P6.2/F12). Default op_type

@@ -89,6 +89,17 @@ class PromptTemplate:
     required_vars:   list[str] = field(default_factory=list)
     optional_vars:   list[str] = field(default_factory=list)
     source:          str = "file"   # "file" | "db"
+    #: The prompts row this came from, when it came from one.
+    #:
+    #: ``name`` does not identify a prompt. Every blueprint prompt in the library
+    #: resolves under the single logical name "blueprint_generation" — twelve of
+    #: them at the time of writing — and ``version`` restarts at v1 per row, so
+    #: name+version is ambiguous across rows. That ambiguity is why "which prompt
+    #: produced this document?" could only be answered by full-text searching
+    #: every prompt version against the stored output. None on the file tier,
+    #: which has no row.
+    prompt_row_id:   int | None = None
+    prompt_title:    str = ""
 
 
 # ── Registry — metadata for all known templates ───────────────────────────────
@@ -488,6 +499,8 @@ def _from_db(
             required_vars   = required_vars,
             optional_vars   = list(meta.get("optional_vars", [])),
             source          = "db",
+            prompt_row_id   = prompt.id,
+            prompt_title    = prompt.name or "",
         )
     except Exception:
         return None

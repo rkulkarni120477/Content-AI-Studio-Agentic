@@ -1,19 +1,39 @@
 /**
  * The block-wide payload must not quietly diverge from the single-document one.
  *
- * This is a source-level guard rather than a render test, and deliberately so: the
- * bug it exists to prevent is not a broken component but two payload builders on the
- * same form drifting apart. `onGenerate` sent `style_id`; `onGenerateBlock`, added
- * later beside it, did not — so the page kept rendering "<style> will be applied"
+ * The source-level half below is a guard rather than a render test, and deliberately
+ * so: the bug it exists to prevent is not a broken component but two payload builders
+ * on the same form drifting apart. `onGenerate` sent `style_id`; `onGenerateBlock`,
+ * added later beside it, did not — so the page kept rendering "<style> will be applied"
  * over a block-wide generation that ignored the style entirely, and the server had
  * no way to tell "no style selected" from "style never sent". Audited 2026-08-13.
  *
  * Rendering these 900-line pages to assert one field would cost far more than it
  * protects; what matters is that whoever edits one builder is failed by the other.
+ *
+ * WHY THERE IS ALSO A BEHAVIOURAL HALF (added 2026-08-27)
+ * ------------------------------------------------------
+ * Grepping the page proved the page's half and nothing else, and the page was never
+ * the broken half. `cddService.mapBlockPayload` is a whitelist between the page and
+ * the HTTP call, and it did not list style_id or prompt_id — so both were built by
+ * the page, asserted present by the tests above, and then dropped before the request.
+ * Production consequence: 30/30 block-wide CDD jobs reached the server with no
+ * prompt_id, so prompt_guidance never reached its DB tier and distilled every day's
+ * MAP guidance from the shipped cdd_generation.md file (a middle-school CTE template)
+ * regardless of which prompt the user selected. The tests below assert what actually
+ * goes over the wire, which is the only thing the server can act on.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('@services/apiClient', () => ({
+  api: { post: vi.fn(() => Promise.resolve({ data: {} })), get: vi.fn(), put: vi.fn(), delete: vi.fn() },
+}));
+
+const { api } = await import('@services/apiClient');
+const { cddService } = await import('@features/cdd/services/cddService');
+const { blueprintService } = await import('@features/blueprint/services/blueprintService');
 
 const read = (p) => readFileSync(resolve(__dirname, '../../..', p), 'utf8');
 
@@ -70,5 +90,60 @@ describe('Blueprint page', () => {
   it('offers no block-wide flow at all', () => {
     expect(source).not.toContain('BlockWidePanel');
     expect(source).not.toContain('onGenerateBlock');
+  });
+});
+
+describe('what the block-wide request actually carries', () => {
+  beforeEach(() => { api.post.mockClear(); });
+
+  /** The body handed to api.post by the last call. */
+  const sentBody = () => api.post.mock.calls[0][1];
+
+  const formValues = {
+    block: 'Block 9',
+    course_id: 101,
+    project_id: 23,
+    course_title: 'Block 9 Aircraft Systems-II',
+    quality_tier: 'standard',
+    model_choice: 'GPT-5.4',
+    style_id: 7,
+    prompt_id: 82,
+  };
+
+  it('carries the selected prompt to the server', async () => {
+    await cddService.generateCddBlock(formValues);
+    // The whole point: without this the server cannot resolve the user's choice at
+    // all on this path, and falls through to the shipped file template.
+    expect(sentBody().prompt_id).toBe(82);
+  });
+
+  it('carries the selected style to the server', async () => {
+    await cddService.generateCddBlock(formValues);
+    expect(sentBody().style_id).toBe(7);
+  });
+
+  it('distinguishes "no style chosen" from "style never sent"', async () => {
+    await cddService.generateCddBlock({ ...formValues, style_id: undefined });
+    // null, not undefined — undefined is dropped by JSON.stringify, which is exactly
+    // the ambiguity the server was left with before.
+    expect(sentBody()).toHaveProperty('style_id', null);
+  });
+
+  it('omits an unselected prompt rather than sending a null the server must special-case', async () => {
+    await cddService.generateCddBlock({ ...formValues, prompt_id: undefined });
+    expect(sentBody().prompt_id).toBeUndefined();
+  });
+
+  it('carries both on the Blueprint twin as well', async () => {
+    await blueprintService.generateBlueprintBlock(formValues);
+    expect(sentBody().prompt_id).toBe(82);
+    expect(sentBody().style_id).toBe(7);
+  });
+
+  it('still narrows the payload — reference docs have no meaning for a whole block', async () => {
+    // Negative control. If the mapper ever became a pass-through, every assertion
+    // above would pass for the wrong reason.
+    await cddService.generateCddBlock({ ...formValues, reference_document_ids: [1, 2] });
+    expect(sentBody().reference_document_ids).toBeUndefined();
   });
 });
