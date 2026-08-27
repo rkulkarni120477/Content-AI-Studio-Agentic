@@ -52,7 +52,7 @@ jobs:
                     },
                     {
                       "type": "TextBlock",
-                      "text": "Branch: develop\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "text": "Branch: prod\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
                       "wrap": true
                     }
                   ]
@@ -121,7 +121,7 @@ jobs:
                     },
                     {
                       "type": "TextBlock",
-                      "text": "Branch: develop\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "text": "Branch: prod\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
                       "wrap": true
                     }
                   ]
@@ -153,7 +153,7 @@ jobs:
                     },
                     {
                       "type": "TextBlock",
-                      "text": "Branch: develop\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "text": "Branch: prod\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
                       "wrap": true
                     }
                   ]
