@@ -74,6 +74,12 @@ class FolderScanRequest(BaseModel):
     client_id: str = ""
     course_id: str = ""
     course_name: str = ""
+    #: Block label for the course being scanned, supplied by CAS (which knows the
+    #: course and therefore the block). Without it a folder whose directories are
+    #: named for their subject rather than their block ingests block-less and is
+    #: then invisible to every block-scoped retrieval — see
+    #: app.api.v1.routers.source_library._block_from_course.
+    block: str = ""
     recursive: bool = True
     dry_run: bool = False
     skip_duplicates: bool = True
@@ -755,7 +761,8 @@ async def folder_scan(request: Request, body: FolderScanRequest, background_task
 
     # CAS-supplied course scope, so folder-scanned documents get isolated to the
     # course they were scanned for, same as single-file /ingest/upload.
-    metadata_hints = {"course_id": body.course_id, "course_name": body.course_name}
+    metadata_hints = {"course_id": body.course_id, "course_name": body.course_name,
+                      "block": body.block}
 
     background_tasks.add_task(
         _process_folder_scan_parallel,

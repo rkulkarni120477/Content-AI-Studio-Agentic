@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -76,22 +77,48 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
+                       client_id: str = "") -> tuple[str, list, str]:
+    """Retrieved Source Library context, its units, and why there is none.
+
+    Best-effort by design: a Source Library that cannot be reached degrades
+    generation to CDD-and-style grounding rather than failing it (the same
+    contract cdd.py documents at its own second-pass retrieval). That part is
+    deliberate and unchanged.
+
+    What was wrong is that the degradation was invisible. A blueprint generated
+    with no source grounding was byte-indistinguishable to the requester from
+    one fully grounded in the library, and nothing about it was recorded on the
+    version either — so after the fact there was no way to tell which of the two
+    a stored document had been. The only trace was a server log line nobody
+    reads while looking at a document that seems fine.
+
+    The third return value is that trace: "" when DIS answered — INCLUDING when
+    it answered with nothing, which is the ordinary shape for a course whose
+    library holds no matching material — and a short reason when the lookup
+    itself failed. Callers record it with the version and tell the requester.
+    """
     try:
         result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
-        ctx = str(result.get("combined_context") or "").strip()
-        units = result.get("source_units") or result.get("sources") or []
-        if ctx:
-            return (
-                f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
-                "Use this as source grounding only. Follow approved CDD, active style, selected module, and requested mode first. "
-                "Do not expose internal DIS metadata.\n\n"
-                f"{ctx}\n---\n",
-                units,
-            )
     except Exception as exc:
         _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
-    return "", []
+        # The class name, not str(exc): this is stored on the version and shown
+        # to the requester, and an upstream message can carry a URL, a token or
+        # a stack fragment.
+        return "", [], type(exc).__name__
+    ctx = str(result.get("combined_context") or "").strip()
+    units = result.get("source_units") or result.get("sources") or []
+    if ctx:
+        return (
+            f"\n\n---\n{label} FROM DIS SOURCE LIBRARY\n"
+            "Use this as source grounding only. Follow approved CDD, active style, selected module, and requested mode first. "
+            "Do not expose internal DIS metadata.\n\n"
+            f"{ctx}\n---\n",
+            units,
+            "",
+        )
+    # DIS answered, with nothing to add. Not a failure, and not reported as one.
+    return "", [], ""
 
 
 def _get_blueprint_or_404(db: Session, blueprint_id: int):
@@ -184,7 +211,7 @@ def generate_blueprint(
         parse_blueprint_components, get_blueprint_prompts,
     )
     from promptops_app.parsers.cdd_parser import extract_cdd_summary, extract_module_section
-    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt
+    from promptops_app.prompts.prompt_builder import PromptVariableError, build_prompt_resolved
     from promptops_app.repositories import blueprint_repository, cdd_repository, style_repository
     from promptops_app.repositories.course_repository import set_active_blueprint
     from promptops_app.services.audit_service import log_audit_event
@@ -258,9 +285,9 @@ def generate_blueprint(
     # unconditionally, paying for a real 12k-token retrieval call whose
     # results mostly duplicated what the day bundle already provided.
     if day_context_block:
-        dis_context_block, dis_source_units = "", []
+        dis_context_block, dis_source_units, dis_unavailable = "", [], ""
     else:
-        dis_context_block, dis_source_units = _dis_context_block(
+        dis_context_block, dis_source_units, dis_unavailable = _dis_context_block(
             "blueprint",
             {
                 "purpose": "blueprint",
@@ -337,7 +364,7 @@ def generate_blueprint(
             "block":              getattr(request_body, "block", None) or "",
         }
         try:
-            system_prompt, user_prompt, _tpl_name, _tpl_version = build_prompt(
+            system_prompt, user_prompt, _tpl = build_prompt_resolved(
                 "blueprint_generation", variables, db=db,
                 project_id=course.project_id if course else request_body.project_id,
                 cluster_id=course.cluster_id if course else None,
@@ -369,8 +396,22 @@ def generate_blueprint(
         else:
             prompt_provenance = {
                 "prompt_source": "registry",
-                "prompt_name": _tpl_name,
-                "prompt_version": _tpl_version,
+                "prompt_name": _tpl.name,
+                "prompt_version": _tpl.version,
+                # The row, not just the logical name. Twelve library prompts
+                # resolve as "blueprint_generation" and each numbers its versions
+                # from v1, so name+version cannot say which one ran: identifying
+                # the prompt behind a stored blueprint previously meant full-text
+                # searching every prompt version against the document. None when
+                # the file tier served the template, which has no row.
+                "prompt_row_id": _tpl.prompt_row_id,
+                "prompt_title": _tpl.prompt_title,
+                "prompt_tier": _tpl.source,
+                # What the requester asked for, kept separately from what
+                # resolution actually returned — a dropdown choice that missed
+                # and fell through to the default is otherwise indistinguishable
+                # from never having chosen.
+                "prompt_id_requested": request_body.prompt_id,
             }
 
     # Same guard the CDD router applies, for the same reason: this path stores the
@@ -388,7 +429,27 @@ def generate_blueprint(
         )
         prompt_provenance["source_context_dropped"] = True
 
+    # Companion to the flag above. That one means the prompt had no slot for the
+    # context we retrieved; this one means there was no context to put anywhere,
+    # because the Source Library could not be reached. Both leave a document
+    # grounded in less than the caller asked for, and neither is visible in the
+    # document itself, so both are recorded on the version.
+    if dis_unavailable:
+        prompt_provenance["source_context_unavailable"] = dis_unavailable
+        _log.warning(
+            "blueprint_generated_without_source_grounding  user=%s  course=%s  reason=%s",
+            current_user.username, request_body.course_id, dis_unavailable,
+        )
+
     # Call LLM.
+    #
+    # max_tokens is the chosen model's own ceiling rather than the 16384 default
+    # that omitting it inherits. Three models in the catalog return up to 64000,
+    # so a blueprint generated on one of them was being held to a quarter of its
+    # range for no reason — the same cap output_budget was introduced to lift on
+    # the regeneration paths.
+    from app.services import cdd_regen_context as regen_ctx_svc
+
     llm_result = generate_with_metadata(
         request_body.model_choice, system_prompt, user_prompt,
         usage_ctx=UsageLogContext(
@@ -397,12 +458,21 @@ def generate_blueprint(
             course_id=request_body.course_id,
             entity_type="blueprint",
         ),
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
     )
 
     if llm_result.status == "error":
         raise LLMGenerationError(
             f"Blueprint generation failed. Error type: {llm_result.error_type}"
         )
+
+    # A reply that hit the output ceiling is a fragment, and this path stores the
+    # reply AS the document: it becomes v1, is auto-pinned as the active version
+    # below, and is what every later regeneration and downstream generation reads
+    # as the blueprint. Nothing downstream can tell a complete document from one
+    # that stops mid-table, so the only honest outcome is to fail visibly. Same
+    # guard, for the same reason, as cdd.py's generation path.
+    _reject_if_truncated(llm_result, "generating this Blueprint")
 
     raw_output = llm_result.text
 
@@ -525,6 +595,7 @@ def generate_blueprint(
             if llm_result.prompt_tokens else None
         ),
         auto_pinned=True,
+        source_context_unavailable=dis_unavailable or None,
     )
 
 
@@ -1170,6 +1241,133 @@ def _reject_if_truncated(result, what: str) -> None:
     )
 
 
+def _generating_prompt_guidance(db: Session, bp, *, model_choice: str,
+                                current_user) -> tuple[str, dict]:
+    """Judgment guidance distilled from the prompt that produced this Blueprint.
+
+    Section regeneration renders BLUEPRINT_SECTION_REGENERATE_PROMPT under
+    BLUEPRINT_SYSTEM_PROMPT — a generic module-authoring constant — no matter
+    which prompt authored the document. The revision template itself is right:
+    it is a fixed contract ("revise this text, keep its facts"). What went
+    missing was the document's own conventions. A DLU day outline written under
+    an AIM prompt with day-type rules and an ACS disposition table was revised by
+    a model that had never been told any of that existed, which is how
+    blueprint_versions 396 came back as 397: a Day 20 exam outline replaced by
+    generic Lesson 1/2/3 filler.
+
+    So: distil, do not substitute. prompt_guidance is the module built for this —
+    it extracts only a prompt's judgment and emphasis instructions, never its
+    structure, precisely so an admin-edited prompt can refine how a fixed
+    contract is filled without redefining it. Appending its output leaves the
+    revision contract authoritative.
+
+    The prompt is the one the document was generated with, read from the version
+    that recorded it (5a6c523), which is why that had to land first. Regenerated
+    versions record no generation_params yet, so the newest version that names a
+    row wins and the search falls back through the lineage to v1.
+
+    With no recorded row — every version predating 5a6c523 — this returns "" and
+    the prompt is byte-identical to what it was before. Falling back to the
+    course's current scope/default instead would be a guess, and the wrong guess
+    is the failure being fixed: course 48's default resolves to a MODULE prompt
+    while the document in question is DLU-shaped, so a legacy day outline would
+    be revised under module conventions. Injecting the wrong conventions is worse
+    than injecting none.
+
+    Returns (guidance_text, provenance). Best-effort: prompt_guidance never
+    raises and degrades to "", so a failure here costs the guidance, not the
+    regeneration. BudgetExceededError is its one deliberate exception and is left
+    to propagate to its 402 handler.
+    """
+    from promptops_app.core.llm_client import safe_json_loads
+    from promptops_app.database import BlueprintVersion
+
+    row_id, row_title, from_version = None, "", None
+    # Four columns, not the entity. Every row here carries full_content and
+    # sections, and blueprint 239 already has 12 versions holding 194 KB of them
+    # between them — all of it loaded on every regeneration to read one JSON
+    # field. Ordered in SQL (active first, then newest) and broken out at the
+    # first match, so the common case reads one row.
+    rows = (db.query(BlueprintVersion.id,
+                     BlueprintVersion.version,
+                     BlueprintVersion.is_active,
+                     BlueprintVersion.generation_params)
+              .filter(BlueprintVersion.blueprint_id == bp.id)
+              .order_by(BlueprintVersion.is_active.desc(), BlueprintVersion.id.desc())
+              .all())
+    for _id, ver_name, _active, gen_params in rows:
+        params = safe_json_loads(gen_params) if gen_params else {}
+        if isinstance(params, dict) and params.get("prompt_row_id"):
+            row_id = params["prompt_row_id"]
+            row_title = params.get("prompt_title") or ""
+            from_version = ver_name
+            break
+
+    if row_id is None:
+        return "", {"applied": False, "reason": "no_recorded_prompt"}
+
+    # The recorded row has to still BE that row. prompt_id resolution falls
+    # through to the normal scope/default chain on a miss — a prompt deleted,
+    # moved to another project, or belonging to another tenant — and that chain
+    # ends at the file tier, whose blueprint_generation.md is the generic
+    # module-level template. Distilling that would inject module conventions into
+    # a document authored by something else: the exact failure this helper exists
+    # to prevent, arrived at from the opposite direction. Verified against the
+    # resolved template's own prompt_row_id, which is why 5a6c523 put it there.
+    from promptops_app.prompts.prompt_loader import load_template
+
+    try:
+        resolved = load_template(
+            "blueprint_generation", db=db, prompt_id=row_id,
+            project_id=bp.project_id, course_id=bp.course_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — a miss must cost the guidance only
+        _log.warning("blueprint_regen_prompt_unresolvable  bp_id=%s  row_id=%s  error=%s",
+                     bp.id, row_id, exc)
+        return "", {"applied": False, "reason": "recorded_prompt_unresolvable",
+                    "prompt_row_id": row_id}
+    if getattr(resolved, "prompt_row_id", None) != row_id:
+        _log.warning(
+            "blueprint_regen_prompt_no_longer_resolves  bp_id=%s  recorded=%s  got=%s "
+            "— revising without its conventions rather than borrowing another prompt's",
+            bp.id, row_id, getattr(resolved, "prompt_row_id", None),
+        )
+        return "", {"applied": False, "reason": "recorded_prompt_no_longer_resolves",
+                    "prompt_row_id": row_id, "prompt_title": row_title}
+
+    # _resolve_prompt_text duck-types its input via getattr, so the regeneration
+    # request — which carries no course/project/prompt fields — is adapted here
+    # rather than by widening that function's contract for one caller. No
+    # *_override attributes: an inline override belongs to the request that used
+    # it, not to a later revision of the document it produced.
+    shim = SimpleNamespace(
+        course_id=bp.course_id,
+        project_id=bp.project_id,
+        prompt_id=row_id,
+        model_choice=model_choice,
+        # resolve_prompt_guidance builds this call's UsageLogContext with
+        # entity_id=str(request_body.block). Without the attribute the
+        # distillation's cost logged against an EMPTY entity id, so it could be
+        # attributed to the project and course but never traced back to the
+        # blueprint that triggered it. The blueprint id alongside
+        # entity_type="blueprint" is the same pairing the regeneration call's own
+        # usage context uses; the attribute is named `block` only because that is
+        # the field the guidance service reads.
+        block=str(bp.id),
+    )
+
+    from promptops_app.services.prompt_guidance import resolve_prompt_guidance
+
+    guidance = resolve_prompt_guidance(db, shim, "blueprint", current_user) or ""
+    return guidance, {
+        "applied": bool(guidance.strip()),
+        "prompt_row_id": row_id,
+        "prompt_title": row_title,
+        "from_version": from_version,
+        "chars": len(guidance),
+    }
+
+
 def _blueprint_cdd_summary(db: Session, bp, max_chars: int) -> str:
     """Return a short CDD summary for a blueprint's linked CDD, or '' if none."""
     if not getattr(bp, "cdd_id", None):
@@ -1258,9 +1456,10 @@ def regenerate_blueprint_item(
     from promptops_app.parsers.blueprint_parser import (
         parse_items_from_section,
         patch_item_in_section,
-        regen_single_item,
+        regen_single_item_with_result,
     )
     from promptops_app.services.usage_service import UsageLogContext
+    from app.services import cdd_regen_context as regen_ctx_svc
 
     bp = _get_blueprint_or_404(db, blueprint_id)
 
@@ -1270,30 +1469,59 @@ def regenerate_blueprint_item(
     if not items or item_index < 0 or item_index >= len(items):
         raise NotFoundError("Blueprint item", item_index)
 
-    cdd_summary = _blueprint_cdd_summary(db, bp, max_chars=800)
-    context = (
-        f"Module: {bp.module_title}. "
-        f"CDD context: {cdd_summary[:300] if cdd_summary else 'N/A'}."
+    item_text = items[item_index]["text"]
+
+    # parse_items_from_section recognises lists and headings but NOT table rows,
+    # so a markdown table parses to a single item: "one item" can be an entire
+    # ACS coverage or day table. Refuse before spending when that item cannot come
+    # back whole — patch_item_in_section would splice the fragment in and the
+    # commit would succeed with rows missing.
+    regen_ctx_svc.assert_can_emit(
+        item_text, model_choice=request_body.model_choice,
+        label=f'Item {item_index + 1} of "{request_body.section_key}"',
     )
-    instruction = f"{(request_body.feedback or '').strip()} {context}".strip()
+
+    # The same scoped grounding the section route uses. What this replaces put
+    # 300 characters of CDD into the INSTRUCTION field — so the model received
+    # the requester's words with a truncated document blob glued onto them, and
+    # regen_single_item's own `context` parameter (added for exactly this) went
+    # unused. The module identity moves into the context block where it belongs.
+    cdd_context, cdd_provenance = _blueprint_regen_context(
+        db, bp,
+        instruction=request_body.feedback or "",
+        section_key=request_body.section_key,
+        section_content=original,
+    )
+    item_context = f"Module: {bp.module_title}\n\n{cdd_context}" if cdd_context else ""
 
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
         entity_type="blueprint_item_regen", entity_id=str(blueprint_id),
     )
-    new_item_text = regen_single_item(
+    new_item_text, item_result = regen_single_item_with_result(
         section_title=request_body.section_key,
         section_content=original,
         item_index=item_index,
-        item_text=items[item_index]["text"],
-        custom_instruction=instruction,
+        item_text=item_text,
+        custom_instruction=(request_body.feedback or "").strip(),
         model_choice=request_body.model_choice,
         usage_ctx=usage_ctx,
+        context=item_context,
+        # The same ceiling assert_can_emit sized the item against a few lines
+        # above. Without it the call inherited a flat 16384 while the guard
+        # allowed up to 64000, so an item between the two passed the check and
+        # truncated anyway.
+        max_tokens=regen_ctx_svc.output_budget(request_body.model_choice),
     )
+    # The reply is about to be patched over a line of the stored document, and a
+    # truncated item reads as a finished one. Refuse instead — the same guard the
+    # section path applies, for the same reason.
+    _reject_if_truncated(item_result, "regenerating this item")
     updated_content = patch_item_in_section(original, item_index, new_item_text)
 
-    _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d",
-              current_user.username, blueprint_id, request_body.section_key, item_index)
+    _log.info("blueprint_item_regenerated  user=%s  bp_id=%d  section=%s  item=%d  context=%s",
+              current_user.username, blueprint_id, request_body.section_key, item_index,
+              cdd_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 
@@ -1360,6 +1588,26 @@ def regenerate_blueprint_section(
         # finish from its own assumptions.
         current_content=request_body.section_content or "",
     )
+
+    # Appended, not substituted. The block above is the revision contract and
+    # stays authoritative; this carries the conventions of the prompt that
+    # authored the document, which the generic system prompt above knows nothing
+    # about. Empty when no prompt is resolvable or the distillation fails, in
+    # which case the prompt is byte-identical to what it was before.
+    guidance, guidance_provenance = _generating_prompt_guidance(
+        db, bp, model_choice=request_body.model_choice, current_user=current_user,
+    )
+    if guidance.strip():
+        regen_prompt = (
+            f"{regen_prompt}\n\n"
+            "---\n"
+            "**Conventions of the prompt this document was written under.** These "
+            "refine how you revise; they never override the instructions above, "
+            "and they never license adding or removing structure the section does "
+            "not already have.\n\n"
+            f"{guidance}\n---\n"
+        )
+
     usage_ctx = UsageLogContext(
         user_name=current_user.username, project_id=bp.project_id, course_id=bp.course_id,
         entity_type="blueprint_section_regen", entity_id=str(blueprint_id),
@@ -1379,9 +1627,10 @@ def regenerate_blueprint_section(
     _reject_if_truncated(result, "regenerating this section")
 
     _log.info("blueprint_section_regenerated  user=%s  bp_id=%d  section=%s  mode=%s  "
-              "grounded=%s  context=%s",
+              "grounded=%s  context=%s  prompt_guidance=%s",
               current_user.username, blueprint_id, request_body.section_key, mode,
-              bool((request_body.section_content or "").strip()), cdd_provenance)
+              bool((request_body.section_content or "").strip()), cdd_provenance,
+              guidance_provenance)
 
     from promptops_app.services.budget_service import build_usage_summary
 

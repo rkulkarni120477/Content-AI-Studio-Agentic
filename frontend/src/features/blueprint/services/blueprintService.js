@@ -115,6 +115,11 @@ export const blueprintService = {
    * Enqueue a block-wide Block Blueprint build (digest pipeline, async). Returns
    * a job handle {job_id, status, poll_url}; poll getJobStatus until terminal,
    * then reload the blueprint by the job's result entity id.
+   *
+   * style_id/prompt_id are carried for the same reason as the CDD twin — see
+   * cddService.mapBlockPayload, where omitting them meant every block-wide
+   * generation silently distilled its MAP guidance from the shipped file
+   * template rather than the prompt the user selected.
    */
   generateBlueprintBlock: (data) => api.post(BLUEPRINT.GENERATE_BLOCK, {
     deliverable: 'blueprint',
@@ -130,6 +135,8 @@ export const blueprintService = {
     target_audience: data.target_audience || '',
     expert_domain: data.expert_domain || '',
     estimated_duration_hours: data.estimated_duration_hours ?? undefined,
+    style_id: data.style_id ?? null,
+    prompt_id: data.prompt_id || undefined,
   }),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
   getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId), POLL_REQUEST_CONFIG),

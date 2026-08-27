@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
@@ -67,6 +67,36 @@ def _tenant_kwargs(user) -> dict:
         "project_id": getattr(user, "_project_id", None),
         "is_platform_admin": getattr(user, "_is_platform_admin", False),
     }
+
+
+def _audit(db: Session, request: Request, user, action: str, *,
+           entity_type: str = "prompt", entity_id=None, summary: str = "",
+           changes: dict | None = None) -> None:
+    """Record a pipeline-prompt write in the shared ``audit_logs`` table.
+
+    Actions stay under the ``prompt.`` family so the console's Audit Log
+    (which filters on the PL action prefixes) surfaces them.
+
+    Restored after 57feb19 ("Sync vedant: DIS feature merge") deleted this
+    helper and all fifteen of its call sites, which left every pipeline-prompt
+    write — create, commit, deploy, workflow transition, default flag,
+    declared variables, scope lock, fragment set, delete — unaudited. The nine
+    tests in tests/characterization/test_pipeline_prompt_audit.py had been
+    failing ever since, unnoticed because the suite could not run to
+    completion (see f6cec2a).
+    """
+    from promptops_app.services.prompt_library_service import log_event
+
+    fwd = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    log_event(
+        db, action, action.rsplit(".", 1)[-1],
+        entity_type=entity_type, entity_id=entity_id,
+        summary=summary, changes=changes,
+        actor_username=user.username, actor_role=user.role,
+        ip_address=fwd or (request.client.host if request.client else None),
+        user_agent=request.headers.get("User-Agent"),
+    )
+    db.commit()
 
 
 def _get_prompt_or_404(db: Session, prompt_id: int, *, project_id: int | None = None,
@@ -235,6 +265,7 @@ def list_prompts(
 )
 def create_prompt(
     request_body: PromptCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.create")),
 ) -> PromptDetailRead:
@@ -289,6 +320,8 @@ def create_prompt(
         db.refresh(prompt)
 
     _log.info("prompt_created  user=%s  name=%s", current_user.username, prompt.name)
+    _audit(db, request, current_user, "prompt.pipeline_create", entity_id=prompt.id,
+           summary=f"Created pipeline prompt '{prompt.name}'")
     return _prompt_detail(db, prompt)
 
 
@@ -301,6 +334,7 @@ def create_prompt(
 )
 def create_from_template(
     request_body: PromptCreateFromTemplateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.create")),
 ) -> PromptRead:
@@ -348,6 +382,8 @@ def create_from_template(
 
     _log.info("prompt_from_template  user=%s  template=%s  name=%s",
               current_user.username, request_body.template_name, asset_id)
+    _audit(db, request, current_user, "prompt.pipeline_create", entity_id=prompt.id,
+           summary=f"Created prompt '{asset_id}' from template '{request_body.template_name}'")
     return PromptRead.model_validate(prompt)
 
 
@@ -361,6 +397,7 @@ def create_from_template(
 )
 def create_from_generation(
     request_body: PromptFromGenerationRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptDetailRead:
@@ -434,6 +471,9 @@ def create_from_generation(
     _log.info("prompt_from_generation  user=%s  source=%s#%s/%s  name=%s",
               current_user.username, source, request_body.artifact_id,
               request_body.version, name)
+    _audit(db, request, current_user, "prompt.pipeline_create", entity_id=prompt.id,
+           summary=(f"Promoted {source} #{request_body.artifact_id} {row.version} "
+                    f"override into prompt '{name}'"))
     return _prompt_detail(db, prompt)
 
 
@@ -445,6 +485,7 @@ def create_from_generation(
 )
 def ai_generate_prompt(
     request_body: PromptAIGenerateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.create")),
 ) -> PromptRead:
@@ -491,6 +532,8 @@ def ai_generate_prompt(
     db.commit()
 
     _log.info("prompt_ai_generated  user=%s  name=%s", current_user.username, asset_id)
+    _audit(db, request, current_user, "prompt.pipeline_create", entity_id=prompt.id,
+           summary=f"AI-generated prompt '{asset_id}'")
     return PromptRead.model_validate(prompt)
 
 
@@ -580,6 +623,7 @@ def resolve_fixing(
 )
 def set_fixing(
     request_body: PromptFixingSetRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.view")),
 ) -> PromptFixingRead:
@@ -615,6 +659,10 @@ def set_fixing(
     )
     _log.info("prompt_fixing_set  user=%s  component=%s  scope=%s  prompt_id=%d",
               current_user.username, request_body.component, request_body.scope_level, target.id)
+    _audit(db, request, current_user, "prompt.scope_lock_set", entity_id=target.id,
+           summary=(f"Locked '{request_body.component}' at {request_body.scope_level} "
+                    f"scope to prompt '{target.name}'"),
+           changes={"scope_level": request_body.scope_level, **{k: v for k, v in ids.items() if v}})
     return PromptFixingRead.model_validate(fixing)
 
 
@@ -625,6 +673,7 @@ def set_fixing(
     description="Unbind reverts the scope to component-default resolution. Same roles as binding.",
 )
 def unset_fixing(
+    request: Request,
     component: str = Query(...),
     scope_level: str = Query(...),
     project_id: int | None = Query(default=None),
@@ -643,6 +692,9 @@ def unset_fixing(
         raise NotFoundError("PromptFixing", f"{component}/{scope_level}")
     _log.info("prompt_fixing_unset  user=%s  component=%s  scope=%s",
               current_user.username, component, scope_level)
+    _audit(db, request, current_user, "prompt.scope_lock_removed",
+           summary=f"Removed the {scope_level}-scope lock on '{component}'",
+           changes={"scope_level": scope_level, **{k: v for k, v in ids.items() if v}})
 
 
 @router.get(
@@ -892,6 +944,7 @@ def list_prompt_fragments(
 def set_prompt_fragment(
     fragment_key: str,
     request_body: PromptFragmentSetRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptFragmentRead:
@@ -921,6 +974,9 @@ def set_prompt_fragment(
         "prompt_fragment_set  user=%s  key=%s  version=%s",
         current_user.username, fragment_key, version.version,
     )
+    _audit(db, request, current_user, "prompt.fragment_set",
+           entity_type="fragment", entity_id=fragment_key,
+           summary=f"Set shared fragment '{fragment_key}' to {version.version}")
     fragment = fragment_repository.get_fragment(db, fragment_key)
     return _fragment_read(fragment, version.content)
 
@@ -935,6 +991,7 @@ def get_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depen
 def update_prompt(
     prompt_id: int,
     request_body: PromptUpdateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.manage")),
 ) -> PromptRead:
@@ -965,16 +1022,24 @@ def update_prompt(
         prompt_repository.set_prompt_tags(db, prompt, request_body.tags)
     db.commit()
     db.refresh(prompt)
+    touched = [f for f in ("description", "tags", "component_type", "variant")
+               if getattr(request_body, f) is not None]
+    _audit(db, request, current_user, "prompt.pipeline_update", entity_id=prompt.id,
+           summary=f"Updated prompt '{prompt.name}' metadata",
+           changes={"fields": touched})
     return PromptRead.model_validate(prompt)
 
 
 @router.delete("/{prompt_id}", status_code=204, summary="Delete a prompt asset")
-def delete_prompt(prompt_id: int, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.manage"))) -> None:
+def delete_prompt(prompt_id: int, request: Request, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.manage"))) -> None:
     """Hard-delete a prompt and all its versions. Admin or Lead only."""
     prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
+    name = prompt.name
     db.delete(prompt)
     db.commit()
     _log.info("prompt_deleted  user=%s  prompt_id=%d", current_user.username, prompt_id)
+    _audit(db, request, current_user, "prompt.pipeline_delete", entity_id=prompt_id,
+           summary=f"Deleted prompt '{name}' and all its versions")
 
 
 @router.get("/{prompt_id}/versions", response_model=list[PromptVersionListItem], summary="List prompt versions")
@@ -995,6 +1060,7 @@ def list_prompt_versions(prompt_id: int, db: Session = Depends(get_db), current_
 def create_prompt_version(
     prompt_id: int,
     request_body: PromptVersionCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.manage")),
 ) -> PromptVersionRead:
@@ -1034,6 +1100,9 @@ def create_prompt_version(
 
     _log.info("prompt_version_committed  user=%s  prompt_id=%d  version=%s  state=%s",
               current_user.username, prompt_id, request_body.version, version.workflow_state)
+    _audit(db, request, current_user, "prompt.version_commit", entity_id=prompt_id,
+           summary=(f"Committed {request_body.version} ({version.workflow_state}) "
+                    f"on prompt '{prompt.name}'"))
     return PromptVersionRead.model_validate(version)
 
 
@@ -1045,6 +1114,7 @@ def create_prompt_version(
 def deploy_prompt_version(
     prompt_id: int,
     version: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptDeployResponse:
@@ -1079,6 +1149,8 @@ def deploy_prompt_version(
 
     _log.info("prompt_version_deployed  user=%s  prompt_id=%d  version=%s",
               current_user.username, prompt_id, version)
+    _audit(db, request, current_user, "prompt.version_deploy", entity_id=prompt_id,
+           summary=f"Deployed {version} as the active version of prompt '{prompt.name}'")
     return PromptDeployResponse(prompt_id=prompt_id, active_version=version)
 
 
@@ -1096,6 +1168,7 @@ def deploy_prompt_version(
 def set_default_flag(
     prompt_id: int,
     request_body: PromptDefaultRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptRead:
@@ -1125,6 +1198,13 @@ def set_default_flag(
     _log.info("prompt_default_%s  user=%s  prompt_id=%d  component=%s  variant=%s",
               "set" if request_body.is_default else "cleared",
               current_user.username, prompt_id, prompt.component_type, prompt.variant)
+    if request_body.is_default:
+        slot = prompt.component_type + (f"/{prompt.variant}" if prompt.variant else "")
+        _audit(db, request, current_user, "prompt.default_set", entity_id=prompt_id,
+               summary=f"Made prompt '{prompt.name}' the '{slot}' component default")
+    else:
+        _audit(db, request, current_user, "prompt.default_cleared", entity_id=prompt_id,
+               summary=f"Cleared the component-default flag on prompt '{prompt.name}'")
     return PromptRead.model_validate(prompt)
 
 
@@ -1144,6 +1224,7 @@ def set_default_flag(
 def set_declared_variables(
     prompt_id: int,
     request_body: PromptVariablesSetRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptVariablesRead:
@@ -1185,6 +1266,9 @@ def set_declared_variables(
     db.refresh(prompt)
     _log.info("prompt_variables_set  user=%s  prompt_id=%d  names=%s",
               current_user.username, prompt_id, ",".join(names))
+    _audit(db, request, current_user, "prompt.variables_set", entity_id=prompt_id,
+           summary=(f"Declared variables on prompt '{prompt.name}': "
+                    f"{', '.join(names) if names else '(none)'}"))
     return PromptVariablesRead(variables=[
         PromptVariableItem(name=v.name, label=v.label or "", hint=v.hint or "")
         for v in sorted(prompt.variables, key=lambda v: (v.sort_order or 0, v.id))
@@ -1214,6 +1298,7 @@ def transition_workflow_state(
     prompt_id: int,
     version: str,
     request_body: PromptWorkflowStateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompt.pipeline.edit")),
 ) -> PromptVersionRead:
@@ -1259,4 +1344,7 @@ def transition_workflow_state(
     db.refresh(ver)
     _log.info("prompt_workflow_state  user=%s  prompt_id=%d  version=%s  %s->%s",
               current_user.username, prompt_id, version, current, target)
+    _audit(db, request, current_user, "prompt.workflow_state", entity_id=prompt_id,
+           summary=(f"Version {version} of prompt '{prompt.name}': "
+                    f"{current} → {target}"))
     return PromptVersionRead.model_validate(ver)

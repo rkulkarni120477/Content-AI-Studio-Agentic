@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from config.settings import TenantConfig
 from services.client_profiles.base import BaseClientProfile
+from services.blocks import block_label
 
 
 DEFAULT_AIM_RULES: Dict[str, Any] = {
@@ -122,7 +123,7 @@ class AIMClientProfile(BaseClientProfile):
             # wrong/blank/hallucinated on 6 of 7 Block 6 project files). block_number
             # above is derived reliably from filename/content, so prefer it whenever
             # known instead of trusting the LLM guess.
-            "block": f"Block {block_number}" if block_number else (meta.get("block") or ""),
+            "block": block_label(block_number) if block_number else block_label(meta.get("block")),
             "block_id": block_id,
             "block_number": block_number,
             "day_id": day_id,

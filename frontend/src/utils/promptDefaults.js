@@ -39,9 +39,17 @@ export const COMPONENT_LABELS = {
   style: 'Style',
 };
 
-export function promptDisplayLabel(prompt) {
+/** Resolve a pipeline component's display name, honouring tenant label overrides. */
+export function componentLabel(component, L) {
+  if (component === 'style' && L?.style) return L.style;
+  if (component === 'cdd' && L?.cdd) return L.cdd;
+  if (component === 'blueprint' && L?.blueprint) return L.blueprint;
+  return COMPONENT_LABELS[component] || component;
+}
+
+export function promptDisplayLabel(prompt, L) {
   if (prompt?.is_default) {
-    const comp = COMPONENT_LABELS[prompt.component_type] || prompt.component_type || 'Prompt';
+    const comp = componentLabel(prompt.component_type, L) || 'Prompt';
     return `🏷️ Default ${comp} Prompt`;
   }
   return prompt?.name || 'Unnamed prompt';
@@ -58,8 +66,10 @@ export function buildPromptDownloadMd({
   userPromptTemplate,
   extraInstructions,
   isAiOverride,
+  labels: L,
 }) {
-  const compLabel = COMPONENT_LABELS[component] || component;
+  const compLabel = componentLabel(component, L);
+  const titleLabel = L?.title || 'Title';
   const lines = [
     `# Prompt Download — ${compLabel}`,
     '',
@@ -68,7 +78,7 @@ export function buildPromptDownloadMd({
     `| **Project** | ${projectName || '—'} |`,
   ];
   if (clusterName) lines.push(`| **Cluster** | ${clusterName} |`);
-  if (courseName) lines.push(`| **Title** | ${courseName} |`);
+  if (courseName) lines.push(`| **${titleLabel}** | ${courseName} |`);
   lines.push(
     `| **Component** | ${compLabel} |`,
     `| **Prompt Asset** | ${promptName || '—'} |`,

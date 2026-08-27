@@ -30,14 +30,27 @@ from __future__ import annotations
 import io
 import re
 from typing import Any, Dict, List, Optional
+from services.blocks import block_label
 
 NBSP = "\xa0"
 BULLETS = "•▪◦‣·*-–—"
 
 # Number of leading columns that carry meaning in an AIM teacher calendar.
 _MAX_COLS = 11
-# A row is a header if it repeats these column titles.
-_HEADER_SIGNATURE = {"days", "subject/day", "topics covered", "acs codes"}
+# A row is a header if its cells name the AIM calendar's columns. Matched by
+# CONCEPT, not by exact title: the 2026-08 workbooks head the same columns
+# "Block Days | Subject Days | Topics Covered | ACS Codes for Topics", and an
+# exact-title signature ({"days", "subject/day", "topics covered", "acs codes"},
+# needing 3 hits) scored one — so seven real AIM calendars fell through to the
+# generic extractor, which numbered every row day 1 and left 2 usable days out
+# of 20. Requiring day + topic + (acs | handbook) keeps this self-gating: another
+# tenant's spreadsheet has no ACS-code or FAA-handbook column.
+_HEADER_CONCEPTS = (
+    ("day", re.compile(r"\bdays?\b", re.I)),
+    ("topic", re.compile(r"\btopics?\b", re.I)),
+    ("acs", re.compile(r"\bacs\b", re.I)),
+    ("handbook", re.compile(r"\bhandbook\b", re.I)),
+)
 
 
 # ── cell helpers ────────────────────────────────────────────────────────────
@@ -57,8 +70,12 @@ def _split_list(cell: str) -> List[str]:
 
 
 def _is_header(cells: List[str]) -> bool:
-    low = {c.strip().lower() for c in cells if c.strip()}
-    return len(_HEADER_SIGNATURE & low) >= 3
+    """True for the AIM calendar's column-title row, in any of its wordings."""
+    text = [c.strip() for c in cells if c.strip()]
+    if not text:
+        return False
+    seen = {name for name, rx in _HEADER_CONCEPTS if any(rx.search(c) for c in text)}
+    return "day" in seen and "topic" in seen and bool(seen & {"acs", "handbook"})
 
 
 def _is_punct(tok: str) -> bool:
@@ -291,7 +308,7 @@ def build_calendar_structure(content: bytes, filename: str,
         topics_list = _split_list(joined[2])
         rec: Dict[str, Any] = {
             "day_number": day_number,
-            "block": f"Block {block_num}" if block_num else "",
+            "block": block_label(block_num) if block_num else "",
             "block_id": f"B{block_num}" if block_num else "",
             "block_number": block_num,
             "subject_unit": unit,
@@ -325,7 +342,7 @@ def build_calendar_structure(content: bytes, filename: str,
         "processing_profile": "aim_teacher_calendar",
         "profile": "aim_teacher_calendar",
         "course_name": "AIM General",
-        "block": f"Block {block_num}" if block_num else "",
+        "block": block_label(block_num) if block_num else "",
         "block_number": block_num,
         "total_days_detected": len(days),
         "days": days,

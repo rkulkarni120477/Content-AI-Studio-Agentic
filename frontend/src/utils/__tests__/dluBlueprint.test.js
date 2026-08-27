@@ -6,6 +6,8 @@ import {
 } from '@utils/dluBlueprint';
 import {
   buildBlueprintUiSections,
+  DOCUMENT_HEADER_SECTION_TITLE,
+  replaceHeadingSection,
   WHOLE_DOCUMENT_SECTION_TITLE,
 } from '@utils/blueprintContent';
 
@@ -397,6 +399,11 @@ describe('buildBlueprintUiSections — the DLU reshape must not swallow trailing
   it('keeps `## ` sections when they continue after the parts', () => {
     const ui = buildBlueprintUiSections(NESTED_UNDER_SECTIONS, null);
     expect(ui.map((s) => s.title)).toEqual([
+      // The document's title, Day Number and Topic sit above the first `## `.
+      // They used to reach the page as nothing at all, and the parts-dict
+      // rebuild dropped them from the stored document the first time any
+      // section was saved. They are now their own editable section.
+      DOCUMENT_HEADER_SECTION_TITLE,
       'SECTION OUTLINES',
       'INTERACTIVE/JOB AID NOTES',
       'MASTER MECHANIC MOMENT STATUS',
@@ -406,6 +413,22 @@ describe('buildBlueprintUiSections — the DLU reshape must not swallow trailing
     // Nothing may claim to be a DLU part here — that flag drives the splice.
     expect(ui.some((s) => s.dlu)).toBe(false);
     expect(ui.some((s) => s.whole)).toBe(false);
+  });
+
+  it('does not lose the day metadata when a later section is edited', () => {
+    // The concrete loss: `**Day Number:** 1` and `**Topic:** …` are what
+    // parse_day_and_title and the regeneration prompt read. Editing OPEN ITEMS
+    // used to delete them.
+    const ui = buildBlueprintUiSections(NESTED_UNDER_SECTIONS, null);
+    const openItems = ui.find((s) => s.title === 'OPEN ITEMS');
+    const out = replaceHeadingSection(NESTED_UNDER_SECTIONS, openItems.locator, 'Resolved.');
+    expect(out).toContain('# DLU OUTLINE — BLOCK 2, DAY 1');
+    expect(out).toContain('**Day Number:** 1');
+    expect(out).toContain('**Topic:** Introduction to Aircraft Drawings');
+    expect(out).toContain('Resolved.');
+    // and the parts nested under SECTION OUTLINES are untouched
+    expect(out).toContain("### 1. TODAY'S MISSION");
+    expect(out).toContain('### 5. DAY REFLECTION');
   });
 
   it('keeps every trailing section independently editable', () => {

@@ -273,6 +273,12 @@ class BlueprintGenerateResponse(BaseModel):
     model_used: str
     tokens_used: Optional[int] = None
     auto_pinned: bool = True
+    #: Set when the Source Library could not be reached, so this Blueprint was
+    #: grounded in the CDD and style alone. None means grounding was available —
+    #: including the ordinary case of a library with nothing matching to add.
+    #: Generation deliberately degrades rather than failing here, so this is the
+    #: only thing that distinguishes the two outcomes for the requester.
+    source_context_unavailable: Optional[str] = None
     # Set only by the import path when a file could not be fully structured (e.g.
     # imported as one unstructured section); None for a normal generation.
     import_warnings: Optional[list[str]] = None

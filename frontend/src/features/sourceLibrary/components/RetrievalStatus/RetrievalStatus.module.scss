@@ -1,0 +1,20 @@
+.wrap { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+
+.pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.ok      { background: #e6f4ea; color: #1e6b34; }
+.warn    { background: #fff4e5; color: #8a5300; }
+.error   { background: #fdecea; color: #a32219; }
+/* Not styled as healthy on purpose — an unchecked document is not a passing one. */
+.unknown { background: #eceff1; color: #455a64; }
+
+.detail { font-size: 11px; color: #667; max-width: 340px; line-height: 1.45; }

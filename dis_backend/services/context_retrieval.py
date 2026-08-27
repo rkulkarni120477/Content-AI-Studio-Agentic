@@ -16,8 +16,47 @@ from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.source_library import read_source_index, source_filter_options as compact_filter_options
 from services.generated_documents import GeneratedDocumentService
+from services.blocks import same_block
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
+
+#: How far the top-ranked unit may exceed the caller's token budget before
+#: _pack_units refuses it outright. The concession exists so a query is never
+#: answered with nothing just because its best unit is a little long; the ceiling
+#: exists because an unchunked document reaches retrieval as ONE unit of the whole
+#: file, and without a bound that single unit becomes the entire context pack.
+#: Four is chosen to be generous to a genuinely long passage (24,000 tokens at the
+#: default 6,000 budget) while still refusing anything that is really a document.
+_FIRST_UNIT_BUDGET_MULTIPLE = 4
+
+#: course_id "-1" means "every course". It is how a document that legitimately
+#: serves the whole programme — an FAA handbook, a style guide, an ASA textbook —
+#: is scoped, because there is no one course to give it.
+GLOBAL_COURSE_ID = "-1"
+
+
+def course_scope_matches(actual: Any, requested: Any) -> bool:
+    """Does a document scoped `actual` belong to a request for course `requested`?
+
+    ONE function, because there were two and they disagreed. _source_matches (the
+    Source Library listing) honoured the -1 sentinel; _passes_filters (retrieval)
+    treated course_id as a plain exact-match field and, separately, substring-
+    tested it against the document's text. So the Source Library showed AIM's
+    entire shared reference library against a course — 23 documents, 3,334 units,
+    including the 1,233-unit FAA Airframe handbook that Block 9's calendar assigns
+    as reading on nearly every day — and retrieval could return none of it. Every
+    course-scoped generation ran without the reference material the library said
+    it had.
+
+    An empty scope does NOT match. A document nobody scoped is unreachable rather
+    than universally reachable: guessing the other way would put every untagged
+    upload into every course's generations.
+    """
+    want = str(requested or "").strip()
+    if not want or want.lower() in {"all", "*", "any"}:
+        return True
+    return str(actual or "").strip() in (GLOBAL_COURSE_ID, want)
+
 
 
 def flatten_text(obj: Any) -> List[str]:
@@ -290,15 +329,70 @@ class ContextRetrievalService:
         total = len(sources)
         limit = max(1, min(int(limit or 50), 500))
         offset = max(0, int(offset or 0))
+        page = sources[offset:offset+limit]
+        self._attach_indexed_units(page)
         return {
             "tenant_id": self.tenant_cfg.tenant_id,
             "client_id": client_id,
             "total": total,
             "limit": limit,
             "offset": offset,
-            "sources": sources[offset:offset+limit],
+            "sources": page,
             "filter_options": compact_filter_options(records),
         }
+
+    def _attach_indexed_units(self, page: List[Dict[str, Any]]) -> None:
+        """Add ``indexed_units`` — how many units of each document retrieval can
+        actually find — to one page of Source Library records, in place.
+
+        WHY THIS IS NOT ``total_units``. ``total_units`` counts what extraction
+        produced; it is written from the processed payload and never revisited. A
+        document can therefore report 36 units and be entirely unfindable, because
+        generation reads the vector index and nothing reconciles the two. Measured
+        on the AIM corpus 2026-08-27: 127 documents held 5,841 extracted units that
+        the index did not have — every Block 2 slide deck among them — while the
+        Source Library displayed all of them as "Processed". Nothing anywhere said
+        otherwise, which is why it went unnoticed for a month.
+
+        One aggregation for the whole page, not a query per row. Fail-soft: on any
+        error every value is left None, which the UI must render as "unknown"
+        rather than as a healthy count — claiming searchable when we could not
+        check is the exact failure this exists to end.
+        """
+        for src in page:
+            src["indexed_units"] = None
+        job_ids = [str(s.get("job_id")) for s in page if s.get("job_id")]
+        if not job_ids:
+            return
+        cfg = self.tenant_cfg.vector_store
+        if not getattr(cfg, "enabled", False):
+            return
+        try:
+            from services.indexing import _vector_store_read_client
+
+            client = _vector_store_read_client(cfg)
+            res = client.search(index=cfg.index_name, body={
+                "size": 0,
+                "query": {"terms": {"job_id": job_ids}},
+                "aggs": {"per_job": {"terms": {"field": "job_id", "size": len(job_ids)}}},
+            })
+            counts = {b["key"]: b["doc_count"]
+                      for b in res["aggregations"]["per_job"]["buckets"]}
+            for src in page:
+                src["indexed_units"] = int(counts.get(str(src.get("job_id")), 0))
+        except Exception as exc:  # noqa: BLE001 — the library must still render
+            # `logger`, not `log`. This handler is the whole point of the method —
+            # every value stays None so the UI says "unknown" rather than claiming
+            # a document is searchable when we could not check — and it raised
+            # NameError instead, turning a degraded listing into a 500. It only
+            # fires when the vector store cannot be queried, which is never true
+            # in the environment it was written in, so nothing caught it until a
+            # deployment pointed at an index that does not exist yet.
+            logger.warning("indexed-unit counts unavailable for %d documents "
+                           "(index=%s): %s: %s — the Source Library will show "
+                           "them as unknown rather than searchable",
+                           len(job_ids), getattr(cfg, "index_name", "?"),
+                           type(exc).__name__, exc)
 
     def _source_matches(self, src: Dict[str, Any], filters: Dict[str, Any]) -> bool:
         def eq(field: str, value: Any) -> bool:
@@ -306,19 +400,20 @@ class ContextRetrievalService:
                 return True
             if str(value).strip().lower() in {"all", "*", "any"}:
                 return True
+            if field == "block":
+                # Not a string compare: the same block is tagged 'Block 09' by one
+                # writer and 'Block 9' by another (services/blocks), so filtering a
+                # library of 61 Block 9 units by "Block 9" used to show 19 of them
+                # and read as "that is all there is".
+                return same_block(src.get(field), value)
             return str(src.get(field) or "").lower() == str(value).lower()
         for field in ("document_type", "source_file_type", "block", "course_name", "day", "chapter", "module_name", "lesson_name", "visibility", "status"):
             if not eq(field, filters.get(field)):
                 return False
-        # course_id isolates documents per CAS course. "-1" is the global
-        # sentinel for documents intentionally shared across every course (e.g.
-        # style guides, reference books). Anything else — including an empty/
-        # untagged course_id — must match the requested course exactly.
-        course_id_filter = str(filters.get("course_id") or "").strip()
-        if course_id_filter and course_id_filter.lower() not in {"all", "*", "any"}:
-            src_course_id = str(src.get("course_id") or "").strip()
-            if src_course_id not in ("-1", course_id_filter):
-                return False
+        # course_id isolates documents per CAS course; see course_scope_matches
+        # for the sentinel rule, which retrieval now shares with this listing.
+        if not course_scope_matches(src.get("course_id"), filters.get("course_id")):
+            return False
         purpose = str(filters.get("purpose") or "").strip().lower()
         if purpose and purpose not in {"all", "*", "any"}:
             purpose_values = [str(p).lower() for p in src.get("purposes", [])]
@@ -691,7 +786,12 @@ class ContextRetrievalService:
 
         content_types = as_list(filters.get("content_types") or filters.get("document_types"))
         unit_types = as_list(filters.get("unit_types"))
-        course_name = filters.get("course_name") or filters.get("course_id")
+        # NOT `or filters.get("course_id")`. A course id fed into the substring
+        # test below asked whether "101" appears anywhere in the document's course
+        # name, id, title, module or subject — which rejected every -1 document and
+        # would equally have accepted course 1010 or a title mentioning FAR 101.
+        # course_id now has its own exact, sentinel-aware check above.
+        course_name = filters.get("course_name")
 
         if unit_types and unit.get("unit_type") not in unit_types:
             return False
@@ -707,8 +807,10 @@ class ContextRetrievalService:
                 return False
 
         # Generic exact filters used by blueprint/course generation APIs.
+        # course_id is deliberately NOT here: an exact match rejects the global
+        # sentinel, which is the whole point of the sentinel. See below.
         exact_fields = [
-            "client_id", "program_id", "course_id", "block_id",
+            "client_id", "program_id", "block_id",
             "block_number", "visibility", "status", "version",
             "topic", "quiz_number", "quiz_id", "project_number", "project_id",
             "administered_on_day", "covers_day",
@@ -716,6 +818,11 @@ class ContextRetrievalService:
         for field in exact_fields:
             if field in filters and not value_matches(meta_all.get(field) or payload.get(field), filters.get(field)):
                 return False
+
+        if "course_id" in filters and not course_scope_matches(
+                meta_all.get("course_id") or payload.get("course_id"),
+                filters.get("course_id")):
+            return False
 
         # Day filtering is strict for lesson/slide content, but calendar-mapped
         # content such as AIM quizzes/study questions may not have day_id in filename.
@@ -922,6 +1029,18 @@ class ContextRetrievalService:
                     str(d.get("source_file_name") or "") for d in budget_dropped
                     if d.get("source_file_name")
                 }),
+                # Told apart from an ordinary budget drop because the remedy is
+                # different and not the caller's: a unit past the ceiling means
+                # the DOCUMENT was never chunked, so no token budget would have
+                # returned it and raising one will not help. Left as an empty
+                # list in the normal case so a caller can test it without
+                # special-casing its absence.
+                "oversized_units_dropped": sorted({
+                    str(d.get("source_file_name") or "")
+                    for d in budget_dropped
+                    if d.get("reason") == "unit_exceeds_budget_ceiling"
+                    and d.get("source_file_name")
+                }),
             },
             "source_units": selected,
             "combined_context": combined,
@@ -1103,18 +1222,53 @@ class ContextRetrievalService:
         so a caller regrouping these units into "whole documents" was silently
         regrouping a subset — the one failure mode worse than returning less, because
         the result looks complete. Reported so the caller can say so.
+
+        THE FIRST UNIT IS A CONCESSION, NOT AN EXEMPTION
+        ------------------------------------------------
+        ``if selected and ...`` deliberately lets the top-ranked unit in even when
+        it alone exceeds the budget, so a query never comes back empty merely
+        because its best answer is a little too long. That is right for a unit
+        somewhat over budget and catastrophic without a ceiling: a document that
+        was never chunked arrives here as ONE unit of the whole file. Production
+        holds five such records — 8083-31B.pdf is a single unit of 3,560,663
+        characters, roughly 890,000 tokens — and any of them ranking first would
+        become the entire context pack for a 6,000-token budget, displacing every
+        other source and overrunning the model's own window.
+
+        So the concession is bounded: a first unit may exceed the budget, but not
+        beyond _FIRST_UNIT_BUDGET_MULTIPLE times it. Past that the unit is not
+        "slightly too long", it is an unchunked document, and it is dropped and
+        reported rather than cut — cutting would hand the caller a fragment
+        labelled as a whole unit, which is the thing this function exists to
+        prevent.
         """
         selected: List[Dict[str, Any]] = []
         used_tokens = 0
+        first_unit_ceiling = token_budget * _FIRST_UNIT_BUDGET_MULTIPLE
         for unit in units:
             unit_text = self._format_unit(unit, include_visual_summary)
             t = estimate_tokens(unit_text)
-            if selected and used_tokens + t > token_budget:
+            over_budget = used_tokens + t > token_budget
+            # Two different refusals, told apart in the report: a later unit that
+            # the budget simply had no room left for, and a unit so large that no
+            # budget could have held it. The second means a document needs
+            # re-chunking; the first means the caller asked for more than fits.
+            if over_budget and not selected and t > first_unit_ceiling:
                 if dropped is not None:
                     dropped.append({
                         "content_unit_id": unit.get("content_unit_id"),
                         "source_file_name": unit.get("source_file_name"),
                         "estimated_tokens": t,
+                        "reason": "unit_exceeds_budget_ceiling",
+                    })
+                continue
+            if selected and over_budget:
+                if dropped is not None:
+                    dropped.append({
+                        "content_unit_id": unit.get("content_unit_id"),
+                        "source_file_name": unit.get("source_file_name"),
+                        "estimated_tokens": t,
+                        "reason": "budget_exhausted",
                     })
                 continue
             unit["estimated_tokens"] = t
