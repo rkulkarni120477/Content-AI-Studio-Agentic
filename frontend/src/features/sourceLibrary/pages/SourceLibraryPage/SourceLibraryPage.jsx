@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useSelector } from 'react-redux';
 import { useParams } from 'react-router-dom';
@@ -118,6 +118,9 @@ export default function SourceLibraryPage() {
   const [documents, setDocuments] = useState([]);
   const [filterOptions, setFilterOptions] = useState({});
   const [filters, setFilters] = useState({ purpose: '', document_type: '', status: '', search: '' });
+  // Served by the API, never hardcoded here: the browser filter and the server
+  // rule must be the same list or one of them is a lie. See get_upload_policy.
+  const [uploadPolicy, setUploadPolicy] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(null);
@@ -458,17 +461,29 @@ export default function SourceLibraryPage() {
     }
     const selectedPurpose = String(rawForm.get('purpose') || 'general_reference');
     const selectedDocumentType = String(rawForm.get('document_type') || '').trim();
-    const queue = entries.map((entry, idx) => ({
-      id: `${Date.now()}-${idx}`,
-      name: entry.relativePath || entry.file.name,
-      size: entry.file.size,
-      status: 'pending',
-      progress: 0,
-      purpose: selectedPurpose,
-      document_type: selectedDocumentType || 'auto-detect',
-      global: uploadAsGlobal,
-      detail: 'Waiting to upload',
-    }));
+    // Refused before anything is sent, with the reason on the row. The server
+    // enforces the same policy — this only saves the round trip and puts the
+    // explanation where the user is looking.
+    const queue = entries.map((entry, idx) => {
+      const name = entry.relativePath || entry.file.name;
+      const reason = rejectionReason(name);
+      return {
+        id: `${Date.now()}-${idx}`,
+        name,
+        size: entry.file.size,
+        status: reason ? 'failed' : 'pending',
+        progress: reason ? 100 : 0,
+        purpose: selectedPurpose,
+        document_type: selectedDocumentType || 'auto-detect',
+        global: uploadAsGlobal,
+        detail: reason || 'Waiting to upload',
+        rejected: Boolean(reason),
+      };
+    });
+    const rejectedCount = queue.filter((q) => q.rejected).length;
+    if (rejectedCount) {
+      toast.error(`${rejectedCount} file(s) were not uploaded — see the reason in the upload status list.`);
+    }
     setPersistedUploadQueue((current) => [...(current || []), ...queue]);
     setUploading(true);
     setUploadProgress(0);
@@ -476,6 +491,7 @@ export default function SourceLibraryPage() {
     let failed = 0;
 
     for (let i = 0; i < entries.length; i += 1) {
+      if (queue[i].rejected) { failed += 1; continue; }
       const { file, relativePath } = entries[i];
       setPersistedUploadQueue((q) => q.map((item) => (item.id === queue[i].id ? { ...item, status: 'uploading', progress: 0, detail: 'Uploading to DIS and processing'  } : item)));
       const fd = new FormData();
@@ -558,6 +574,34 @@ export default function SourceLibraryPage() {
   }
 
   const documentTypeOptions = useMemo(() => unique(filterOptions.document_types), [filterOptions]);
+  useEffect(() => {
+    let cancelled = false;
+    sourceLibraryApi.getUploadPolicy()
+      .then((p) => { if (!cancelled) setUploadPolicy(p); })
+      // A policy we could not load must not silently become 'allow everything':
+      // the server still enforces it, so the upload is refused there instead.
+      .catch(() => { if (!cancelled) setUploadPolicy(null); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const acceptAttr = useMemo(
+    () => (uploadPolicy?.supported_extensions || []).map((e) => `.${e}`).join(','),
+    [uploadPolicy],
+  );
+
+  /** Why this file cannot be uploaded, or '' if it can. Mirrors unsupported_reasons. */
+  const rejectionReason = useCallback((filename) => {
+    if (!uploadPolicy) return '';   // unknown policy -> let the server decide
+    const ext = String(filename || '').toLowerCase().split('.').pop();
+    const blocked = uploadPolicy.blocked_extensions || {};
+    if (blocked[ext]) return blocked[ext];
+    const supported = uploadPolicy.supported_extensions || [];
+    if (!supported.includes(ext)) {
+      return `.${ext || 'unknown'} is not a supported document type. Supported: ${supported.map((e) => `.${e}`).join(', ')}.`;
+    }
+    return '';
+  }, [uploadPolicy]);
+
   const statusOptions = useMemo(() => unique([...(filterOptions.statuses || []), ...(documents || []).map((doc) => doc.status || 'processed'), ...(uploadQueue || []).map((item) => item.status)]), [filterOptions, documents, uploadQueue]);
   const uploadStatusItems = useMemo(() => {
     return (uploadQueue || []).filter((item) => {
@@ -630,7 +674,7 @@ export default function SourceLibraryPage() {
             <div className={styles.uploadGrid}>
               <div>
                 <label className={styles.label}>Files</label>
-                <input className={styles.input} type="file" name="files" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.json,.jpg,.jpeg,.png" />
+                <input className={styles.input} type="file" name="files" multiple accept={acceptAttr || undefined} />
               </div>
               <div>
                 <label className={styles.label}>Or Folder (uploads all supported files inside, keeping subfolders)</label>

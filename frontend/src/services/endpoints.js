@@ -141,6 +141,7 @@ export const SOURCE_LIBRARY = {
   SEARCH:           (jobId) => `/api/v1/source-library/documents/${jobId}/search`,
   DELETE_DOCUMENT:  (jobId) => `/api/v1/source-library/documents/${jobId}`,
   UPLOAD:           '/api/v1/source-library/documents/upload',
+  UPLOAD_POLICY:    '/api/v1/source-library/upload-policy',
   FOLDER_SCAN:      '/api/v1/source-library/folder-scan',
   RETRIEVE:         (purpose) => `/api/v1/source-library/retrieve/${purpose}`,
   ACCESS_CONFIG:    '/api/v1/source-library/admin/access-config',

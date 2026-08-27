@@ -23,6 +23,7 @@ from app.core.dis_access import (
     save_dis_access_config,
 )
 from app.core.dis_client import dis_client
+from app.core.upload_formats import load_upload_formats, unsupported_reasons
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,20 @@ def _normalize_client_id(value: str | None) -> str:
     # Delegates to the single source of truth in app.core.dis_access (was a
     # duplicated alias map here — kept identical, so behavior is unchanged).
     return normalize_client_name(value)
+
+
+def _reject_unsupported(filenames: list[str]) -> None:
+    """Refuse an upload this pipeline cannot turn into retrievable content.
+
+    The policy itself is config, not code — see config/upload_formats.json and
+    app.core.upload_formats. Accepting an unreadable file and failing quietly
+    downstream is what this replaces: it was stored, listed as "Processed", and
+    contributed nothing to any generation. A refusal at the door is recoverable
+    in seconds; a silent empty ingestion was not noticed for weeks.
+    """
+    reasons = unsupported_reasons(filenames)
+    if reasons:
+        raise HTTPException(400, " | ".join(reasons))
 
 
 #: Sentinel course id meaning "visible in every course of this client" — set by
@@ -261,6 +276,21 @@ async def delete_source_document(
     return await dis_client.delete_source(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
+@router.get("/upload-policy")
+async def get_upload_policy(current_user=Depends(get_current_user)) -> Dict[str, Any]:
+    """What the Source Library will accept, and why it refuses the rest.
+
+    Served rather than duplicated in the frontend so the browser-side filter and
+    the server-side rule cannot drift — a drifting pair is how style_id and
+    prompt_id went missing between a page and its own API client.
+    """
+    policy = load_upload_formats()
+    return {
+        "supported_extensions": sorted(policy["supported_extensions"]),
+        "blocked_extensions": policy["blocked_extensions"],
+    }
+
+
 @router.post("/documents/upload")
 async def upload_source_document(
     files: List[UploadFile] = File(..., alias="files"),
@@ -286,6 +316,9 @@ async def upload_source_document(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
+    # Before anything is stored or a DIS job is created: a type this pipeline
+    # cannot read must be refused here, not accepted and quietly lost downstream.
+    _reject_unsupported([f.filename or "" for f in files])
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     # An explicit block from the caller always wins; this only fills the blank the
     # form has always left. See _block_from_course for why a blank is not benign.
