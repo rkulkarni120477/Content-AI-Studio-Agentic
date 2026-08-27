@@ -1,5 +1,6 @@
 import Loader from '@components/common/Loader/Loader';
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import {
   parseStyleUnderstanding,
   styleUnderstandingText,
@@ -28,7 +29,7 @@ export default function StyleDetailsPanel({
 
   if (!style) return null;
 
-  const understanding = styleUnderstandingText(style);
+  const understanding = applyTerminology(styleUnderstandingText(style), L, ['style']);
   const { sections, preamble, rawFallback } = parseStyleUnderstanding(understanding);
   const refDocs = style.reference_documents || [];
 

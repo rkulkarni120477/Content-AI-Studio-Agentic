@@ -125,7 +125,7 @@ export default function InlinePromptControls({
   const labelToPrompt = useMemo(() => {
     const map = new Map();
     filteredPrompts.forEach((p) => {
-      let lbl = promptDisplayLabel(p, L);
+      let lbl = promptDisplayLabel(p, L, component);
       if (map.has(lbl)) lbl = `${lbl} (${p.id})`;
       map.set(lbl, p);
     });
@@ -221,7 +221,7 @@ export default function InlinePromptControls({
     }
     if (!selectedKey || !labelToPrompt.has(selectedKey)) {
       const def = filteredPrompts.find((p) => p.is_default) || filteredPrompts[0];
-      const lbl = promptDisplayLabel(def, L);
+      const lbl = promptDisplayLabel(def, L, component);
       const key = labelToPrompt.has(lbl) ? lbl : promptOptions[0];
       setSelectedKey(key);
       loadPromptDetail(labelToPrompt.get(key)?.id);
@@ -386,7 +386,7 @@ export default function InlinePromptControls({
               />
               {selectedPrompt && (
                 <p className={styles.meta}>
-                  📦 <strong>{selectedPrompt.name}</strong>
+                  📦 <strong>{promptDisplayLabel(selectedPrompt, L, component)}</strong>
                   {' · '}v<code>{selectedPrompt.active_version || '—'}</code>
                   {selectedPrompt.is_default && ' · 🏷️ default'}
                   {selectedPrompt.owner && ` · owner: ${selectedPrompt.owner}`}
@@ -591,7 +591,7 @@ export default function InlinePromptControls({
 
           {showEdit && selectedPrompt && (
             <div className={styles.subPanel}>
-              <p className={styles.subPanel__title}>✏️ Edit: {selectedPrompt.name}</p>
+              <p className={styles.subPanel__title}>✏️ Edit: {promptDisplayLabel(selectedPrompt, L, component)}</p>
               {selectedPrompt.is_default && (
                 <p className={styles.infoNote}>🏷️ System default — edits save as a new version; v1 is preserved.</p>
               )}

@@ -121,7 +121,7 @@ export default function CreateCourseModal({
       ) : (
         <form onSubmit={handleCreate}>
           <Input
-            label={`${L.title} Name *`}
+            label={`${L.title} Name`}
             value={name}
             onChange={(e) => setName(e.target.value)}
             required

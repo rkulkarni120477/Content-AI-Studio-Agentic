@@ -5,6 +5,7 @@ import {
   lowerFirst,
   pluralize,
   sanitizeOverrides,
+  applyTerminology,
   DEFAULT_LABELS,
 } from '../tenantLabels';
 
@@ -118,5 +119,32 @@ describe('describeOverrides', () => {
   it('returns nothing for a tenant on default wording', () => {
     expect(describeOverrides({})).toEqual([]);
     expect(describeOverrides({ style: 'Style' })).toEqual([]);
+  });
+});
+
+describe('applyTerminology', () => {
+  const L = buildLabels({
+    title: 'Course',
+    style: 'Design Guide',
+    blueprint: 'Learning Plan',
+  });
+
+  it('rewrites whole words in generated copy', () => {
+    expect(applyTerminology('create a detailed module blueprint', L, ['blueprint']))
+      .toBe('create a detailed module learning Plan');
+    expect(applyTerminology('defining a style for content', L, ['style']))
+      .toBe('defining a design Guide for content');
+  });
+
+  it('does not rewrite snake_case identifiers by default', () => {
+    expect(applyTerminology('default_style_prompt', L, ['style'])).toBe('default_style_prompt');
+    expect(applyTerminology('default_blueprint_prompt', L, ['blueprint'])).toBe('default_blueprint_prompt');
+  });
+
+  it('rewrites snake_case identifiers when asked', () => {
+    expect(applyTerminology('default_style_prompt', L, ['style'], { identifiers: true }))
+      .toBe('default_Design Guide_prompt');
+    expect(applyTerminology('default_blueprint_prompt', L, ['blueprint'], { identifiers: true }))
+      .toBe('default_Learning Plan_prompt');
   });
 });
