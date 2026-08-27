@@ -72,7 +72,7 @@ export default function CreateCourseModal({
           ← Back
         </Button>
         <Button variant="primary" onClick={handleCreate} loading={createLoading}>
-          Create Title
+          Create {L.title}
         </Button>
       </>
     ) : (
@@ -111,7 +111,7 @@ export default function CreateCourseModal({
           >
             <span className={styles.choice__icon} aria-hidden="true">📥</span>
             <span className={styles.choice__title}>
-              Import Title{!importEnabled && <span className={styles.badge}>Coming soon</span>}
+              Import {L.title}{!importEnabled && <span className={styles.badge}>Coming soon</span>}
             </span>
             <span className={styles.choice__desc}>
               Import an existing Canvas IMSCC package and reconstruct it in CAS.

@@ -57,6 +57,7 @@ export default function CreateStyleForm({ embedded = false }) {
   const [sourceError, setSourceError] = useState('');
   const [sourceLoading, setSourceLoading] = useState(false);
   const sourceCacheKey = styleDocsCacheKey({ courseId: selectedCourse?.id || courseId, projectId: selectedProject?.id });
+  const styleSchema = useMemo(() => createStyleSchema(L.style), [L.style]);
 
   const {
     register,
@@ -64,7 +65,7 @@ export default function CreateStyleForm({ embedded = false }) {
     formState: { errors },
     reset,
   } = useForm({
-    resolver: zodResolver(createStyleSchema),
+    resolver: zodResolver(styleSchema),
     defaultValues: {
       name: '',
       description: '',

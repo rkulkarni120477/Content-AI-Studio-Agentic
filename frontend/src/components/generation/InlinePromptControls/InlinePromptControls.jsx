@@ -27,9 +27,10 @@ import {
   GENERATE_DEFAULT_USER,
   promptDisplayLabel,
   buildPromptDownloadMd,
-  COMPONENT_LABELS,
+  componentLabel,
 } from '@utils/promptDefaults';
 import { downloadBlob, extractErrorMessage } from '@utils/helpers';
+import { useLabels } from '@hooks/useLabels';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import Select from '@components/common/Select/Select';
@@ -74,6 +75,7 @@ export default function InlinePromptControls({
   // prompts.create / prompts.manage are admin+reviewer only — authors go
   // through 📬 Request a Change instead of seeing buttons that would 403.
   const canManagePrompts = useAppSelector(selectIsReviewer);
+  const L = useLabels();
 
   const [selectedKey, setSelectedKey] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -109,7 +111,7 @@ export default function InlinePromptControls({
   const onCapabilityChangeRef = useRef(onCapabilityChange);
   onCapabilityChangeRef.current = onCapabilityChange;
 
-  const compLabel = COMPONENT_LABELS[component] || component;
+  const compLabel = componentLabel(component, L);
   const defaults = DEFAULTS[component] || { system: '', user: '' };
   const navigate = useNavigate();
 
@@ -123,12 +125,12 @@ export default function InlinePromptControls({
   const labelToPrompt = useMemo(() => {
     const map = new Map();
     filteredPrompts.forEach((p) => {
-      let lbl = promptDisplayLabel(p);
+      let lbl = promptDisplayLabel(p, L);
       if (map.has(lbl)) lbl = `${lbl} (${p.id})`;
       map.set(lbl, p);
     });
     return map;
-  }, [filteredPrompts]);
+  }, [filteredPrompts, L]);
 
   const promptOptions = useMemo(() => {
     if (labelToPrompt.size === 0) return [];
@@ -219,7 +221,7 @@ export default function InlinePromptControls({
     }
     if (!selectedKey || !labelToPrompt.has(selectedKey)) {
       const def = filteredPrompts.find((p) => p.is_default) || filteredPrompts[0];
-      const lbl = promptDisplayLabel(def);
+      const lbl = promptDisplayLabel(def, L);
       const key = labelToPrompt.has(lbl) ? lbl : promptOptions[0];
       setSelectedKey(key);
       loadPromptDetail(labelToPrompt.get(key)?.id);
@@ -523,6 +525,7 @@ export default function InlinePromptControls({
                   userPromptTemplate: effectiveUser,
                   extraInstructions,
                   isAiOverride: hasOverride,
+                  labels: L,
                 });
                 const ver = (selectedPrompt?.active_version || 'v1').replace(/\//g, '-');
                 downloadBlob(new Blob([md], { type: 'application/msword' }), `prompt_${component}_${ver}.doc`);

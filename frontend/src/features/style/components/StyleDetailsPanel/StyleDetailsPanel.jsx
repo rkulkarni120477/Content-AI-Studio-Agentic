@@ -36,7 +36,7 @@ export default function StyleDetailsPanel({
     <div
       className={inModal ? styles.inModal : styles.panel}
       role="region"
-      aria-label={`Style details for ${style.name}`}
+      aria-label={`${L.style} details for ${style.name}`}
     >
       {!inModal && (
         <h3 className={styles.heading}>📋 {L.style} Details — {style.name}</h3>

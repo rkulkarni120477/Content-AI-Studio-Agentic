@@ -32,8 +32,8 @@ export const createUserSchema = z.object({
 });
 
 // ─── Style Schemas ────────────────────────────────────────────────────────────
-export const createStyleSchema = z.object({
-  name:                requiredString('Style name'),
+export const createStyleSchema = (styleLabel = 'Style') => z.object({
+  name:                requiredString(`${styleLabel} name`),
   description:         optionalString(),
   custom_instructions: optionalString(),
   document_ids:        z.array(z.union([z.string(), z.number()])).optional(),

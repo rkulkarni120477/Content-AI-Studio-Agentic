@@ -5,6 +5,7 @@ import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@
 import { resolveProjectId } from '@utils/workspaceContext';
 import { createBlockJobThunks } from '@features/shared/blockJob';
 import { createArchiveThunks } from '@features/shared/documentArchive';
+import { labelsFromState } from '@config/tenantLabels';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -43,13 +44,14 @@ export const fetchBlueprintsThunk = createAsyncThunk(
 
 export const generateBlueprintThunk = createAsyncThunk(
   'blueprint/generate',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.project_id) {
-        return rejectWithValue('Select a project before generating a Blueprint.');
+        return rejectWithValue(`Select a project before generating a ${L.blueprint}.`);
       }
       const result = await blueprintService.generateBlueprint(payload);
-      toast.success('Blueprint generated and set as active.');
+      toast.success(`${L.blueprint} generated and set as active.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -77,8 +79,8 @@ export const {
     // Lets resumeThunk refuse to start a duplicate poll chain for a job it is
     // already polling (one per remount would mean one success toast per remount).
     selectBlockJob: (state) => state.blueprint?.blockJob,
-    completedMessage: 'Block Blueprint generated and set as active.',
-    failedMessage: 'Blueprint generation failed.',
+    completedMessage: (L) => `Block ${L.blueprint} generated and set as active.`,
+    failedMessage: (L) => `${L.blueprint} generation failed.`,
     onComplete: (dispatch, courseId) => {
       if (courseId) dispatch(fetchBlueprintsThunk(courseId));
     },
@@ -118,10 +120,10 @@ export const importBlueprintThunk = createAsyncThunk(
 
 export const setActiveBlueprintThunk = createAsyncThunk(
   'blueprint/setActive',
-  async ({ blueprintId, courseId }, { rejectWithValue }) => {
+  async ({ blueprintId, courseId }, { getState, rejectWithValue }) => {
     try {
       const result = await blueprintService.pinBlueprint(blueprintId, courseId);
-      toast.success('Active blueprint updated.');
+      toast.success(`Active ${labelsFromState(getState).blueprintLower} updated.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -155,10 +157,10 @@ export const activateBlueprintVersionThunk = createAsyncThunk(
 
 export const commitBlueprintVersionThunk = createAsyncThunk(
   'blueprint/commitVersion',
-  async ({ blueprintId, data }, { rejectWithValue }) => {
+  async ({ blueprintId, data }, { getState, rejectWithValue }) => {
     try {
       const result = await blueprintService.commitVersion(blueprintId, data);
-      toast.success('Blueprint version saved.');
+      toast.success(`${labelsFromState(getState).blueprint} version saved.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -252,6 +254,7 @@ export const fetchArchivedBlueprintsThunk = createAsyncThunk(
 const blueprintArchiveThunks = createArchiveThunks({
   name: 'blueprint',
   label: 'Blueprint',
+  labelKey: 'blueprint',
   api: {
     archive: blueprintService.archiveBlueprint,
     restore: blueprintService.restoreBlueprint,
