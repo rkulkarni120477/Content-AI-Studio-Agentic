@@ -6,6 +6,7 @@ service token.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
@@ -23,6 +24,8 @@ from app.core.dis_access import (
 )
 from app.core.dis_client import dis_client
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -30,6 +33,53 @@ def _normalize_client_id(value: str | None) -> str:
     # Delegates to the single source of truth in app.core.dis_access (was a
     # duplicated alias map here — kept identical, so behavior is unchanged).
     return normalize_client_name(value)
+
+
+#: Sentinel course id meaning "visible in every course of this client" — set by
+#: the Source Library's "Upload as Global" toggle. A global upload belongs to no
+#: single block, so block derivation must never fire for it.
+_GLOBAL_COURSE_ID = -1
+
+
+def _block_from_course(db: Session, course_id: int | None) -> str:
+    """The block label the upload is scoped to, or "" when there isn't one.
+
+    WHY THIS EXISTS. DIS derives a document's ``block`` by regex over its path,
+    filename and first 1,500 characters (AIMClientProfile._extract_block_day). A
+    file whose folder is named for its subject rather than its block — e.g.
+    ``Landing Gear Projects/Landing Gear Systems Project 4 A52.docx`` — matches
+    nothing, is stored with ``block: ""``, and is then invisible to every
+    block-scoped retrieval while the Source Library still reports it "Processed".
+    Measured 2026-08-27 on the AIM corpus: 148 documents lost this way across six
+    courses, 59-79% of each — which is why Block 9's CDD reported "Total Projects:
+    0" while eleven landing-gear project files sat in the store, and why Blocks 8
+    and 10 had no reachable teaching content at all.
+
+    The upload already knows the answer and always did: the user picked a course,
+    and that course is named for its block. Sending it makes the tag a fact about
+    the upload rather than a guess about the filename, so a document's
+    retrievability no longer depends on whether someone typed "Block N" into a
+    folder name. DIS treats caller hints as authoritative over its own inference
+    (metadata_tagging_agent applies metadata_hints AFTER enrich_metadata), and
+    skips empty ones, so "" here preserves exactly the previous behaviour.
+
+    Returns "" — never a guess — for a global upload, a missing course, or a
+    course whose name carries no block label (non-AIM tenants land here, which is
+    correct: they have no blocks and must be left untouched).
+    """
+    if course_id is None or course_id == _GLOBAL_COURSE_ID:
+        return ""
+    try:
+        from app.core.dis_day_context import infer_block_label
+        from promptops_app.database import Course
+
+        course = db.query(Course).filter(Course.id == course_id).first()
+        if course is None:
+            return ""
+        return infer_block_label(getattr(course, "name", "")) or ""
+    except Exception:  # noqa: BLE001 — tagging must never break an upload
+        log.warning("source_library: block derivation failed for course_id=%s", course_id, exc_info=True)
+        return ""
 
 
 def _client_from_scope(db: Session, *, project_id: int | None = None, course_id: int | None = None) -> str:
@@ -237,6 +287,19 @@ async def upload_source_document(
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    # An explicit block from the caller always wins; this only fills the blank the
+    # form has always left. See _block_from_course for why a blank is not benign.
+    if not (block or "").strip():
+        block = await run_in_threadpool(_block_from_course, db, course_id)
+        if not block and course_id not in (None, _GLOBAL_COURSE_ID):
+            # Not fatal — non-block tenants legitimately land here — but for a
+            # block-organised course this is the moment a document becomes
+            # unretrievable, and it used to happen in complete silence.
+            log.warning(
+                "source_library upload: no block resolved (course_id=%s client=%s files=%s) — "
+                "documents will be stored block-less and excluded from block-scoped retrieval",
+                course_id, resolved_client, [f.filename for f in files],
+            )
     form_fields = {
         "client_id": resolved_client,
         "purpose": purpose,
@@ -269,6 +332,10 @@ async def scan_source_folder(
     payload = dict(payload)
     payload["client_id"] = resolved_client
     payload["course_id"] = str(course_id) if course_id is not None else ""
+    # Same reasoning as the upload path: a scanned folder is named for whatever the
+    # content team called it, so the block must come from the course, not the path.
+    if not str(payload.get("block") or "").strip():
+        payload["block"] = await run_in_threadpool(_block_from_course, db, course_id)
     return await dis_client.folder_scan(payload=payload, current_user=current_user, client_id=resolved_client)
 
 
