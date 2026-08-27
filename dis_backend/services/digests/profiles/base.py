@@ -36,10 +36,10 @@ def store_target(conn_or_cur: Any) -> str:
     On 2026-08-27 a dev deployment whose ``DIS_STRUCTURE_STORE_URL`` pointed at an
     empty sibling database reported "No calendar found for block 'Block 9'" — a
     message indistinguishable from a block that genuinely has no calendar, and
-    settled only by connecting to both databases by hand. Since per-client and
-    global env vars outrank the client YAML (settings._STORE_ENV_OVERRIDES), the
-    committed config is NOT evidence of where a deployment reads, so the store has
-    to name itself.
+    settled only by connecting to both databases by hand. Those env overrides are
+    gone now (see settings, "Where the backing stores live"), but a stale image or
+    a hand-edited mounted YAML can still diverge from the committed config, so the
+    store names itself rather than being inferred from a file on someone's disk.
 
     Host and database only, never the DSN: it carries the store password.
     """

@@ -245,6 +245,47 @@ def _bedrock_client(client_kwargs: Dict[str, Any]) -> Any:
         return client
 
 
+#: Memoised answer from boto3's own credential chain. On an EC2 box the first
+#: lookup is an IMDS round trip, and ``llm_is_mocked`` runs on every ``call_llm``,
+#: so it is resolved once per process. Not a TTL cache for the same reason
+#: ``_PREFLIGHT_OK`` is not: if credentials disappear mid-process the Bedrock calls
+#: themselves fail, which is a loud per-day failure rather than a silent stub.
+_ambient_creds: "Optional[bool]" = None
+_ambient_creds_lock = threading.Lock()
+
+
+def reset_ambient_credential_probe() -> None:
+    """Forget the cached answer. For tests, and for in-process credential changes."""
+    global _ambient_creds
+    with _ambient_creds_lock:
+        _ambient_creds = None
+
+
+def ambient_aws_credentials() -> bool:
+    """Whether boto3 can find AWS credentials without being handed any.
+
+    An EC2 instance role, ``~/.aws``, SSO, container credentials — every source
+    boto3 resolves on its own when :meth:`bedrock_client_kwargs` passes no key. That
+    is a live path, not a hypothetical one: dev's ``dis_backend/.env`` carries no
+    keys and its Bedrock calls run on the instance role
+    ``AmazonSSMRoleForInstancesQuickSetup``.
+    """
+    global _ambient_creds
+    if _ambient_creds is None:
+        with _ambient_creds_lock:
+            if _ambient_creds is None:
+                try:
+                    import botocore.session
+                    _ambient_creds = (
+                        botocore.session.get_session().get_credentials() is not None)
+                except Exception:
+                    # Unresolvable counts as absent: the mock is then chosen for a
+                    # box that genuinely cannot call a model, which is the case it
+                    # exists for.
+                    _ambient_creds = False
+    return _ambient_creds
+
+
 def llm_is_mocked(settings: Any = None) -> bool:
     """True when :func:`call_llm` will serve canned replies instead of calling a model.
 
@@ -260,6 +301,15 @@ def llm_is_mocked(settings: Any = None) -> bool:
     directly, so a deployment setting only DIS_BEDROCK_* kept serving mock replies
     while holding perfectly good credentials it never used — the two conditions must
     be derived from the same place or they drift exactly when it matters.
+
+    That same drift had a second half, closed on 2026-08-27: when the kwargs carry no
+    key at all the client does not fail, it falls back to boto3's own chain, so
+    "no explicit key" was never the same question as "no credentials". The dev box
+    holds no keys in ``dis_backend/.env`` and invokes Bedrock through its instance
+    role; setting ENVIRONMENT=development there made DIS refuse those working
+    credentials and serve canned filler instead. An ambient chain that resolves now
+    counts (:func:`ambient_aws_credentials`), so the mock is reserved for a box that
+    genuinely cannot reach a model.
     """
     settings = settings if settings is not None else get_settings()
     if getattr(settings, "environment", "") != "development":
@@ -267,12 +317,22 @@ def llm_is_mocked(settings: Any = None) -> bool:
     if getattr(settings, "anthropic_api_key", None):
         return False
     try:
-        return not (settings.bedrock_client_kwargs() or {}).get("aws_access_key_id")
+        explicit = (settings.bedrock_client_kwargs() or {}).get("aws_access_key_id")
     except Exception:
         # Never let a settings-shape surprise decide this. Falling back to the
         # narrower check keeps the old behaviour rather than silently flipping a
         # credentialled deployment onto the mock.
         return not getattr(settings, "aws_access_key_id", None)
+    if explicit:
+        return False
+    # An empty key is NOT "no credentials". When the kwargs carry only a region,
+    # _bedrock_client hands resolution to boto3's own chain, so this must ask the
+    # same chain the client will actually use — the whole point of deriving both
+    # from one place. Dev is exactly this shape: no keys in dis_backend/.env, an
+    # instance role that invokes Bedrock fine, and ENVIRONMENT=development. Reading
+    # "no explicit key" as "no model" there refuses to use credentials that work,
+    # and serves canned filler in their place.
+    return not ambient_aws_credentials()
 
 
 def call_llm(model: str, prompt: str, max_tokens: int = 300) -> tuple[str, int, int]:

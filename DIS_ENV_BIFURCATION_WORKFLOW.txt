@@ -1,4 +1,28 @@
 ================================================================================
+SUPERSEDED (2026-08-27) — DO NOT FOLLOW THIS RUNBOOK
+================================================================================
+The decision this plan implements was reversed: DIS is now deliberately ONE
+shared corpus for dev and prod, and a store's location comes from the client
+YAML alone (config/clients/<client>.yaml). The env overrides this runbook is
+built on — DIS_STRUCTURE_STORE_URL[_<CLIENT>], DIS_VECTOR_STORE_ENDPOINT /
+DIS_VECTOR_STORE_INDEX[_<CLIENT>] — were REMOVED from config/settings.py on
+2026-08-27 and now do nothing; tests/test_config_env.py pins that they cannot
+repoint a store.
+
+What triggered the reversal: Phase 4 had been applied on the dev box, so dev's
+DIS read dis_db_dev — a database holding 0 calendars and 1 document — while the
+committed YAML named the populated dis_db. Every Block-9 digest build failed
+with "No calendar found for client='aim' block='Block 9'", a message
+indistinguishable from a block that genuinely has no calendar, and the cause was
+invisible in the repo because an unversioned env var outranked the tracked file.
+
+Still valid and KEPT from this work: the `environment` column stamped on the
+dis.* tables (Phase 6) — one shared store that records which environment wrote
+each row is what bifurcation was reaching for, without splitting the corpus.
+
+Kept for the history of the decision. Anything below that sets a store location
+from the environment is now wrong.
+================================================================================
 DEV / PROD BIFURCATION FOR DIS UPLOADS  —  IMPLEMENTATION WORKFLOW
 ================================================================================
 Scope  : Separate dev and prod for DIS file uploads across S3, Postgres and

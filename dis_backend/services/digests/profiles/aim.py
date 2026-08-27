@@ -49,6 +49,48 @@ def _is_row_restatement(text: str) -> bool:
 _HEADER_ROW_RE = re.compile(r"^\s*Day\s*\|", re.IGNORECASE)
 
 
+#: The assignment/assessment items a pasted-in row can still be mined for. AIM
+#: writes projects as "Project P30" / "Project 9-1" / "Project 14-2", quizzes as
+#: "Quiz 3" or "Quiz #3", and the block exam by one of the three names
+#: attribution._FINAL_EXAM already reconciles.
+_ITEM_RES = (
+    re.compile(r"\bProject\s+[A-Z]?\d+(?:-\d+)?\b", re.IGNORECASE),
+    re.compile(r"\bQuiz\s*#?\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\b(?:Final|Cumulative)(?:\s+Cumulative)?\s+Exam\b", re.IGNORECASE),
+    re.compile(r"\bReview\s+Quiz\b", re.IGNORECASE),
+)
+
+
+def _mine_row_items(text: str) -> List[str]:
+    """The assignment/assessment items named inside a pasted-in table row.
+
+    Blanking a row-restatement cell outright was wrong, and only a whole-corpus
+    comparison showed it: Blocks 14 and 15 store every day's assignments in that
+    pasted form on BOTH of their calendars, so there was no clean sibling to
+    borrow from and the Projects Today column went from 20 days populated to 0.
+    The rows are not empty of meaning — "Day 2 | INDUCTION and EXHAUST SYSTEMS
+    ... | Reading: FAA-H-8083-32B Pg. 3-4 to 3-9 Project P30" names a real
+    project. Mining recovers the item and leaves the lesson prose behind, which
+    is what the cell was supposed to hold in the first place.
+
+    De-duplicated, first-seen order, whitespace-collapsed. Returns [] when the
+    row names nothing, and the caller then treats the cell as absent.
+    """
+    body = _JSON_ESCAPE_IN_CELL.sub(" ", str(text or ""))
+    out: List[str] = []
+    for pattern in _ITEM_RES:
+        for m in pattern.findall(body):
+            item = " ".join(str(m).split())
+            if item and item.lower() not in {o.lower() for o in out}:
+                out.append(item)
+    return out
+
+
+#: ``::text`` renders a JSONB newline as the two characters ``\`` and ``n``; the
+#: item patterns above must not be blocked by one sitting against a word.
+_JSON_ESCAPE_IN_CELL = re.compile(r"\\[nrt]|[\r\n\t]")
+
+
 def _usable(value: Any, fieldname: str = "") -> bool:
     """Whether a calendar cell carries real extracted content.
 
@@ -94,6 +136,7 @@ class AIMCurriculumProfile(CurriculumProfile):
     coverage_label = "ACS"
 
     def load_scope(self, cur, schema: str, client_id: str, block: str) -> ScopeData:
+        self._extra_duplicate_days: List[int] = []
         calendar_id, dup_ids, total_days, cal_spellings = self._pick_calendar(
             cur, schema, client_id, block)
         days = self._load_days(cur, schema, calendar_id, dup_ids)
@@ -104,6 +147,12 @@ class AIMCurriculumProfile(CurriculumProfile):
         # get it fixed. See services/blocks.spelling_note.
         note = spelling_note(block, list(cal_spellings) + list(unit_spellings))
         notes = [note] if note else []
+        if getattr(self, "_extra_duplicate_days", None):
+            notes.append(
+                f"DUPLICATE_CALENDAR_EXTRA_DAYS — a lower-ranked calendar for this "
+                f"block carries day(s) {self._extra_duplicate_days} that the "
+                f"canonical one does not; they are NOT enumerated, because the "
+                f"canonical calendar defines the block's length")
         references = self._load_reference_works(cur, schema, client_id)
         if not references:
             # Said out loud, because its effect is invisible in the output: with no
@@ -224,6 +273,22 @@ class AIMCurriculumProfile(CurriculumProfile):
         for r in rows:
             by_day.setdefault(int(r["day_number"]), []).append(r)
 
+        # The CANONICAL calendar decides which days exist; duplicates only fill in
+        # fields. Taking the union instead let a day present in a lower-ranked
+        # duplicate widen the block — Block 4 went from 16 days to 17, and since
+        # total_days still comes from the canonical calendar's own column that also
+        # manufactured a spurious day-count disagreement. Extra days in a duplicate
+        # are reported rather than absorbed, because "the calendars disagree about
+        # how long this block is" is a fact for a human to resolve, not one for this
+        # function to decide by silently picking the larger answer.
+        canonical_days = {int(r["day_number"]) for r in rows
+                          if r.get("calendar_id") == calendar_id}
+        if canonical_days:
+            extra = sorted(set(by_day) - canonical_days)
+            if extra:
+                self._extra_duplicate_days = extra
+            by_day = {dn: v for dn, v in by_day.items() if dn in canonical_days}
+
         merged: List[Dict[str, Any]] = []
         for dn in sorted(by_day):
             # `.get`, not `[...]`: a row whose calendar_id is absent or NULL sorts
@@ -241,6 +306,14 @@ class AIMCurriculumProfile(CurriculumProfile):
                     if _usable(other.get(fieldname), fieldname):
                         replacement = other[fieldname]
                         break
+                if replacement is None and fieldname in ("assignments_json",
+                                                         "assessments_json"):
+                    # No calendar has a clean cell for this field. Before giving
+                    # up, mine the row itself — it names the project or quiz even
+                    # when the extractor pasted the whole line around it.
+                    mined = _mine_row_items(row.get(fieldname) or "")
+                    if mined:
+                        replacement = json.dumps(mined)
                 # Cleared, not left as-is, when no calendar can supply the field.
                 # An unusable cell is a failed extraction, and carrying it forward
                 # puts a paragraph of lesson topics in the Projects Today column

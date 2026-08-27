@@ -123,7 +123,11 @@ def main() -> int:
 
     tenant_cfg = get_tenant_config(args.client)
     cfg = tenant_cfg.vector_store
-    dis_url = os.environ.get("DIS_STRUCTURE_STORE_URL") or tenant_cfg.structure_store.url
+    # The client YAML is the only source of a store location, so a script that
+    # writes to DIS cannot be repointed by an env var the service ignores — an
+    # env-first read here would let a backfill edit a different database than
+    # DIS reads. See settings, "Where the backing stores live".
+    dis_url = tenant_cfg.structure_store.url
     cas_url = os.environ.get("DATABASE_URL_PROD", "").replace("+psycopg2", "")
     if not cas_url:
         print("DATABASE_URL_PROD is not set — needed to map a block to its course",

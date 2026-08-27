@@ -218,12 +218,13 @@ def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     pinned: List[Dict[str, Any]] = []
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         conn.read_only = True  # belt-and-suspenders; only SELECTs are issued
-        # Logged every build, because the store is chosen by precedence rather than
-        # by the file anyone reads: a per-client or global env var outranks the
-        # client YAML (settings._STORE_ENV_OVERRIDES), so nothing in the repo tells
-        # an operator where a deployment actually reads. One line here turns "this
-        # block has no calendar" into "this deployment is reading the wrong
-        # database" without a second person connecting to RDS to find out.
+        # Logged every build so the store a deployment READ is a fact in the log,
+        # not an inference from config. The env overrides that could silently
+        # repoint it are gone (settings, "Where the backing stores live"), but a
+        # stale image, an unmerged config edit or a hand-edited mounted YAML can
+        # still diverge — and on 2026-08-27 that divergence surfaced only as "No
+        # calendar found for block 'Block 9'", settled by connecting to two
+        # databases by hand. One line turns that into "reading the wrong database".
         log.info("enumerate: client=%s block=%s store=%s schema=%s",
                  cid, block, store_target(conn), schema)
         with conn.cursor() as cur:

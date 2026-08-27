@@ -1,16 +1,20 @@
-"""Environment-driven store location for the tenant configs.
+"""Where a tenant's stores come from, and what the environment may not change.
 
-The client YAMLs are committed, so a connection string written into them is baked
-into the image: every environment is forced onto the same database, and
-repointing one means editing a tracked file. That is how local, dev and prod all
-came to share a single dev RDS whose security group admits one hard-coded /32 —
-which breaks the moment an IP changes, with a failure that surfaces two layers
-away as "no enumerated days or DIS error".
+The client YAML is the only source of a store location: for AIM,
+config/clients/aim.yaml holds structure_store.url and vector_store.endpoint /
+index_name, and local, dev and prod all read that same file — DIS is one shared
+corpus, not one per environment.
 
-These tests pin the escape hatch and, just as importantly, pin that it is inert
-when unused: with no environment variables set, the resolved config must be
-byte-identical to the YAML literal, so adding the mechanism cannot itself change
-any deployment.
+These tests pin that rule from both sides: the resolved config must equal the
+YAML literal, and the DIS_STRUCTURE_STORE_URL / DIS_VECTOR_STORE_* overrides that
+used to outrank it must now be inert. They were removed on 2026-08-27, the day
+dev exported the first one at an empty sibling database and every Block-9 digest
+build failed with "No calendar found for block 'Block 9'" — a deployment cannot
+be diagnosed from the repo when an unversioned env var silently outranks it.
+
+Model ids (DIS_MODEL_*) and credentials stay environment-driven, and are pinned
+further down: model availability is a per-region, per-principal fact no committed
+file can settle, and credentials must not be committed at all.
 """
 from __future__ import annotations
 
@@ -64,31 +68,43 @@ def test_without_env_the_yaml_literal_is_untouched(load_config):
     assert resolved == literal, "env resolution altered the committed YAML value"
 
 
-def test_global_env_repoints_every_client(load_config):
-    settings = load_config({"DIS_STRUCTURE_STORE_URL": "postgresql://u:p@localhost:5432/dis_db"})
-    for client in ("aim", "cengage"):
-        assert settings.get_tenant_config(client).structure_store.url == \
-            "postgresql://u:p@localhost:5432/dis_db"
+def test_env_cannot_repoint_the_structure_store(load_config):
+    """The exact dev misconfiguration of 2026-08-27, now inert.
 
-
-def test_per_client_env_wins_over_global(load_config):
-    """Tenants may legitimately live in separate databases while sharing an image."""
+    An exported DIS_STRUCTURE_STORE_URL naming an empty sibling database used to
+    win over the YAML, and the only symptom was "No calendar found for block
+    'Block 9'" two layers up.
+    """
     settings = load_config({
-        "DIS_STRUCTURE_STORE_URL": "postgresql://u:p@shared:5432/d",
-        "DIS_STRUCTURE_STORE_URL_AIM": "postgresql://u:p@aim-only:5432/d",
+        "DIS_STRUCTURE_STORE_URL": "postgresql://u:p@wrong-host:5432/empty_db",
+        "DIS_STRUCTURE_STORE_URL_AIM": "postgresql://u:p@wrong-host-aim:5432/empty_db",
     })
-    assert "aim-only" in settings.get_tenant_config("aim").structure_store.url
-    assert "shared" in settings.get_tenant_config("cengage").structure_store.url
+    for client in ("aim", "cengage"):
+        url = settings.get_tenant_config(client).structure_store.url
+        assert "wrong-host" not in url
+        assert "dis-dev-postgres" in url
 
 
-def test_vector_store_endpoint_and_index_are_overridable(load_config):
+def test_env_cannot_repoint_the_vector_store(load_config):
+    """Same rule for OpenSearch: a repointed index reads a different corpus, which
+    surfaces as thin retrieval rather than as a configuration error."""
     settings = load_config({
         "DIS_VECTOR_STORE_ENDPOINT": "https://opensearch.local:9200",
         "DIS_VECTOR_STORE_INDEX": "dis-content-local",
+        "DIS_VECTOR_STORE_INDEX_AIM": "dis-content-local-aim",
     })
     vs = settings.get_tenant_config("aim").vector_store
-    assert vs.endpoint == "https://opensearch.local:9200"
-    assert vs.index_name == "dis-content-local"
+    assert "opensearch.local" not in vs.endpoint
+    assert vs.index_name == "dis-content-dev-aim"
+
+
+def test_dev_and_prod_read_the_same_stores(load_config):
+    """DIS is one shared corpus. The YAML carries no environment switch, so there is
+    no committed value for an ENVIRONMENT to select between."""
+    dev = load_config({"ENVIRONMENT": "development"}).get_tenant_config("aim")
+    prod = load_config({"ENVIRONMENT": "production"}).get_tenant_config("aim")
+    assert dev.structure_store.url == prod.structure_store.url
+    assert dev.vector_store.index_name == prod.vector_store.index_name
 
 
 def test_placeholders_in_yaml_expand_from_the_environment(load_config):
@@ -110,9 +126,9 @@ def test_expansion_walks_nested_structures(load_config):
         {"a": "h1", "b": ["h1", {"c": "h1"}], "d": 7, "e": None}
 
 
-def test_blank_env_var_does_not_blank_the_config(load_config):
-    """An empty variable is 'unset', not 'set to nothing' — otherwise an exported
-    but empty var in a shell profile would silently disable a store."""
+def test_an_exported_but_empty_var_leaves_the_store_alone(load_config):
+    """Kept from when the override existed: neither a set nor an empty
+    DIS_STRUCTURE_STORE_URL may blank or move the store the YAML names."""
     settings = load_config({"DIS_STRUCTURE_STORE_URL": ""})
     assert "dis-dev-postgres" in settings.get_tenant_config("aim").structure_store.url
 

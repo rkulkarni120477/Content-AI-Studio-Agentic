@@ -26,10 +26,10 @@ def _ensure_database_exists(psycopg_module, dsn: str) -> None:
     created — it needs its own autocommit connection to a different,
     already-existing database on the same server (the "postgres" maintenance
     database, always present on RDS). This is one level up from what
-    auto_create_schema already does for schema/tables: a DIS_STRUCTURE_STORE_URL
-    freshly repointed at a database that has never existed (e.g. a new
-    environment's own dev database) self-provisions on first upload instead
-    of needing someone to run CREATE DATABASE by hand first.
+    auto_create_schema already does for schema/tables: a structure_store.url
+    freshly pointed at a database that has never existed (e.g. a new client's own
+    database) self-provisions on first upload instead of needing someone to run
+    CREATE DATABASE by hand first.
 
     Requires the connecting role to have CREATEDB — if it doesn't, this fails
     loudly with Postgres's own permission-denied error (caught by
