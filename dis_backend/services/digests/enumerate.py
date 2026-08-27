@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 from config.settings import TenantConfig, get_settings
 from services.digests import attribution
 from services.digests.profiles import get_curriculum_profile
+from services.digests.profiles.base import store_target
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,10 @@ class EnumerateResult:
     #: was dropped in transit — the caller cannot otherwise tell, because a server
     #: that ignores the field answers exactly like one that honoured it.
     pinned_document_ids: List[str] = field(default_factory=list)
+    #: The subset of ``pinned_document_ids`` that actually contributed units. CAS
+    #: verifies per id, so an aggregate count is not enough: "2 documents pinned,
+    #: 40 units added" cannot distinguish both landing from one landing twice.
+    pinned_applied_ids: List[str] = field(default_factory=list)
     pinned_unit_count: int = 0
 
     def to_summary(self, include_units: bool = False) -> Dict[str, Any]:
@@ -104,6 +109,7 @@ class EnumerateResult:
             # for" from "this server predates the field".
             "extra_documents_applied": {
                 "requested": self.pinned_document_ids,
+                "applied": self.pinned_applied_ids,
                 "units_added": self.pinned_unit_count,
             },
         }
@@ -212,6 +218,14 @@ def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     pinned: List[Dict[str, Any]] = []
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         conn.read_only = True  # belt-and-suspenders; only SELECTs are issued
+        # Logged every build, because the store is chosen by precedence rather than
+        # by the file anyone reads: a per-client or global env var outranks the
+        # client YAML (settings._STORE_ENV_OVERRIDES), so nothing in the repo tells
+        # an operator where a deployment actually reads. One line here turns "this
+        # block has no calendar" into "this deployment is reading the wrong
+        # database" without a second person connecting to RDS to find out.
+        log.info("enumerate: client=%s block=%s store=%s schema=%s",
+                 cid, block, store_target(conn), schema)
         with conn.cursor() as cur:
             scope = profile.load_scope(cur, schema, cid, block)
             if pinned_ids:
@@ -225,6 +239,7 @@ def enumerate_block(tenant_cfg: TenantConfig, block: str, client_id: str = "",
     result.pinned_unit_count = len(pinned)
     if pinned_ids:
         found = {str((u.get("metadata_json") or {}).get("job_id") or "") for u in pinned}
+        result.pinned_applied_ids = [d for d in pinned_ids if d in found]
         missing = [d for d in pinned_ids if d not in found]
         if missing:
             # Named, not counted: a pinned document that contributed nothing is a
@@ -397,8 +412,19 @@ def _assemble(block, client_id, profile, scope) -> EnumerateResult:
     # Profile notes first: they describe the scope every later flag is computed
     # from, so a reader sees "these tags were merged" before the day counts.
     flags.extend(n for n in getattr(scope, "notes", []) if n)
-    if total_days and enumerated_days != total_days:
+    if total_days and enumerated_days < total_days:
         flags.append(f"BLOCK_INCOMPLETE — enumerated {enumerated_days} days != total_days {total_days}")
+    elif total_days and enumerated_days > total_days:
+        # Distinct from BLOCK_INCOMPLETE, and newly reachable: day rows are now
+        # merged across a block's duplicate calendars, so a day number present
+        # only in a lower-ranked duplicate widens the set, while total_days still
+        # comes from the canonical calendar's own column. More days than declared
+        # is a disagreement between calendars, not a missing part of the block,
+        # and calling it "incomplete" sends a reviewer looking for the opposite
+        # problem.
+        flags.append(f"CALENDAR_DAYS_EXCEED_DECLARED — enumerated {enumerated_days} days "
+                     f"but the canonical calendar declares total_days {total_days}; "
+                     f"the block's calendars disagree on how many days it has")
     if dup_ids:
         flags.append(f"DUPLICATE_CALENDAR — {len(dup_ids)} other calendar(s) for this block: {dup_ids}")
     for dn in sorted(day_numbers):

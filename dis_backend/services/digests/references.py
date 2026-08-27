@@ -254,7 +254,48 @@ def chapter_runs(units: Sequence[Dict[str, Any]]) -> Dict[int, Tuple[int, int]]:
             best = current
         if len(best) >= _MIN_CHAPTER_CHUNKS:
             runs[chapter] = (best[0], best[-1])
-    return runs
+    return _monotonic_only(runs)
+
+
+def _monotonic_only(runs: Dict[int, Tuple[int, int]]) -> Dict[int, Tuple[int, int]]:
+    """Keep only the chapters whose located positions agree with book order.
+
+    "Longest run wins" knows nothing about WHERE a run sits, and a later region
+    that reuses an early chapter's figure numbering — an appendix, a
+    worked-examples section, renumbered errata — can be longer than the real
+    chapter and take its place. The wrong span is then returned as an exact
+    resolution, with no reason string and no coverage flag, which is the worst
+    possible failure: silently confident and wrong.
+
+    A book's chapters appear in order, so the largest subset of runs that is
+    strictly increasing in start position is the one consistent with being a
+    book. Chapters outside it are dropped rather than guessed at, which routes
+    them through ``units_for_citation``'s documented fallback WITH a reason —
+    turning a silent wrong answer into a visible approximate one.
+    """
+    chapters = sorted(runs)
+    if len(chapters) < 2:
+        return runs
+    # Longest strictly-increasing-by-start subsequence over chapters in order.
+    # n is the chapter count (<= ~30 for these handbooks), so O(n^2) is free.
+    length = [1] * len(chapters)
+    prev = [-1] * len(chapters)
+    for i in range(len(chapters)):
+        for j in range(i):
+            if runs[chapters[j]][0] < runs[chapters[i]][0] and length[j] + 1 > length[i]:
+                length[i] = length[j] + 1
+                prev[i] = j
+    end = max(range(len(chapters)), key=lambda i: length[i])
+    keep = []
+    while end != -1:
+        keep.append(chapters[end])
+        end = prev[end]
+    kept = set(keep)
+    for chapter in chapters:
+        if chapter not in kept:
+            log.warning("chapter %s located at %s contradicts book order; "
+                        "not trusted as an exact span", chapter, runs[chapter])
+    return {c: runs[c] for c in chapters if c in kept}
 
 
 #: Characters of reference text one day may carry when the cited chapter cannot be

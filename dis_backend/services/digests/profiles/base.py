@@ -25,6 +25,32 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 
+def store_target(conn_or_cur: Any) -> str:
+    """``host/dbname`` for an open structure-store connection, credentials stripped.
+
+    Takes a connection or a cursor, so a caller that only holds the cursor (every
+    profile read does) needs no extra plumbing.
+
+    Which database a read actually landed in is not otherwise recoverable from the
+    logs, and it is the answer to the most expensive class of enumeration failure.
+    On 2026-08-27 a dev deployment whose ``DIS_STRUCTURE_STORE_URL`` pointed at an
+    empty sibling database reported "No calendar found for block 'Block 9'" — a
+    message indistinguishable from a block that genuinely has no calendar, and
+    settled only by connecting to both databases by hand. Since per-client and
+    global env vars outrank the client YAML (settings._STORE_ENV_OVERRIDES), the
+    committed config is NOT evidence of where a deployment reads, so the store has
+    to name itself.
+
+    Host and database only, never the DSN: it carries the store password.
+    """
+    try:
+        info = getattr(conn_or_cur, "connection", conn_or_cur).info
+        return f"{info.host}/{info.dbname}"
+    except Exception:
+        # A logging/diagnostic helper must never be the thing that fails a build.
+        return "unknown-host/unknown-db"
+
+
 @dataclass
 class ScopeData:
     """The tenant-specific inventory the shared assembler needs. ``days`` is the

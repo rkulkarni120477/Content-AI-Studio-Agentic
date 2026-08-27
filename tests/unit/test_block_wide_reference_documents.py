@@ -76,20 +76,28 @@ def _run(monkeypatch, *, request_body, bundle=None, report=None, accepts_extra=T
     """Run _build_and_reduce against a stub DIS; returns (result, calls)."""
     calls = {}
 
+    # An "old client" is simulated by its SIGNATURE, not by raising TypeError from
+    # a method that declares the parameter. _call_with_extra_documents inspects the
+    # signature and never makes the doomed call, so a stub that accepts **kw and
+    # raises is a NEW client with an internal bug — and that TypeError is meant to
+    # propagate. Simulating the old one by raising made this test assert the
+    # opposite of the guarantee it names.
+    class _OldStub:
+        def build_digests_sync(self, block, current_user=None, client_id=None,
+                               map_guidance=""):
+            calls.setdefault("build", []).append({})
+            return report if report is not None else {}
+
+        def get_digests_bundle_sync(self, block, current_user=None, client_id=None):
+            calls.setdefault("bundle", []).append({})
+            return bundle if bundle is not None else {"enumerate": {"days": [1]}, "digests": []}
+
     class _Stub:
         def build_digests_sync(self, block, **kw):
-            if not accepts_extra and "extra_document_ids" in kw:
-                raise TypeError(
-                    "build_digests_sync() got an unexpected keyword argument "
-                    "'extra_document_ids'")
             calls.setdefault("build", []).append(kw)
             return report if report is not None else {}
 
         def get_digests_bundle_sync(self, block, **kw):
-            if not accepts_extra and "extra_document_ids" in kw:
-                raise TypeError(
-                    "get_digests_bundle_sync() got an unexpected keyword argument "
-                    "'extra_document_ids'")
             calls.setdefault("bundle", []).append(kw)
             return bundle if bundle is not None else {"enumerate": {"days": [1]}, "digests": []}
 
@@ -102,7 +110,7 @@ def _run(monkeypatch, *, request_body, bundle=None, report=None, accepts_extra=T
 
     import promptops_app.services.block_wide_generator as bwg
     monkeypatch.setattr(bwg, "BlockWideGenerator", _Gen)
-    monkeypatch.setattr(svc, "dis_client", _Stub())
+    monkeypatch.setattr(svc, "dis_client", _Stub() if accepts_extra else _OldStub())
     monkeypatch.setattr(svc, "_map_usage_ctx", lambda *a, **k: None)
     monkeypatch.setattr(svc, "_reserve_map_budget", lambda *a, **k: [])
     monkeypatch.setattr(svc, "_settle_map_usage", lambda *a, **k: None)

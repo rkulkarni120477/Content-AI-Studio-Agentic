@@ -15,17 +15,33 @@ import re
 from typing import Any, Dict, List, Optional
 
 from services.blocks import BLOCK_KEY_SQL, block_key, spelling_note
-from services.digests.profiles.base import CurriculumProfile, ScopeData
+from services.digests.profiles.base import CurriculumProfile, ScopeData, store_target
 
 
 #: An extracted cell that is really the whole table row pasted back in. The
 #: 'Block 09' calendars store their ENTIRE flattened day row in assignments_json
-#: and assessments_json — "Day 4 | LANDING GEAR SYSTEMS Aircraft wheels ... |
-#: Reading: ..." — so the Projects Today column reported a paragraph of lesson
-#: topics as though it were the day's project. A cell that opens with the day's
-#: own "Day N |" header is that leak, never an assignment; a real one reads
-#: "Project 9-1" or "Quiz 3".
-_ROW_RESTATEMENT_RE = re.compile(r"^\s*Day\s*\d+\s*\|", re.IGNORECASE)
+#: and assessments_json — "Day 4 | LANDING GEAR SYSTEMS Aircraft wheels Wheel
+#: construction Wheel inspection | Reading: ..." — so the Projects Today column
+#: reported a paragraph of lesson topics as though it were the day's project.
+_ROW_RESTATEMENT_RE = re.compile(r"^\s*Day\s*\d+\s*\|(?P<rest>.*)$",
+                                 re.IGNORECASE | re.DOTALL)
+
+#: How much text may follow a "Day N |" label before the cell is judged to be the
+#: whole row rather than a label. The prefix ALONE is not evidence: a calendar may
+#: legitimately write "Day 3 | Project 9-2", and rejecting that would discard a
+#: real assignment and then either borrow a sibling calendar's value or blank the
+#: cell. The leak is identifiable by its SIZE and by carrying further column
+#: separators — the real rows run 80+ characters across three or more columns.
+_ROW_RESTATEMENT_MAX_LABEL = 60
+
+
+def _is_row_restatement(text: str) -> bool:
+    """Whether a cell is its own table row pasted back in, not an extracted value."""
+    m = _ROW_RESTATEMENT_RE.match(str(text or ""))
+    if not m:
+        return False
+    rest = m.group("rest").strip()
+    return len(rest) > _ROW_RESTATEMENT_MAX_LABEL or "|" in rest
 
 #: A header row captured as data: the spreadsheet's own column titles. Seen live
 #: on Block 9 day 1, whose assignments cell held "Day | Learning Objectives |
@@ -56,7 +72,7 @@ def _usable(value: Any, fieldname: str = "") -> bool:
     extracted = fieldname.endswith("_json")
     if not extracted:
         return True
-    if _HEADER_ROW_RE.search(text) or _ROW_RESTATEMENT_RE.search(text):
+    if _HEADER_ROW_RE.search(text) or _is_row_restatement(text):
         return False
     # A JSON list whose every item restates the row is junk even when the list
     # itself is well-formed — the leak is inside the items, not the container.
@@ -69,7 +85,7 @@ def _usable(value: Any, fieldname: str = "") -> bool:
             real = [i for i in items
                     if str(i).strip()
                     and not _HEADER_ROW_RE.search(str(i))
-                    and not _ROW_RESTATEMENT_RE.search(str(i))]
+                    and not _is_row_restatement(str(i))]
             return bool(real)
     return True
 
@@ -152,8 +168,13 @@ class AIMCurriculumProfile(CurriculumProfile):
         )
         rows = cur.fetchall()
         if not rows:
+            # Names the database, not just the table: the block key is normalized
+            # here, so a miss means the rows are not in the store this deployment
+            # reads — which on 2026-08-27 was an env override pointing dev at an
+            # empty sibling database while the client YAML named the populated one.
             raise LookupError(
-                f"No calendar found for client={client_id!r} block={block!r} in {schema}.dis_course_calendars"
+                f"No calendar found for client={client_id!r} block={block!r} in "
+                f"{schema}.dis_course_calendars of {store_target(cur)}"
             )
         canonical = rows[0]
         dup_ids = [r["calendar_id"] for r in rows[1:]]

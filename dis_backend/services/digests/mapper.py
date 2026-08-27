@@ -527,7 +527,12 @@ def _source_body(llm_units: List[Dict[str, Any]],
     return body, dropped
 
 
-def _reading_body(references: Any, limit: Optional[int] = None) -> tuple[str, Dict[str, int]]:
+#: Sentinel for "no cap" on _reading_body. NOT 0 — see that function's docstring.
+READING_NO_LIMIT = None
+
+
+def _reading_body(references: Any, limit: Optional[int] = READING_NO_LIMIT
+                  ) -> tuple[str, Dict[str, int]]:
     """The ASSIGNED READING block: the handbook passages this day's calendar cites.
 
     Kept out of ``_source_body`` and labelled separately because the two are
@@ -540,6 +545,22 @@ def _reading_body(references: Any, limit: Optional[int] = None) -> tuple[str, Di
     so the first pages of the assigned range are the ones the day actually opens
     on, and dropping the tail keeps a contiguous passage where dropping the
     lowest-ranked chunks would leave holes mid-argument.
+
+    ``limit`` is a HARD character cap, and ``0`` means "no room" — deliberately
+    NOT ``_source_body``'s "0 = do not trim" convention. The caller computes it
+    as ``budget - len(body)``, which reaches 0 whenever the day's own units
+    already fill the model's window; under the other convention that arithmetic
+    silently meant "unlimited", so exactly when there was no room left the whole
+    chapter was appended to an already-full prompt with an empty ``dropped``
+    dict — no flag, no log, and (with the escalation ladder empty on this
+    account) no larger model to absorb it. Measured: limit=10,000 kept 9,161
+    chars and reported 47 dropped units; limit=0 kept 150,255 and reported none.
+    Pass ``READING_NO_LIMIT`` for the unbounded sizing pass.
+
+    Nothing is force-kept either. ``_source_body`` always retains its first unit
+    because a day must contribute something; assigned reading is supplementary
+    to the day's own material, so when there is no room it yields entirely
+    rather than evicting what it was meant to support.
     """
     units = list(getattr(references, "units", None) or [])
     if not units:
@@ -551,23 +572,36 @@ def _reading_body(references: Any, limit: Optional[int] = None) -> tuple[str, Di
     kept: List[str] = []
     used = len(header)
     dropped_units = dropped_chars = 0
+    withheld = 0
     for u in units:
+        # The same gate every other unit passes through. Reference works reach
+        # this function straight from a SQL read that filters on document TYPE
+        # only, so without this an answer key bound into a textbook appendix — or
+        # any ebook_reference a future ingestion marks is_answer_key — would enter
+        # the prompt, and "answer keys: never, regardless of audience" is stated
+        # in this module as unconditional. Instructor visibility is fine here:
+        # build_digest fixes the audience to instructor (see its docstring).
+        if not text_allowed_for_digest(u, "instructor"):
+            withheld += 1
+            continue
         text = u.get("text_content") or ""
         if MAP_MAX_UNIT_CHARS:
             text = text[:MAP_MAX_UNIT_CHARS]
         if not text.strip():
             continue
-        if limit and used + len(text) > limit and kept:
+        if limit is not None and used + len(text) > limit:
             dropped_units += 1
             dropped_chars += len(text)
             continue
         kept.append(text)
         used += len(text)
+    dropped: Dict[str, int] = {}
+    if dropped_units:
+        dropped = {"reading_units": dropped_units, "reading_chars": dropped_chars}
+    if withheld:
+        dropped["reading_units_withheld"] = withheld
     if not kept:
-        return "", ({"reading_units": dropped_units, "reading_chars": dropped_chars}
-                    if dropped_units else {})
-    dropped = ({"reading_units": dropped_units, "reading_chars": dropped_chars}
-               if dropped_units else {})
+        return "", dropped
     return header + "\n\n".join(kept), dropped
 
 
@@ -590,7 +624,7 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     # escalating keeps all of the day's evidence, trimming silently discards the very
     # material the extraction is supposed to rest on.
     full_body, _ = _source_body(llm_units, limit=0)
-    full_reading, _ = _reading_body(references, limit=0)
+    full_reading, _ = _reading_body(references, limit=READING_NO_LIMIT)
     model, escalation = select_model_for(model, len(full_body) + len(full_reading))
 
     budget = context_budget_chars(model)

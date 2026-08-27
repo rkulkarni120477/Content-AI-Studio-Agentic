@@ -793,17 +793,39 @@ def _call_with_extra_documents(fn, *args, extra_document_ids: List[str], **kwarg
     """
     if not extra_document_ids:
         return fn(*args, **kwargs), True
-    try:
-        return fn(*args, extra_document_ids=extra_document_ids, **kwargs), True
-    except TypeError as exc:
-        # Narrowed to a signature rejection: a TypeError raised from inside the call
-        # is a real bug and must keep travelling to the failure branch above.
-        if "extra_document_ids" not in str(exc):
-            raise
-        _log.warning("dis_client.%s does not accept extra_document_ids — retrying "
+    if not _accepts_extra_documents(fn):
+        _log.warning("dis_client.%s does not accept extra_document_ids — calling "
                      "without the %s pinned document(s)",
                      getattr(fn, "__name__", "?"), len(extra_document_ids))
         return fn(*args, **kwargs), False
+    # No TypeError guard here on purpose. Whether the callee takes the parameter is
+    # answered by its SIGNATURE above, so any TypeError from this point is raised
+    # from inside the call and is a real bug that must keep travelling to the
+    # failure branch. Matching on the exception message instead could not tell the
+    # two apart: a genuine internal error whose text happens to name the field —
+    # "cannot build cache key: extra_document_ids contains non-hashable entries" —
+    # was swallowed, retried without the pin, succeeded, and reported "old client"
+    # while a real defect went unlogged.
+    return fn(*args, extra_document_ids=extra_document_ids, **kwargs), True
+
+
+def _accepts_extra_documents(fn) -> bool:
+    """Whether *fn* declares an ``extra_document_ids`` parameter (or **kwargs).
+
+    Signature inspection, not exception text: it answers the actual question and
+    it answers it BEFORE the call, so a callee that cannot take the pin is never
+    invoked twice. Unintrospectable callables (C functions, some mocks) are
+    assumed to accept it — the call itself is then the authority, and a genuine
+    TypeError from one propagates, which is the safe direction.
+    """
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if "extra_document_ids" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _extra_documents_ack(*payloads) -> Optional[List[str]]:
@@ -822,8 +844,27 @@ def _extra_documents_ack(*payloads) -> Optional[List[str]]:
             if not isinstance(scope, dict) or _EXTRA_DOCS_ACK_KEY not in scope:
                 continue
             value = scope.get(_EXTRA_DOCS_ACK_KEY)
-            ids = ([str(x).strip() for x in value if str(x).strip()]
-                   if isinstance(value, (list, tuple)) else [])
+            # DIS reports a dict: {"requested": [...], "applied": [...],
+            # "units_added": N}. The per-id "applied" list is the only field that
+            # can answer "did MY document land", which is what this check exists
+            # for — "2 requested, 40 units added" cannot distinguish both landing
+            # from one landing twice.
+            #
+            # The bare-list branch is not dead code: it is what a DIS built
+            # between this feature's two halves would send, and reading a dict as
+            # "not a list" is exactly the bug this replaces — it silently made
+            # every pinned run report honoured=false while the pin worked, in both
+            # test suites, because the tests fabricated the ack shape instead of
+            # taking it from the producer.
+            if isinstance(value, dict):
+                raw = value.get("applied")
+                if raw is None:
+                    raw = value.get("requested") if value.get("units_added") else []
+            elif isinstance(value, (list, tuple)):
+                raw = value
+            else:
+                raw = []
+            ids = [str(x).strip() for x in (raw or []) if str(x).strip()]
             seen = seen or []
             seen.extend(i for i in ids if i not in seen)
     return seen

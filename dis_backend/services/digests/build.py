@@ -111,6 +111,7 @@ def _finalize_report(block: str, en, per_day: List[Dict[str, Any]],
         # one that honoured them.
         "extra_documents_applied": {
             "requested": en.pinned_document_ids,
+            "applied": en.pinned_applied_ids,
             "units_added": en.pinned_unit_count,
         },
         "per_day": sorted(per_day, key=lambda p: p["day_number"]),
