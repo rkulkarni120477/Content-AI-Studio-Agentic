@@ -7,6 +7,11 @@ import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import RetrievalStatus from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
 import { acceptAttribute, rejectionReason as policyRejectionReason } from '@features/sourceLibrary/utils/uploadPolicy';
+import {
+  optionsKeyForTaxonomyKey,
+  taxonomyFiltersFromUiConfig,
+  toSourceLibraryApiFilters,
+} from '@features/sourceLibrary/utils/taxonomyFilters';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
@@ -207,7 +212,9 @@ export default function SourceLibraryPage() {
     }
     setLoading(true);
     try {
-      const data = await sourceLibraryApi.listDocuments(withScope(nextFilters));
+      // Server-side filtering owns pagination; map UI keys (e.g. module → module_name)
+      // and never re-filter only the current page client-side.
+      const data = await sourceLibraryApi.listDocuments(withScope(toSourceLibraryApiFilters(nextFilters)));
       const list = data.documents || data.sources || [];
       setDocuments(list);
       writeCachedDocuments(docsCacheKey, list);
@@ -575,6 +582,7 @@ export default function SourceLibraryPage() {
   }
 
   const documentTypeOptions = useMemo(() => unique(filterOptions.document_types), [filterOptions]);
+  const taxonomyFilters = useMemo(() => taxonomyFiltersFromUiConfig(uiConfig), [uiConfig]);
   useEffect(() => {
     let cancelled = false;
     sourceLibraryApi.getUploadPolicy()
@@ -605,20 +613,10 @@ export default function SourceLibraryPage() {
   }, [uploadQueue, uploadStatusFilters, documents]);
   const uploadPurposeOptions = useMemo(() => unique((uploadQueue || []).map((i) => i.purpose)), [uploadQueue]);
   const uploadDocTypeOptions = useMemo(() => unique((uploadQueue || []).map((i) => i.document_type)), [uploadQueue]);
-  const displayedDocuments = useMemo(() => {
-    const q = String(filters.search || '').trim().toLowerCase();
-    return (documents || []).filter((doc) => {
-      if (filters.purpose && doc.purpose !== filters.purpose) return false;
-      if (filters.document_type && doc.document_type !== filters.document_type) return false;
-      if (filters.status && String(doc.status || 'processed') !== filters.status) return false;
-      if (!q) return true;
-      return [doc.title, doc.source_file_name, doc.document_type, doc.purpose, doc.document_id, doc.job_id]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-        .includes(q);
-    });
-  }, [documents, filters]);
+  // Documents are already filtered server-side (including search/purpose/type/status
+  // and configured taxonomy filters). Re-filtering the current page would hide
+  // matches that fall outside this page of results.
+  const displayedDocuments = documents || [];
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Source Library' }]} noPadding>
@@ -794,6 +792,39 @@ export default function SourceLibraryPage() {
               <option value="">All statuses</option>
               {statusOptions.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
+            {taxonomyFilters.map((tf) => {
+              const key = tf.key;
+              const label = tf.label || key;
+              const type = String(tf.type || 'select').toLowerCase();
+              const optionsKey = optionsKeyForTaxonomyKey(key);
+              const options = unique(filterOptions[optionsKey] || []);
+              if (type === 'text') {
+                return (
+                  <div key={key}>
+                    <label className={styles.label}>{label}</label>
+                    <input
+                      className={styles.input}
+                      value={filters[key] || ''}
+                      onChange={(e) => updateFilter(key, e.target.value)}
+                      placeholder={label}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div key={key}>
+                  <label className={styles.label}>{label}</label>
+                  <select
+                    className={styles.select}
+                    value={filters[key] || ''}
+                    onChange={(e) => updateFilter(key, e.target.value)}
+                  >
+                    <option value="">{`All ${label}`}</option>
+                    {options.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              );
+            })}
           </div>
         </aside>
 
