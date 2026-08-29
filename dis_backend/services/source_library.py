@@ -19,7 +19,7 @@ from services.metadata_framework.adapters import (
     project_filter_options_map,
     project_index_metadata,
 )
-from services.metadata_framework.registry import DEFAULT_REGISTRY
+from services.metadata_framework.registry import registry_for_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -225,12 +225,18 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key: str) -> Dict[str, Any]:
+def compact_source_record(
+    payload: Dict[str, Any],
+    payload_key: str,
+    content_key: str,
+    tenant_cfg: Optional[TenantConfig] = None,
+) -> Dict[str, Any]:
     meta = payload.get("metadata", {}) or {}
     source = payload.get("source_file", {}) or {}
     document_type = str(meta.get("document_type") or meta.get("doc_type") or source.get("type") or "document")
     purpose = normalize_purpose(str(meta.get("purpose") or ""), document_type)
     now = datetime.utcnow().isoformat()
+    registry = registry_for_tenant(tenant_cfg)
 
     def _first_unit_value(key: str):
         """Fallback: first non-empty value of `key` across content-unit metadata.
@@ -284,9 +290,10 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "updated_at": now,
     }
     # Optional simple filter / calendar-join keys. Driven by the Field Registry
-    # (default = pre-Phase-1 hardcoded list). Additive only; absent values stay
-    # empty/None. AIM profile transforms still write into payload.metadata first.
-    record.update(project_index_metadata(meta, _promote, DEFAULT_REGISTRY))
+    # (tenant metadata_framework when present; else DEFAULT_REGISTRY). Additive
+    # only; absent values stay empty/None. AIM profile transforms still write
+    # into payload.metadata first.
+    record.update(project_index_metadata(meta, _promote, registry))
     return record
 
 
@@ -476,7 +483,7 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     c_key = source_content_key(tenant_cfg, client_id, job_id)
     content_doc = build_clean_content_document(payload)
     content_url = writer.write_json(c_key, content_doc)
-    record = compact_source_record(payload, p_key, c_key)
+    record = compact_source_record(payload, p_key, c_key, tenant_cfg=tenant_cfg)
     record["total_units"] = int(content_doc.get("total_units") or 0)
     # Alongside total_units, and for the same reason it is set here rather than in
     # compact_source_record: both describe the CLEAN content document retrieval
@@ -486,8 +493,11 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     return {"content_key": c_key, "content_url": content_url, "index_url": index_url}
 
 
-def source_filter_options(records: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    fields = project_filter_options_map(DEFAULT_REGISTRY)
+def source_filter_options(
+    records: List[Dict[str, Any]],
+    tenant_cfg: Optional[TenantConfig] = None,
+) -> Dict[str, List[str]]:
+    fields = project_filter_options_map(registry_for_tenant(tenant_cfg))
     out: Dict[str, set] = {k: set() for k in fields}
     for r in records:
         for out_key, field in fields.items():

@@ -21,7 +21,7 @@ from services.metadata_framework.adapters import (
     project_cas_list_taxonomy,
     project_retrieval_metadata,
 )
-from services.metadata_framework.registry import DEFAULT_REGISTRY
+from services.metadata_framework.registry import registry_for_tenant
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
@@ -331,8 +331,8 @@ class ContextRetrievalService:
                     "created_at": src.get("created_at"),
                     "updated_at": src.get("updated_at"),
                     # Taxonomy columns: Field Registry cas_list promote
-                    # (default = course_name/block/day/chapter/module_name/learning_objective).
-                    **project_cas_list_taxonomy(src, DEFAULT_REGISTRY),
+                    # (tenant metadata_framework when present; else DEFAULT_REGISTRY).
+                    **project_cas_list_taxonomy(src, registry_for_tenant(self.tenant_cfg)),
                 })
         sources.sort(key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""), reverse=True)
         total = len(sources)
@@ -347,7 +347,7 @@ class ContextRetrievalService:
             "limit": limit,
             "offset": offset,
             "sources": page,
-            "filter_options": compact_filter_options(records),
+            "filter_options": compact_filter_options(records, tenant_cfg=self.tenant_cfg),
         }
 
     def _attach_indexed_units(self, page: List[Dict[str, Any]]) -> None:
@@ -445,7 +445,10 @@ class ContextRetrievalService:
 
     def source_filter_options(self, client_id: str) -> Dict[str, List[str]]:
         index = read_source_index(self.tenant_cfg, client_id)
-        return compact_filter_options(list(index.get("sources") or []))
+        return compact_filter_options(
+            list(index.get("sources") or []),
+            tenant_cfg=self.tenant_cfg,
+        )
 
     def get_structure(self, client_id: str, job_id: str) -> Dict[str, Any]:
         """Return clean readable content for one source document.
@@ -583,9 +586,12 @@ class ContextRetrievalService:
         compact_source_record, so _passes_filters can gate block/day/quiz/
         project entirely from the index (no content-file read). Keys absent on
         older, pre-enrichment records come back None and behave as "unset".
-        Field set comes from the Field Registry (default = pre-Phase-1 list).
+        Field set comes from the Field Registry (tenant metadata_framework when
+        present; else DEFAULT_REGISTRY).
         """
-        return project_retrieval_metadata(rec, DEFAULT_REGISTRY)
+        return project_retrieval_metadata(
+            rec, registry_for_tenant(getattr(self, "tenant_cfg", None))
+        )
 
     def _enrich_payload_meta(self, payload: Dict[str, Any]) -> None:
         """Derive use_for_* purpose flags and back-stop restricted marking.
