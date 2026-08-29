@@ -39,16 +39,43 @@ describe('taxonomyFiltersFromUiConfig', () => {
     expect(taxonomyFiltersFromUiConfig(uiConfig).map((f) => f.key)).toEqual(['block']);
   });
 
+  it('renders a tenant-configured field without a hardcoded allowlist entry', () => {
+    const uiConfig = {
+      source_library: {
+        taxonomy_filters: [
+          { key: 'block', label: 'Block', type: 'select' },
+          { key: 'test_metadata_field', label: 'Test Field', type: 'text' },
+        ],
+      },
+    };
+    expect(taxonomyFiltersFromUiConfig(uiConfig).map((f) => f.key)).toEqual([
+      'block',
+      'test_metadata_field',
+    ]);
+  });
+
   it('returns [] when taxonomy_filters are missing', () => {
     expect(taxonomyFiltersFromUiConfig(null)).toEqual([]);
     expect(taxonomyFiltersFromUiConfig({})).toEqual([]);
   });
 });
 
-describe('module → module_name mapping', () => {
+describe('API key mappings (characterization)', () => {
   it('maps module to module_name for the API contract', () => {
     expect(apiParamForTaxonomyKey('module')).toBe('module_name');
+    expect(apiParamForTaxonomyKey('module_name')).toBe('module_name');
     expect(apiParamForTaxonomyKey('course_name')).toBe('course_name');
+  });
+
+  it('maps day_number to day for the API contract', () => {
+    expect(apiParamForTaxonomyKey('day_number')).toBe('day');
+    expect(apiParamForTaxonomyKey('day')).toBe('day');
+  });
+
+  it('passes block, chapter, learning_objective through unchanged', () => {
+    expect(apiParamForTaxonomyKey('block')).toBe('block');
+    expect(apiParamForTaxonomyKey('chapter')).toBe('chapter');
+    expect(apiParamForTaxonomyKey('learning_objective')).toBe('learning_objective');
   });
 
   it('sends module_name when the UI filter key is module', () => {
@@ -63,6 +90,10 @@ describe('module → module_name mapping', () => {
       search: 'guide',
     });
     expect(params).not.toHaveProperty('module');
+  });
+
+  it('sends day when the UI filter key is day_number', () => {
+    expect(toSourceLibraryApiFilters({ day_number: 'Day 3' })).toEqual({ day: 'Day 3' });
   });
 });
 
@@ -92,6 +123,16 @@ describe('toSourceLibraryApiFilters', () => {
       block: 'Block 2',
     });
   });
+
+  it('forwards tenant synth field without an allowlist edit', () => {
+    expect(toSourceLibraryApiFilters({
+      test_metadata_field: 'ABC',
+      block: 'Block 9',
+    })).toEqual({
+      test_metadata_field: 'ABC',
+      block: 'Block 9',
+    });
+  });
 });
 
 describe('optionsKeyForTaxonomyKey', () => {
@@ -100,5 +141,9 @@ describe('optionsKeyForTaxonomyKey', () => {
     expect(optionsKeyForTaxonomyKey('day')).toBe('days');
     expect(optionsKeyForTaxonomyKey('module')).toBe('module');
     expect(optionsKeyForTaxonomyKey('course_name')).toBe('course_name');
+  });
+
+  it('falls through for tenant-configured keys', () => {
+    expect(optionsKeyForTaxonomyKey('test_metadata_field')).toBe('test_metadata_field');
   });
 });

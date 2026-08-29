@@ -20,6 +20,7 @@ from services.digests import progress as digest_progress
 from services.digests.enumerate import enumerate_block
 from services.digests.build import digest_status, context_bundle, run_tracked_build
 from services.digests.day_scoped import day_context, DEFAULT_SUPPLEMENT_K
+from services.metadata_framework.filter_query import build_documents_library_filters
 from services.source_library import delete_source_document
 from config.settings import get_tenant_config
 from storage.provider import get_storage_provider
@@ -59,23 +60,27 @@ async def documents_library(
 
     It is purpose-aware and client-config aware. The same endpoint supports AIM
     Block/Day filters and Cengage Chapter/Module/LO filters through metadata.
+
+    Extra query keys are accepted only when the tenant Field Registry promotes
+    them to filter_options (Phase 3). Unknown keys are ignored.
     """
     tenant = get_current_tenant(request)
     client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
-    filters = {
-        "document_type": document_type,
-        "visibility": visibility,
-        "status": status,
-        "search": search,
-        "block": block,
-        "day": day,
-        "chapter": chapter,
-        "module_name": module_name,
-        "learning_objective": learning_objective,
-        "course_name": course_name,
-        "course_id": course_id,
-        "metadata_filters": {},
-    }
+    filters = build_documents_library_filters(
+        document_type=document_type,
+        visibility=visibility,
+        status=status,
+        search=search,
+        block=block,
+        day=day,
+        chapter=chapter,
+        module_name=module_name,
+        learning_objective=learning_objective,
+        course_name=course_name,
+        course_id=course_id,
+        query_params=request.query_params,
+        tenant_cfg=tenant,
+    )
     return ContextRetrievalService(tenant, role=getattr(request.state, "role", "user")).documents_library(
         client_id, purpose=purpose, filters=filters, limit=limit, offset=offset
     )

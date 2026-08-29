@@ -2,35 +2,33 @@
  * Source Library taxonomy filter helpers.
  *
  * Filters are defined per client in DIS retrieval.source_ui.taxonomy_filters and
- * exposed to the UI as uiConfig.source_library.taxonomy_filters. CAS/DIS already
- * filter server-side; this module only maps UI config keys to the existing API
- * contract and filter_options keys.
+ * exposed to the UI as uiConfig.source_library.taxonomy_filters. CAS/DIS filter
+ * server-side; DIS authorizes filter keys via the tenant Field Registry
+ * (filter_options). This module maps UI keys onto the API / filter_options
+ * contract without maintaining a per-field allowlist of supported taxonomy keys.
  */
 
-/** Cengage YAML uses `module`; CAS/DIS list endpoints expect `module_name`. */
+/** Compatibility aliases: UI / YAML key → CAS/DIS storage query param. */
 export const TAXONOMY_API_KEY_MAP = {
   module: 'module_name',
+  day_number: 'day',
 };
 
 /**
- * Keys with an end-to-end Source Library filter path today.
- * AIM `topic` is configured in YAML but has no index/API path yet — deferred.
+ * Keys that appear in some tenant uiConfig but have no Source Library filter
+ * path yet. Not an allowlist of supported fields — only known deferred keys.
+ * AIM `topic` remains deferred (do not implement here).
  */
-export const SERVER_SUPPORTED_TAXONOMY_KEYS = new Set([
-  'course_name',
-  'block',
-  'day',
-  'chapter',
-  'module',
-  'module_name',
-  'learning_objective',
+export const DEFERRED_TAXONOMY_KEYS = new Set([
+  'topic',
 ]);
 
-/** Config/UI key → source_filter_options() response key. */
+/** Config/UI key → source_filter_options() response key (compat plurals / aliases). */
 export const TAXONOMY_OPTIONS_KEY_MAP = {
   course_name: 'course_name',
   block: 'blocks',
   day: 'days',
+  day_number: 'days',
   chapter: 'chapter',
   module: 'module',
   module_name: 'module',
@@ -42,7 +40,7 @@ export function taxonomyFiltersFromUiConfig(uiConfig) {
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry) => {
     const key = String(entry?.key || '').trim();
-    return key && SERVER_SUPPORTED_TAXONOMY_KEYS.has(key);
+    return key && !DEFERRED_TAXONOMY_KEYS.has(key);
   });
 }
 
@@ -59,13 +57,14 @@ export function optionsKeyForTaxonomyKey(key) {
 /**
  * Build query params for listDocuments.
  * Maps UI filter keys (e.g. module) onto the CAS/DIS contract (module_name)
- * and drops empty / unsupported values so pagination stays server-owned.
+ * and drops empty / deferred values so pagination stays server-owned.
+ * New registry filter_options fields need no allowlist edit here.
  */
 export function toSourceLibraryApiFilters(filters = {}) {
   const out = {};
   for (const [key, value] of Object.entries(filters || {})) {
     if (value === undefined || value === null || value === '') continue;
-    if (key === 'topic') continue;
+    if (DEFERRED_TAXONOMY_KEYS.has(key)) continue;
     const apiKey = apiParamForTaxonomyKey(key);
     out[apiKey] = value;
   }
