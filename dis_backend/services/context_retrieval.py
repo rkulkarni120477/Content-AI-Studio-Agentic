@@ -21,7 +21,19 @@ from services.metadata_framework.adapters import (
     project_cas_list_taxonomy,
     project_retrieval_metadata,
 )
-from services.metadata_framework.registry import registry_for_tenant
+from services.metadata_framework.registry import (
+    PROMOTE_FILTER_OPTIONS,
+    registry_for_tenant,
+)
+
+# Listing historically matched these via a hardcoded field loop even though they
+# are not filter_options-promoted (so they do not appear in filter dropdown maps).
+# Keep as compatibility — not Field Registry definitions.
+_LISTING_COMPAT_FILTER_FIELDS = ("lesson_name", "visibility")
+
+# purpose is filter_options-promoted but matched with multi-value business logic,
+# not the simple eq() path used for taxonomy/operational metadata fields.
+_FILTER_OPTIONS_SKIP_EQ = frozenset({"purpose"})
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
@@ -416,9 +428,21 @@ class ContextRetrievalService:
                 # and read as "that is all there is".
                 return same_block(src.get(field), value)
             return str(src.get(field) or "").lower() == str(value).lower()
-        for field in ("document_type", "source_file_type", "block", "course_name", "day", "chapter", "module_name", "lesson_name", "visibility", "status"):
+
+        # Filterable metadata: Field Registry filter_options promote
+        # (tenant metadata_framework when present; else DEFAULT_REGISTRY).
+        registry = registry_for_tenant(getattr(self, "tenant_cfg", None))
+        for spec in registry.for_promote(PROMOTE_FILTER_OPTIONS):
+            if spec.key in _FILTER_OPTIONS_SKIP_EQ:
+                continue
+            if not eq(spec.key, filters.get(spec.key)):
+                return False
+        # Compatibility: listing fields matched before Phase 2 that are not
+        # filter_options-promoted (dropdown maps stay unchanged).
+        for field in _LISTING_COMPAT_FILTER_FIELDS:
             if not eq(field, filters.get(field)):
                 return False
+
         # course_id isolates documents per CAS course; see course_scope_matches
         # for the sentinel rule, which retrieval now shares with this listing.
         if not course_scope_matches(src.get("course_id"), filters.get("course_id")):
@@ -438,6 +462,7 @@ class ContextRetrievalService:
                 return False
         q = str(filters.get("search") or "").strip().lower()
         if q:
+            # Search haystack is free-text UX, not a Field Registry definition.
             hay = " ".join(str(src.get(k) or "") for k in ("source_file_name", "title", "document_type", "course_name", "block", "day", "chapter", "module_name", "lesson_name", "learning_objective", "purpose")).lower()
             if q not in hay:
                 return False

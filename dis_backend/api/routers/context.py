@@ -71,12 +71,11 @@ async def documents_library(
         "day": day,
         "chapter": chapter,
         "module_name": module_name,
+        "learning_objective": learning_objective,
         "course_name": course_name,
         "course_id": course_id,
         "metadata_filters": {},
     }
-    if learning_objective:
-        filters["metadata_filters"]["learning_objective"] = learning_objective
     return ContextRetrievalService(tenant, role=getattr(request.state, "role", "user")).documents_library(
         client_id, purpose=purpose, filters=filters, limit=limit, offset=offset
     )
