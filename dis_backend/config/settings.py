@@ -148,11 +148,11 @@ class MetadataSchema(BaseModel):
 
 
 class MetadataFrameworkConfig(BaseModel):
-    """Phase 0 passthrough for client YAML ``metadata_framework``.
+    """Client YAML ``metadata_framework`` (Phase 0+).
 
-    Intentionally permissive: nested framework structure (fields, taxonomies,
-    chunking policies, etc.) is accepted as open content so later phases can
-    tighten types without rewriting TenantConfig loading.
+    Phase 0: permissive passthrough so nested content survives TenantConfig load.
+    Phase 1: ``services.metadata_framework.registry.registry_from_config`` reads
+    optional ``fields``; empty/missing falls back to the hardcoded DEFAULT_REGISTRY.
     """
     model_config = ConfigDict(extra="allow")
 

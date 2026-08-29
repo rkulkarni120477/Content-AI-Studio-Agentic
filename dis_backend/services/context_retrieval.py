@@ -17,6 +17,11 @@ from services.artifacts import ArtifactWriter
 from services.source_library import read_source_index, source_filter_options as compact_filter_options
 from services.generated_documents import GeneratedDocumentService
 from services.blocks import same_block
+from services.metadata_framework.adapters import (
+    project_cas_list_taxonomy,
+    project_retrieval_metadata,
+)
+from services.metadata_framework.registry import DEFAULT_REGISTRY
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
@@ -325,12 +330,9 @@ class ContextRetrievalService:
                     "extracted_chars": src.get("extracted_chars"),
                     "created_at": src.get("created_at"),
                     "updated_at": src.get("updated_at"),
-                    "course_name": src.get("course_name", ""),
-                    "block": src.get("block", ""),
-                    "day": src.get("day", ""),
-                    "chapter": src.get("chapter", ""),
-                    "module_name": src.get("module_name", ""),
-                    "learning_objective": src.get("learning_objective", ""),
+                    # Taxonomy columns: Field Registry cas_list promote
+                    # (default = course_name/block/day/chapter/module_name/learning_objective).
+                    **project_cas_list_taxonomy(src, DEFAULT_REGISTRY),
                 })
         sources.sort(key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""), reverse=True)
         total = len(sources)
@@ -581,41 +583,9 @@ class ContextRetrievalService:
         compact_source_record, so _passes_filters can gate block/day/quiz/
         project entirely from the index (no content-file read). Keys absent on
         older, pre-enrichment records come back None and behave as "unset".
+        Field set comes from the Field Registry (default = pre-Phase-1 list).
         """
-        return {
-            "title": rec.get("title"),
-            "document_type": rec.get("document_type"),
-            "doc_type": rec.get("document_type"),
-            "purpose": rec.get("purpose"),
-            "visibility": rec.get("visibility"),
-            # Security-critical: propagate restriction flags so the retrieval
-            # gate can hide restricted sources from students.
-            "restricted": rec.get("restricted"),
-            "access_level": rec.get("access_level"),
-            "status": rec.get("status"),
-            "course_name": rec.get("course_name"),
-            "block": rec.get("block"),
-            "day": rec.get("day"),
-            "chapter": rec.get("chapter"),
-            "module_name": rec.get("module_name"),
-            "learning_objective": rec.get("learning_objective"),
-            "content_type": rec.get("content_type"),
-            "block_id": rec.get("block_id"),
-            "block_number": rec.get("block_number"),
-            "day_number": rec.get("day_number"),
-            "day_id": rec.get("day_id"),
-            "mapped_day": rec.get("mapped_day"),
-            "filename_day_id": rec.get("filename_day_id"),
-            "quiz_number": rec.get("quiz_number"),
-            "project_number": rec.get("project_number"),
-            "lesson_name": rec.get("lesson_name"),
-            "subject_unit": rec.get("subject_unit"),
-            "course_id": rec.get("course_id"),
-            "program_id": rec.get("program_id"),
-            "calendar_mapping_required": rec.get("calendar_mapping_required"),
-            "is_generation_candidate": rec.get("is_generation_candidate"),
-            "is_archive_or_working_version": rec.get("is_archive_or_working_version"),
-        }
+        return project_retrieval_metadata(rec, DEFAULT_REGISTRY)
 
     def _enrich_payload_meta(self, payload: Dict[str, Any]) -> None:
         """Derive use_for_* purpose flags and back-stop restricted marking.

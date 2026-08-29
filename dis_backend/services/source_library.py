@@ -15,6 +15,11 @@ from typing import Any, Dict, List, Optional
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.locks import source_index_lock
+from services.metadata_framework.adapters import (
+    project_filter_options_map,
+    project_index_metadata,
+)
+from services.metadata_framework.registry import DEFAULT_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +251,7 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
             v = _first_unit_value(key)
         return v if v not in (None, "", []) else default
 
-    return {
+    record = {
         "document_id": payload.get("job_id"),
         "job_id": payload.get("job_id"),
         "tenant_id": payload.get("tenant_id"),
@@ -277,34 +282,12 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "source_relative_path": source.get("relative_path") or "",
         "created_at": payload.get("created_at") or now,
         "updated_at": now,
-        # Optional simple filter values only. No internal metadata dump.
-        "course_name": meta.get("course_name") or "",
-        "block": meta.get("block") or "",
-        "day": meta.get("day") or "",
-        "chapter": meta.get("chapter") or "",
-        "module_name": meta.get("module_name") or "",
-        "learning_objective": meta.get("learning_objective") or "",
-        # Filter / calendar-join keys promoted from the processed payload, so the
-        # retrieval allow-set and the block/day/quiz/project filters can be
-        # evaluated from the source index alone — no per-query content-file
-        # reads. Additive only; absent values stay empty/None.
-        "content_type": meta.get("content_type") or "",
-        "block_id": meta.get("block_id") or meta.get("block") or "",
-        "block_number": meta.get("block_number") or "",
-        "day_number": _promote("day_number", None),
-        "day_id": _promote("day_id"),
-        "mapped_day": meta.get("mapped_day") or "",
-        "filename_day_id": meta.get("filename_day_id") or "",
-        "quiz_number": _promote("quiz_number", None),
-        "project_number": _promote("project_number"),
-        "lesson_name": meta.get("lesson_name") or "",
-        "subject_unit": _promote("subject_unit"),
-        "course_id": meta.get("course_id") or "",
-        "program_id": meta.get("program_id") or "",
-        "calendar_mapping_required": bool(meta.get("calendar_mapping_required")),
-        "is_generation_candidate": meta.get("is_generation_candidate"),
-        "is_archive_or_working_version": bool(meta.get("is_archive_or_working_version")),
     }
+    # Optional simple filter / calendar-join keys. Driven by the Field Registry
+    # (default = pre-Phase-1 hardcoded list). Additive only; absent values stay
+    # empty/None. AIM profile transforms still write into payload.metadata first.
+    record.update(project_index_metadata(meta, _promote, DEFAULT_REGISTRY))
+    return record
 
 
 def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
@@ -504,18 +487,7 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
 
 
 def source_filter_options(records: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    fields = {
-        "document_types": "document_type",
-        "source_file_types": "source_file_type",
-        "purposes": "purpose",
-        "status": "status",
-        "course_name": "course_name",
-        "blocks": "block",
-        "days": "day",
-        "chapter": "chapter",
-        "module": "module_name",
-        "learning_objective": "learning_objective",
-    }
+    fields = project_filter_options_map(DEFAULT_REGISTRY)
     out: Dict[str, set] = {k: set() for k in fields}
     for r in records:
         for out_key, field in fields.items():
