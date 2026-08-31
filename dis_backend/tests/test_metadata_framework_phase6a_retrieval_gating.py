@@ -204,6 +204,47 @@ class TestTenantDynamicField:
         assert aim_service._passes_filters({}, p, {_SYNTH_FIELD: "synth-value"}) is True
 
 
+class TestTopicLegacyCompat:
+    """Top-level topic= gating preserved outside PROMOTE_RETRIEVAL (DECISION-001)."""
+
+    def test_no_topic_filter_passes(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters({}, p, {}) is True
+
+    def test_empty_topic_filter_passes(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters({}, p, {"topic": ""}) is True
+
+    def test_topic_match_passes(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters({}, p, {"topic": "Engines"}) is True
+
+    def test_topic_case_insensitive_match(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters({}, p, {"topic": "engines"}) is True
+
+    def test_topic_mismatch_fails(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters({}, p, {"topic": "Hydraulics"}) is False
+
+    def test_topic_missing_metadata_fails(self, aim_service):
+        p = _payload(visibility="instructor")
+        assert aim_service._passes_filters({}, p, {"topic": "Engines"}) is False
+
+    def test_topic_all_is_literal_not_wildcard(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters({}, p, {"topic": "all"}) is False
+
+    def test_metadata_filters_topic_unchanged(self, aim_service):
+        p = _payload(topic="Engines", visibility="instructor")
+        assert aim_service._passes_filters(
+            {}, p, {"metadata_filters": {"topic": "Engines"}}
+        ) is True
+        assert aim_service._passes_filters(
+            {}, p, {"metadata_filters": {"topic": "Hydraulics"}}
+        ) is False
+
+
 class TestDefaultRegistryFallback:
     def test_empty_metadata_framework_uses_default_registry_fields(self, aim_service):
         """AIM has no metadata_framework; visibility/status remain filterable."""
