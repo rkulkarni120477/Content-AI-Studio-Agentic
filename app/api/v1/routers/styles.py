@@ -153,11 +153,20 @@ def _upsert_generated_style_to_dis(style, current_user, *, active: bool | None =
     except Exception as exc:
         _log.warning("dis_generated_style_upsert_failed style_id=%s error=%s", getattr(style, "id", None), exc)
 
-def _get_style_or_404(db: Session, style_id: int, *, with_documents: bool = False):
-    """Fetch a style by ID or raise HTTP 404."""
+def _get_style_or_404(db: Session, style_id: int, current_user, *, with_documents: bool = False):
+    """Fetch a style by ID, scoped to the caller's tenant, or raise HTTP 404.
+
+    A cross-tenant style 404s exactly like a nonexistent one (no enumeration
+    oracle) — get_style_by_id is itself unfiltered, so without this any
+    authenticated user could act on any tenant's style just by knowing its id.
+    """
     from promptops_app.repositories import style_repository
+    from app.core.tenant_context import visible_to_tenant
+
     style = style_repository.get_style_by_id(db, style_id, with_documents=with_documents)
-    if style is None:
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    project_id = getattr(current_user, "_project_id", None)
+    if style is None or not visible_to_tenant(style.project_id, project_id, is_platform_admin):
         raise NotFoundError("Style", style_id)
     return style
 
@@ -233,10 +242,32 @@ def list_styles(
     current_user=Depends(get_current_user),
 ) -> PaginatedResponse[StyleListItem]:
     """Return styles for the workspace scope (project/course) when provided."""
-    from promptops_app.database import get_active_style, get_styles
+    from promptops_app.database import Course, get_active_style, get_styles
 
-    styles = get_styles(db, project_id=project_id, course_id=course_id)
-    active = get_active_style(db, project_id=project_id, course_id=course_id)
+    # A tenant caller is always scoped to their own project regardless of what
+    # project_id (if any) they pass — same rule as cdd.list_cdds. course_id is
+    # only honored if it actually belongs to that project: get_styles' own
+    # course_id branch does not itself check this, so an unverified
+    # cross-tenant course_id would return that course's styles regardless of
+    # the forced project_id.
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    if is_platform_admin:
+        effective_project_id = project_id
+        effective_course_id = course_id
+    else:
+        effective_project_id = getattr(current_user, "_project_id", None)
+        effective_course_id = None
+        if course_id is not None and effective_project_id is not None:
+            course = db.query(Course).filter(Course.id == course_id).first()
+            if course and course.project_id == effective_project_id:
+                effective_course_id = course_id
+        if effective_project_id is None:
+            # No tenant to scope to — nothing rather than the global catalogue
+            # get_styles(db) returns when both params are omitted.
+            return PaginatedResponse.create(items=[], total=0, page=page, page_size=page_size)
+
+    styles = get_styles(db, project_id=effective_project_id, course_id=effective_course_id)
+    active = get_active_style(db, project_id=effective_project_id, course_id=effective_course_id)
     active_id = active.id if active else None
 
     total = len(styles)
@@ -304,7 +335,7 @@ def create_style(
         len(request_body.document_ids or []),
         request_body.activate,
     )
-    return _style_to_read(_get_style_or_404(db, style.id, with_documents=True), current_user)
+    return _style_to_read(_get_style_or_404(db, style.id, current_user, with_documents=True), current_user)
 
 
 @router.get(
@@ -318,7 +349,7 @@ def get_style(
     current_user=Depends(get_current_user),
 ) -> StyleRead:
     """Return full style details including linked documents (Streamlit view panel)."""
-    style = _get_style_or_404(db, style_id, with_documents=True)
+    style = _get_style_or_404(db, style_id, current_user, with_documents=True)
     return _style_to_read(style, current_user)
 
 
@@ -334,7 +365,7 @@ def update_style(
     current_user=Depends(require_permission("style.edit")),
 ) -> StyleRead:
     """Update style metadata. Does not regenerate AI understanding."""
-    style = _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, current_user)
 
     if request_body.name is not None:
         style.name = request_body.name
@@ -358,7 +389,7 @@ def delete_style(
     current_user=Depends(require_permission("style.delete")),
 ) -> None:
     """Hard-delete a style. Admin only."""
-    style = _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, current_user)
     db.delete(style)
     db.commit()
     _log.info("style_deleted  user=%s  style_id=%d", current_user.username, style_id)
@@ -396,7 +427,7 @@ async def append_style_documents(
     from promptops_app.parsers.file_parser import _parse_uploaded_file
     from promptops_app.repositories import document_repository
 
-    style = _get_style_or_404(db, style_id, with_documents=True)
+    style = _get_style_or_404(db, style_id, current_user, with_documents=True)
     uploaded: list[str] = []
     errors: list[str] = []
     new_doc_ids: list[int] = []
@@ -496,7 +527,7 @@ def generate_style_intelligence(
         regenerate_style_understanding,
     )
 
-    style = _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, current_user)
 
     dis_context = _retrieve_dis_style_context(
         style, current_user, request_body.document_ids,
@@ -633,14 +664,14 @@ def activate_style(
     """
     from promptops_app.database import set_active_style
 
-    _get_style_or_404(db, style_id)
+    _get_style_or_404(db, style_id, current_user)
     set_active_style(
         db,
         style_id,
         project_id=request_body.project_id,
         course_id=request_body.course_id,
     )
-    style = _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, current_user)
     db.refresh(style)
     _upsert_generated_style_to_dis(style, current_user, active=True)
 
@@ -659,7 +690,7 @@ def deactivate_style(
     current_user=Depends(require_permission("style.deactivate")),
 ) -> StyleRead:
     """Remove active status from a style."""
-    style = _get_style_or_404(db, style_id)
+    style = _get_style_or_404(db, style_id, current_user)
     style.is_active = False
     db.commit()
     db.refresh(style)

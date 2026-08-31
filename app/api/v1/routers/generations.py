@@ -304,10 +304,24 @@ def list_generations(
     """
     from promptops_app.repositories import generation_repository
 
+    # A tenant caller is always scoped to their own project regardless of what
+    # project_id (if any) they pass — same rule as cdd.list_cdds. Safe to keep
+    # course_id as-is alongside it: list_editor_generations ANDs both filters
+    # together, so a course_id from another tenant just yields nothing rather
+    # than that other tenant's generations.
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    if is_platform_admin:
+        effective_project_id = project_id
+    else:
+        effective_project_id = getattr(current_user, "_project_id", None)
+        if effective_project_id is None:
+            # No tenant to scope to — nothing rather than every tenant's rows.
+            return PaginatedResponse.create(items=[], total=0, page=page, page_size=page_size)
+
     generations = generation_repository.list_editor_generations(
         db,
         course_id=course_id,
-        project_id=project_id,
+        project_id=effective_project_id,
         blueprint_id=blueprint_id,
         cdd_id=cdd_id if not blueprint_id else None,
         limit=500,
@@ -340,14 +354,16 @@ def export_generation(
     template: str = Query(default="default"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
+    tenant=Depends(get_tenant_context),
 ) -> Response:
+    from promptops_app.database import Generation
     from promptops_app.repositories import generation_repository
     from promptops_app.services.export_service import ExportRequest, export_content
     from app.core.exceptions import WorkflowError
+    from app.core.tenant_context import get_scoped_or_404
 
-    gen = generation_repository.get_generation_by_id(db, generation_id)
-    if not gen:
-        raise NotFoundError("Generation", generation_id)
+    tenant_id, is_platform_admin = tenant
+    gen = get_scoped_or_404(db, Generation, generation_id, tenant_id, is_platform_admin)
 
     blocks = generation_repository.list_blocks_for_generation(db, generation_id)
     if not blocks:
@@ -384,13 +400,15 @@ def get_generation(
     generation_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
 ) -> GenerationRead:
     """Return a generation record and lightweight block list."""
+    from promptops_app.database import Generation
     from promptops_app.repositories import generation_repository
+    from app.core.tenant_context import get_scoped_or_404
 
-    gen = generation_repository.get_generation_by_id(db, generation_id)
-    if not gen:
-        raise NotFoundError("Generation", generation_id)
+    tenant_id, is_platform_admin = tenant
+    gen = get_scoped_or_404(db, Generation, generation_id, tenant_id, is_platform_admin)
 
     result = GenerationRead.model_validate(gen)
     blocks = generation_repository.list_blocks_for_generation(db, generation_id)
@@ -520,14 +538,15 @@ def get_module_completion(
     generation_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
 ) -> CompletionStatusResponse:
     """Check if all lessons in the current blueprint are complete."""
     from promptops_app.core.shared import get_module_completion_status
-    from promptops_app.repositories import generation_repository
+    from promptops_app.database import Generation
+    from app.core.tenant_context import get_scoped_or_404
 
-    gen = generation_repository.get_generation_by_id(db, generation_id)
-    if not gen:
-        raise NotFoundError("Generation", generation_id)
+    tenant_id, is_platform_admin = tenant
+    gen = get_scoped_or_404(db, Generation, generation_id, tenant_id, is_platform_admin)
 
     status = get_module_completion_status(db, gen.blueprint_id)
     return CompletionStatusResponse(
@@ -552,14 +571,15 @@ def get_course_completion(
     ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
 ) -> CompletionStatusResponse:
     """Check if all modules in the course are complete."""
     from promptops_app.core.content_utils import get_all_modules_completion
-    from promptops_app.repositories import course_repository
+    from promptops_app.database import Course
+    from app.core.tenant_context import get_scoped_or_404
 
-    course = course_repository.get_course_by_id(db, course_id)
-    if not course:
-        raise NotFoundError("Course", course_id)
+    tenant_id, is_platform_admin = tenant
+    course = get_scoped_or_404(db, Course, course_id, tenant_id, is_platform_admin)
 
     eff_cdd_id = cdd_id or course.active_cdd_id
     status = get_all_modules_completion(db, eff_cdd_id)

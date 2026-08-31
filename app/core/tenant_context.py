@@ -67,6 +67,20 @@ def apply_tenant_filter(q: Query, model, tenant_id=None, is_platform_admin: bool
     return q
 
 
+def visible_to_tenant(row_project_id: int | None, tenant_id, is_platform_admin: bool = False) -> bool:
+    """Boolean twin of ``apply_tenant_filter`` for a single already-fetched row
+    keyed on an integer ``project_id`` column (CDD, Blueprint, Style, Prompt).
+
+    A NULL row project_id is shared/global — visible to every tenant. Used by
+    a resource's own ``_get_X_or_404`` helper so a cross-tenant row 404s
+    exactly like a nonexistent one (no enumeration oracle) instead of the
+    unfiltered by-id lookup those helpers otherwise do.
+    """
+    if is_platform_admin or row_project_id is None:
+        return True
+    return _as_int(row_project_id) == _as_int(tenant_id)
+
+
 def get_scoped_or_404(db, model, pk, tenant_id=None, is_platform_admin: bool = False):
     """Fetch one row by primary key, scoped to tenant; raises NotFoundError (404) if missing."""
     from app.core.exceptions import NotFoundError

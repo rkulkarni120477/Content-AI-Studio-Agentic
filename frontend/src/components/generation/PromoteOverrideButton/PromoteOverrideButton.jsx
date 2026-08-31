@@ -17,7 +17,7 @@ function parseParams(raw) {
 // provenance). This offers to save that capture as a real registry prompt —
 // opt-in (experiments never auto-register), admin-gated server-side, and
 // inert for generation until made a default or scope-locked.
-export default function PromoteOverrideButton({ sourceType, artifactId, version, generationParams }) {
+export default function PromoteOverrideButton({ sourceType, artifactId, version, generationParams, projectId }) {
   const navigate = useNavigate();
   const L = useLabels();
   const [busy, setBusy] = useState(false);
@@ -31,6 +31,11 @@ export default function PromoteOverrideButton({ sourceType, artifactId, version,
         source_type: sourceType,
         artifact_id: artifactId,
         version,
+        // Platform admins only — stamps the promoted prompt to the tenant
+        // currently being viewed instead of landing shared/global (a
+        // platform admin's own project is always null server-side).
+        // Ignored for a tenant caller, whose own project always wins.
+        project_id: projectId ?? null,
       });
       toast.success(`Saved as prompt "${created.name}" — make it a default or bind it in ${L.titles} to put it in use.`);
       navigate(`/prompt-library/prompts/${created.id}`);
