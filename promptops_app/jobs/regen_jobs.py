@@ -135,3 +135,99 @@ def run_regenerate_item_job(job_id: str) -> None:
                 pass
     finally:
         db.close()
+
+
+def run_apply_feedback_job(job_id: str) -> None:
+    """Apply selected feedback and regenerate a module's blocks — as a job.
+
+    ``POST /feedback/apply`` used to run this inline in the request, one LLM call
+    per block, so a module with several blocks blew past the browser's 120s
+    timeout and the request was cancelled client-side while the server kept
+    working (observed 2026-08). It is now a background job: the endpoint
+    validates + enqueues and returns a ``job_id``; the frontend polls
+    ``GET /jobs/{job_id}`` and reads the summary from
+    ``GET /feedback/apply-result/{job_id}`` on completion.
+
+    The endpoint has already authorised the caller and resolved the target
+    blueprint, so this worker only re-loads the rows by id (no tenant filter)
+    and does the heavy regeneration. Idempotent under Celery retry: an
+    already-completed job is a no-op.
+    """
+    db = SessionLocal()
+    job = None
+    try:
+        job = db.query(GenerationJob).filter(GenerationJob.id == job_id).first()
+        if not job:
+            _log.error("Apply-feedback job %s not found", job_id)
+            return
+        if job.status == JobStatus.CANCELLED:
+            _log.info("Apply-feedback job %s cancelled before start", job_id)
+            return
+        if job.status == JobStatus.COMPLETED:
+            _log.info("Apply-feedback job %s already completed — skipping duplicate run", job_id)
+            return
+
+        from promptops_app.database import Course, FeedbackItem, ModuleBlueprint
+        from promptops_app.repositories import feedback_repository
+        from promptops_app.services.feedback_service import apply_feedback_to_module
+
+        params = json.loads(job.request_json)
+        item_ids = params["item_ids"]
+        blueprint_id = params["blueprint_id"]
+        course_id = params["course_id"]
+        user_name = params.get("user_name", "")
+
+        set_running(db, job, 15, "Loading feedback and module...")
+        items = (
+            db.query(FeedbackItem)
+            .filter(FeedbackItem.id.in_(item_ids), FeedbackItem.status == "active")
+            .all()
+        )
+        if not items:
+            set_failed(db, job, "No active feedback items found to apply.")
+            return
+        blueprint = db.query(ModuleBlueprint).filter(ModuleBlueprint.id == blueprint_id).first()
+        if blueprint is None:
+            set_failed(db, job, "Target module was not found.")
+            return
+        course = db.query(Course).filter(Course.id == course_id).first()
+        if course is None:
+            set_failed(db, job, "Course was not found.")
+            return
+
+        set_running(db, job, 45, "Regenerating module content...")
+        instruction, regenerated, skipped = apply_feedback_to_module(
+            db, items=items, blueprint=blueprint, course=course, created_by=user_name,
+        )
+
+        set_running(db, job, 90, "Saving...")
+        module_label = feedback_repository.format_module_label(blueprint)
+        # Persist the summary the frontend toast needs; the status poll only
+        # reports terminal state, so the counts are read back via
+        # GET /feedback/apply-result/{job_id} keyed on this job.
+        job.result_json = json.dumps({
+            "instruction": instruction,
+            "regenerated": regenerated,
+            "skipped": skipped,
+            "blueprint_id": blueprint_id,
+            "module_label": module_label,
+        }, ensure_ascii=False)
+        db.commit()
+        # result_entity_id carries the blueprint for traceability (apply has no
+        # single generation row); the real summary lives in result_json above.
+        set_completed(db, job, blueprint_id)
+        _log.info(
+            "feedback_apply_job_done user=%s course=%s blueprint=%s items=%d regenerated=%d skipped=%d job=%s",
+            user_name, course_id, blueprint_id, len(items), len(regenerated), skipped, job_id,
+        )
+
+    except Exception as exc:  # noqa: BLE001 - background boundary; log full, expose clean
+        _log.exception("Apply-feedback job %s failed: %s", job_id, exc)
+        if job is not None:
+            try:
+                message = str(exc) if isinstance(exc, BudgetExceededError) else "Applying feedback failed. Please try again."
+                set_failed(db, job, message)
+            except Exception:  # pragma: no cover - best-effort status write
+                pass
+    finally:
+        db.close()

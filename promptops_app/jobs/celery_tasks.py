@@ -49,6 +49,16 @@ def run_regenerate_item_task(job_id: str) -> None:
     regen_jobs.run_regenerate_item_job(job_id)
 
 
+@celery_app.task(name="feedback.apply")
+def run_apply_feedback_task(job_id: str) -> None:
+    """Celery entry point for apply-feedback module regeneration.
+
+    One LLM call per block in the module, so it can run for minutes — moved off
+    the request thread to stop the browser's 120s timeout cancelling it mid-run.
+    """
+    regen_jobs.run_apply_feedback_job(job_id)
+
+
 @celery_app.task(name="block.run_block_wide")
 def run_block_wide_task(job_id: str) -> None:
     """Celery entry point for block-wide CDD/Blueprint generation (digest pipeline).
@@ -72,5 +82,6 @@ TASK_FOR_FUNC = {
     import_jobs.run_import_job: run_import_task,
     import_jobs.run_reverse_gen_job: run_reverse_gen_task,
     regen_jobs.run_regenerate_item_job: run_regenerate_item_task,
+    regen_jobs.run_apply_feedback_job: run_apply_feedback_task,
     block_wide_jobs.run_block_wide_job: run_block_wide_task,
 }
