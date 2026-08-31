@@ -24,6 +24,7 @@ psycopg[binary]>=3.2,<4   # DIS structure_store (services/indexing.py) uses psyc
 pydantic>=2.7.0
 pydantic-settings>=2.2.1
 python-dotenv>=1.0.1
+pyyaml>=6.0.1                    # DIS client YAML generation + TenantConfig load check
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 PyJWT>=2.8.0
