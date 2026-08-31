@@ -25,9 +25,16 @@ import AnalyticsPage from '@features/analytics/pages/AnalyticsPage/AnalyticsPage
 import { describeOverrides } from '@config/tenantLabels';
 import styles from './TenantsPage.module.scss';
 
+const TENANT_TEMPLATE_OPTIONS = [
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'academic', label: 'Academic' },
+  { value: 'publishing', label: 'Publishing' },
+];
+
 const EMPTY_FORM = {
   slug: '', name: '', max_users: 50,
   admin_username: '', admin_password: '', admin_display_name: '',
+  template: 'minimal',
 };
 
 /** Field rules for New Tenant. Messages are built from label + minLength so copy stays in one place. */
@@ -139,6 +146,7 @@ export default function TenantsPage() {
         admin_username: form.admin_username.trim(),
         admin_password: form.admin_password,
         admin_display_name: form.admin_display_name.trim() || form.admin_username.trim(),
+        template: form.template,
       });
       toast.success('Tenant created');
       setShowNew(false);
@@ -658,6 +666,13 @@ export default function TenantsPage() {
             min={1}
             value={form.max_users}
             onChange={(e) => set('max_users', e.target.value)}
+          />
+          <Select
+            label="Template"
+            value={form.template}
+            onChange={(e) => set('template', e.target.value)}
+            options={TENANT_TEMPLATE_OPTIONS}
+            hint="Metadata configuration family for this tenant's Source Library client."
           />
 
           <div className={styles.sectionLabel}>Initial tenant admin</div>
