@@ -59,13 +59,14 @@ class OutlineImportResult:
     """Everything the endpoint needs to persist an imported Outline."""
     raw_output: str                       # DLU Outline markdown → BlueprintVersion.full_content
     sections: dict                        # parse_sections_from_text(raw_output)
-    derived_title: str                    # blueprint title ("Day N: <topic> Blueprint")
-    day_number: Optional[int]             # the day used for this outline (file day, else caller's hint)
-    file_day: Optional[int]               # day actually found IN the file (None if none) — lets the
-                                          # caller refuse when the file and the picked day disagree
-    topic: str                            # day topic, best-effort
-    method: str                           # "passthrough" | "llm_restructure" | "raw_fallback"
-    is_dlu: bool                          # whether it renders as the DLU day accordions
+    derived_title: str                    # blueprint title ("Day N: …" / "Module N: …")
+    kind: str                             # "day" (DLU day Outline) or "module" (module Outline)
+    unit_number: int                      # the day or module number this Outline is filed under
+    file_unit: Optional[int]              # day/module actually found IN the file (None if none) — lets
+                                          # the caller refuse when the file and the picked unit disagree
+    topic: str                            # day/module topic, best-effort
+    method: str                           # "passthrough" | "llm_restructure" | "raw_fallback" | "module"
+    is_dlu: bool                          # whether it renders as the DLU day accordions (day kind only)
     warnings: List[str] = field(default_factory=list)
 
 
@@ -339,10 +340,21 @@ def _detect_day_topic(text: str) -> Tuple[Optional[int], str]:
         if m:
             day = int(m.group(1))
     # 3. A "Day N" heading at the start of a line ("Day 7: Weather Systems",
-    #    "## Day 7") — the CAS export's title row shape. Line-anchored, so prose
-    #    mentions of other days are ignored.
+    #    "## Day 7") — the CAS export's title row shape.
     if day is None:
         m = re.search(r"(?im)^[\s>*_#-]*\**\s*Day\s+(\d+)\b\s*[:\-–—]?\s*(.*)$", text)
+        if m:
+            day = int(m.group(1))
+            if not topic:
+                topic = _clean_topic(m.group(2))
+    # 4. "Day N" inside a heading — next to a "Block N" on the same line
+    #    ("Block 5 — Day 6: Scope & Sequence"), or immediately followed by a
+    #    heading separator ("Day 6:"). A prose sentence ("continues on Day 2 last
+    #    week") has neither the Block pairing nor the trailing separator, so it is
+    #    still ignored — that mis-filing was the whole point of the anchoring.
+    if day is None:
+        m = (re.search(r"(?im)^[^\n]*\bBlock\s*\d+\b[^\n]*?\bDay\s+(\d+)\b\s*[:\-–—]?\s*(.*)$", text)
+             or re.search(r"(?im)\bDay\s+(\d+)\s*[:\-–—]\s*([^\n|]*)", text))
         if m:
             day = int(m.group(1))
             if not topic:
@@ -353,6 +365,30 @@ def _detect_day_topic(text: str) -> Tuple[Optional[int], str]:
         if tm:
             topic = _clean_topic(tm.group(1))
     return day, topic
+
+
+def _detect_module(text: str) -> Tuple[Optional[int], str]:
+    """Anchored (module_number, topic) for a module-based Outline. Same discipline
+    as _detect_day_topic: a "Module N" heading or label line, or "Module N:"
+    followed by a separator — never a "Module N" buried in a prose sentence."""
+    num: Optional[int] = None
+    topic = ""
+    # A "Module N" / "Module Number: N" heading or label at the start of a line.
+    m = re.search(r"(?im)^[\s>*_#-]*\**\s*Module(?:\s*Number)?\s*\**\s*[:\-]?\s*\**\s*(\d+)\b\s*[:\-–—]?\s*(.*)$", text)
+    if m:
+        num = int(m.group(1))
+        topic = _clean_topic(m.group(2))
+    # "Module N:" with a heading separator anywhere (e.g. "Block 5 — Module 2: …").
+    if num is None:
+        m = re.search(r"(?im)\bModule\s+(\d+)\s*[:\-–—]\s*([^\n|]*)", text)
+        if m:
+            num = int(m.group(1))
+            topic = _clean_topic(m.group(2))
+    if not topic:
+        tm = re.search(r"(?im)^[\s>*_-]*\**\s*Topic\s*\**\s*[:\-]\s*\**\s*(.+?)\s*\**\s*$", text)
+        if tm:
+            topic = _clean_topic(tm.group(1))
+    return num, topic
 
 
 def _looks_like_dlu(text: str) -> bool:
@@ -483,23 +519,39 @@ def _filename_stem(filename: str) -> str:
     return _slug(stem.replace("_", " ").replace("-", " ")) or "Imported Outline"
 
 
-def _build_title(document_title: str, day: Optional[int], topic: str, stem: str) -> str:
-    """The blueprint title. A DLU day title must read 'Day N: …' so the day stays
-    recoverable from it — the router matches an existing day's Outline by that
-    prefix (to add a new version instead of a duplicate) and parse_day_and_title
-    feeds the Generate dropdown from it."""
+def _day_from_filename(filename: str) -> Optional[int]:
+    """A day named in the file's own name, e.g. 'Block_5_Day_6_Scope.docx' → 6.
+    A deliberate, reliable signal, used only when the content surfaces no day in a
+    recognizable heading."""
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    m = re.search(r"(?i)(?:^|[^a-z0-9])day[ _-]?(\d+)", stem)
+    return int(m.group(1)) if m else None
+
+
+def _module_from_filename(filename: str) -> Optional[int]:
+    """A module named in the file's own name, e.g. 'Module_2_Outline.docx' → 2
+    (also 'Mod2'). Fallback when the content has no module heading."""
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    m = re.search(r"(?i)(?:^|[^a-z0-9])mod(?:ule)?[ _-]?(\d+)", stem)
+    return int(m.group(1)) if m else None
+
+
+def _build_title(document_title: str, kind: str, unit: int, topic: str, stem: str) -> str:
+    """The blueprint title. It must read '<Day|Module> N: …' so the unit stays
+    recoverable from it — the router matches an existing Outline for that unit by
+    the prefix (to add a new version instead of a duplicate) and the Generate
+    dropdown reads the unit from it."""
+    word = "Day" if kind == "day" else "Module"
     custom = _slug(document_title)
     if custom:
-        # Respect the user's label, but keep a "Day N:" prefix so versioning and
-        # day-recovery still work; a title the user already prefixed is left as-is.
-        if day and not re.match(r"(?i)^\s*day\s+\d+\b", custom):
-            return f"Day {day}: {custom}"
+        # Respect the user's label, but keep a "<Day|Module> N:" prefix so
+        # versioning and unit-recovery still work; an already-prefixed title stays.
+        if not re.match(r"(?i)^\s*(?:day|module)\s+\d+\b", custom):
+            return f"{word} {unit}: {custom}"
         return custom
-    if day and topic:
-        return f"Day {day}: {topic} Blueprint"
-    if day:
-        return f"Day {day} Blueprint"
-    return f"{stem} Blueprint"
+    if topic:
+        return f"{word} {unit}: {topic} Blueprint"
+    return f"{word} {unit} Blueprint"
 
 
 # --------------------------------------------------------------------------- #
@@ -507,15 +559,18 @@ def _build_title(document_title: str, day: Optional[int], topic: str, stem: str)
 # --------------------------------------------------------------------------- #
 def normalize_import(filename: str, data: bytes, *,
                      document_title: str = "",
-                     day_hint: Optional[int] = None,
+                     hint_kind: Optional[str] = None,
+                     hint_number: Optional[int] = None,
                      model_choice: str = "GPT-5.4", usage_ctx=None) -> OutlineImportResult:
-    """Extract *data* and normalize it into the canonical DLU Outline day shape.
+    """Extract *data* and normalize it into an Outline — either a DLU **day**
+    Outline (five-part accordions) or a **module** Outline (freeform sections).
 
-    ``day_hint`` is the day the user confirmed in the dropdown; it is used only
-    when the file itself carries no detectable day, so the file always wins. The
-    result carries ``file_day`` (the day found in the file, or None) separately
-    from ``day_number`` (the day actually used), so the caller can refuse when the
-    two disagree. ``model_choice`` / ``usage_ctx`` are only used on the LLM path.
+    The kind and unit are decided from the FILE (a day/module anchored to a
+    heading, label, title, or the filename); ``hint_kind``/``hint_number`` are the
+    dropdown selection, used only to disambiguate or when the file names no unit.
+    An LLM-inferred number is never used — the model can echo a unit from a passing
+    mention and misfile the Outline. ``model_choice``/``usage_ctx`` are used only
+    on the day-Outline LLM restructure path.
     """
     ext = os.path.splitext(filename or "")[1].lower()
     if ext not in SUPPORTED_EXTS:
@@ -538,36 +593,66 @@ def normalize_import(filename: str, data: bytes, *,
         if not flat_text:
             raise ValueError("No extractable text found in the uploaded PDF.")
 
-    # Resolve the day BEFORE any LLM call — and only from trustworthy sources:
-    #   file_day  = a day anchored to a title/label/heading line in the file
-    #   day_hint  = the day the user confirmed in the dropdown
-    # An LLM-inferred day is never used: the model can echo a day from a passing
-    # mention ("continues from Day 2"), which would silently misfile the Outline.
-    file_day, topic = _detect_day_topic(flat_text)
-    if file_day is not None and day_hint is not None and file_day != int(day_hint):
+    # ---- Resolve day-vs-module and the unit number, BEFORE any LLM call ------
+    file_day, day_topic = _detect_day_topic(flat_text)
+    if file_day is None:
+        file_day = _day_from_filename(filename)
+    file_module, mod_topic = _detect_module(flat_text)
+    if file_module is None:
+        file_module = _module_from_filename(filename)
+
+    hk = (hint_kind or "").lower()
+    hn = int(hint_number) if hint_number is not None else None
+
+    # The FILE decides day-vs-module when it clearly indicates one; the dropdown
+    # hint only disambiguates when the file shows both, or supplies the kind when
+    # the file names neither.
+    if file_day is not None and file_module is None:
+        kind, file_unit, topic = "day", file_day, day_topic
+    elif file_module is not None and file_day is None:
+        kind, file_unit, topic = "module", file_module, mod_topic
+    elif file_day is not None and file_module is not None:
+        if hk == "module":
+            kind, file_unit, topic = "module", file_module, mod_topic
+        else:
+            kind, file_unit, topic = "day", file_day, day_topic
+    elif hk in ("day", "module") and hn is not None:
+        kind, file_unit, topic = hk, None, ""
+    else:
         raise ValueError(
-            f"This file looks like Day {file_day}, but Day {int(day_hint)} is selected. "
-            "Please confirm which day this Outline is for and try again."
-        )
-    day = file_day if file_day is not None else (int(day_hint) if day_hint else None)
-    if day is None:
-        # Nothing trustworthy to place it on — refuse rather than guess (and skip
-        # the LLM entirely). The UI shows a day dropdown for exactly this.
-        raise ValueError(
-            "We couldn't tell which day this Outline is for. Please select the day "
-            "from the dropdown and upload the file again."
+            "We couldn't tell which day or module this Outline is for. Please select "
+            "it from the dropdown and upload the file again."
         )
 
-    # Tier 1 — already the DLU Outline shape → pass through untouched (no LLM).
-    if _is_structured_dlu(flat_text):
-        body = flat_text
-        method = "passthrough"
+    # Same-kind file/dropdown disagreement → refuse rather than misfile.
+    if file_unit is not None and hn is not None and hk == kind and file_unit != hn:
+        word = "Day" if kind == "day" else "Module"
+        raise ValueError(
+            f"This file looks like {word} {file_unit}, but {word} {hn} is selected. "
+            f"Please confirm which {word.lower()} this Outline is for and try again."
+        )
+
+    unit = file_unit if file_unit is not None else hn
+    if unit is None:
+        raise ValueError(
+            "We couldn't tell which day or module this Outline is for. Please select "
+            "it from the dropdown and upload the file again."
+        )
+
+    # ---- Build the content ---------------------------------------------------
+    if kind == "module":
+        # Module Outlines have no fixed part-shape (module → lessons), so preserve
+        # the extracted markdown as-is — lossless, no LLM. It renders through the
+        # standard "## section" parser like a generated module blueprint.
+        raw_output = flat_text.strip()
+        method = "module"
+        is_dlu = False
     else:
-        # Tier 2 — reorganize into the DLU Outline shape under the preserve-all
-        # contract. Oversized input, a truncated/failed call, or an unrecognized
-        # result falls back to a raw wrap so content is never dropped, only shown
-        # less structured.
-        if len(flat_text) > _LLM_INPUT_CHAR_CAP:
+        # Day (DLU) Outline — structure into the five-part shape.
+        if _is_structured_dlu(flat_text):
+            body = flat_text
+            method = "passthrough"
+        elif len(flat_text) > _LLM_INPUT_CHAR_CAP:
             warnings.append(
                 "The file was too large to auto-structure into the Outline layout, so "
                 "its full extracted content was imported as a single section."
@@ -585,7 +670,7 @@ def normalize_import(filename: str, data: bytes, *,
                     body = restructured
                     method = "llm_restructure"
                     # Take a nicer topic from the restructured title if we have
-                    # none — but NOT the day (see the day-resolution note above).
+                    # none — but NOT the day (see the unit-resolution note above).
                     _, r_topic = _detect_day_topic(restructured)
                     if r_topic and not topic:
                         topic = r_topic
@@ -605,25 +690,23 @@ def normalize_import(filename: str, data: bytes, *,
                 )
                 body = _raw_body(flat_text)
                 method = "raw_fallback"
+        # Stamp the title to the RESOLVED day so the stated day always matches the
+        # day it is filed under. Only structured tiers render as the accordions.
+        raw_output = _stamp_title(body, unit, topic)
+        is_dlu = (method != "raw_fallback")
 
-    # Stamp the title to the RESOLVED day so the content's stated day always
-    # matches the day it is filed under.
-    raw_output = _stamp_title(body, day, topic)
     parsed_sections = parse_sections_from_text(raw_output)
-    derived_title = _build_title(document_title, day, topic, stem)
+    derived_title = _build_title(document_title, kind, unit, topic, stem)
 
     return OutlineImportResult(
         raw_output=raw_output,
         sections=parsed_sections,
         derived_title=derived_title,
-        day_number=day,
-        file_day=file_day,
+        kind=kind,
+        unit_number=unit,
+        file_unit=file_unit,
         topic=topic,
         method=method,
-        # Honest flag: only the structured tiers render as the day accordions. A
-        # raw_fallback injects a "# DLU Outline" title but has no parsed parts, so
-        # a substring detector would wrongly call it DLU (and hand the Generate
-        # dropdown a bogus "Full DLU" component).
-        is_dlu=(method != "raw_fallback"),
+        is_dlu=is_dlu,
         warnings=warnings,
     )
