@@ -56,6 +56,7 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { applyTerminology } from '@config/tenantLabels';
 import { useLabels } from '@hooks/useLabels';
 import styles from './BlueprintPage.module.scss';
 
@@ -968,7 +969,7 @@ export default function BlueprintPage() {
                     options={blueprints.map((bp) => ({
                       value: String(bp.id),
                       label: [
-                        `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                        `M${bp.module_number || '?'}: ${applyTerminology(bp.title, L, ['blueprint'])} (ID: ${bp.id})`,
                         formatDate(bp.created_at),
                         bp.created_by,
                       ].filter(Boolean).join(' — '),
@@ -989,6 +990,7 @@ export default function BlueprintPage() {
                       leaving no way to restore what was just archived. */}
                   <DocumentArchivePanel
                     label={L.blueprint}
+                    termKey="blueprint"
                     docs={blueprints}
                     archivedDocs={archivedBlueprints}
                     activeId={activeBlueprint?.id ?? null}
@@ -1066,7 +1068,9 @@ export default function BlueprintPage() {
                       )}
 
                       <div className={styles.activeContent}>
-                        <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
+                        <h3 className={styles.activeContent__title}>
+                          {applyTerminology(displayBp.title, L, ['blueprint'])}
+                        </h3>
                         {viewMode && (
                           <p className={styles.configPanel__item}>
                             Mode: <strong>{viewMode === 'teacher' ? 'Teacher' : 'Student'}</strong>

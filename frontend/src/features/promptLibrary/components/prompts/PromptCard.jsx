@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { pipelineStageLabel, starsDisplay } from '../../utils/prompt';
+import { useLabels } from '@hooks/useLabels';
 import { plPrompt, plPromptEdit } from '../../paths';
 import VisibilityBadge from './VisibilityBadge';
 
@@ -13,7 +14,8 @@ export default function PromptCard({
   // carries the array — read whichever is present.
   const verCount = (p._version_count ?? (p.versions || []).length) || 1;
   const rs = p._review_stats || { count: 0, avg: 0 };
-  const category = p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category;
+  const L = useLabels();
+  const category = p.prompt_kind === 'pipeline' ? pipelineStageLabel(p, L) : p.category;
 
   function handleCopy() {
     if (vars.length) {

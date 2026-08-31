@@ -140,14 +140,21 @@ export function labelsFromState(getState) {
   }
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Soft-replace default product terms in display/generated text with the tenant's
- * wording. Word-boundary only — does not touch identifiers like blueprint_id.
- * Pass `keys` to limit which vocabulary is rewritten (e.g. ['blueprint']).
+ * wording. Word-boundary only by default — does not touch identifiers like
+ * blueprint_id. Pass `{ identifiers: true }` to also rewrite snake_case slugs
+ * such as default_style_prompt. Pass `keys` to limit which vocabulary is
+ * rewritten (e.g. ['blueprint']).
  */
-export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS) {
+export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS, options = {}) {
   if (!text || typeof text !== 'string') return text;
   let out = text;
+  const identifiers = Boolean(options?.identifiers);
   const all = {
     title: [
       ['Titles', L.titles], ['Title', L.title],
@@ -167,9 +174,23 @@ export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS) {
     ],
   };
   for (const key of keys) {
-    for (const [from, to] of (all[key] || [])) {
+    const pairs = identifiers
+      ? ({
+        title: [['Titles', L.titles], ['titles', L.titles], ['Title', L.title], ['title', L.title]],
+        style: [['Styles', L.styles], ['styles', L.styles], ['Style', L.style], ['style', L.style]],
+        cdd: [['CDDs', L.cdds], ['cdds', L.cdds], ['CDD', L.cdd], ['cdd', L.cdd]],
+        blueprint: [
+          ['Blueprints', L.blueprints], ['blueprints', L.blueprints],
+          ['Blueprint', L.blueprint], ['blueprint', L.blueprint],
+        ],
+      }[key] || [])
+      : (all[key] || []);
+    for (const [from, to] of pairs) {
       if (!to || to === from) continue;
-      out = out.replace(new RegExp(`\\b${from}\\b`, 'g'), to);
+      const pattern = identifiers
+        ? new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(from)}(?![A-Za-z0-9])`, 'g')
+        : new RegExp(`\\b${escapeRegExp(from)}\\b`, 'g');
+      out = out.replace(pattern, to);
     }
   }
   return out;
