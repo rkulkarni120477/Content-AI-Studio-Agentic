@@ -651,3 +651,15 @@ aim_content_rules:
     final_exam_answer_key: instructor_only
     project_instructor_guide: instructor_only
     archive_or_working_version: internal_only
+
+# Phase 7: AIM-only Topic Source Library filter. Do NOT copy into DEFAULT_REGISTRY
+# or other tenants. cas_list intentionally omitted (DECISION-002).
+metadata_framework:
+  fields:
+    topic:
+      type: string
+      tier: structural
+      promote:
+        - index
+        - filter_options
+        - retrieval

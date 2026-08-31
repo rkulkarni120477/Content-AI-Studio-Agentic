@@ -204,8 +204,8 @@ class TestTenantDynamicField:
         assert aim_service._passes_filters({}, p, {_SYNTH_FIELD: "synth-value"}) is True
 
 
-class TestTopicLegacyCompat:
-    """Top-level topic= gating preserved outside PROMOTE_RETRIEVAL (DECISION-001)."""
+class TestTopicRegistryRetrieval:
+    """Phase 7: AIM topic gates via PROMOTE_RETRIEVAL (legacy exception removed)."""
 
     def test_no_topic_filter_passes(self, aim_service):
         p = _payload(topic="Engines", visibility="instructor")
@@ -244,13 +244,17 @@ class TestTopicLegacyCompat:
             {}, p, {"metadata_filters": {"topic": "Hydraulics"}}
         ) is False
 
+    def test_aim_registry_promotes_topic_for_retrieval(self):
+        reg = registry_for_tenant(get_tenant_config("aim"))
+        spec = reg.get("topic")
+        assert spec is not None
+        assert spec.promotes("retrieval")
+
 
 class TestDefaultRegistryFallback:
     def test_empty_metadata_framework_uses_default_registry_fields(self, aim_service):
-        """AIM has no metadata_framework; visibility/status remain filterable."""
-        reg = registry_for_tenant(get_tenant_config("aim"))
-        assert reg is DEFAULT_REGISTRY or registry_for_tenant(
-            SimpleNamespace(metadata_framework=None)
-        ) is DEFAULT_REGISTRY
+        """Non-AIM empty framework still uses DEFAULT_REGISTRY; AIM has topic overlay."""
+        reg_default = registry_for_tenant(SimpleNamespace(metadata_framework=None))
+        assert reg_default.get("topic") is None
         p = _payload(visibility="instructor", status="ready")
         assert aim_service._passes_filters({}, p, {"visibility": "instructor", "status": "ready"}) is True

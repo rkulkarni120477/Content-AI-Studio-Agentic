@@ -53,10 +53,6 @@ _RETRIEVAL_EXACT_SKIP = frozenset({
     "document_type", "doc_type", "content_type", "title",
 })
 
-# Pre-Phase-6A exact-match fields intentionally excluded from Field Registry
-# (DECISION-001: defer topic promotion) but still gated at retrieval time.
-_RETRIEVAL_LEGACY_EXACT = frozenset({"topic"})
-
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
 #: How far the top-ranked unit may exceed the caller's token budget before
@@ -868,12 +864,6 @@ class ContextRetrievalService:
                     if actual not in (None, "", [], {}):
                         break
             if not value_matches(actual, filters.get(filter_key)):
-                return False
-
-        # Legacy exact-match compat: not registry-promoted (see DECISION-001).
-        for field in _RETRIEVAL_LEGACY_EXACT:
-            if field in filters and not value_matches(
-                    meta_all.get(field) or payload.get(field), filters.get(field)):
                 return False
 
         if "course_id" in filters and not course_scope_matches(

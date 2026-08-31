@@ -85,8 +85,8 @@ def test_existing_retrieval_config_unaffected_when_framework_present():
     assert tenant.metadata_framework.model_dump().get("version") == "0.1"
 
 
-def test_real_aim_client_loads_without_metadata_framework():
-    """Regression: committed AIM YAML has no metadata_framework and must still load."""
+def test_real_aim_client_loads_with_topic_metadata_framework():
+    """Phase 7: AIM YAML overlays metadata_framework.fields.topic (tenant-only)."""
     import config.settings as settings
 
     importlib.reload(settings)
@@ -94,7 +94,11 @@ def test_real_aim_client_loads_without_metadata_framework():
     assert tenant.tenant_id == "aim"
     assert tenant.retrieval.source_ui.get("taxonomy_filters")
     assert tenant.metadata_framework is not None
-    assert tenant.metadata_framework.model_dump() == {}
+    fields = tenant.metadata_framework.model_dump().get("fields") or {}
+    topic = fields.get("topic") or {}
+    assert topic.get("type") == "string"
+    assert set(topic.get("promote") or []) == {"index", "filter_options", "retrieval"}
+    assert "cas_list" not in (topic.get("promote") or [])
 
 
 def test_yaml_roundtrip_via_safe_load():

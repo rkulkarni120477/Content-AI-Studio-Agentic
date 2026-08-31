@@ -27,7 +27,7 @@ describe('taxonomyFiltersFromUiConfig', () => {
     ]);
   });
 
-  it('defers AIM topic until a backend path exists', () => {
+  it('renders AIM topic through config-driven taxonomy filters', () => {
     const uiConfig = {
       source_library: {
         taxonomy_filters: [
@@ -36,7 +36,9 @@ describe('taxonomyFiltersFromUiConfig', () => {
         ],
       },
     };
-    expect(taxonomyFiltersFromUiConfig(uiConfig).map((f) => f.key)).toEqual(['block']);
+    const filters = taxonomyFiltersFromUiConfig(uiConfig);
+    expect(filters.map((f) => f.key)).toEqual(['block', 'topic']);
+    expect(filters.find((f) => f.key === 'topic')?.type).toBe('text');
   });
 
   it('renders a tenant-configured field without a hardcoded allowlist entry', () => {
@@ -72,10 +74,11 @@ describe('API key mappings (characterization)', () => {
     expect(apiParamForTaxonomyKey('day')).toBe('day');
   });
 
-  it('passes block, chapter, learning_objective through unchanged', () => {
+  it('passes block, chapter, learning_objective, topic through unchanged', () => {
     expect(apiParamForTaxonomyKey('block')).toBe('block');
     expect(apiParamForTaxonomyKey('chapter')).toBe('chapter');
     expect(apiParamForTaxonomyKey('learning_objective')).toBe('learning_objective');
+    expect(apiParamForTaxonomyKey('topic')).toBe('topic');
   });
 
   it('sends module_name when the UI filter key is module', () => {
@@ -118,10 +121,19 @@ describe('toSourceLibraryApiFilters', () => {
     });
   });
 
-  it('does not send deferred topic', () => {
+  it('forwards topic filter values', () => {
     expect(toSourceLibraryApiFilters({ topic: 'landing gear', block: 'Block 2' })).toEqual({
+      topic: 'landing gear',
       block: 'Block 2',
     });
+  });
+
+  it('treats all as unconstrained and does not send it', () => {
+    expect(toSourceLibraryApiFilters({ topic: 'all', block: 'Block 2' })).toEqual({
+      block: 'Block 2',
+    });
+    expect(toSourceLibraryApiFilters({ topic: 'ALL' })).toEqual({});
+    expect(toSourceLibraryApiFilters({ topic: '*', chapter: 'any' })).toEqual({});
   });
 
   it('forwards tenant synth field without an allowlist edit', () => {
@@ -141,6 +153,7 @@ describe('optionsKeyForTaxonomyKey', () => {
     expect(optionsKeyForTaxonomyKey('day')).toBe('days');
     expect(optionsKeyForTaxonomyKey('module')).toBe('module');
     expect(optionsKeyForTaxonomyKey('course_name')).toBe('course_name');
+    expect(optionsKeyForTaxonomyKey('topic')).toBe('topic');
   });
 
   it('falls through for tenant-configured keys', () => {
