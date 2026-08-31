@@ -12,6 +12,11 @@ import {
   taxonomyFiltersFromUiConfig,
   toSourceLibraryApiFilters,
 } from '@features/sourceLibrary/utils/taxonomyFilters';
+import {
+  documentTypeFromUiConfig,
+  uploadControlType,
+  uploadMetadataFieldsFromUiConfig,
+} from '@features/sourceLibrary/utils/uploadFields';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
@@ -583,6 +588,8 @@ export default function SourceLibraryPage() {
 
   const documentTypeOptions = useMemo(() => unique(filterOptions.document_types), [filterOptions]);
   const taxonomyFilters = useMemo(() => taxonomyFiltersFromUiConfig(uiConfig), [uiConfig]);
+  const uploadMetadataFields = useMemo(() => uploadMetadataFieldsFromUiConfig(uiConfig), [uiConfig]);
+  const documentTypeUpload = useMemo(() => documentTypeFromUiConfig(uiConfig), [uiConfig]);
   useEffect(() => {
     let cancelled = false;
     sourceLibraryApi.getUploadPolicy()
@@ -676,9 +683,45 @@ export default function SourceLibraryPage() {
                 </select>
               </div>
               <div>
-                <label className={styles.label}>Document Type</label>
-                <input className={styles.input} name="document_type" placeholder="Optional, auto-detect if blank" />
+                <label className={styles.label}>{documentTypeUpload.label}</label>
+                {documentTypeUpload.control === 'select' ? (
+                  <select className={styles.select} name="document_type" defaultValue="">
+                    <option value="">Auto-detect if blank</option>
+                    {documentTypeUpload.options.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : (
+                  <input className={styles.input} name="document_type" placeholder={documentTypeUpload.placeholder} />
+                )}
               </div>
+              {uploadMetadataFields.map((field) => {
+                const control = uploadControlType(field);
+                const label = field.label || field.key;
+                if (control === 'select') {
+                  return (
+                    <div key={field.key}>
+                      <label className={styles.label}>{label}</label>
+                      <select className={styles.select} name={field.key} defaultValue="">
+                        <option value="">—</option>
+                        {(field.options || []).map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </div>
+                  );
+                }
+                if (control === 'textarea') {
+                  return (
+                    <div key={field.key}>
+                      <label className={styles.label}>{label}</label>
+                      <textarea className={styles.input} name={field.key} placeholder={field.placeholder || label} rows={3} />
+                    </div>
+                  );
+                }
+                return (
+                  <div key={field.key}>
+                    <label className={styles.label}>{label}</label>
+                    <input className={styles.input} name={field.key} placeholder={field.placeholder || label} />
+                  </div>
+                );
+              })}
             </div>
             <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <button type="submit" className={styles.button} disabled={uploading} onClick={() => { uploadAsGlobalRef.current = false; }}>{uploading ? `Uploading ${uploadProgress}%` : 'Upload and Ingest'}</button>

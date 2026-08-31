@@ -25,6 +25,7 @@ from services.metadata_framework.registry import (
     PROMOTE_FILTER_OPTIONS,
     registry_for_tenant,
 )
+from services.upload_ui_config import build_upload_metadata_ui
 
 # Listing historically matched these via a hardcoded field loop even though they
 # are not filter_options-promoted (so they do not appear in filter dropdown maps).
@@ -183,10 +184,13 @@ class ContextRetrievalService:
         return mapping
 
     def ui_config(self, client_id: str) -> Dict[str, Any]:
+        source_ui = self._source_ui_config()
+        schema = self.tenant_cfg.get_metadata_schema(client_id)
         return {
             "tenant_id": self.tenant_cfg.tenant_id,
             "client_id": client_id,
-            "source_library": self._source_ui_config(),
+            "source_library": source_ui,
+            "upload_metadata": build_upload_metadata_ui(source_ui, schema),
             "purpose_labels": getattr(self.tenant_cfg.retrieval, "purpose_labels", {}) or (self.tenant_cfg.client_rules or {}).get("purpose_labels", {}) or {
                 "style": "Style Reference Documents",
                 "cdd": "Course Design Sources",

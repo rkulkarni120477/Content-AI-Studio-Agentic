@@ -249,6 +249,23 @@ retrieval:
       - key: topic
         label: Topic
         type: text
+    upload:
+      fields:
+        - key: document_type
+          label: Document Type
+          control: select
+        - key: chapter
+          label: Chapter
+          control: text
+          order: 1
+        - key: module_name
+          label: Module
+          control: text
+          order: 2
+        - key: learning_objective
+          label: Learning Objective
+          control: text
+          order: 3
   source_type_mapping:
     style:
       - style_guide
