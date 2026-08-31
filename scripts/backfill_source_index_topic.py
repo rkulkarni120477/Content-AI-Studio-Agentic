@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Backfill AIM compact source-index ``topic`` from studio payload metadata.
 
-Phase 7: existing compact S3 source records were written before AIM promoted
+Phase 7B: compact records whose ``payload_key`` was stored as an ``s3://`` URI
+(from ``ProcessedStorageAgent`` / ``write_json`` return value) are normalized
+before ``ArtifactWriter.read_json()``. Relative logical keys are unchanged.
 ``topic`` to Field Registry ``index``. Newly ingested records pick up ``topic``
 automatically via ``compact_source_record`` + AIM ``metadata_framework``. This
 script rewrites **existing** compact rows only.
@@ -53,6 +55,50 @@ def _topic_from_payload(payload: dict) -> str:
     return str(value)
 
 
+def resolve_payload_key(
+    payload_key: str,
+    *,
+    processed_bucket: str,
+    source_prefix: str,
+    base_prefix: str = "",
+) -> str | None:
+    """Return a logical S3 key for ``ArtifactWriter.read_json()``, or None.
+
+    Relative logical keys are returned unchanged (Phase 7 pre-7B behavior).
+    ``s3://`` URIs are parsed using the same convention as dedup/finalize
+    agents: extract bucket + object key, validate bucket, strip ``base_prefix``,
+    then require the logical key to stay within ``source_prefix``.
+    """
+    key = str(payload_key or "").replace("\\", "/").strip()
+    if not key:
+        return None
+
+    if not key.startswith("s3://"):
+        return key
+
+    parts = key.split("/", 3)
+    if len(parts) < 4 or not parts[3]:
+        return None
+
+    bucket = parts[2]
+    if bucket != processed_bucket:
+        return None
+
+    object_key = parts[3].lstrip("/")
+    bp = (base_prefix or "").strip("/")
+    if bp and object_key.startswith(bp + "/"):
+        object_key = object_key[len(bp) + 1 :]
+    object_key = object_key.lstrip("/")
+
+    prefix = source_prefix.strip("/").rstrip("/")
+    if not object_key.startswith(prefix + "/"):
+        return None
+    if not object_key.endswith("/studio_payload/payload.json"):
+        return None
+
+    return object_key
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -72,7 +118,11 @@ def main() -> int:
 
     from config.settings import get_tenant_config
     from services.artifacts import ArtifactWriter
-    from services.source_library import read_source_index, write_source_index
+    from services.source_library import (
+        read_source_index,
+        source_base_prefix,
+        write_source_index,
+    )
 
     client_id = str(args.client or "").strip()
     if not client_id:
@@ -81,6 +131,8 @@ def main() -> int:
 
     tenant_cfg = get_tenant_config(client_id)
     writer = ArtifactWriter(tenant_cfg)
+    source_prefix = source_base_prefix(tenant_cfg, client_id)
+    base_prefix = getattr(tenant_cfg.storage, "base_prefix", "") or ""
 
     if args.from_manifest:
         with open(args.from_manifest) as fh:
@@ -131,8 +183,17 @@ def main() -> int:
         if not payload_key:
             missing_payload.append((job_id, rec.get("source_file_name"), "no payload_key"))
             continue
+        resolved_key = resolve_payload_key(
+            payload_key,
+            processed_bucket=writer.processed_bucket,
+            source_prefix=source_prefix,
+            base_prefix=base_prefix,
+        )
+        if not resolved_key:
+            unreadable.append((job_id, rec.get("source_file_name"), "invalid_payload_key"))
+            continue
         try:
-            payload = writer.read_json(payload_key)
+            payload = writer.read_json(resolved_key)
         except Exception as exc:  # noqa: BLE001 — leave record untouched
             unreadable.append((job_id, rec.get("source_file_name"), type(exc).__name__))
             continue
