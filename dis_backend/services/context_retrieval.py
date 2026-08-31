@@ -23,6 +23,7 @@ from services.metadata_framework.adapters import (
 )
 from services.metadata_framework.registry import (
     PROMOTE_FILTER_OPTIONS,
+    PROMOTE_RETRIEVAL,
     registry_for_tenant,
 )
 from services.upload_ui_config import build_upload_metadata_ui
@@ -35,6 +36,22 @@ _LISTING_COMPAT_FILTER_FIELDS = ("lesson_name", "visibility")
 # purpose is filter_options-promoted but matched with multi-value business logic,
 # not the simple eq() path used for taxonomy/operational metadata fields.
 _FILTER_OPTIONS_SKIP_EQ = frozenset({"purpose"})
+
+# Retrieval fields promoted to _metadata_from_record but gated elsewhere in
+# _passes_filters — excluded from the registry exact-match loop (Phase 6A).
+_RETRIEVAL_EXACT_SKIP = frozenset({
+    "course_id",       # course_scope_matches sentinel
+    "purpose",         # purpose gate
+    "course_name",     # substring gate below
+    # day/calendar normalization (dedicated block in _passes_filters)
+    "day", "day_id", "mapped_day", "day_number", "filename_day_id",
+    "block",           # same_block in listing; block_id/block_number stay exact
+    # boolean operational flags (bool_fields loop)
+    "restricted", "calendar_mapping_required", "is_generation_candidate",
+    "is_archive_or_working_version",
+    # content_types filter handles document_type / content_type / doc_type
+    "document_type", "doc_type", "content_type", "title",
+})
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
@@ -818,17 +835,35 @@ class ContextRetrievalService:
             if not any(norm(v) in [norm(x) for x in content_types] for v in possible):
                 return False
 
-        # Generic exact filters used by blueprint/course generation APIs.
-        # course_id is deliberately NOT here: an exact match rejects the global
-        # sentinel, which is the whole point of the sentinel. See below.
-        exact_fields = [
-            "client_id", "program_id", "block_id",
-            "block_number", "visibility", "status", "version",
-            "topic", "quiz_number", "quiz_id", "project_number", "project_id",
-            "administered_on_day", "covers_day",
-        ]
-        for field in exact_fields:
-            if field in filters and not value_matches(meta_all.get(field) or payload.get(field), filters.get(field)):
+        # Registry-authorized exact-match metadata fields (Phase 6A).
+        # course_id, purpose, day/calendar, booleans, and block normalization
+        # remain explicit business rules above/below this loop.
+        registry = registry_for_tenant(self.tenant_cfg)
+        for spec in registry.for_promote(PROMOTE_RETRIEVAL):
+            if spec.key in _RETRIEVAL_EXACT_SKIP:
+                continue
+            filter_key = None
+            candidate_keys = [spec.key]
+            if spec.filter_options_key:
+                candidate_keys.append(spec.filter_options_key)
+            candidate_keys.extend(spec.aliases)
+            seen = set()
+            for fk in candidate_keys:
+                if fk in seen:
+                    continue
+                seen.add(fk)
+                if fk in filters:
+                    filter_key = fk
+                    break
+            if filter_key is None:
+                continue
+            actual = meta_all.get(spec.key) or payload.get(spec.key)
+            if actual in (None, "", [], {}):
+                for alias in spec.aliases:
+                    actual = meta_all.get(alias) or payload.get(alias)
+                    if actual not in (None, "", [], {}):
+                        break
+            if not value_matches(actual, filters.get(filter_key)):
                 return False
 
         if "course_id" in filters and not course_scope_matches(
