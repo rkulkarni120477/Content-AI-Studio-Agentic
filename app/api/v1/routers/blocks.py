@@ -335,22 +335,29 @@ def regenerate_block(
     Saves the current content as a version before overwriting.
     """
     from promptops_app.core.constants import ChangeSource
-    from promptops_app.prompt_templates import IMPROVISE_BLOCK_PROMPT_TEMPLATE, PERSONA_PREFIX_TEMPLATE
+    from promptops_app.core.content_utils import build_regeneration_context
+    from promptops_app.prompt_templates import IMPROVISE_BLOCK_PROMPT_TEMPLATE, IMPROVISE_BLOCK_SYSTEM
     from promptops_app.repositories.block_repo import save_block_version
     from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
 
     block = _get_block_or_404(db, block_id)
+    generation = block.generation
 
     feedback = request_body.feedback_instruction.strip() if request_body.feedback_instruction else ""
-    system_prompt = PERSONA_PREFIX_TEMPLATE
-    user_prompt = IMPROVISE_BLOCK_PROMPT_TEMPLATE.format(
-        block_label=block.block_label,
-        current_content=block.content or "",
-        feedback_instruction=feedback or "Improve overall quality, clarity, and engagement.",
-    )
+    topic = (getattr(generation, "topic", None) if generation else None) or block.block_label or ""
 
-    generation = block.generation
+    # Rebuild the same CDD + Blueprint + Style context the generator injected,
+    # so the regenerated block honours the pinned Blueprint (User Guide intent).
+    context_preamble = build_regeneration_context(db, generation)
+    improvise_prompt = IMPROVISE_BLOCK_PROMPT_TEMPLATE.format(
+        topic=topic,
+        block_type=block.block_type or "lesson",
+        improvise_instruction=feedback or "Improve overall quality, clarity, and engagement.",
+        original_content=block.content or "",
+    )
+    system_prompt = IMPROVISE_BLOCK_SYSTEM
+    user_prompt = f"{context_preamble}\n\n{improvise_prompt}" if context_preamble else improvise_prompt
     usage_ctx = UsageLogContext(
         user_name=current_user.username,
         project_id=getattr(generation, "project_id", None),

@@ -190,6 +190,73 @@ def build_context_injection(
     return injection, cdd_version_label, blueprint_version_label
 
 
+def build_regeneration_context(db, generation, *, target_audience: str = "") -> str:
+    """Rebuild the persona + Style + CDD/Blueprint preamble for a regeneration
+    or feedback-apply prompt, mirroring the context layers the original
+    generator (``jobs/generation_jobs.py``) injects at generation time.
+
+    Everything is re-read live from the DB using the IDs stored on the
+    ``Generation`` row (``cdd_id``, ``blueprint_id``, ``project_id``,
+    ``course_id``), so regenerated content honours the *current* CDD, Blueprint,
+    and active Style. Best-effort: any missing linkage or lookup failure
+    degrades gracefully to an empty layer rather than raising, so regeneration
+    never fails just because a context source is absent.
+
+    Returns the preamble string (may be empty), intended to be prepended to the
+    improvise/feedback user prompt.
+    """
+    from promptops_app.database import build_style_context, get_active_style
+    from promptops_app.prompt_templates import PERSONA_PREFIX_TEMPLATE
+
+    cdd_id       = getattr(generation, "cdd_id", None)       if generation else None
+    blueprint_id = getattr(generation, "blueprint_id", None) if generation else None
+    project_id   = getattr(generation, "project_id", None)   if generation else None
+    course_id    = getattr(generation, "course_id", None)    if generation else None
+
+    parts: list[str] = []
+
+    # 1. Persona prefix. The per-generation expert/audience params are not
+    #    persisted on the Generation row, so fill with graceful defaults; the
+    #    real audience/domain detail is carried by the CDD/Blueprint injection.
+    try:
+        parts.append(PERSONA_PREFIX_TEMPLATE.format(
+            expert_exp=20,
+            expert_domain=(getattr(generation, "topic", None) or "the subject matter"),
+            aud_cat="Professional/Corporate",
+            target_audience=target_audience or "the intended learners",
+        ).strip())
+    except Exception:
+        pass
+
+    # 2. Active instructional Style.
+    try:
+        _style     = get_active_style(db, project_id=project_id, course_id=course_id)
+        _style_inj = build_style_context(db, _style) if _style else ""
+        if _style_inj:
+            parts.append(
+                "--- ACTIVE INSTRUCTIONAL STYLE ---\n"
+                "The following style definition MUST be applied. Tone, structure, "
+                "vocabulary, and formatting must comply with these rules:\n\n"
+                f"{_style_inj}\n"
+                "--- END STYLE DEFINITION ---"
+            )
+    except Exception:
+        pass
+
+    # 3. CDD + Blueprint injection (the same helper the generator uses).
+    try:
+        if cdd_id or blueprint_id:
+            ctx_injection, _, _ = build_context_injection(
+                db, cdd_id, blueprint_id, target_audience=target_audience
+            )
+            if ctx_injection:
+                parts.append(ctx_injection.strip())
+    except Exception:
+        pass
+
+    return "\n\n".join(p for p in parts if p).strip()
+
+
 # ---------------------------------------------------------------------------
 # Content block splitting
 # ---------------------------------------------------------------------------
