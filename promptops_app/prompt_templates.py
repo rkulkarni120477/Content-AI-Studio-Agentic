@@ -103,6 +103,12 @@ REGISTRY_FALLBACK_USER = "Draft a {block_type} for: {topic}"
 
 # --- Block regeneration / improvisation templates ---
 IMPROVISE_DEFAULT_REQUEST = "Make this block more detailed, engaging, and instructionally clear while preserving intent."
+IMPROVISE_BLOCK_SYSTEM = (
+    "You are a senior instructional designer improving a DRAFT eLearning content block. "
+    "Strictly follow the CDD, Blueprint, and instructional Style context provided below. "
+    "Preserve the block's intent and required structure, and honour the requested changes. "
+    "Return the improved content only (no extra explanation)."
+)
 IMPROVISE_BLOCK_PROMPT_TEMPLATE = """You are improving a DRAFT content block.
 Topic: {topic}
 Block Type: {block_type}
