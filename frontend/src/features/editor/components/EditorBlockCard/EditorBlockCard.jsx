@@ -83,7 +83,6 @@ function ScopeRadios({ value, onChange, name }) {
 export default function EditorBlockCard({
   block,
   generationId,
-  genCreatedBy,
   reviewers = [],
   onBlockUpdated,
   isValidating = false,
@@ -92,7 +91,7 @@ export default function EditorBlockCard({
   exportSlot = null,
 }) {
   const dispatch = useAppDispatch();
-  const { user, isAdmin, isReviewer } = useAuth();
+  const { hasPermission } = useAuth();
   const modelChoice = useAppSelector(selectModelChoice);
   const plagiarismReport = useAppSelector((s) => selectPlagiarismByBlock(s)[block.id]);
 
@@ -139,7 +138,15 @@ export default function EditorBlockCard({
     .includes(block.workflow_state);
   const canRegen = block.workflow_state === WORKFLOW_STATES.DRAFT;
   const autosaveLocked = WORKFLOW_EXPORTABLE.includes(block.workflow_state);
-  const canSubmit = canEdit && (isAdmin || isReviewer || genCreatedBy === user?.username);
+  // Eligibility is "holds workflow.submit" (admin, reviewer, and author all do —
+  // see app/core/permissions.py), matching exactly what the backend actually
+  // enforces (workflow.py's submit_for_review has no ownership check at all).
+  // Previously required genCreatedBy === user — the generation's ORIGINAL
+  // creator — which meant an author assigned to edit someone else's generated
+  // topic could save changes (canEdit doesn't check ownership either) but could
+  // never submit them: the whole section silently disappeared with no error,
+  // no matter how many times they edited and saved.
+  const canSubmit = canEdit && hasPermission('workflow.submit');
 
   const displayAiReview = block.ai_review || aiReviewText;
   const isDeferredReview = !displayAiReview

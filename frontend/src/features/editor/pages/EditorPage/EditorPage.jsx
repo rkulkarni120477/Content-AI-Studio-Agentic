@@ -670,7 +670,6 @@ export default function EditorPage() {
             key={block.id}
             block={block}
             generationId={selectedGenId}
-            genCreatedBy={genDetail?.created_by}
             reviewers={reviewers}
             onBlockUpdated={() => dispatch(fetchGenerationBlocksThunk(selectedGenId))}
             isValidating={isValidating}
