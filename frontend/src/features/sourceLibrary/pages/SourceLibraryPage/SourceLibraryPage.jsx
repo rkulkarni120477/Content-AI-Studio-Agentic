@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useSelector } from 'react-redux';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
@@ -119,6 +119,7 @@ export default function SourceLibraryPage() {
   // (not state) avoids a re-render race between the click and the submit.
   const uploadAsGlobalRef = useRef(false);
   const { courseId } = useParams();
+  const navigate = useNavigate();
   const selectedProject = useSelector(selectSelectedProject);
   const selectedCourse = useSelector(selectSelectedCourse);
   const scopedCourseId = selectedCourse?.id || courseId || "";
@@ -905,6 +906,13 @@ export default function SourceLibraryPage() {
                       <td>
                         <div className={styles.rowActions}>
                           <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button>
+                          <button
+                            type="button"
+                            className={`${styles.button} ${styles.buttonSecondary}`}
+                            onClick={() => navigate(`/workspace/${courseId}/sources/${doc.job_id || doc.document_id}/metadata?tab=ai`)}
+                          >
+                            Edit metadata
+                          </button>
                           {isAdmin && (
                             <button
                               type="button"

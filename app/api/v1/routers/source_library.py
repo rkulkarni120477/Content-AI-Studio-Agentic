@@ -454,6 +454,46 @@ async def delete_generated_document(
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.generated_delete(generated_doc_id, current_user=current_user, client_id=resolved_client)
 
+@router.get("/documents/{job_id}/metadata")
+async def get_document_metadata_route(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.source_metadata(job_id=job_id, current_user=current_user, client_id=resolved_client)
+
+
+@router.patch("/documents/{job_id}/metadata")
+async def patch_document_metadata_route(
+    job_id: str,
+    body: Dict[str, Any] = Body(...),
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.patch_source_metadata(job_id=job_id, payload=body, current_user=current_user, client_id=resolved_client)
+
+
+@router.post("/documents/{job_id}/metadata/revert-ai")
+async def revert_document_metadata_route(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.revert_source_metadata(job_id=job_id, current_user=current_user, client_id=resolved_client)
+
+
 @router.get("/documents/{job_id}/overview")
 async def get_source_overview(
     job_id: str,

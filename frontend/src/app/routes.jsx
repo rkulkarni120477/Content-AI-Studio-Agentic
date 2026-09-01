@@ -22,6 +22,7 @@ const FeedbackPage  = lazyWithReload(() => import('@features/feedback/pages/Feed
 const WorkflowPage  = lazyWithReload(() => import('@features/workflow/pages/WorkflowPage/WorkflowPage'));
 const ExportPage    = lazyWithReload(() => import('@features/export/pages/ExportPage/ExportPage'));
 const SourceLibraryPage = lazyWithReload(() => import('@features/sourceLibrary/pages/SourceLibraryPage/SourceLibraryPage'));
+const MetadataEditorPage = lazyWithReload(() => import('@features/sourceLibrary/pages/MetadataEditorPage/MetadataEditorPage'));
 const StylePage     = lazyWithReload(() => import('@features/style/pages/StylePage/StylePage'));
 const AnalyticsPage = lazyWithReload(() => import('@features/analytics/pages/AnalyticsPage/AnalyticsPage'));
 
@@ -83,6 +84,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="sources" replace /> },
       { path: 'sources',   element: wrap(<SourceLibraryPage />) },
+      { path: 'sources/:jobId/metadata', element: wrap(<MetadataEditorPage />) },
       { path: 'style',     element: wrap(<StylePage />) },
       { path: 'cdd',       element: wrap(<CddPage />) },
       { path: 'blueprint', element: wrap(<BlueprintPage />) },
