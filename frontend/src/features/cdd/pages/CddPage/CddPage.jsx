@@ -1000,6 +1000,7 @@ export default function CddPage() {
                           version={versionDetail?.version || displayCdd?.active_content?.version}
                           generationParams={versionDetail?.generation_params
                             || displayCdd?.active_content?.generation_params}
+                          projectId={selProject?.id ?? projectId}
                         />
                         <CddContentView
                           fullContent={previewFullContent}

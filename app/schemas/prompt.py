@@ -80,6 +80,15 @@ class PromptFromGenerationRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200,
                              description="Registry name; defaults to a slug from the source.")
     description: str = Field(default="", max_length=2000)
+    project_id: int | None = Field(
+        default=None,
+        description=(
+            "Platform admins only — stamp the promoted prompt as owned by "
+            "this project instead of shared/global. Ignored for a tenant "
+            "caller, whose own project is always used regardless of this "
+            "value."
+        ),
+    )
 
 
 class PromptAIGenerateRequest(BaseModel):

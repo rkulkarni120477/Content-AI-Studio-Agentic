@@ -121,11 +121,23 @@ def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
     return "", [], ""
 
 
-def _get_blueprint_or_404(db: Session, blueprint_id: int):
-    """Fetch a blueprint by ID or raise HTTP 404."""
+def _get_blueprint_or_404(db: Session, blueprint_id: int, current_user):
+    """Fetch a blueprint by ID or raise HTTP 404, scoped to the caller's tenant.
+
+    A cross-tenant blueprint 404s exactly like a nonexistent one (no
+    enumeration oracle) — same contract as cdd._get_cdd_or_404.
+    ``get_blueprint_by_id`` is itself unfiltered, so without this every one of
+    this helper's ~16 callers (get/update/archive/restore/versions/pin/
+    export/…) would let any authenticated user act on any tenant's blueprint
+    just by knowing its id.
+    """
     from promptops_app.repositories import blueprint_repository
+    from app.core.tenant_context import visible_to_tenant
+
     bp = blueprint_repository.get_blueprint_by_id(db, blueprint_id)
-    if bp is None:
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    project_id = getattr(current_user, "_project_id", None)
+    if bp is None or not visible_to_tenant(bp.project_id, project_id, is_platform_admin):
         raise NotFoundError("Blueprint", blueprint_id)
     return bp
 
@@ -155,12 +167,28 @@ def list_blueprints(
     from promptops_app.repositories import blueprint_repository
     from app.services import design_doc_archive as archive_svc
 
-    if course_id:
+    # Was completely unfiltered when course_id was omitted (list_all_blueprints
+    # — every tenant, no role/tenant check at all) and honored an arbitrary
+    # ``project_id`` query param verbatim even for a non-platform-admin. A
+    # tenant caller is always scoped to their own project regardless of what
+    # they pass, same rule as cdd.list_cdds/prompts.list_prompts.
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    effective_project_id = project_id if is_platform_admin else getattr(current_user, "_project_id", None)
+
+    if effective_project_id:
         bps = blueprint_repository.list_blueprints_for_course(
-            db, course_id=course_id, project_id=project_id, include_archived=include_archived,
+            db, course_id=course_id, project_id=effective_project_id, include_archived=include_archived,
         )
-    else:
+    elif is_platform_admin and course_id:
+        bps = blueprint_repository.list_blueprints_for_course(
+            db, course_id=course_id, include_archived=include_archived,
+        )
+    elif is_platform_admin:
         bps = blueprint_repository.list_all_blueprints(db, include_archived=include_archived)
+    else:
+        # Non-platform-admin with no project assigned at all — nothing to
+        # scope to, so nothing shown rather than every tenant's rows.
+        bps = []
 
     total = len(bps)
     start = (page - 1) * page_size
@@ -1005,7 +1033,7 @@ def get_blueprint_references(
     """Return the reference/blocker snapshot for one blueprint."""
     from app.services import design_doc_archive as archive_svc
 
-    _get_blueprint_or_404(db, blueprint_id)
+    _get_blueprint_or_404(db, blueprint_id, current_user)
     return DocumentReferences.from_refs(
         archive_svc.references_for(db, archive_svc.BLUEPRINT, blueprint_id)
     )
@@ -1040,7 +1068,7 @@ def archive_blueprint(
     from app.core.exceptions import ResourceInUseError
     from promptops_app.services.audit_service import log_audit_event
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     outcome = archive_svc.archive(
         db, archive_svc.BLUEPRINT, bp, actor=current_user.username, unpin=unpin,
     )
@@ -1088,7 +1116,7 @@ def restore_blueprint(
     from app.services import design_doc_archive as archive_svc
     from promptops_app.services.audit_service import log_audit_event
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     changed = archive_svc.restore(db, archive_svc.BLUEPRINT, bp)
     if changed:
         log_audit_event(
@@ -1134,7 +1162,7 @@ def permanently_delete_blueprint(
     from app.services import design_doc_archive as archive_svc
     from promptops_app.services.audit_service import log_audit_event
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     title, course_id, project_id = bp.title, bp.course_id, bp.project_id
 
     refs = archive_svc.purge(db, archive_svc.BLUEPRINT, bp)
@@ -1157,7 +1185,7 @@ def permanently_delete_blueprint(
 def get_blueprint(blueprint_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> BlueprintRead:
     """Return blueprint with its active version content."""
     from promptops_app.repositories import blueprint_repository
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     result = BlueprintRead.model_validate(bp)
     if bp.active_version:
         ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version)
@@ -1170,7 +1198,7 @@ def get_blueprint(blueprint_id: int, db: Session = Depends(get_db), current_user
 def list_blueprint_versions(blueprint_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> list[BlueprintVersionListItem]:
     """List all saved versions for a blueprint."""
     from promptops_app.repositories import blueprint_repository
-    _get_blueprint_or_404(db, blueprint_id)
+    _get_blueprint_or_404(db, blueprint_id, current_user)
     versions = blueprint_repository.list_blueprint_versions(db, blueprint_id)
     return [BlueprintVersionListItem.model_validate(v) for v in versions]
 
@@ -1179,7 +1207,7 @@ def list_blueprint_versions(blueprint_id: int, db: Session = Depends(get_db), cu
 def get_blueprint_version(blueprint_id: int, version: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> BlueprintVersionRead:
     """Return full content of a specific blueprint version."""
     from promptops_app.repositories import blueprint_repository
-    _get_blueprint_or_404(db, blueprint_id)
+    _get_blueprint_or_404(db, blueprint_id, current_user)
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, version)
     if not ver:
         raise NotFoundError(f"Blueprint version '{version}'", blueprint_id)
@@ -1190,7 +1218,7 @@ def get_blueprint_version(blueprint_id: int, version: str, db: Session = Depends
 def activate_blueprint_version(blueprint_id: int, version: str, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.version"))) -> BlueprintActivateVersionResponse:
     """Set a version as active. Deactivates all others."""
     from promptops_app.database import BlueprintVersion
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     ver = db.query(BlueprintVersion).filter(BlueprintVersion.blueprint_id == blueprint_id, BlueprintVersion.version == version).first()
     if not ver:
         raise NotFoundError(f"Blueprint version '{version}'", blueprint_id)
@@ -1206,7 +1234,7 @@ def activate_blueprint_version(blueprint_id: int, version: str, db: Session = De
 def create_blueprint_version(blueprint_id: int, request_body: BlueprintVersionCreateRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("blueprint.version"))) -> BlueprintVersionRead:
     """Save edited content as a new named version."""
     from promptops_app.database import BlueprintVersion
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     db.query(BlueprintVersion).filter(BlueprintVersion.blueprint_id == blueprint_id).update({BlueprintVersion.is_active: False})
     new_ver = BlueprintVersion(
         blueprint_id=blueprint_id, version=request_body.version_tag,
@@ -1473,7 +1501,7 @@ def regenerate_blueprint_item(
     from promptops_app.services.usage_service import UsageLogContext
     from app.services import cdd_regen_context as regen_ctx_svc
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
 
     original = request_body.section_content or ""
     item_index = request_body.item_index
@@ -1567,7 +1595,7 @@ def regenerate_blueprint_section(
     from promptops_app.services.usage_service import UsageLogContext
     from app.services import cdd_regen_context as regen_ctx_svc
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     mode = "teacher" if request_body.teacher_mode else "student"
     regen_system, _, regen_template = get_blueprint_prompts(mode)
     cdd_summary, cdd_provenance = _blueprint_regen_context(
@@ -1657,7 +1685,7 @@ def pin_blueprint(blueprint_id: int, request_body: BlueprintPinRequest, db: Sess
     """Set as active blueprint for generation. Equivalent to the '📌 Set as Active Blueprint' button."""
     from promptops_app.repositories.course_repository import set_active_blueprint
     from app.services import design_doc_archive as archive_svc
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     # Pinning an archive would quietly put a document someone deliberately
     # retired back in front of every generation for this course.
     archive_svc.assert_live(bp, archive_svc.BLUEPRINT)
@@ -1688,7 +1716,7 @@ def get_blueprint_components(
     )
     from promptops_app.repositories import blueprint_repository
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version) if bp.active_version else None
 
     # DLU course: the Content Type dropdown lists EVERY generated DLU day for
@@ -1772,7 +1800,7 @@ def get_blueprint_completion_status(
     from app.schemas.generation import CompletionStatusResponse
     from promptops_app.core.content_utils import get_module_completion_status
 
-    _get_blueprint_or_404(db, blueprint_id)
+    _get_blueprint_or_404(db, blueprint_id, current_user)
     status = get_module_completion_status(db, blueprint_id)
     return CompletionStatusResponse(
         completed=status.get("completed", False),
@@ -1798,7 +1826,7 @@ def export_blueprint(
     from promptops_app.repositories import blueprint_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     if not bp.active_version:
         raise WorkflowError("This blueprint has no active version to export.")
 
@@ -1899,7 +1927,7 @@ def export_module_lessons(
     from promptops_app.services.export_service import ExportRequest, export_content
     from promptops_app.core.constants import WorkflowState
 
-    bp = _get_blueprint_or_404(db, blueprint_id)
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
 
     latest_gens = generation_repository.list_latest_generations_for_blueprint(db, blueprint_id)
     if not latest_gens:

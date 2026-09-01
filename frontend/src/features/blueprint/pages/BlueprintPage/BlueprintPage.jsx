@@ -1083,6 +1083,7 @@ export default function BlueprintPage() {
                           version={versionDetail?.version || displayBp?.active_content?.version}
                           generationParams={versionDetail?.generation_params
                             || displayBp?.active_content?.generation_params}
+                          projectId={selProject?.id ?? projectId}
                         />
                         <BlueprintContentView
                           fullContent={previewFullContent}
