@@ -17,8 +17,9 @@ Run it when generation starts failing with that message:
 Idempotent: an existing rule for the same IP is reported, not duplicated.
 
 This is a stop-gap. The durable fix is to stop pinning a dynamic address —
-put DIS and the RDS in one VPC, or reach it through an SSM port-forward, and set
-DIS_STRUCTURE_STORE_URL accordingly (see dis_backend/config/settings.py).
+put DIS and the RDS in one VPC, or reach it through an SSM port-forward, and
+point structure_store.url in the client YAML at it (that file is the only source
+of a store location — see dis_backend/config/settings.py).
 """
 from __future__ import annotations
 

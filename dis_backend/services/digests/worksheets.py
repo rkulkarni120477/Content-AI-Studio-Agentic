@@ -22,9 +22,11 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from services.aim_calendar import parse_handbook
 from services.blocks import BLOCK_KEY_SQL, block_key
-from services.digests import attribution
+from services.digests import attribution, compose
+from services.digests.references import (
+    edition_designator, edition_series, parse_citations,
+)
 
 log = logging.getLogger(__name__)
 
@@ -531,6 +533,16 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
     for u in en.unattributed:
         _touch(u, None)
 
+    # Assigned reading. These units belong to no block — they are the shared
+    # handbooks a day's calendar row cites — so they appear in neither
+    # ``units_by_day`` nor ``unattributed``, and a delivered Block 9 inventory
+    # listed nine administrative files while omitting the two FAA handbooks that
+    # every one of its 18 reading days was actually taught from. The day set is
+    # the days that cite them, so the Days Applicable column stays true.
+    for dn, refs in (getattr(en, "references_by_day", None) or {}).items():
+        for u in (getattr(refs, "units", None) or []):
+            _touch(u, dn)
+
     # Block-wide reference docs (syllabus/calendar/handbook) that never became
     # per-day content units at all — see _block_wide_reference_files. Only
     # filled in when this tenant/type combination isn't already reachable via
@@ -627,32 +639,90 @@ def _subject_letter(code: str) -> str:
     return parts[2] if len(parts) > 2 else "?"
 
 
-def _project_quiz_counts(days: List[Dict[str, Any]]) -> tuple[int, int]:
+def _project_quiz_counts(days: List[Dict[str, Any]],
+                         composed: Optional[Dict[int, Dict[str, List[str]]]] = None
+                         ) -> tuple[int, int]:
+    """How many DISTINCT projects and assessments the block's calendar names.
+
+    Counted from the day cells the Day-by-Day Map itself renders, so Worksheet 1's
+    totals and Worksheet 4's columns can never disagree. They did: this counted
+    via ``attribution.build_calendar_refs``, whose project pattern requires a
+    ``9-1``-shaped number, and Block 9's calendar names its projects "Project
+    A27", "Project 4 A52", "Project 2 A29" — none of which match. The delivered
+    workbook reported "Total Projects 8" from a calendar that was later found to
+    describe a different schedule, and 0 once that was corrected, while the Day-by-Day
+    Map listed projects on eleven days.
+
+    That pattern is left alone: it also drives S1 attribution, where matching a
+    project FILE to its calendar day is a different job with a different cost of
+    error, and widening it there is not this function's decision to make.
+
+    Names are folded on case and whitespace, so "Quiz #6" and "quiz 6" count once.
+    """
+    projects: set[str] = set()
+    quizzes: set[str] = set()
+    composed = composed or {}
+    for d in days:
+        dn = d.get("day_number")
+        extra = composed.get(dn) or {}
+        for item in _merge_items(_json_list(d.get("assignments_json")), extra.get("projects")):
+            projects.add(" ".join(str(item).split()).lower())
+        for item in _merge_items(_json_list(d.get("assessments_json")), extra.get("assessments")):
+            quizzes.add(" ".join(str(item).split()).lower())
+    # Per KIND, the extracted cells win and the calendar's in-prose references are
+    # the fallback — not a union of the two. A block that names its projects only
+    # in prose ("Reading: ... Project 1-2 due") and never in a cell reported Total
+    # Projects 0, which the fallback fixes; but unioning both sides where the
+    # cells ARE populated let the prose scan's looser pattern inflate the other
+    # column, taking a 20-day block from 13 quizzes to 27. Whichever side actually
+    # describes this block is the one to count, and that is decided per column.
     proj_ref, quiz_ref = attribution.build_calendar_refs(days)
-    return len(proj_ref), len(quiz_ref)
+    if not projects:
+        projects = {f"project {k}".lower() for k in proj_ref}
+    if not quizzes:
+        quizzes = {f"quiz {k}".lower() for k in quiz_ref}
+    return _distinct(projects), _distinct(quizzes)
+
+
+def _distinct(labels: set) -> int:
+    """How many distinct items a set of labels names.
+
+    "Quiz 6" and "Quiz 6 from Materials and Processes - Day 4" are one quiz
+    written two ways — the calendar's prose and its extracted cell — so a plain
+    ``len`` double-counts exactly the items that were found twice. See
+    :func:`_same_item` for what "the same" means.
+    """
+    kept: List[str] = []
+    for label in sorted(labels, key=len):
+        if not any(_same_item(label, other) for other in kept):
+            kept.append(label)
+    return len(kept)
 
 
 def _primary_handbooks(days: List[Dict[str, Any]]) -> List[str]:
     """One prose line per handbook (not per exact citation), contiguous day-ranges
     collapsed — e.g. "FAA-H-8083-30B — cited on Days 1-13, 17-19". Reuses
-    parse_handbook to pull the handbook NAME out of each day's 'Reference reading:'
-    citation text (already embedded in source_text at calendar-ingestion time),
-    grouping by that identity rather than by exact page range — a handbook cited
-    with a different page range on different days still collapses into one line,
-    matching how AIM's own sample presents this rather than emitting one row per
-    distinct citation string."""
+    ``references.parse_citations`` — the same parser the Day-by-Day Map's Handbook
+    Reference column and the assigned-reading resolution use — grouping by handbook
+    identity rather than by exact page range, so a handbook cited with a different
+    page range on different days still collapses into one line, matching how AIM's
+    own sample presents this rather than emitting one row per distinct citation
+    string.
+
+    It previously used the local ``Reference reading:`` regex, which matches 84 of
+    the 350 AIM day rows that actually carry a citation and none at all on Block 9.
+    That is why a delivered Block Overview read "NOT AVAILABLE — no handbook
+    citations found" on the same workbook whose Day-by-Day Map cited a handbook on
+    18 of 20 days: two parsers, one answer each, and the wrong one rendered here.
+    """
     days_by_handbook: Dict[str, List[int]] = {}
     for d in days:
         dn = d.get("day_number")
         if dn is None:
             continue
-        m = _REFERENCE_READING_RE.search(d.get("source_text") or "")
-        if not m:
-            continue
-        for ref in parse_handbook(m.group(1)):
-            hb = ref.get("handbook")
-            if hb:
-                days_by_handbook.setdefault(hb, []).append(dn)
+        for c in parse_citations(d.get("source_text") or ""):
+            if c.handbook:
+                days_by_handbook.setdefault(edition_designator(c.handbook), []).append(dn)
 
     out = [f"{hb} — cited on Days {_collapse_day_ranges(day_nums)}"
            for hb, day_nums in days_by_handbook.items()]
@@ -738,13 +808,112 @@ SYLLABUS_NOT_SEARCHABLE = ("syllabus not searchable for this block — the looku
                            "block number and this block's label has none")
 
 
-def _extract_syllabus_fields(text: str) -> Dict[str, str]:
-    """Verbatim marker-anchored slicing (mirrors cdd_parser.parse_cdd_flat's
-    position-based approach) — no LLM, so these fields can never be paraphrased.
-    Each marker's content runs until wherever the syllabus's OWN next labeled
-    heading actually starts (_next_heading_start), not a fixed character count —
-    see that function's docstring for why a hardcoded cutoff is wrong in both
-    directions."""
+#: The syllabus fields an extractor is asked for, with the plain-language
+#: description the model is given. Keyed the same as _SYLLABUS_KEY_BY_MARKER so
+#: the LLM and marker paths are interchangeable field-for-field.
+_SYLLABUS_LLM_FIELDS = {
+    "course_description": "the paragraph describing what this course/block covers",
+    "course_objectives": "what a student will be able to do on completion",
+    "grading_policy": "how the grade is composed, including any percentage breakdown",
+}
+
+
+def _normalized(text: str) -> str:
+    """Whitespace-collapsed, case-folded — the form verbatim checks compare in."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _verbatim_only(candidate: str, source: str) -> str:
+    """*candidate* if it genuinely appears in *source*, else "".
+
+    This is what lets an LLM read these cells without giving up the property the
+    marker-slicing version had for free: a syllabus field is a quotation, never a
+    summary. The model is asked for verbatim spans, and this checks rather than
+    trusts — a paraphrase, a merged sentence or an invented policy fails the
+    substring test and the field falls back to the marker path.
+
+    Compared whitespace-collapsed because the ingested syllabus is one flattened
+    line and any extractor will re-wrap it; that is a rendering difference, not a
+    change of words.
+    """
+    text = " ".join(str(candidate or "").split())
+    if not text:
+        return ""
+    return text if _normalized(text) in _normalized(source) else ""
+
+
+def _llm_syllabus_fields(text: str, tenant_cfg: Any) -> Dict[str, str]:
+    """Marker-free extraction of the syllabus fields. {} when unavailable.
+
+    The marker path (:func:`_extract_syllabus_fields`) can only find a field
+    whose heading it already knows and whose punctuation matches, and this
+    module's own history is a list of the ways that fails on real documents: a
+    citation truncated at "Ch.", a heading matched mid-parenthetical, a grading
+    breakdown physically separated from its own prose. A model reads the
+    document instead of pattern-matching its punctuation.
+
+    What it is NOT allowed to do is write. Every returned value is checked back
+    against the source by :func:`_verbatim_only`, so this can add coverage but
+    can never add words — a field the model paraphrased is discarded exactly as
+    if it had not been found.
+    """
+    if not text or tenant_cfg is None:
+        return {}
+    try:
+        from services.pipeline.common import call_llm, safe_json
+        model = tenant_cfg.pipeline.models.digest_extraction
+    except Exception:  # noqa: BLE001 — extraction is additive; never sink the worksheet
+        return {}
+
+    wanted = "\n".join(f"  {k}: {desc}" for k, desc in _SYLLABUS_LLM_FIELDS.items())
+    prompt = (
+        "Extract fields from the course syllabus below.\n\n"
+        "Rules:\n"
+        "- Copy the text EXACTLY as it appears. Do not paraphrase, summarize, "
+        "reorder or correct it.\n"
+        "- If a field is not stated in the document, return an empty string for it. "
+        "Never infer or invent one.\n"
+        "- Return ONLY a JSON object with exactly these keys:\n"
+        f"{wanted}\n\n"
+        f"SYLLABUS:\n{text}\n"
+    )
+    try:
+        reply, _ti, _to = call_llm(model, prompt, 4000)
+        data = safe_json(reply) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("syllabus LLM extraction failed (%s); using marker extraction", exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key in _SYLLABUS_LLM_FIELDS:
+        value = _verbatim_only(data.get(key, ""), text)
+        if value:
+            out[key] = value
+        elif str(data.get(key) or "").strip():
+            # Answered, but not with words from the document. Worth a line in the
+            # log: it is the signal that the model is drifting toward summary, and
+            # the cell it would have filled now silently falls back instead.
+            log.warning("syllabus LLM returned non-verbatim %s; discarded", key)
+    return out
+
+
+def _extract_syllabus_fields(text: str, tenant_cfg: Any = None) -> Dict[str, str]:
+    """Verbatim marker-anchored slicing, with an LLM pass for what it misses.
+
+    Position-based slicing (mirrors cdd_parser.parse_cdd_flat) still runs first
+    and still wins wherever it finds a field: it is exact by construction, needs
+    no model, and cannot be affected by an outage. The LLM pass only fills fields
+    the markers did NOT find — a syllabus that names its sections differently, or
+    punctuates them in a way _HEADING_RE does not admit, previously rendered
+    "NOT AVAILABLE — not found in syllabus text" while the content sat in the
+    document.
+
+    The no-paraphrase guarantee survives, and is now enforced rather than
+    structural: every LLM-supplied value is checked back against the source by
+    _verbatim_only, so a summarized field is discarded and the honest
+    NOT AVAILABLE placeholder stands.
+    """
     keys = tuple(_SYLLABUS_KEY_BY_MARKER.values())
     if not text:
         # The lookup ran and returned nothing — the one case where blaming ingestion
@@ -756,6 +925,28 @@ def _extract_syllabus_fields(text: str) -> Dict[str, str]:
         if m:
             end = _next_heading_start(text, m.end())
             out[key] = text[m.end():end].strip()
+    # ALWAYS ask the model, and keep whichever verbatim answer is more complete.
+    # "Markers first, LLM only for what markers missed" sounded conservative and
+    # was not: _HEADING_RE stops the marker capture at the next thing that LOOKS
+    # like a heading, so a field containing a capitalised phrase followed by a
+    # colon is cut there. A delivered Block 9 Block Overview shows both halves of
+    # that failure — Course Description ending mid-word at "Subject L (Ice and",
+    # Supplemental References ending at "Federal Aviation Administration" — and a
+    # non-empty truncated value blocked the model from supplying the rest.
+    #
+    # Both paths return substrings of the same document (the LLM's are checked by
+    # _verbatim_only), so "more complete" is simply "longer": a longer verbatim
+    # span cannot be less faithful than a shorter one it contains, and when they
+    # do not overlap the longer one is still the one that read past the false
+    # heading boundary.
+    llm_fields = _llm_syllabus_fields(text, tenant_cfg)
+    for key, value in llm_fields.items():
+        current = out.get(key) or ""
+        if len(value) > len(current):
+            if current:
+                log.info("syllabus %s: model read %d chars where markers read %d",
+                         key, len(value), len(current))
+            out[key] = value
     grading_table = _grading_percentage_table(text)
     if grading_table:
         out["grading_policy"] = f"{out.get('grading_policy', '')} {grading_table}".strip()
@@ -790,14 +981,200 @@ def _json_list(value: Any) -> List[str]:
     return [" ".join(str(item).split()) for item in items]
 
 
-def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[str, Any]:
+#: Room for the day-row extraction prompt's own instructions, so the rows can be
+#: budgeted against the model's real input window rather than a guess.
+_DAY_ITEMS_OVERHEAD_CHARS = 4_000
+_DAY_ITEMS_CHARS_PER_TOKEN = 2.5
+
+
+def compose_day_items(days: List[Dict[str, Any]], tenant_cfg: Any = None,
+                      flags: Optional[List[str]] = None) -> Dict[int, Dict[str, List[str]]]:
+    """Read each day's calendar row and return the items it names.
+
+    ``{day_number: {"projects": [...], "assessments": [...], "hangar": [...]}}``,
+    empty when unavailable — the caller keeps whatever it extracted mechanically.
+
+    The regex extraction this supplements can only find items shaped like the
+    patterns someone thought to write down. It finds "Quiz #6" and misses
+    "Landing gear subject matter quiz"; it finds "Project 4 A52" and misses a
+    project a row names in prose. Worse, the cells it reads are frequently the
+    whole flattened table row, so on several blocks there is no extracted cell to
+    read at all and the pattern is all there is.
+
+    A model reads the row instead. It is NOT allowed to name an item the row does
+    not contain: every returned item is checked back against that day's own text
+    by ``compose.verify`` in VERBATIM mode, so an invented project is discarded
+    exactly as if it had not been returned. One call for the whole block, so the
+    model sees the block's naming conventions rather than guessing per day.
+    """
+    if not days or tenant_cfg is None:
+        return {}
+    try:
+        from services.pipeline.common import call_llm, safe_json
+        model = tenant_cfg.pipeline.models.digest_extraction
+        max_in = int(getattr(tenant_cfg.pipeline.models, "digest_max_input_tokens", 0) or 180_000)
+    except Exception:  # noqa: BLE001 — additive; never sink the worksheet
+        return {}
+
+    budget = int(max_in * _DAY_ITEMS_CHARS_PER_TOKEN) - _DAY_ITEMS_OVERHEAD_CHARS
+    rows, used, omitted = [], 0, []
+    for d in sorted(days, key=lambda x: x.get("day_number") or 0):
+        dn = d.get("day_number")
+        text = " ".join(str(d.get("source_text") or "").split())
+        if dn is None or not text:
+            continue
+        block = f"DAY {dn}:\n{text}\n"
+        # Whole days in or whole days out, and the omission is reported. Cutting a
+        # row mid-sentence would hand the model a truncated project name and the
+        # verbatim check would then reject the real item it half-saw.
+        if used + len(block) > budget and rows:
+            omitted.append(dn)
+            continue
+        rows.append(block)
+        used += len(block)
+    if not rows:
+        return {}
+    if omitted and flags is not None:
+        flags.append(f"DAY_ITEMS_NOT_COMPOSED — day rows {omitted} did not fit the "
+                     f"extractor input budget; their Projects/Assessment/Hangar cells "
+                     f"come from pattern extraction only")
+
+    prompt = (
+        "Below are the rows of a course calendar, one per teaching day. For each "
+        "day, list the items the row names.\n\n"
+        "Rules:\n"
+        "- projects: shop projects / assignments the row names for that day, "
+        "INCLUDING the continuation and due markers as written (e.g. "
+        "\"Project 4 A52\", \"Project 9-1\").\n"
+        "- assessments: quizzes, exams and subject-matter quizzes the row names "
+        "(e.g. \"Quiz #6\", \"Cumulative Exam\", \"Landing gear subject matter "
+        "quiz\").\n"
+        "- hangar: hangar / shop-floor activities the row names.\n"
+        "- Copy each item using the row's OWN words. Do not renumber, expand, "
+        "normalise, translate or tidy them. An item you cannot copy from the row "
+        "will be discarded.\n"
+        "- A day that names none of a kind gets an empty list. Most days do. "
+        "Never write \"N/A\" or \"none\" as an item.\n"
+        "- Lesson topics, readings and preparation notes are NOT items.\n\n"
+        'Respond with ONLY: {"days": [{"day": int, "projects": [str], '
+        '"assessments": [str], "hangar": [str]}]}\n\n'
+        + "\n".join(rows)
+    )
+    try:
+        reply, _ti, _to = call_llm(model, prompt, 8000)
+        data = safe_json(reply) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("day-item composition failed (%s); pattern extraction stands", exc)
+        return {}
+
+    by_day = {int(d["day_number"]): " ".join(str(d.get("source_text") or "").split())
+              for d in days if d.get("day_number") is not None}
+    out: Dict[int, Dict[str, List[str]]] = {}
+    dropped = 0
+    for entry in (data.get("days") or []) if isinstance(data, dict) else []:
+        try:
+            dn = int(entry.get("day"))
+        except (TypeError, ValueError):
+            continue
+        source = by_day.get(dn)
+        if not source:
+            continue
+        kept: Dict[str, List[str]] = {}
+        for key in ("projects", "assessments", "hangar"):
+            values = []
+            for item in (entry.get(key) or []):
+                value, _why = compose.verify(str(item), source, compose.VERBATIM)
+                if value and value not in values:
+                    values.append(value)
+                elif not value and str(item).strip():
+                    dropped += 1
+            if values:
+                kept[key] = values
+        if kept:
+            out[dn] = kept
+    if dropped:
+        log.warning("day-item composition: discarded %d item(s) not present in the "
+                    "day's own row text", dropped)
+        if flags is not None:
+            flags.append(f"DAY_ITEMS_UNGROUNDED — {dropped} composed item(s) named "
+                         f"text absent from the day row and were discarded")
+    return out
+
+
+def _same_item(a: str, b: str) -> bool:
+    """Whether two labels name the same project/quiz written two ways.
+
+    One label extends the other AT A WORD BOUNDARY — "Quiz 6" and "Quiz 6 from
+    Materials and Processes - Day 4" are one quiz; "Project 2-1" and "Project
+    2-10" are two. Plain substring containment gets the second pair wrong, and
+    gets it wrong silently: it folded Block 2's projects 2-10 through 2-13 into
+    2-1 and reported nine projects for a block that has thirteen.
+    """
+    x, y = (a, b) if len(a) <= len(b) else (b, a)
+    if x == y:
+        return True
+    if not y.startswith(x):
+        return False
+    return not (y[len(x)].isalnum() or y[len(x)] in "-_.")
+
+
+def _merge_items(primary: List[str], extra: Optional[List[str]]) -> List[str]:
+    """``primary`` then anything in ``extra`` that does not name the same item."""
+    out = list(primary or [])
+    folded = [" ".join(str(x).split()).lower() for x in out]
+    for item in (extra or []):
+        text = " ".join(str(item).split())
+        key = text.lower()
+        if not key or any(_same_item(key, f) for f in folded):
+            continue
+        out.append(text)
+        folded.append(key)
+    return out
+
+
+def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]],
+                     day_references: Any = None,
+                     composed: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
     """Per-day fields for the Day-by-Day Map that need the raw calendar row /
-    day's units — not derivable from the projected day summary alone."""
-    projects = _json_list(day.get("assignments_json"))
-    assessments = _json_list(day.get("assessments_json"))
-    m = _REFERENCE_READING_RE.search(day.get("source_text") or "")
-    handbook_reference = m.group(1).strip() if m else ""
-    hb_match = _HANDBOOK_RE.search(handbook_reference)
+    day's units — not derivable from the projected day summary alone.
+
+    ``day_references`` (optional) is this day's parsed reading assignment from
+    ``services.digests.references``. When present it supplies the Handbook
+    Reference cell, because it parses the citation the calendars actually carry.
+    The local regex below is kept only as the fallback for a caller that has no
+    resolved references, and it is why that cell was wrong in delivered work:
+    it required the literal "Reference reading:", matching 84 of the 350 AIM day
+    rows that carry a citation, and its line-bounded capture returned the bare
+    handbook code with the chapter and page range dropped — "FAA-H-8083-31B"
+    where the calendar said "FAA-H-8083-31B Ch. 13 pgs. 13-1 to 13-14".
+    """
+    composed = composed or {}
+    # Pattern extraction first (an exact cell is exact), then whatever the model
+    # read from the row that no pattern was written for — both are grounded in
+    # this day's own text, so the union states nothing the row does not.
+    projects = _merge_items(_json_list(day.get("assignments_json")),
+                            composed.get("projects"))
+    assessments = _merge_items(_json_list(day.get("assessments_json")),
+                               composed.get("assessments"))
+    citations = list(getattr(day_references, "citations", None) or [])
+    if citations:
+        handbook_reference = "; ".join(c.describe() for c in citations)
+        # The EDITION is the handbook's own designator, taken from the parsed
+        # citation rather than re-matched out of the rendered cell. The regex
+        # below only knows the ``FAA-H-`` spelling, and ``describe()`` renders
+        # the normalised code without that prefix — so every day in a delivered
+        # Block 9 workbook showed a populated Handbook Reference beside an empty
+        # Handbook Edition, and the block-level conflict check downstream, which
+        # matches the same way, fell back to comparing whole page-range strings
+        # and declared 18 distinct "editions" for what is three chapters of two
+        # handbooks.
+        handbook_edition = "; ".join(dict.fromkeys(
+            edition_designator(c.handbook) for c in citations if c.handbook))
+    else:
+        m = _REFERENCE_READING_RE.search(day.get("source_text") or "")
+        handbook_reference = m.group(1).strip() if m else ""
+        hb_match = _HANDBOOK_RE.search(handbook_reference)
+        handbook_edition = hb_match.group(0) if hb_match else ""
 
     def _fname(u: Dict[str, Any]):
         return (u.get("metadata_json") or {}).get("source_file_name") or u.get("title")
@@ -805,6 +1182,16 @@ def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[s
     files = sorted({
         _fname(u) for u in units if u.get("unit_type") != "calendar_day" and _fname(u)
     })
+    # The assigned reading is a source. A day whose digest was extracted from
+    # tens of thousands of characters of handbook chapter rendered "—" in this
+    # column, because the reading units are resolved outside the day's own unit
+    # list. Marked rather than merged: a reviewer must still be able to tell the
+    # block's own material from a handbook the calendar pointed at.
+    for name in dict.fromkeys(
+            str((u.get("metadata_json") or {}).get("source_file_name") or "")
+            for u in (getattr(day_references, "units", None) or [])):
+        if name and f"{name} (assigned reading)" not in files and name not in files:
+            files.append(f"{name} (assigned reading)")
     # Hangar activities get their own AIM Day-by-Day Map column, split out of the
     # general file list — matched by "hangar" appearing in whatever document_type
     # string the tenant's own client profile assigned (confirmed live: AIM's is
@@ -813,18 +1200,29 @@ def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[s
         _fname(u) for u in units
         if _fname(u) and "hangar" in str((u.get("metadata_json") or {}).get("document_type") or "").lower()
     })
+    # The calendar's own hangar column, which the AIM parser writes to
+    # ``activities_json`` (services/aim_calendar.py sets activities =
+    # hangar_activities). Nothing read it: the field was loaded and merged and
+    # then never consulted, so this cell could only ever be filled by an ingested
+    # FILE tagged as a hangar activity — and on this client 51 of the 74 such
+    # files carry no block tag at all, which is why every delivered day reads
+    # "no hangar activity listed" while the calendar lists them.
+    hangar = _merge_items(hangar_files,
+                          _merge_items(_json_list(day.get("activities_json")),
+                                       composed.get("hangar")))
     return {
         "projects_today": projects,
         "assessment_today": assessments,
         "handbook_reference": handbook_reference,
-        "handbook_edition": hb_match.group(0) if hb_match else "",
+        "handbook_edition": handbook_edition,
         "source_files_today": files,
-        "hangar_activity_today": hangar_files,
+        "hangar_activity_today": hangar,
     }
 
 
 def build_block_overview(en, cur=None, schema: str = "dis",
-                         flags: Optional[List[str]] = None) -> Dict[str, Any]:
+                         flags: Optional[List[str]] = None,
+                         tenant_cfg: Any = None) -> Dict[str, Any]:
     """Block-level summary: totals, ACS subjects, handbook/supplemental-reference
     citations, web resources, and verbatim syllabus fields where the source is
     available. ``schema`` must be the tenant's own structure_store.schema_name —
@@ -838,7 +1236,8 @@ def build_block_overview(en, cur=None, schema: str = "dis",
     Best-effort stays best-effort — this function still never raises — but it no
     longer degrades silently, which is the half of "best-effort" that was missing.
     """
-    total_projects, total_quizzes = _project_quiz_counts(en.days)
+    total_projects, total_quizzes = _project_quiz_counts(
+        en.days, getattr(en, "composed_day_items", None))
     subjects = sorted({_subject_letter(c) for c in en.declared_acs if _subject_letter(c) != "?"})
     primary_handbooks = _primary_handbooks(en.days)
     web_resources = build_web_resources(en.days, en.units_by_day)
@@ -863,7 +1262,7 @@ def build_block_overview(en, cur=None, schema: str = "dis",
                                  "number for the filename match; the syllabus fields are "
                                  "unknown, not known-absent")
             else:
-                syllabus_fields = _extract_syllabus_fields(text)
+                syllabus_fields = _extract_syllabus_fields(text, tenant_cfg)
         except Exception as exc:  # noqa: BLE001 — overview must never fail the build
             # Was `except Exception: pass`, which left the pre-set "not ingested"
             # placeholders in place: a query failure rendered, in the delivered

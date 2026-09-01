@@ -469,6 +469,23 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
     }
 
 
+def extracted_chars(content_doc: Dict[str, Any]) -> int:
+    """How much text a document actually yielded, across its content units.
+
+    total_units cannot answer this. build_clean_content_document falls back to a
+    single unit holding reading_content when chunking produced nothing, so a file
+    the extractor could not read at all still records total_units = 1 — and in
+    production not one of 605 AIM records has total_units = 0, while 109 of 120
+    legacy .doc records have exactly one unit containing zero characters.
+
+    So "did anything come out of this file" is a question about characters, not
+    units, and it is the question the Source Library has to answer: a document
+    with no text cannot reach any generation, and until now it displayed the same
+    "needs_review" as a healthy one.
+    """
+    return sum(len(str(u.get("text") or "")) for u in (content_doc.get("content_units") or []))
+
+
 def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, payload: Dict[str, Any], payload_key: Optional[str] = None) -> Dict[str, str]:
     writer = ArtifactWriter(tenant_cfg)
     job_id = str(payload.get("job_id"))
@@ -478,6 +495,10 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     content_url = writer.write_json(c_key, content_doc)
     record = compact_source_record(payload, p_key, c_key)
     record["total_units"] = int(content_doc.get("total_units") or 0)
+    # Alongside total_units, and for the same reason it is set here rather than in
+    # compact_source_record: both describe the CLEAN content document retrieval
+    # reads, not the raw pipeline payload.
+    record["extracted_chars"] = extracted_chars(content_doc)
     index_url = upsert_source_record(tenant_cfg, client_id, record)
     return {"content_key": c_key, "content_url": content_url, "index_url": index_url}
 

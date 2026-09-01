@@ -420,6 +420,12 @@ export default function CddPage() {
       // template is a far closer approximation than the generic default. An id that
       // doesn't resolve to a pipeline row is ignored server-side, so this is safe.
       prompt_id: promptConfig.selectedPromptId || undefined,
+      // The same picker the sync path sends above, and the same ids. Additive here:
+      // the block still enumerates every ingested source, and these are digested on
+      // top of it — so this can only add the document the user attached, never
+      // narrow the block to it. Leaving it out was what made the picker above a
+      // fully enabled control over a request that ignored it.
+      reference_document_ids: refDocIds,
     };
     await dispatch(generateCddBlockThunk(payload));
   }
@@ -864,6 +870,7 @@ export default function CddPage() {
                       with it, leaving no way to restore what was just archived. */}
                   <DocumentArchivePanel
                     label={L.cdd}
+                    termKey="cdd"
                     docs={cdds}
                     archivedDocs={archivedCdds}
                     activeId={activeCdd?.id ?? null}
@@ -1052,7 +1059,7 @@ export default function CddPage() {
                 <BlockWidePanel
                   capability={promptCapability}
                   label={L.cdd}
-                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Applies the ${L.styleLower}, additional instructions and duration set above; the document selection does not apply, since every ingested source in the block is used. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
+                  hint={`Generate a whole-block ${L.cdd} from every source in the block — enumerated day-by-day, digested, then reduced with coverage checks. Applies the ${L.styleLower}, additional instructions and duration set above. Any documents selected above are added on top of everything the block already contains — they never replace it, so the block-wide result still covers every ingested source. Runs in the background; the ${L.cdd} is pinned as active when it finishes.`}
                   block={blockLabel}
                   onBlockChange={onBlockLabelChange}
                   qualityTier={qualityTier}

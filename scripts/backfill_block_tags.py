@@ -85,10 +85,14 @@ def main() -> int:
         print(f"no client config at {cfg_path}", file=sys.stderr)
         return 2
     cfg = yaml.safe_load(open(cfg_path))
-    dis_url = os.environ.get("DIS_STRUCTURE_STORE_URL") or cfg["structure_store"]["url"]
+    # The client YAML is the only source of a store location, so a script that
+    # writes to DIS cannot be repointed by an env var the service ignores — an
+    # env-first read here would let a backfill edit a different database than
+    # DIS reads. See settings, "Where the backing stores live".
+    dis_url = cfg["structure_store"]["url"]
     vs = cfg["vector_store"]
-    os_endpoint = os.environ.get("DIS_VECTOR_STORE_ENDPOINT") or vs["endpoint"]
-    os_index = os.environ.get(f"DIS_VECTOR_STORE_INDEX_{args.client.upper()}") or vs["index_name"]
+    os_endpoint = vs["endpoint"]
+    os_index = vs["index_name"]
     os_auth = HTTPBasicAuth(vs["username"], vs["password"])
 
     cas_url = os.environ.get("DATABASE_URL_PROD", "").replace("+psycopg2", "")

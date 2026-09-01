@@ -438,7 +438,7 @@ export default function SelectionSidebar({
           </button>
           {showNewCourse && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label={`${L.title} Name *`} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label={`${L.title} Name`} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />

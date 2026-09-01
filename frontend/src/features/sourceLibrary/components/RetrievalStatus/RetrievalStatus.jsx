@@ -16,39 +16,64 @@ import styles from './RetrievalStatus.module.scss';
  * So this reports the two things that actually decide whether a document can
  * reach a generation, and says plainly when it cannot:
  *
+ *   extracted_chars === 0         -> Nothing extracted (needs re-ingestion)
  *   indexed_units > 0             -> Searchable
- *   extracted > 0, indexed 0      -> Extracted but not indexed (recoverable — the
+ *   units > 0, indexed 0          -> Extracted but not indexed (recoverable — the
  *                                    text is still stored; re-indexing restores it)
- *   extracted === 0               -> Nothing extracted (needs re-ingestion)
  *   indexed_units == null         -> Unknown; the index could not be reached
  *
  * `indexed_units == null` deliberately does NOT render as healthy. Claiming
  * searchable without checking is the failure this component exists to end.
+ *
+ * WHY extracted_chars AND NOT total_units
+ * ---------------------------------------
+ * The first version keyed "nothing extracted" on total_units === 0, and that
+ * branch could never run. build_clean_content_document falls back to a single
+ * unit holding reading_content when chunking yields nothing, so a file the
+ * extractor could not read at all still records total_units = 1. Measured on the
+ * AIM index: not one of 605 records has total_units = 0, while 109 of 120 legacy
+ * .doc records have exactly one unit containing zero characters. The component
+ * looked correct and reported "needs_review" for every unreadable file.
+ *
+ * "Nothing extracted" is also checked FIRST, ahead of the unknown case. It is
+ * knowable from the record alone and needs no search index, so a deployment
+ * whose index is unreachable should still say plainly that a file yielded no
+ * text, rather than hiding a definite answer behind "Unknown".
  */
 export default function RetrievalStatus({ doc }) {
-  const extracted = Number(doc?.total_units ?? 0);
+  const units = Number(doc?.total_units ?? 0);
   const indexed = doc?.indexed_units;
+  // null/undefined means the record predates the field, which is NOT the same as
+  // zero — an older record simply was not measured, and calling that "nothing
+  // extracted" would condemn every healthy document ingested before it existed.
+  const chars = doc?.extracted_chars;
+  const measured = chars !== null && chars !== undefined;
   const blockMissing = !String(doc?.block || '').trim() && String(doc?.course_id) !== '-1';
 
   let tone = 'ok';
   let label = 'Searchable';
   let detail = '';
 
-  if (indexed === null || indexed === undefined) {
+  if (measured && Number(chars) === 0) {
+    tone = 'error';
+    label = 'Nothing extracted';
+    detail = 'No text was recovered from this file, so no generation can use it. '
+      + 'It needs re-ingesting with an extractor that can read this format.';
+  } else if (indexed === null || indexed === undefined) {
     tone = 'unknown';
     label = 'Unknown';
     detail = 'Search index could not be reached — this is not a healthy result.';
-  } else if (extracted === 0) {
+  } else if (units === 0) {
     tone = 'error';
     label = 'Nothing extracted';
     detail = 'No text was recovered from this file. No generation can use it until it is re-ingested.';
   } else if (Number(indexed) === 0) {
     tone = 'error';
     label = 'Not indexed';
-    detail = `${extracted} unit${extracted === 1 ? '' : 's'} extracted but never reached the search index, so generation cannot see this document. The text is still stored — re-indexing restores it.`;
-  } else if (Number(indexed) < extracted) {
+    detail = `${units} unit${units === 1 ? '' : 's'} extracted but never reached the search index, so generation cannot see this document. The text is still stored — re-indexing restores it.`;
+  } else if (Number(indexed) < units) {
     tone = 'warn';
-    label = `Partly searchable · ${indexed}/${extracted}`;
+    label = `Partly searchable · ${indexed}/${units}`;
     detail = 'Some extracted units are missing from the search index.';
   } else {
     label = `Searchable · ${indexed} unit${Number(indexed) === 1 ? '' : 's'}`;

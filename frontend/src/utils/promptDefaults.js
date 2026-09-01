@@ -1,3 +1,5 @@
+import { applyTerminology } from '@config/tenantLabels';
+
 /** Fallback CDD prompts when no prompt library assets exist (matches Streamlit inline defaults). */
 export const CDD_DEFAULT_SYSTEM = `You are an experienced Instructional Designer, CTE expert, and SME for middle school CTE Career Pathways.
 Create structured, standards-aligned Course Design Documents with clear learning objectives, module structure, and assessment guidance.`;
@@ -41,18 +43,21 @@ export const COMPONENT_LABELS = {
 
 /** Resolve a pipeline component's display name, honouring tenant label overrides. */
 export function componentLabel(component, L) {
-  if (component === 'style' && L?.style) return L.style;
-  if (component === 'cdd' && L?.cdd) return L.cdd;
-  if (component === 'blueprint' && L?.blueprint) return L.blueprint;
-  return COMPONENT_LABELS[component] || component;
+  const key = String(component || '').toLowerCase();
+  if (key === 'style' && L?.style) return L.style;
+  if (key === 'cdd' && L?.cdd) return L.cdd;
+  if (key === 'blueprint' && L?.blueprint) return L.blueprint;
+  return COMPONENT_LABELS[key] || component;
 }
 
-export function promptDisplayLabel(prompt, L) {
+export function promptDisplayLabel(prompt, L, fallbackComponent) {
   if (prompt?.is_default) {
-    const comp = componentLabel(prompt.component_type, L) || 'Prompt';
+    const comp = componentLabel(prompt.component_type || fallbackComponent, L) || 'Prompt';
     return `🏷️ Default ${comp} Prompt`;
   }
-  return prompt?.name || 'Unnamed prompt';
+  const raw = prompt?.name || '';
+  const rewritten = applyTerminology(raw, L, undefined, { identifiers: true });
+  return rewritten || raw || 'Unnamed prompt';
 }
 
 export function buildPromptDownloadMd({

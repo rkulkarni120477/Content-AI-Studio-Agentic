@@ -44,6 +44,7 @@ import {
   DEFAULT_DOCUMENT_SOURCE_TYPE,
 } from '@utils/documentRegistry';
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import styles from './StylePage.module.scss';
 
 function documentPreviewText(preview) {
@@ -450,7 +451,7 @@ export default function StylePage() {
                   onChange={(e) => setStyleStateFilter(e.target.value)}
                 />
                 <div className={styles.docSearch}>
-                  <label className={styles.docSearch__label}>Search {L.styleLower}</label>
+                  <label className={styles.docSearch__label}>Search {L.style}</label>
                   <SearchBar
                     value={styleSearch}
                     onChange={setStyleSearch}
@@ -479,7 +480,9 @@ export default function StylePage() {
                       <div className={styles.styleItem__info}>
                         <span className={styles.styleItem__name}>{style.name}</span>
                         {style.understanding_preview && (
-                          <span className={styles.styleItem__desc}>{style.understanding_preview}</span>
+                          <span className={styles.styleItem__desc}>
+                            {applyTerminology(style.understanding_preview, L, ['style'])}
+                          </span>
                         )}
                         <span className={styles.styleItem__date}>{formatDate(style.created_at)}</span>
                       </div>

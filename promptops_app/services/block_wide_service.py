@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from app.core.dis_client import dis_client
+from promptops_app.services.deliverable_labels import label, long_label
 from promptops_app.services.budget_service import BudgetExceededError
 from promptops_app.services.user_directives import (
     compose_guidance,
@@ -505,13 +506,14 @@ def _day_table_from_rows(rows: list[dict], extension_columns: list[str] | None =
     return out
 
 
-def render_cdd_markdown(course_title: str, block: Optional[str], result) -> str:
+def render_cdd_markdown(course_title: str, block: Optional[str], result,
+                        deliverable_label: str = "Course Design Document") -> str:
     """CDD markdown — same 6-worksheet shape as the Block Blueprint (per the
     2026-08-06 decision to give both deliverables the AIM-sample shape), just a
     different title line. is_dlu_cdd/split_cdd_worksheets detect this shape by
     heading pattern alone, so the existing DLU-CDD parsing/XLSX-export machinery
     picks this up unchanged."""
-    intro = [f"# Course Design Document — {course_title}"]
+    intro = [f"# {deliverable_label} — {course_title}"]
     if block:
         intro.append(f"**Block:** {block}")
     return _render_worksheets(result, intro)
@@ -756,6 +758,153 @@ def _digest_failure_reasons(report: Optional[Dict[str, Any]]) -> List[str]:
     return reasons
 
 
+#: What a DIS that honours pinned documents echoes back: the ids it actually
+#: digested. Checked rather than assumed, because DigestBuildRequest is a plain
+#: BaseModel — Pydantic drops keys it does not declare — so a DIS that predates the
+#: field accepts the request, ignores the pins and answers exactly like one that
+#: applied them. That is the same silent-drop shape that let 30/30 prod block-wide
+#: jobs run with the prompt the user selected discarded one layer down.
+_EXTRA_DOCS_ACK_KEY = "extra_documents_applied"
+
+
+def _selected_document_ids(request_body) -> List[str]:
+    """The documents the requester pinned in the form's Reference Documents picker.
+
+    Additive by contract: these are digested ON TOP of every unit the block
+    enumerates, never instead of them (see app.schemas.block_wide). De-duplicated and
+    stringified here so the wire value cannot depend on whether the picker handed us
+    ints or strings, and so an id appearing twice cannot be paid for twice.
+    """
+    out: List[str] = []
+    for raw in getattr(request_body, "reference_document_ids", None) or []:
+        text = str(raw).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _call_with_extra_documents(fn, *args, extra_document_ids: List[str], **kwargs):
+    """Call *fn* with ``extra_document_ids``; returns ``(reply, sent)``.
+
+    ``sent`` is False when the callee has no such parameter — a CAS process running
+    against an older app.core.dis_client, or a test double with a fixed signature.
+    Degrading there rather than propagating the TypeError is the point: pinning an
+    extra document must never be able to fail a generation that would otherwise have
+    succeeded, and the caller records the miss on coverage instead. Empty ids call
+    through untouched, so an unused picker cannot change any existing behavior.
+    """
+    if not extra_document_ids:
+        return fn(*args, **kwargs), True
+    if not _accepts_extra_documents(fn):
+        _log.warning("dis_client.%s does not accept extra_document_ids — calling "
+                     "without the %s pinned document(s)",
+                     getattr(fn, "__name__", "?"), len(extra_document_ids))
+        return fn(*args, **kwargs), False
+    # No TypeError guard here on purpose. Whether the callee takes the parameter is
+    # answered by its SIGNATURE above, so any TypeError from this point is raised
+    # from inside the call and is a real bug that must keep travelling to the
+    # failure branch. Matching on the exception message instead could not tell the
+    # two apart: a genuine internal error whose text happens to name the field —
+    # "cannot build cache key: extra_document_ids contains non-hashable entries" —
+    # was swallowed, retried without the pin, succeeded, and reported "old client"
+    # while a real defect went unlogged.
+    return fn(*args, extra_document_ids=extra_document_ids, **kwargs), True
+
+
+def _accepts_extra_documents(fn) -> bool:
+    """Whether *fn* declares an ``extra_document_ids`` parameter (or **kwargs).
+
+    Signature inspection, not exception text: it answers the actual question and
+    it answers it BEFORE the call, so a callee that cannot take the pin is never
+    invoked twice. Unintrospectable callables (C functions, some mocks) are
+    assumed to accept it — the call itself is then the authority, and a genuine
+    TypeError from one propagates, which is the safe direction.
+    """
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if "extra_document_ids" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _extra_documents_ack(*payloads) -> Optional[List[str]]:
+    """The ids DIS reports it applied, or None when no payload mentions the field.
+
+    None and ``[]`` are deliberately different answers: None means this DIS never
+    spoke about pinned documents (so nothing can be concluded and the pins must be
+    reported as not applied), while ``[]`` means it understood the field and applied
+    nothing — a resolvable-id problem, not a version problem.
+    """
+    seen: Optional[List[str]] = None
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for scope in (payload, payload.get("enumerate")):
+            if not isinstance(scope, dict) or _EXTRA_DOCS_ACK_KEY not in scope:
+                continue
+            value = scope.get(_EXTRA_DOCS_ACK_KEY)
+            # DIS reports a dict: {"requested": [...], "applied": [...],
+            # "units_added": N}. The per-id "applied" list is the only field that
+            # can answer "did MY document land", which is what this check exists
+            # for — "2 requested, 40 units added" cannot distinguish both landing
+            # from one landing twice.
+            #
+            # The bare-list branch is not dead code: it is what a DIS built
+            # between this feature's two halves would send, and reading a dict as
+            # "not a list" is exactly the bug this replaces — it silently made
+            # every pinned run report honoured=false while the pin worked, in both
+            # test suites, because the tests fabricated the ack shape instead of
+            # taking it from the producer.
+            if isinstance(value, dict):
+                raw = value.get("applied")
+                if raw is None:
+                    raw = value.get("requested") if value.get("units_added") else []
+            elif isinstance(value, (list, tuple)):
+                raw = value
+            else:
+                raw = []
+            ids = [str(x).strip() for x in (raw or []) if str(x).strip()]
+            seen = seen or []
+            seen.extend(i for i in ids if i not in seen)
+    return seen
+
+
+def _extra_documents_state(requested: List[str], sent: bool,
+                           report, bundle) -> Dict[str, Any]:
+    """Coverage record for the requester's pinned documents.
+
+    Carried on coverage rather than on the report for the same reason as
+    failure_reasons: coverage reaches the job result and the persisted version row,
+    where someone asking "did the document I attached actually get used?" can read
+    the answer. A run whose pins were dropped is still a successful generation by
+    every other measure — the block's own content was digested exactly as before —
+    so this is the only place the difference can surface.
+    """
+    applied = _extra_documents_ack(report, bundle)
+    state: Dict[str, Any] = {
+        "requested": list(requested),
+        "applied": list(applied or []),
+        "honoured": bool(applied) and all(i in applied for i in requested),
+    }
+    if not sent:
+        state["note"] = (f"{len(requested)} pinned document(s) could not be sent: this "
+                         f"CAS process's DIS client has no extra_document_ids "
+                         f"parameter. The block's own sources were digested as usual.")
+    elif applied is None:
+        state["note"] = (f"{len(requested)} pinned document(s) were sent, but DIS did "
+                         f"not report applying them — a DIS that predates the field "
+                         f"ignores it silently. The block's own sources were digested "
+                         f"as usual.")
+    elif not state["honoured"]:
+        missing = [i for i in requested if i not in applied]
+        state["note"] = (f"DIS applied {len(applied)} of {len(requested)} pinned "
+                         f"document(s); not applied: {', '.join(missing)}.")
+    return state
+
+
 def _load_course(db, request_body):
     """The request's course row, or None. Never raises.
 
@@ -788,6 +937,12 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     to both the MAP build (DIS side) and the REDUCE narrative fill below. ""
     (the default) reproduces this function's exact pre-existing behavior.
 
+    ``request_body.reference_document_ids`` (when the form's Reference Documents
+    picker was used) are pinned ON TOP of the block's enumerated units — additive,
+    never a filter. Whether DIS actually applied them is verified rather than
+    assumed, and lands on ``result.coverage["extra_documents"]``; a DIS or a client
+    that cannot carry them degrades to today's behavior instead of failing the run.
+
     ``db`` + ``request_body`` are threaded purely so the REDUCE prompts resolve
     through their DB tier with this request's scope (prompt_id → course → cluster →
     project). Without them ``load_template`` cannot consult the DB at all, so an
@@ -804,6 +959,7 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     # separate DIS request field would silently drop these during a mixed-version
     # deploy while continuing to serve digests built without them.
     map_guidance_wire = compose_guidance(map_guidance, directives.map_text)
+    extra_document_ids = _selected_document_ids(request_body)
 
     # The build request carries no client_id on the wire — DIS derives the tenant from
     # the caller's identity headers (dis_client._headers), and drops a requested client
@@ -850,9 +1006,17 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     # the previous attempt's cause.
     _failure_reason.set("")
     try:
-        report = dis_client.build_digests_sync(block, current_user=current_user, client_id=dis_client_id,
-                                                map_guidance=map_guidance_wire)
-        bundle = dis_client.get_digests_bundle_sync(block, current_user=current_user, client_id=dis_client_id)
+        report, report_sent = _call_with_extra_documents(
+            dis_client.build_digests_sync, block, current_user=current_user,
+            client_id=dis_client_id, map_guidance=map_guidance_wire,
+            extra_document_ids=extra_document_ids)
+        bundle, bundle_sent = _call_with_extra_documents(
+            dis_client.get_digests_bundle_sync, block, current_user=current_user,
+            client_id=dis_client_id, extra_document_ids=extra_document_ids)
+        # Both halves have to carry the pins: the build digests them, the bundle is
+        # what REDUCE reads. One without the other is a half-applied selection, which
+        # is worse than none because it looks applied.
+        extra_documents_sent = report_sent and bundle_sent
     except BudgetExceededError:
         # A quota breach must reach the HTTP layer as a real 402, not be folded into
         # the generic "DIS unavailable" fallback below.
@@ -932,6 +1096,18 @@ def _build_and_reduce(deliverable: str, block: str, quality_tier: Optional[str],
     reasons = _digest_failure_reasons(report)
     if reasons and isinstance(getattr(result, "coverage", None), dict):
         result.coverage["failure_reasons"] = reasons
+    if extra_document_ids:
+        state = _extra_documents_state(extra_document_ids, extra_documents_sent,
+                                       report, bundle)
+        if isinstance(getattr(result, "coverage", None), dict):
+            result.coverage["extra_documents"] = state
+        if not state["honoured"]:
+            # Logged as well as recorded: a coverage dict is only read by whoever
+            # opens the job result, and a pinned document that quietly did nothing is
+            # exactly the class of miss that goes unnoticed for a month.
+            _log.warning("block_wide_extra_documents_not_applied deliverable=%s "
+                         "block=%s requested=%s — %s", deliverable, block,
+                         len(extra_document_ids), state.get("note", ""))
     return result, report, directives
 
 
@@ -1129,7 +1305,9 @@ def generate_cdd_via_digests(db, request_body, current_user, dis_client_id, map_
     # same way COVERAGE & REVIEW is. A report with no findings appends nothing, so an
     # aligned prompt still produces byte-identical output.
     raw_output = append_section(
-        render_cdd_markdown(request_body.course_title, request_body.block, result), capability)
+        render_cdd_markdown(request_body.course_title, request_body.block, result,
+                            long_label(db, getattr(request_body, "project_id", None))),
+        capability)
     sections = parse_sections_from_text(raw_output)
     for key, value in parse_cdd_flat(raw_output).items():
         if not key.startswith("_") and value.strip():
@@ -1167,7 +1345,14 @@ def persist_cdd_and_respond(db, request_body, current_user, *, raw_output, secti
     from promptops_app.repositories.course_repository import set_active_cdd
     from promptops_app.services.audit_service import log_audit_event
 
-    document_title = request_body.document_title or f"{request_body.course_title} — CDD"
+    # The tenant's own word for the deliverable. AIM calls this a Blueprint and
+    # has said so in projects.ui_labels for some time; the server had never read
+    # the column, so the stored title said "- CDD" and that title is what the
+    # exporter stamps across the top of every worksheet and into the download
+    # filename. A tenant with no override is unaffected.
+    document_title = (request_body.document_title
+                      or f"{request_body.course_title} \u2014 "
+                         f"{label(db, getattr(request_body, 'project_id', None))}")
 
     new_cdd = CourseDesignDocument(
         title=document_title,

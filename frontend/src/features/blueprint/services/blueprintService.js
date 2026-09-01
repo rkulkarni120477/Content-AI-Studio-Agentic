@@ -84,20 +84,21 @@ export const blueprintService = {
   },
 
   /**
-   * Import an existing DLU Outline file. Multipart upload → the server extracts,
-   * normalizes into the day-Outline shape, then either appends a new version to
-   * the existing Outline for that day or creates a fresh one, and pins it. Reloads
-   * the full blueprint by id (like generateBlueprint) so the display gets the same
-   * shape a generated Outline has. `dayNumber` is only a fallback — the file wins.
+   * Import an existing Outline file (day-based DLU or module-based). Multipart
+   * upload → the server extracts, detects the day/module from the file, then either
+   * appends a new version to the existing Outline for that unit or creates a fresh
+   * one, and pins it. Reloads the full blueprint by id (like generateBlueprint) so
+   * the display gets the same shape a generated Outline has. `unitKind`/`unitNumber`
+   * are only the dropdown hint — the file wins when it names a unit.
    */
-  importBlueprint: async ({ file, courseId, projectId, courseTitle, documentTitle, dayNumber, cddId, modelChoice }, onProgress) => {
+  importBlueprint: async ({ file, courseId, projectId, documentTitle, unitKind, unitNumber, cddId, modelChoice }, onProgress) => {
     const form = new FormData();
     form.append('file', file);
     form.append('course_id', String(courseId));
     form.append('project_id', String(projectId));
-    if (courseTitle) form.append('course_title', courseTitle);
     if (documentTitle) form.append('document_title', documentTitle);
-    if (dayNumber != null && dayNumber !== '') form.append('day_number', String(dayNumber));
+    if (unitKind) form.append('unit_kind', unitKind);
+    if (unitNumber != null && unitNumber !== '') form.append('unit_number', String(unitNumber));
     if (cddId != null) form.append('cdd_id', String(cddId));
     if (modelChoice) form.append('model_choice', modelChoice);
     const created = await api.upload(BLUEPRINT.IMPORT, form, onProgress);
@@ -119,7 +120,9 @@ export const blueprintService = {
    * style_id/prompt_id are carried for the same reason as the CDD twin — see
    * cddService.mapBlockPayload, where omitting them meant every block-wide
    * generation silently distilled its MAP guidance from the shipped file
-   * template rather than the prompt the user selected.
+   * template rather than the prompt the user selected. reference_document_ids is
+   * carried for the same reason and is additive: pinned documents are digested on
+   * top of the block's enumerated units, never instead of them.
    */
   generateBlueprintBlock: (data) => api.post(BLUEPRINT.GENERATE_BLOCK, {
     deliverable: 'blueprint',
@@ -137,6 +140,7 @@ export const blueprintService = {
     estimated_duration_hours: data.estimated_duration_hours ?? undefined,
     style_id: data.style_id ?? null,
     prompt_id: data.prompt_id || undefined,
+    reference_document_ids: data.reference_document_ids || [],
   }),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
   getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId), POLL_REQUEST_CONFIG),

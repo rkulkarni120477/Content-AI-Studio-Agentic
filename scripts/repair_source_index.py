@@ -161,7 +161,11 @@ def main() -> int:
         return 2
     recorded_jobs = {str(r.get("job_id")) for r in records}
 
-    dis_url = os.environ.get("DIS_STRUCTURE_STORE_URL") or tenant_cfg.structure_store.url
+    # The client YAML is the only source of a store location, so a script that
+    # writes to DIS cannot be repointed by an env var the service ignores — an
+    # env-first read here would let a backfill edit a different database than
+    # DIS reads. See settings, "Where the backing stores live".
+    dis_url = tenant_cfg.structure_store.url
     conn = psycopg2.connect(dis_url)
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""

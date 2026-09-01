@@ -20,10 +20,12 @@ import { useAuth } from '../context/AuthContext';
 import { platformService } from '@features/platform/services/platformService';
 import TeamMultiSelect from '../components/TeamMultiSelect';
 import { extractVarNames, findLegacyVarNames, toLabel } from '../utils/prompt';
+import { useLabels } from '@hooks/useLabels';
 import { APPLY_PROPOSAL_KEY } from '../utils/requestProposal';
 import { plCourses, plHome, plPrompt } from '../paths';
 
 export default function PromptFormPage() {
+  const L = useLabels();
   const { id } = useParams();
   const isEdit = Boolean(id);
   const navigate = useNavigate();
@@ -414,9 +416,9 @@ export default function PromptFormPage() {
                   disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
                 >
                   <option value="">— none —</option>
-                  <option value="style">Style (style)</option>
-                  <option value="cdd">CDD (cdd)</option>
-                  <option value="blueprint">Blueprint (blueprint)</option>
+                  <option value="style">{L.style} (style)</option>
+                  <option value="cdd">{L.cdd} (cdd)</option>
+                  <option value="blueprint">{L.blueprint} (blueprint)</option>
                   <option value="generate">Lesson Generation (generate)</option>
                   <option value="quiz">Assessment (quiz)</option>
                 </select>

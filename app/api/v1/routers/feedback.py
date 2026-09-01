@@ -41,6 +41,7 @@ from app.core.dependencies import get_db, get_tenant_context, require_permission
 from app.core.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 from app.core.permissions import effective_rbac_check
 from app.core.tenant_context import apply_tenant_filter, get_scoped_or_404
+from app.schemas.common import JobAcceptedResponse
 from app.schemas.feedback import (
     FeedbackAnalyzeResponse,
     FeedbackApplyBlockResult,
@@ -330,21 +331,28 @@ def update_feedback_item(
 
 @router.post(
     "/apply",
-    response_model=FeedbackApplyResponse,
-    summary="Apply selected feedback items to regenerate a module's blocks",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Queue applying selected feedback items to regenerate a module's blocks",
+    description=(
+        "Validates the selection and target module, then queues a background job "
+        "that regenerates the module's latest content blocks against the selected "
+        "feedback (one LLM call per block). Returns a job_id immediately; poll "
+        "GET /jobs/{job_id} to completion, then GET /feedback/apply-result/{job_id} "
+        "for the regenerate summary. Running inline previously exceeded the browser "
+        "request timeout on modules with several blocks."
+    ),
 )
 def apply_feedback(
     body: FeedbackApplyRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("editor.edit")),
     tenant=Depends(get_tenant_context),
-) -> FeedbackApplyResponse:
+) -> JobAcceptedResponse:
     from promptops_app.database import Course, FeedbackItem
-    from promptops_app.repositories import feedback_repository
-    from promptops_app.services.feedback_service import (
-        apply_feedback_to_module,
-        resolve_apply_blueprint_id,
-    )
+    from promptops_app.jobs import dispatch, regen_jobs
+    from promptops_app.repositories import job_repository
+    from promptops_app.services.feedback_service import resolve_apply_blueprint_id
 
     if not effective_rbac_check(current_user, "feedback.upload"):
         raise PermissionDeniedError("feedback.upload", user_role=current_user.role)
@@ -378,27 +386,70 @@ def apply_feedback(
     if blueprint is None:
         raise ValidationError("A target module blueprint is required.")
 
-    instruction, regenerated, skipped = apply_feedback_to_module(
+    # One LLM call per block can run for minutes; running it inline held the
+    # request open past the browser's 120s timeout, which then cancelled it
+    # while the server kept working. Enqueue and hand back a job to poll.
+    job_id = job_repository.create_job(
         db,
-        items=items,
-        blueprint=blueprint,
-        course=course,
-        created_by=current_user.username,
+        user_name=current_user.username,
+        request_params={
+            "item_ids": [i.id for i in items],
+            "blueprint_id": target_bp_id,
+            "course_id": course_id,
+            "user_name": current_user.username,
+        },
+        project_id=getattr(course, "project_id", None),
+        course_id=course_id,
+        job_type="apply_feedback",
     )
-    db.commit()
+    dispatch.submit(regen_jobs.run_apply_feedback_job, job_id)
 
-    module_label = feedback_repository.format_module_label(blueprint)
     _log.info(
-        "feedback_applied user=%s course=%d blueprint_id=%d items=%d regenerated=%d skipped=%d",
-        current_user.username, course_id, target_bp_id, len(items),
-        len(regenerated), skipped,
+        "feedback_apply_queued user=%s course=%d blueprint_id=%d items=%d job=%s",
+        current_user.username, course_id, target_bp_id, len(items), job_id,
     )
+    return JobAcceptedResponse(
+        job_id=job_id,
+        status="queued",
+        status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+@router.get(
+    "/apply-result/{job_id}",
+    response_model=FeedbackApplyResponse,
+    summary="Read the summary of a completed apply-feedback job",
+    description=(
+        "Returns the regenerate summary (which blocks were regenerated, how many "
+        "were skipped, the target module) recorded by an apply-feedback job. Call "
+        "once GET /jobs/{job_id} reports 'completed'."
+    ),
+)
+def get_apply_feedback_result(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("feedback.view")),
+) -> FeedbackApplyResponse:
+    from promptops_app.jobs.job_status import JobStatus
+    from promptops_app.repositories import job_repository
+
+    job = job_repository.get_job(db, job_id)
+    # Scope to the creator: the summary names this user's regenerated blocks, and
+    # the status poll has no ownership check, so a guessed id must not leak them.
+    if not job or job.job_type != "apply_feedback" or job.created_by != current_user.username:
+        raise NotFoundError("Apply-feedback job", job_id)
+    if job.status == JobStatus.FAILED:
+        raise ValidationError(job.error_message or "Applying feedback failed.")
+    if job.status != JobStatus.COMPLETED or not job.result_json:
+        raise ValidationError("Apply-feedback job has not completed yet.")
+
+    data = json.loads(job.result_json)
     return FeedbackApplyResponse(
-        instruction=instruction,
-        regenerated=[FeedbackApplyBlockResult(**r) for r in regenerated],
-        skipped=skipped,
-        blueprint_id=target_bp_id,
-        module_label=module_label,
+        instruction=data.get("instruction", ""),
+        regenerated=[FeedbackApplyBlockResult(**r) for r in data.get("regenerated", [])],
+        skipped=data.get("skipped", 0),
+        blueprint_id=data.get("blueprint_id"),
+        module_label=data.get("module_label", "module"),
     )
 
 

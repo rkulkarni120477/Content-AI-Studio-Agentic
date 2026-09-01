@@ -652,20 +652,23 @@ def import_outline(
     file: UploadFile = File(..., description="Outline file (.xlsx, .xls, .docx, .pdf)."),
     course_id: int = Form(..., description="Course this imported Outline belongs to."),
     project_id: int = Form(..., description="Parent project id."),
-    document_title: str = Form("", description="Outline title. Blank → 'Day N: <topic> Blueprint'."),
-    day_number: int | None = Form(None, description="Day the user confirmed in the dropdown; used only when the file carries no day."),
-    model_choice: str = Form("GPT-5.4", description="Model used only for the LLM restructure path."),
+    document_title: str = Form("", description="Outline title. Blank → '<Day|Module> N: <topic> Blueprint'."),
+    unit_kind: str = Form("day", description="Dropdown context: 'day' (DLU) or 'module'. Only a hint — the file decides when it names a unit."),
+    unit_number: int | None = Form(None, description="Day/module the user confirmed in the dropdown; used only when the file names no unit."),
+    model_choice: str = Form("GPT-5.4", description="Model used only for the day-Outline LLM restructure path."),
     cdd_id: int | None = Form(None, description="Optional CDD to link the imported Outline to."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.generate")),
 ) -> BlueprintGenerateResponse:
     """Extract → normalize → persist an uploaded Outline as an active blueprint.
 
-    Behaviour confirmed with product (CAS-98): one file = one day; the day is read
-    from the file (``day_number`` is only a fallback); an existing Outline for that
-    day gets a new version (the pinned/active one, else the most recent), otherwise
-    a new Outline is created. Reuses the same persistence primitives the generate
-    path uses, so an imported Outline is indistinguishable downstream — only
+    Handles both Outline kinds (CAS-98): a DLU **day** Outline (five-part
+    accordions) and a **module** Outline (freeform sections). The kind and unit are
+    read from the file; ``unit_kind``/``unit_number`` are the dropdown selection,
+    used to disambiguate or when the file names no unit. An existing Outline for
+    that unit gets a new version (the pinned one, else the most recent); otherwise a
+    fresh Outline is created. Reuses the generate path's persistence primitives, so
+    an imported Outline is indistinguishable downstream — only
     ``generation_params.prompt_source`` records that it was imported.
     """
     from promptops_app.database import BlueprintVersion, ModuleBlueprint
@@ -692,17 +695,20 @@ def import_outline(
             file.filename or "outline",
             raw,
             document_title=document_title,
-            day_hint=day_number,
+            hint_kind=unit_kind,
+            hint_number=unit_number,
             model_choice=model_choice,
             usage_ctx=usage_ctx,
         )
     except ValueError as exc:
         # Content/format problem the user can act on — wrong type, empty file, or
-        # an unresolvable/contradictory day. normalize_import raises these (before
+        # an unresolvable/contradictory unit. normalize_import raises these (before
         # any LLM call) with a user-facing message; surface it as a clean 400.
         raise HTTPException(400, str(exc)) from exc
 
-    day = result.day_number   # guaranteed resolved (normalize_import refuses otherwise)
+    kind = result.kind                # "day" | "module"
+    unit = result.unit_number         # guaranteed resolved (normalize_import refuses otherwise)
+    word = "Day" if kind == "day" else "Module"
 
     generation_params = {
         "prompt_source": "imported",
@@ -710,37 +716,42 @@ def import_outline(
         "source_filename": file.filename,
         "is_dlu": result.is_dlu,
         "import_warnings": result.warnings,
-        "day_number": day,
+        "outline_kind": kind,
+        "unit_number": unit,
         "topic": result.topic,
         "cdd_id": cdd_id,
     }
     change_reason = f"Imported from {file.filename}"
 
-    # Find a live Outline already covering this day in this course. A DLU day
-    # Outline is titled "Day N: <topic> Blueprint", so an explicit "Day N" title
-    # prefix identifies the day without a dedicated column. The match is title-
-    # prefix only (not the module-number fallback parse_day_and_title also does),
-    # so a same-numbered Module blueprint is never mistaken for a day Outline and
-    # can't have an Outline version grafted onto its history. Prefer the course's
-    # pinned Outline when it is one of the matches, else the most recent (the list
-    # is newest-first).
-    def _title_day(title: str):
-        m = re.match(r"(?i)^\s*day\s+(\d+)\b", title or "")
-        return int(m.group(1)) if m else None
+    # Find a live Outline already covering this unit in this course, so a re-upload
+    # adds a new version instead of a duplicate. A day Outline is titled "Day N:
+    # …"; a module Outline is titled "Module N: …" (and carries module_number=N).
+    # Matching is scoped to the same kind — a day file never versions over a module
+    # Outline of the same number, and vice-versa. Prefer the course's pinned Outline
+    # when it is a match, else the most recent (the list is newest-first).
+    def _unit_of(title: str, module_number):
+        m = re.match(r"(?i)^\s*(day|module)\s+(\d+)\b", title or "")
+        if m:
+            return m.group(1).lower(), int(m.group(2))
+        # An older module blueprint may be titled "<topic> Blueprint" with the
+        # number only in module_number — treat it as a module of that number.
+        if module_number is not None:
+            return "module", int(module_number)
+        return None, None
 
     course = get_course_by_id(db, course_id)
     pinned_id = course.active_blueprint_id if course else None
-    # limit high enough to see every day Outline in the course — the default 100
-    # could miss the match and create a duplicate instead of a new version.
+    # limit high enough to see every Outline in the course — the default 100 could
+    # miss the match and create a duplicate instead of a new version.
     candidates = [
         bp for bp in blueprint_repository.list_blueprints_for_course(
             db, course_id=course_id, project_id=project_id, limit=10000)
-        if _title_day(bp.title) == day
+        if _unit_of(bp.title, bp.module_number) == (kind, unit)
     ]
     target = next((bp for bp in candidates if bp.id == pinned_id), None) or (candidates[0] if candidates else None)
 
     if target is not None:
-        # Existing Outline for this day → append a new version (history kept).
+        # Existing Outline for this unit → append a new version (history kept).
         version_record = blueprint_repository.create_blueprint_version(
             db, target,
             content=result.raw_output,
@@ -753,13 +764,13 @@ def import_outline(
         bp_title = bp.title
         was_new = False
     else:
-        # No Outline for this day yet → create a fresh one at v1.
+        # No Outline for this unit yet → create a fresh one at v1.
         bp_title = result.derived_title
         bp = ModuleBlueprint(
             cdd_id=cdd_id,
             title=bp_title,
-            module_title=f"Module {day}",
-            module_number=day,
+            module_title=f"{word} {unit}",
+            module_number=unit,
             active_version="v1",
             project_id=project_id,
             course_id=course_id,
@@ -784,10 +795,10 @@ def import_outline(
         was_new = True
 
     _log.info(
-        "outline_import  user=%s  course=%d  file=%r  method=%s  dlu=%s  day=%s  "
-        "bp_id=%d  new=%s  version=%s",
+        "outline_import  user=%s  course=%d  file=%r  method=%s  kind=%s  unit=%s  "
+        "dlu=%s  bp_id=%d  new=%s  version=%s",
         current_user.username, course_id, file.filename, result.method,
-        result.is_dlu, day, bp.id, was_new, version_record.version,
+        kind, unit, result.is_dlu, bp.id, was_new, version_record.version,
     )
 
     # Copy the imported Outline to DIS/S3 for retrieval and listing, exactly as
@@ -801,8 +812,8 @@ def import_outline(
             "summary": result.raw_output[:500],
             "active": True,
             "metadata": {
-                "selected_module": f"Day {day}",
-                "module_number": day,
+                "selected_module": f"{word} {unit}",
+                "module_number": unit,
                 "course_id": course_id,
                 "project_id": project_id,
                 "cdd_id": cdd_id,
@@ -828,7 +839,8 @@ def import_outline(
                         "prompt_source": "imported",
                         "import_method": result.method,
                         "source_filename": file.filename,
-                        "day_number": day,
+                        "outline_kind": kind,
+                        "unit_number": unit,
                         "new_document": was_new,
                         "version": version_record.version,
                         "output": result.raw_output,

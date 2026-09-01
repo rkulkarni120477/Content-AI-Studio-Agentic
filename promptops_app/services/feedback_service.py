@@ -698,7 +698,8 @@ def apply_feedback_to_module(
     aborting the whole batch.
     """
     from promptops_app.core.constants import ChangeSource
-    from promptops_app.prompt_templates import IMPROVISE_BLOCK_PROMPT_TEMPLATE, PERSONA_PREFIX_TEMPLATE
+    from promptops_app.core.content_utils import build_regeneration_context
+    from promptops_app.prompt_templates import IMPROVISE_BLOCK_PROMPT_TEMPLATE, IMPROVISE_BLOCK_SYSTEM
     from promptops_app.repositories import generation_repository
     from promptops_app.repositories.block_repo import save_block_version
     from promptops_app.services.llm_service import generate_with_metadata
@@ -715,16 +716,22 @@ def apply_feedback_to_module(
 
     regenerated: list[dict] = []
     skipped = 0
-    system_prompt = PERSONA_PREFIX_TEMPLATE
+    system_prompt = IMPROVISE_BLOCK_SYSTEM
 
     for block in blocks:
         gen = getattr(block, "generation", None)
         topic = (getattr(gen, "topic", None) if gen else None) or block.block_label or ""
-        user_prompt = IMPROVISE_BLOCK_PROMPT_TEMPLATE.format(
+        # Rebuild the same CDD + Blueprint + Style context the generator used,
+        # so feedback-applied content honours the pinned Blueprint.
+        context_preamble = build_regeneration_context(db, gen)
+        improvise_prompt = IMPROVISE_BLOCK_PROMPT_TEMPLATE.format(
             topic=topic,
             block_type=block.block_type or "lesson",
             improvise_instruction=instruction,
             original_content=block.content or "",
+        )
+        user_prompt = (
+            f"{context_preamble}\n\n{improvise_prompt}" if context_preamble else improvise_prompt
         )
         usage_ctx = UsageLogContext(
             user_name=created_by,

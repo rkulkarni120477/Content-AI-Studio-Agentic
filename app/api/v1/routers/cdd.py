@@ -181,6 +181,10 @@ def _is_dlu_prompt(*texts: str) -> bool:
 # the async worker (jobs/block_wide_jobs.py) can share them without a router↔jobs
 # import cycle. These aliases keep the local names used by generate_cdd() and the
 # coverage eval; persist_cdd_and_respond is also the legacy path's shared tail.
+from promptops_app.services.deliverable_labels import (  # noqa: E402
+    filename_slug,
+    label as deliverable_label,
+)
 from promptops_app.services.block_wide_service import (  # noqa: E402
     generate_cdd_via_digests as _generate_cdd_via_digests,
     persist_cdd_and_respond as _persist_and_respond,
@@ -2191,7 +2195,12 @@ def export_cdd(
                 sheets.append((label, clean))
         if sheets:
             buf = build_xlsx_worksheets(cdd.title, sheets)
-            fname = f"CDD_{cdd.title.replace(' ', '_')}_{cdd.active_version}.xlsx"
+            # Prefixed with the tenant's own word for the deliverable. A tenant
+            # that calls this a Blueprint was still handed a file named
+            # CDD_<title>.xlsx — and the title itself said CDD too, so the word
+            # appeared twice in a filename for a thing they never call that.
+            fname = (f"{filename_slug(deliverable_label(db, cdd.project_id))}_"
+                     f"{cdd.title.replace(' ', '_')}_{cdd.active_version}.xlsx")
             _log.info(
                 "cdd_exported_dlu_xlsx  user=%s  cdd_id=%d  sheets=%d",
                 current_user.username, cdd_id, len(sheets),
@@ -2245,7 +2254,8 @@ def export_cdd(
         entity_id=cdd.id,
         project_id=cdd.project_id,
         course_id=cdd.course_id,
-        file_name=f"CDD_{cdd.title.replace(' ', '_')}_{cdd.active_version}.{format}",
+        file_name=(f"{filename_slug(deliverable_label(db, cdd.project_id))}_"
+                   f"{cdd.title.replace(' ', '_')}_{cdd.active_version}.{format}"),
     )
 
     result = export_content(db, export_request)

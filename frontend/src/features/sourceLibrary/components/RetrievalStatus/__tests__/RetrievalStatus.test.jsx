@@ -59,3 +59,55 @@ describe('RetrievalStatus', () => {
     expect(screen.getByText(/Partly searchable · 12\/36/)).toBeTruthy();
   });
 });
+
+/**
+ * The empty-file case, which the first version could not detect.
+ *
+ * "Nothing extracted" keyed on total_units === 0. build_clean_content_document
+ * falls back to a single unit holding reading_content when chunking yields
+ * nothing, so a file the extractor could not read still records total_units = 1.
+ * On the AIM index not one of 605 records has total_units = 0, while 109 of 120
+ * legacy .doc records hold exactly one unit of zero characters — every one of
+ * them displayed as an ordinary document.
+ */
+describe('a file that yielded no text', () => {
+
+  const emptyDoc = {
+    source_file_name: 'Landing Gear Systems Final Exam Match Statements.doc',
+    total_units: 1,          // the fallback unit, not real content
+    extracted_chars: 0,
+    indexed_units: 0,
+    block: 'Block 9',
+  };
+
+  it('says nothing was extracted, despite reporting one unit', () => {
+    show(emptyDoc);
+    expect(screen.getByText('Nothing extracted')).toBeTruthy();
+    expect(screen.queryByText(/Searchable/)).toBeNull();
+  });
+
+  it('says so even when the search index cannot be reached', () => {
+    // Definite beats unknown: whether text came out of the file is answerable
+    // from the record alone, so a deployment with no index must not hide it.
+    show({ ...emptyDoc, indexed_units: null });
+    expect(screen.getByText('Nothing extracted')).toBeTruthy();
+    expect(screen.queryByText('Unknown')).toBeNull();
+  });
+
+  it('does not condemn a record that predates the measurement', () => {
+    // extracted_chars absent means "not measured", which is not "zero". Treating
+    // the two alike would mark every document ingested before the field existed
+    // as unusable.
+    const { extracted_chars, ...older } = emptyDoc;
+    show({ ...older, indexed_units: 4 });
+    expect(screen.queryByText('Nothing extracted')).toBeNull();
+  });
+
+  it('still calls a real one-unit document searchable', () => {
+    // Negative control: a genuine short document has one unit too, and the only
+    // thing separating it from the .doc above is that text came out of it.
+    show({ ...emptyDoc, extracted_chars: 1840, indexed_units: 1 });
+    expect(screen.getByText(/Searchable/)).toBeTruthy();
+    expect(screen.queryByText('Nothing extracted')).toBeNull();
+  });
+});

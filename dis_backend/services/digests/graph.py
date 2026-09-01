@@ -102,10 +102,12 @@ def build_digests_via_graph(
     for day in en.days:
         dn = day["day_number"]
         units = en.units_by_day.get(dn, [])
-        if _build.day_is_cached(day, units, model, existing, force=False, map_guidance=map_guidance):
+        refs = en.references_by_day.get(dn)
+        if _build.day_is_cached(day, units, model, existing, force=False,
+                                map_guidance=map_guidance, references=refs):
             cached_days.append(dn)
         else:
-            days_to_build.append({"day": day, "units": units})
+            days_to_build.append({"day": day, "units": units, "references": refs})
 
     client_id = en.client_id
 
@@ -123,7 +125,7 @@ def build_digests_via_graph(
         per-day primitive; returns a single-item ``results`` list to be merged."""
         res = _build.build_one_day(
             tenant_cfg, state["day"], state["units"], model, client_id, block,
-            map_guidance=map_guidance,
+            map_guidance=map_guidance, references=state.get("references"),
         )
         # Runs on N worker threads concurrently; the registry takes a lock per call.
         progress.record(client_id, block, res["status"])
