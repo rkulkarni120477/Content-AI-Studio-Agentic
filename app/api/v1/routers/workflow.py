@@ -23,6 +23,8 @@ Endpoints:
   POST   /blocks/{id}/publish        Publish
   POST   /blocks/{id}/archive        Archive
   POST   /workflow/bulk-approve      Bulk approve
+  POST   /workflow/bulk-submit       Bulk submit for review
+  POST   /workflow/bulk-publish      Bulk publish
 """
 
 from __future__ import annotations
@@ -39,6 +41,10 @@ from app.schemas.workflow import (
     ApproveBlockRequest,
     BulkApproveRequest,
     BulkApproveResponse,
+    BulkPublishRequest,
+    BulkSubmitRequest,
+    BulkTransitionItemResult,
+    BulkTransitionResponse,
     PendingQueueResponse,
     RejectBlockRequest,
     RequestChangesRequest,
@@ -56,11 +62,24 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_block_or_404(db: Session, block_id: int):
-    """Fetch a block by ID or raise HTTP 404."""
+def _get_block_or_404(db: Session, block_id: int, current_user):
+    """Fetch a block by ID, scoped to the caller's tenant, or raise HTTP 404.
+
+    A cross-tenant block 404s exactly like a nonexistent one (no enumeration
+    oracle), same contract as prompts._get_prompt_or_404 / cdd._get_cdd_or_404.
+    Without this, every one of this helper's callers (submit/approve/publish/
+    archive/reset/events/…) would let any authenticated user act on any
+    tenant's content block just by knowing its id — a block has no project_id
+    of its own, so the tenant boundary is its generation's.
+    """
     from promptops_app.database import Block
+    from app.core.tenant_context import visible_to_tenant
+
     block = db.query(Block).filter(Block.id == block_id).first()
-    if not block:
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    project_id = getattr(current_user, "_project_id", None)
+    row_project_id = getattr(block.generation, "project_id", None) if block and block.generation else None
+    if block is None or not visible_to_tenant(row_project_id, project_id, is_platform_admin):
         raise NotFoundError("Block", block_id)
     return block
 
@@ -259,7 +278,7 @@ def submit_for_review(
     """
     from promptops_app.services.workflow_service import submit_for_review as _submit
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     ok, reason = _submit(db, block, request_body.reviewer_username, actor=current_user.username)
 
     if not ok:
@@ -285,7 +304,7 @@ def approve_block(
     """Move in_review → approved. Calls workflow_service.approve_block()."""
     from promptops_app.services.workflow_service import approve_block as _approve
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     ok, reason = _approve(db, block, actor=current_user.username, comment=request_body.comment)
 
     if not ok:
@@ -310,7 +329,7 @@ def request_changes(
     """Move in_review → changes_requested. A reason is mandatory."""
     from promptops_app.services.workflow_service import request_changes as _request
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     ok, reason = _request(db, block, actor=current_user.username, reason=request_body.reason)
 
     if not ok:
@@ -335,7 +354,7 @@ def reject_block(
     """Move in_review → rejected (hard decline). A reason is mandatory."""
     from promptops_app.services.workflow_service import reject_block as _reject
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     ok, reason = _reject(db, block, actor=current_user.username, reason=request_body.reason)
 
     if not ok:
@@ -359,7 +378,7 @@ def publish_block(
     """Move approved → published."""
     from promptops_app.services.workflow_service import publish_block as _publish
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     ok, reason = _publish(db, block, actor=current_user.username)
 
     if not ok:
@@ -383,7 +402,7 @@ def archive_block(
     """Move approved/published → archived. Admin only."""
     from promptops_app.services.workflow_service import archive_block as _archive
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     ok, reason = _archive(db, block, actor=current_user.username)
 
     if not ok:
@@ -412,7 +431,11 @@ def bulk_approve(
     """
     from promptops_app.services.workflow_service import bulk_approve as _bulk
 
-    results = _bulk(db, request_body.block_ids, actor=current_user.username)
+    results = _bulk(
+        db, request_body.block_ids, actor=current_user.username,
+        project_id=getattr(current_user, "_project_id", None),
+        is_platform_admin=getattr(current_user, "_is_platform_admin", False),
+    )
 
     _log.info("bulk_approve  user=%s  approved=%d  skipped=%d",
               current_user.username, len(results["approved"]), len(results["skipped"]))
@@ -422,6 +445,73 @@ def bulk_approve(
         skipped=results["skipped"],
         errors=results["errors"],
         total_approved=len(results["approved"]),
+    )
+
+
+@router.post(
+    "/bulk-submit",
+    response_model=BulkTransitionResponse,
+    summary="Bulk submit multiple blocks for review",
+    description=(
+        "Submits all Draft/Rejected/Changes Requested blocks in the given "
+        "list to in_review, assigning them all to the same reviewer. Admin "
+        "only. Blocks not in a submittable state are reported as failed with "
+        "a reason rather than blocking the rest."
+    ),
+)
+def bulk_submit(
+    request_body: BulkSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("workflow.bulk_submit")),
+) -> BulkTransitionResponse:
+    from promptops_app.services.workflow_service import bulk_submit_for_review as _bulk
+
+    results = _bulk(
+        db, request_body.block_ids, request_body.reviewer_username, current_user.username,
+        project_id=getattr(current_user, "_project_id", None),
+        is_platform_admin=getattr(current_user, "_is_platform_admin", False),
+    )
+    succeeded = sum(1 for r in results if r["ok"])
+
+    _log.info("bulk_submit  user=%s  succeeded=%d  failed=%d",
+              current_user.username, succeeded, len(results) - succeeded)
+
+    return BulkTransitionResponse(
+        succeeded=succeeded, failed=len(results) - succeeded,
+        results=[BulkTransitionItemResult(**r) for r in results],
+    )
+
+
+@router.post(
+    "/bulk-publish",
+    response_model=BulkTransitionResponse,
+    summary="Bulk publish multiple approved blocks",
+    description=(
+        "Publishes all Approved blocks in the given list. Admin only. "
+        "Blocks not in Approved state are reported as failed with a reason "
+        "rather than blocking the rest."
+    ),
+)
+def bulk_publish(
+    request_body: BulkPublishRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("workflow.bulk_publish")),
+) -> BulkTransitionResponse:
+    from promptops_app.services.workflow_service import bulk_publish as _bulk
+
+    results = _bulk(
+        db, request_body.block_ids, current_user.username,
+        project_id=getattr(current_user, "_project_id", None),
+        is_platform_admin=getattr(current_user, "_is_platform_admin", False),
+    )
+    succeeded = sum(1 for r in results if r["ok"])
+
+    _log.info("bulk_publish  user=%s  succeeded=%d  failed=%d",
+              current_user.username, succeeded, len(results) - succeeded)
+
+    return BulkTransitionResponse(
+        succeeded=succeeded, failed=len(results) - succeeded,
+        results=[BulkTransitionItemResult(**r) for r in results],
     )
 
 
@@ -438,7 +528,7 @@ def list_block_workflow_events(
     """Return recent workflow events for the Approval Center history expander."""
     from promptops_app.repositories import generation_repository
 
-    _get_block_or_404(db, block_id)
+    _get_block_or_404(db, block_id, current_user)
     events = generation_repository.list_workflow_events_for_block(db, block_id, limit=20)
     return [WorkflowEventRead.model_validate(e) for e in events]
 
@@ -457,7 +547,7 @@ def reset_block_to_draft(
     from promptops_app.database import apply_transition_local, log_event
     from promptops_app.services.audit_service import log_audit_event
 
-    block = _get_block_or_404(db, block_id)
+    block = _get_block_or_404(db, block_id, current_user)
     apply_transition_local(db, block, "reset_to_draft", current_user.username)
     log_event(
         db,

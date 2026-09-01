@@ -1,0 +1,64 @@
+.section {
+  margin-bottom: $space-6;
+}
+
+.title {
+  font-size: $font-size-md;
+  font-weight: $font-weight-semibold;
+  margin: 0 0 $space-3;
+}
+
+.emptyHint {
+  color: $color-gray-500;
+  font-size: $font-size-sm;
+}
+
+.selectAllRow {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  margin-bottom: $space-2;
+  cursor: pointer;
+}
+
+.list {
+  list-style: none;
+  margin: 0 0 $space-3;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid $color-gray-200;
+  border-radius: $radius-md;
+}
+
+.item {
+  border-bottom: 1px solid $color-gray-100;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &--selected {
+    background: $color-primary-soft;
+  }
+}
+
+.itemLabel {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-2 $space-3;
+  cursor: pointer;
+  width: 100%;
+}
+
+.itemText {
+  font-size: $font-size-sm;
+}
+
+.result {
+  margin-top: $space-3;
+  font-size: $font-size-sm;
+}
