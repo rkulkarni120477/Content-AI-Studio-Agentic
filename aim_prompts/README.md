@@ -15,7 +15,7 @@ per component.
 | `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | **Live** as id 86, v1 (dev + prod) |
 | `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | **Live** as id 90, v1 (dev + prod) |
 | `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | **Live** as id 87, v1 (dev + prod) |
-| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | **Live** as v1 — dev id 99, prod id 97 |
+| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | **Live** as `AIM_DLU_STORYBOARD_PROMPT` v1 — dev id 99, prod id 97 |
 | `AIM_DOMAIN_CONTEXT_BLOCK.md` | — | pasted into Extra instructions | Context layer, not a prompt |
 | `AIM_STYLE_GUIDE.md` | — | Style record + Extra instructions | Content artifact, not a prompt |
 
@@ -25,6 +25,17 @@ on `content-ai-studio` — and every row above exists in both under the same id,
 which is why one number serves for both. The one exception is
 `AIM_DLU_PRODUCTION_SPEC_PROMPT.md`, loaded on 2026-09-02 after the others and
 therefore landing on each instance's own next id: **99 in dev, 97 in prod**.
+
+**The DB row is named `AIM_DLU_STORYBOARD_PROMPT`, and the document it produces
+calls itself a production specification.** That mismatch is deliberate, and it is
+the one naming point worth understanding before touching either. The row name is
+what a person picks out of the Prompt Template dropdown, so it uses AIM's own word
+for the artifact — the source drafts are titled "AIM16 Storyboard". The document's
+self-description cannot use that word, because `generation_jobs.py:483` strips it
+from every reply and would leave a hole in the title line. A row name is metadata
+and never enters a model's context: it reaches only the usage log, as
+`UsageLogContext(prompt_template=...)`. So the scrub cannot touch it, and the two
+names can differ safely. Do not "fix" the fenced text to match the row name.
 
 Verified 2026-09-02 against both endpoints: all eight rows resolve through
 `list_prompts_by_component`, and each stored system and user text is
@@ -733,11 +744,14 @@ topic.
   (`InlinePromptControls.jsx:120`), so a row filed under the stem name is invisible
   in the picker. That is the one mistake to avoid when loading any of these into
   another environment.
-- **Loaded into both environments, with different ids.** dev id 99, prod id 97 —
-  the rest of the AIM set shares one id across both, this one does not, so a
-  script or note that assumes a single id will target the wrong row. Reaching dev
-  at all needs the SSM port-forward through the `CAS-dev` bastion, since the dev
-  endpoint is not publicly accessible.
+- **Loaded into both environments as `AIM_DLU_STORYBOARD_PROMPT`, with different
+  ids.** dev id 99, prod id 97 — the rest of the AIM set shares one id across both,
+  this one does not, so a script or note that assumes a single id will target the
+  wrong row. Renamed from `AIM_DLU_PRODUCTION_SPEC_PROMPT` on 2026-09-02, after
+  loading; selection resolves by `prompt_id`, so the rename changed no behaviour
+  and both rows still resolve, render clean and match this file's fences byte for
+  byte. Reaching dev at all needs the SSM port-forward through the `CAS-dev`
+  bastion, since the dev endpoint is not publicly accessible.
 - **The output cap is 16,384 tokens and this artifact is the one that will hit
   it.** `DEFAULT_MAX_OUTPUT_TOKENS = 16384` (`llm_client.py:43`) is hardcoded, not
   env-driven, and the generate path never passes a `max_tokens` override, so it
