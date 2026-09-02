@@ -10,14 +10,24 @@ per component.
 |---|---|---|---|
 | `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82, v3 |
 | `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | **Live** as DB prompt id 91, v1 |
-| `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | Not yet in the DB |
+| `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 89, v1 |
+| `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 88, v1 |
+| `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 86, v1 |
+| `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 90, v1 |
+| `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 87, v1 |
+| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | **Live** as DB prompt id 97, v1 |
 | `AIM_DOMAIN_CONTEXT_BLOCK.md` | — | pasted into Extra instructions | Context layer, not a prompt |
 | `AIM_STYLE_GUIDE.md` | — | Style record + Extra instructions | Content artifact, not a prompt |
+
+**Every id in the Status column is a `cas-prod-db` id.** Dev and prod are separate
+RDS instances — `cas_dev_db` on `content-ai-studio-dev-rds`, `cas-prod-db` on
+`content-ai-studio` — and none of these rows has been loaded into dev, whose
+endpoint is reachable only from inside the VPC. So a dev environment resolves the
+seeded defaults for every component here, not these prompts. Verified 2026-09-02
+by reading both endpoints: all seven AIM rows exist in prod, and each one's stored
+system and user text is byte-identical to this directory's fences, except ids 82
+and 86, which differ from their files by a single trailing character (similarity
+1.000 — a paste artifact, not drift).
 
 The five DLU/manual prompts match the DLU parts the frontend already recognises
 (`frontend/src/utils/dluBlueprint.js`): Today's Mission, Learn It, Quick Check, Up
@@ -696,18 +706,32 @@ topic.
   placeholder left behind and no undeclared variable; the five declared variables
   are all supplied at the call site; the file is ASCII with exactly two `text`
   fences; `legacy_blockers` returns empty on the rendered pair; and the document
-  title survives the `storyboard` regex intact. It is **not** in the DB. **Load it
-  with `component_type` = `generate`**, not `content_generation`: the latter is the
-  registry *stem* name, which `_STEM_COMPONENT` maps to the component `generate`
-  (`prompt_loader.py:61-66`), and the Generate page's dropdown keeps a row only
-  when `!p.component_type || p.component_type === 'generate'`
-  (`InlinePromptControls.jsx:120`) — so a row filed under the stem name would
-  never appear in the picker. Otherwise register it exactly as prompt 91 was:
-  `prompt_kind` `pipeline`, `is_default` False, `project_id` NULL, no variant, and
-  no `PromptVariable` declarations, so what gets enforced is `content_generation`'s
-  registry pair, `topic` + `learning_objectives` (`prompt_loader.py:137-147`) —
-  both of which this file declares and the route supplies. Being `is_default` False
-  it changes no generation until someone picks it in the Prompt Template dropdown.
+  title survives the `storyboard` regex intact. **It is in prod but has never run
+  a generation.** Loaded 2026-09-02 as prompt id 97, v1, registered the way prompt
+  91 is: `component_type` `generate`, `prompt_kind` `pipeline`, `is_default` False,
+  `project_id` NULL, no variant, `visibility` `draft`, one v1 version with
+  `workflow_state` `active` and `is_active` True, and no `PromptVariable`
+  declarations — so what gets enforced is `content_generation`'s registry pair,
+  `topic` + `learning_objectives` (`prompt_loader.py:137-147`), both of which this
+  file declares and the route supplies. Verified after loading: it appears in
+  `list_prompts_by_component(db, "generate")`, `build_prompt_resolved(...,
+  prompt_id=97)` resolves and renders with no placeholder left behind, the stored
+  text is byte-identical to this file's fences, and `default_generate_prompt`
+  (id 6) is still the only `generate` default. Being `is_default` False it changes
+  no generation until someone picks it in the Prompt Template dropdown.
+
+  **The `component_type` must be `generate`, not `content_generation`** — the
+  latter is the registry *stem* name, which `_STEM_COMPONENT` maps to the component
+  `generate` (`prompt_loader.py:61-66`), and the Generate page's dropdown keeps a
+  row only when `!p.component_type || p.component_type === 'generate'`
+  (`InlinePromptControls.jsx:120`), so a row filed under the stem name is invisible
+  in the picker. That is the one mistake to avoid when loading any of these into
+  another environment.
+- **Nothing here is loaded into dev.** Dev and prod are separate RDS instances and
+  the dev endpoint resolves only inside the VPC, so it times out from a developer
+  machine. Every id in the Status table is a prod id; a dev environment falls back
+  to the seeded component defaults. Loading these into dev has to run from inside
+  the VPC.
 - **The output cap is 16,384 tokens and this artifact is the one that will hit
   it.** `DEFAULT_MAX_OUTPUT_TOKENS = 16384` (`llm_client.py:43`) is hardcoded, not
   env-driven, and the generate path never passes a `max_tokens` override, so it
