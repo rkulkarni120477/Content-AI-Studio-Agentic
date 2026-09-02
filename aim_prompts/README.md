@@ -8,26 +8,32 @@ per component.
 
 | File | Component | Route | Status |
 |---|---|---|---|
-| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82, v3 |
-| `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | **Live** as DB prompt id 91, v1 |
-| `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 89, v1 |
-| `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 88, v1 |
-| `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 86, v1 |
-| `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 90, v1 |
-| `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | **Live** as DB prompt id 87, v1 |
-| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | **Live** as DB prompt id 97, v1 |
+| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as id 82, v3 (dev + prod) |
+| `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | **Live** as id 91, v1 (dev + prod) |
+| `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | **Live** as id 89, v1 (dev + prod) |
+| `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | **Live** as id 88, v1 (dev + prod) |
+| `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | **Live** as id 86, v1 (dev + prod) |
+| `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | **Live** as id 90, v1 (dev + prod) |
+| `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | **Live** as id 87, v1 (dev + prod) |
+| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | **Live** as v1 — dev id 99, prod id 97 |
 | `AIM_DOMAIN_CONTEXT_BLOCK.md` | — | pasted into Extra instructions | Context layer, not a prompt |
 | `AIM_STYLE_GUIDE.md` | — | Style record + Extra instructions | Content artifact, not a prompt |
 
-**Every id in the Status column is a `cas-prod-db` id.** Dev and prod are separate
-RDS instances — `cas_dev_db` on `content-ai-studio-dev-rds`, `cas-prod-db` on
-`content-ai-studio` — and none of these rows has been loaded into dev, whose
-endpoint is reachable only from inside the VPC. So a dev environment resolves the
-seeded defaults for every component here, not these prompts. Verified 2026-09-02
-by reading both endpoints: all seven AIM rows exist in prod, and each one's stored
-system and user text is byte-identical to this directory's fences, except ids 82
-and 86, which differ from their files by a single trailing character (similarity
-1.000 — a paste artifact, not drift).
+**Both environments carry the whole set, and the ids agree.** Dev and prod are
+separate RDS instances — `cas_dev_db` on `content-ai-studio-dev-rds`, `cas-prod-db`
+on `content-ai-studio` — and every row above exists in both under the same id,
+which is why one number serves for both. The one exception is
+`AIM_DLU_PRODUCTION_SPEC_PROMPT.md`, loaded on 2026-09-02 after the others and
+therefore landing on each instance's own next id: **99 in dev, 97 in prod**.
+
+Verified 2026-09-02 against both endpoints: all eight rows resolve through
+`list_prompts_by_component`, and each stored system and user text is
+byte-identical to this directory's fences — except ids 82 and 86, which differ
+from their files by a single trailing character in both environments (similarity
+1.000, so a paste artifact rather than drift). The dev endpoint is
+`PubliclyAccessible=false` and resolves only to its private address, so reaching
+it needs the SSM port-forward through the `CAS-dev` bastion; a plain connection
+from a developer machine times out.
 
 The five DLU/manual prompts match the DLU parts the frontend already recognises
 (`frontend/src/utils/dluBlueprint.js`): Today's Mission, Learn It, Quick Check, Up
@@ -727,11 +733,11 @@ topic.
   (`InlinePromptControls.jsx:120`), so a row filed under the stem name is invisible
   in the picker. That is the one mistake to avoid when loading any of these into
   another environment.
-- **Nothing here is loaded into dev.** Dev and prod are separate RDS instances and
-  the dev endpoint resolves only inside the VPC, so it times out from a developer
-  machine. Every id in the Status table is a prod id; a dev environment falls back
-  to the seeded component defaults. Loading these into dev has to run from inside
-  the VPC.
+- **Loaded into both environments, with different ids.** dev id 99, prod id 97 —
+  the rest of the AIM set shares one id across both, this one does not, so a
+  script or note that assumes a single id will target the wrong row. Reaching dev
+  at all needs the SSM port-forward through the `CAS-dev` bastion, since the dev
+  endpoint is not publicly accessible.
 - **The output cap is 16,384 tokens and this artifact is the one that will hit
   it.** `DEFAULT_MAX_OUTPUT_TOKENS = 16384` (`llm_client.py:43`) is hardcoded, not
   env-driven, and the generate path never passes a `max_tokens` override, so it
