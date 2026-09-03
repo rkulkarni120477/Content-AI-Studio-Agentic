@@ -113,6 +113,30 @@ export const blueprintService = {
   },
 
   /**
+   * Async Outline import. Same multipart form as importBlueprint, but the server
+   * runs the extract + LLM restructure in a background job and returns a job
+   * handle `{job_id, status, poll_url}` immediately — the caller polls getJobStatus
+   * until terminal, then reloads the blueprint by the job's generation_id. This is
+   * the timeout-proof path used by the UI (a slow file can't 504 the request).
+   */
+  importBlueprintAsync: async ({ file, courseId, projectId, documentTitle, unitKind, unitNumber, cddId, modelChoice }, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('course_id', String(courseId));
+    form.append('project_id', String(projectId));
+    if (documentTitle) form.append('document_title', documentTitle);
+    if (unitKind) form.append('unit_kind', unitKind);
+    if (unitNumber != null && unitNumber !== '') form.append('unit_number', String(unitNumber));
+    if (cddId != null) form.append('cdd_id', String(cddId));
+    if (modelChoice) form.append('model_choice', modelChoice);
+    return api.upload(BLUEPRINT.IMPORT_ASYNC, form, onProgress);
+  },
+
+  /** The caller's in-flight Outline-import job for this course, or null — lets a
+   *  reloaded page reattach to an import already running server-side. */
+  getActiveOutlineImportJob: (courseId) => api.get(GENERATE.JOB_ACTIVE(courseId, 'outline_import')),
+
+  /**
    * Enqueue a block-wide Block Blueprint build (digest pipeline, async). Returns
    * a job handle {job_id, status, poll_url}; poll getJobStatus until terminal,
    * then reload the blueprint by the job's result entity id.

@@ -22,7 +22,13 @@ the ``run_*`` functions (they detect and adopt their own prior output keyed by
 from __future__ import annotations
 
 from promptops_app.celery_app import celery_app
-from promptops_app.jobs import block_wide_jobs, generation_jobs, import_jobs, regen_jobs
+from promptops_app.jobs import (
+    block_wide_jobs,
+    generation_jobs,
+    import_jobs,
+    outline_import_jobs,
+    regen_jobs,
+)
 
 
 @celery_app.task(name="gen.run")
@@ -59,6 +65,14 @@ def run_apply_feedback_task(job_id: str) -> None:
     regen_jobs.run_apply_feedback_job(job_id)
 
 
+@celery_app.task(name="import.outline")
+def run_outline_import_task(job_id: str) -> None:
+    """Celery entry point for async Outline import (extract + LLM restructure +
+    persist). Moved off the request thread so a reverse proxy can't 504 the slow
+    restructure call on a large file."""
+    outline_import_jobs.run_outline_import_job(job_id)
+
+
 @celery_app.task(name="block.run_block_wide")
 def run_block_wide_task(job_id: str) -> None:
     """Celery entry point for block-wide CDD/Blueprint generation (digest pipeline).
@@ -83,5 +97,6 @@ TASK_FOR_FUNC = {
     import_jobs.run_reverse_gen_job: run_reverse_gen_task,
     regen_jobs.run_regenerate_item_job: run_regenerate_item_task,
     regen_jobs.run_apply_feedback_job: run_apply_feedback_task,
+    outline_import_jobs.run_outline_import_job: run_outline_import_task,
     block_wide_jobs.run_block_wide_job: run_block_wide_task,
 }
