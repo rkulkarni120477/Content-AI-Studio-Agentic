@@ -284,6 +284,15 @@ class BlueprintGenerateResponse(BaseModel):
     import_warnings: Optional[list[str]] = None
 
 
+class OutlineImportJobResponse(BaseModel):
+    """202 handle for an async Outline import — the client polls poll_url
+    (GET /api/v1/jobs/{job_id}); on completion the job's generation_id is the
+    imported blueprint id."""
+    job_id: str
+    status: str
+    poll_url: str
+
+
 class BlueprintComponentsResponse(BaseModel):
     """Returned by GET /blueprints/{id}/components — used to populate the Generate dropdown."""
 

@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -64,6 +66,7 @@ from app.schemas.blueprint import (
     BlueprintVersionCreateRequest,
     BlueprintVersionListItem,
     BlueprintVersionRead,
+    OutlineImportJobResponse,
 )
 from app.schemas.common import PaginatedResponse
 from app.schemas.block_wide import BlockWideGenerateRequest, BlockWideJobResponse
@@ -75,6 +78,22 @@ from promptops_app.services.block_wide_service import run_block_wide_sync
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
+
+# Uploaded Outline files are staged here for the async import worker to read by
+# path (Celery payloads must be JSON-serialisable — a path, not bytes). Staged
+# under the repo root, NOT the OS tempdir, because when Celery is on the worker
+# is a different container; the repo root is the shared bind-mount both mount
+# (docker-compose `volumes: .:/app`). Reuses the IMSCC import's staging dir so
+# there's one place to clean. See imports.py `_IMPORT_STAGING_DIR`.
+_OUTLINE_IMPORT_STAGING_DIR = os.environ.get("IMPORT_STAGING_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))),
+    "import_uploads",
+)
+
+# Guard the whole-file read below — an Outline is an Excel/Word/PDF worksheet, so
+# 25 MB is generous; a larger upload is almost certainly a mistake and would only
+# bloat the staging dir / LLM prompt.
+_MAX_IMPORT_BYTES = 25 * 1024 * 1024
 
 
 def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
@@ -671,11 +690,8 @@ def import_outline(
     an imported Outline is indistinguishable downstream — only
     ``generation_params.prompt_source`` records that it was imported.
     """
-    from promptops_app.database import BlueprintVersion, ModuleBlueprint
     from promptops_app.parsers.blueprint_parser import parse_blueprint_components
-    from promptops_app.repositories import blueprint_repository
-    from promptops_app.repositories.course_repository import get_course_by_id, set_active_blueprint
-    from promptops_app.services.audit_service import log_audit_event
+    from promptops_app.services.outline_import_persist import persist_imported_outline
     from promptops_app.services.outline_import_service import normalize_import
     from promptops_app.services.usage_service import UsageLogContext
 
@@ -706,149 +722,17 @@ def import_outline(
         # any LLM call) with a user-facing message; surface it as a clean 400.
         raise HTTPException(400, str(exc)) from exc
 
-    kind = result.kind                # "day" | "module"
-    unit = result.unit_number         # guaranteed resolved (normalize_import refuses otherwise)
-    word = "Day" if kind == "day" else "Module"
-
-    generation_params = {
-        "prompt_source": "imported",
-        "import_method": result.method,
-        "source_filename": file.filename,
-        "is_dlu": result.is_dlu,
-        "import_warnings": result.warnings,
-        "outline_kind": kind,
-        "unit_number": unit,
-        "topic": result.topic,
-        "cdd_id": cdd_id,
-    }
-    change_reason = f"Imported from {file.filename}"
-
-    # Find a live Outline already covering this unit in this course, so a re-upload
-    # adds a new version instead of a duplicate. A day Outline is titled "Day N:
-    # …"; a module Outline is titled "Module N: …" (and carries module_number=N).
-    # Matching is scoped to the same kind — a day file never versions over a module
-    # Outline of the same number, and vice-versa. Prefer the course's pinned Outline
-    # when it is a match, else the most recent (the list is newest-first).
-    def _unit_of(title: str, module_number):
-        m = re.match(r"(?i)^\s*(day|module)\s+(\d+)\b", title or "")
-        if m:
-            return m.group(1).lower(), int(m.group(2))
-        # An older module blueprint may be titled "<topic> Blueprint" with the
-        # number only in module_number — treat it as a module of that number.
-        if module_number is not None:
-            return "module", int(module_number)
-        return None, None
-
-    course = get_course_by_id(db, course_id)
-    pinned_id = course.active_blueprint_id if course else None
-    # limit high enough to see every Outline in the course — the default 100 could
-    # miss the match and create a duplicate instead of a new version.
-    candidates = [
-        bp for bp in blueprint_repository.list_blueprints_for_course(
-            db, course_id=course_id, project_id=project_id, limit=10000)
-        if _unit_of(bp.title, bp.module_number) == (kind, unit)
-    ]
-    target = next((bp for bp in candidates if bp.id == pinned_id), None) or (candidates[0] if candidates else None)
-
-    if target is not None:
-        # Existing Outline for this unit → append a new version (history kept).
-        version_record = blueprint_repository.create_blueprint_version(
-            db, target,
-            content=result.raw_output,
-            sections_json=json.dumps(result.sections),
-            generation_params_json=json.dumps(generation_params),
-            change_summary=change_reason,
-            created_by=current_user.username,
-        )
-        bp = target
-        bp_title = bp.title
-        was_new = False
-    else:
-        # No Outline for this unit yet → create a fresh one at v1.
-        bp_title = result.derived_title
-        bp = ModuleBlueprint(
-            cdd_id=cdd_id,
-            title=bp_title,
-            module_title=f"{word} {unit}",
-            module_number=unit,
-            active_version="v1",
-            project_id=project_id,
-            course_id=course_id,
-            created_by=current_user.username,
-        )
-        db.add(bp)
-        db.commit()
-        db.refresh(bp)
-        version_record = BlueprintVersion(
-            blueprint_id=bp.id,
-            version="v1",
-            full_content=result.raw_output,
-            sections=json.dumps(result.sections),
-            generation_params=json.dumps(generation_params),
-            change_reason=change_reason,
-            is_active=True,
-            created_by=current_user.username,
-        )
-        db.add(version_record)
-        db.commit()
-        db.refresh(version_record)
-        was_new = True
-
-    _log.info(
-        "outline_import  user=%s  course=%d  file=%r  method=%s  kind=%s  unit=%s  "
-        "dlu=%s  bp_id=%d  new=%s  version=%s",
-        current_user.username, course_id, file.filename, result.method,
-        kind, unit, result.is_dlu, bp.id, was_new, version_record.version,
+    bp, version_record, _was_new = persist_imported_outline(
+        db, result, course_id=course_id, project_id=project_id, cdd_id=cdd_id,
+        source_filename=file.filename, current_user=current_user,
     )
-
-    # Copy the imported Outline to DIS/S3 for retrieval and listing, exactly as
-    # the generate path does — a best-effort side effect that never blocks import.
-    try:
-        dis_client.generated_upsert_sync({
-            "generated_doc_id": f"blueprint_{bp.id}",
-            "generated_type": "blueprint",
-            "title": bp_title,
-            "content": result.raw_output,
-            "summary": result.raw_output[:500],
-            "active": True,
-            "metadata": {
-                "selected_module": f"{word} {unit}",
-                "module_number": unit,
-                "course_id": course_id,
-                "project_id": project_id,
-                "cdd_id": cdd_id,
-                "prompt_source": "imported",
-            },
-            "source_documents_used": [],
-            "cas_ref": {"entity": "blueprint", "id": bp.id},
-            "created_by": current_user.username,
-        }, current_user=current_user)
-    except Exception as exc:
-        _log.warning("dis_imported_outline_upsert_failed blueprint_id=%s error=%s", bp.id, exc)
-
-    set_active_blueprint(db, course_id, bp.id)
 
     components = parse_blueprint_components(version_record)
     component_list = [BlueprintComponent(**c) for c in components]
 
-    log_audit_event(db, current_user.username, "blueprint.created",
-                    entity_type="blueprint", entity_id=bp.id,
-                    project_id=project_id, course_id=course_id,
-                    metadata={
-                        "title": bp_title,
-                        "prompt_source": "imported",
-                        "import_method": result.method,
-                        "source_filename": file.filename,
-                        "outline_kind": kind,
-                        "unit_number": unit,
-                        "new_document": was_new,
-                        "version": version_record.version,
-                        "output": result.raw_output,
-                    })
-
     return BlueprintGenerateResponse(
         blueprint_id=bp.id,
-        title=bp_title,
+        title=bp.title,
         version=version_record.version,
         sections_count=len(result.sections),
         components=component_list,
@@ -860,6 +744,90 @@ def import_outline(
         # one section) instead of showing the same success as a clean one.
         import_warnings=result.warnings or None,
     )
+
+
+@router.post(
+    "/import-async",
+    response_model=OutlineImportJobResponse,
+    status_code=202,
+    summary="Import an existing Outline file asynchronously (Excel, DOCX, PDF)",
+    description=(
+        "Same behaviour as POST /import, but runs the extract + (day-Outline) LLM "
+        "restructure in a background job so a slow file never hits a reverse-proxy "
+        "read timeout (504). Returns a job handle immediately (202); poll "
+        "GET /api/v1/jobs/{job_id} — on completion the job's generation_id is the "
+        "imported blueprint id, and any degraded-import note is in the job's warning."
+    ),
+    responses={
+        202: {"description": "Import job queued."},
+        400: {"description": "Empty or too-large file."},
+        403: {"description": "User does not have the blueprint.generate permission."},
+    },
+)
+def import_outline_async(
+    file: UploadFile = File(..., description="Outline file (.xlsx, .xls, .docx, .pdf)."),
+    course_id: int = Form(..., description="Course this imported Outline belongs to."),
+    project_id: int = Form(..., description="Parent project id."),
+    document_title: str = Form("", description="Outline title. Blank → '<Day|Module> N: <topic> Blueprint'."),
+    unit_kind: str = Form("day", description="Dropdown context: 'day' (DLU) or 'module'. Only a hint — the file decides when it names a unit."),
+    unit_number: int | None = Form(None, description="Day/module the user confirmed in the dropdown; used only when the file names no unit."),
+    model_choice: str = Form("GPT-5.4", description="Model used only for the day-Outline LLM restructure path."),
+    cdd_id: int | None = Form(None, description="Optional CDD to link the imported Outline to."),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("blueprint.generate")),
+) -> OutlineImportJobResponse:
+    """Stage the uploaded file, enqueue the import job, and return a poll handle.
+
+    The heavy work (extract + LLM restructure + persist) runs in
+    ``outline_import_jobs.run_outline_import_job`` — identical to the sync route,
+    just off the request thread. Validation of the file's content/day happens in
+    the worker; a user-actionable problem surfaces as the job's error_message.
+    """
+    from promptops_app.jobs import dispatch, outline_import_jobs
+    from promptops_app.repositories import job_repository
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty.")
+    if len(raw) > _MAX_IMPORT_BYTES:
+        raise HTTPException(400, "This file is too large to import. Please upload a file under 25 MB.")
+
+    # Stage to the shared-volume dir so the worker (possibly a different container)
+    # can read it by path; the job deletes it when done.
+    os.makedirs(_OUTLINE_IMPORT_STAGING_DIR, exist_ok=True)
+    suffix = os.path.splitext(file.filename or "")[1].lower()
+    fd, package_path = tempfile.mkstemp(prefix="outline_", suffix=suffix, dir=_OUTLINE_IMPORT_STAGING_DIR)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(raw)
+
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params={
+            "package_path": package_path,
+            "filename": file.filename or "outline",
+            "course_id": course_id,
+            "project_id": project_id,
+            "document_title": document_title,
+            "unit_kind": unit_kind,
+            "unit_number": unit_number,
+            "model_choice": model_choice,
+            "cdd_id": cdd_id,
+            "user_name": current_user.username,
+            # Real id lets the worker's DIS access resolution find the caller's
+            # tenant — see block_wide_jobs._reconstruct_user.
+            "user_id": getattr(current_user, "id", None),
+            "role": getattr(current_user, "role", "user"),
+        },
+        project_id=project_id,
+        course_id=course_id,
+        job_type="outline_import",
+    )
+    dispatch.submit(outline_import_jobs.run_outline_import_job, job_id)
+
+    _log.info("outline_import_async_queued  user=%s  course=%d  file=%r  job=%s",
+              current_user.username, course_id, file.filename, job_id)
+    return OutlineImportJobResponse(job_id=job_id, status="queued", poll_url=f"/api/v1/jobs/{job_id}")
 
 
 @router.post(
