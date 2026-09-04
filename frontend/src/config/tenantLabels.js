@@ -128,13 +128,36 @@ export const FALLBACK_LABELS = buildLabels({});
 
 /** Build labels from a project row (or null → defaults). */
 export function labelsFromProject(project) {
-  return buildLabels(project?.ui_labels);
+  let raw = project?.ui_labels ?? project?.uiLabels;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = {};
+    }
+  }
+  return buildLabels(raw);
 }
 
-/** Build labels from Redux state (thunks / non-React code). */
-export function labelsFromState(getState) {
+/**
+ * Build labels from Redux state (thunks / non-React code).
+ * Accepts `getState` or an already-read state object.
+ */
+export function labelsFromState(getStateOrState) {
   try {
-    return labelsFromProject(getState()?.dashboard?.selectedProject);
+    const state = typeof getStateOrState === 'function'
+      ? getStateOrState()
+      : getStateOrState;
+    const selected = state?.dashboard?.selectedProject;
+    const listed = (state?.dashboard?.projects?.items || [])
+      .find((p) => p?.id === selected?.id);
+    const hasOverrides = (p) => {
+      const raw = p?.ui_labels ?? p?.uiLabels;
+      if (!raw) return false;
+      if (typeof raw === 'string') return raw.trim().length > 2;
+      return typeof raw === 'object' && Object.keys(raw).length > 0;
+    };
+    return labelsFromProject(hasOverrides(selected) ? selected : (listed || selected));
   } catch {
     return FALLBACK_LABELS;
   }

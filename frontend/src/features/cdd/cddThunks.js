@@ -6,6 +6,7 @@ import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
 import { createBlockJobThunks } from '@features/shared/blockJob';
 import { createArchiveThunks } from '@features/shared/documentArchive';
+import { labelsFromState } from '@config/tenantLabels';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -49,14 +50,15 @@ export const fetchCddsThunk = createAsyncThunk(
 
 export const generateCddThunk = createAsyncThunk(
   'cdd/generate',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.project_id) {
-        return rejectWithValue('Select a project before generating a CDD.');
+        return rejectWithValue(`Select a project before generating a ${L.cdd}.`);
       }
       const result = await cddService.generateCdd(payload);
-      toast.success('CDD generated and set as active.');
-      queueDeferredToast('CDD created and pinned as active.');
+      toast.success(`${L.cdd} generated and set as active.`);
+      queueDeferredToast(`${L.cdd} created and pinned as active.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -86,8 +88,9 @@ export const {
     selectBlockJob: (state) => state.cdd?.blockJob,
     completedMessage: (L) => `${L.cdd} generated and set as active.`,
     failedMessage: (L) => `${L.cdd} generation failed.`,
-    onComplete: (dispatch, courseId) => {
-      queueDeferredToast('CDD created and pinned as active.');
+    onComplete: (dispatch, courseId, getState) => {
+      const L = labelsFromState(getState);
+      queueDeferredToast(`${L.cdd} created and pinned as active.`);
       if (courseId) dispatch(fetchCddsThunk(courseId));
     },
   });
@@ -100,14 +103,15 @@ export const {
  */
 export const importCddThunk = createAsyncThunk(
   'cdd/import',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.projectId) {
-        return rejectWithValue('Select a project before importing a blueprint.');
+        return rejectWithValue(`Select a project before importing a ${L.blueprintLower}.`);
       }
       const result = await cddService.importCdd(payload, payload.onProgress);
-      toast.success('Blueprint imported and set as active.');
-      queueDeferredToast('Blueprint imported and pinned as active.');
+      toast.success(`${L.blueprint} imported and set as active.`);
+      queueDeferredToast(`${L.blueprint} imported and pinned as active.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -115,10 +119,10 @@ export const importCddThunk = createAsyncThunk(
 
 export const setActiveCddThunk = createAsyncThunk(
   'cdd/setActive',
-  async ({ cddId, courseId }, { rejectWithValue }) => {
+  async ({ cddId, courseId }, { getState, rejectWithValue }) => {
     try {
       const result = await cddService.setActiveCdd(cddId, courseId);
-      toast.success('Active CDD updated.');
+      toast.success(`Active ${labelsFromState(getState).cdd} updated.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },

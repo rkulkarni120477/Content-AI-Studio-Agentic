@@ -147,4 +147,21 @@ describe('applyTerminology', () => {
     expect(applyTerminology('default_blueprint_prompt', L, ['blueprint'], { identifiers: true }))
       .toBe('default_Learning Plan_prompt');
   });
+
+  it('rewrites the toast copy testers see', () => {
+    const withCdd = buildLabels({
+      title: 'Course',
+      style: 'Design Guide',
+      cdd: 'CD',
+      blueprint: 'Learning Plan',
+    });
+    expect(applyTerminology('Style "Test" created and activated for this title.', withCdd))
+      .toBe('Design Guide "Test" created and activated for this course.');
+    expect(applyTerminology('CDD generated and set as active.', withCdd))
+      .toBe('CD generated and set as active.');
+    expect(applyTerminology('Active blueprint updated.', withCdd))
+      .toBe('Active learning Plan updated.');
+    expect(applyTerminology('Blueprint generated and set as active.', withCdd))
+      .toBe('Learning Plan generated and set as active.');
+  });
 });

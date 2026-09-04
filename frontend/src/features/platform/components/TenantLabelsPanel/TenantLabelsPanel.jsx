@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
+import { useAppDispatch } from '@app/hooks';
+import { patchSelectedProjectUiLabels } from '@features/dashboard/dashboardSlice';
 import { platformService } from '@features/platform/services/platformService';
 import { extractErrorMessage } from '@utils/helpers';
 import {
@@ -28,6 +30,7 @@ function formFromTenant(tenant) {
  * the effect before saving rather than clicking into the tenant to check.
  */
 export default function TenantLabelsPanel({ tenant, onBack, onSaved }) {
+  const dispatch = useAppDispatch();
   const [form, setForm] = useState(() => formFromTenant(tenant));
   const [saving, setSaving] = useState(false);
 
@@ -56,6 +59,10 @@ export default function TenantLabelsPanel({ tenant, onBack, onSaved }) {
       // Always send the whole object: a cleared box must clear the override,
       // and the server treats a missing key as "no override".
       await platformService.updateTenant(tenant.id, { ui_labels: pendingOverrides });
+      dispatch(patchSelectedProjectUiLabels({
+        projectId: tenant.id,
+        ui_labels: pendingOverrides,
+      }));
       toast.success(
         Object.keys(pendingOverrides).length
           ? 'Labels saved — everyone in this organization will see the new wording.'

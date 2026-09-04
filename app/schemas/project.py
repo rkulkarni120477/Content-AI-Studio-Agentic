@@ -68,8 +68,14 @@ class ProjectListItem(BaseModel):
     name: str
     client_name: Optional[str] = None
     created_at: Optional[datetime] = None
+    ui_labels: dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("ui_labels", mode="before")
+    @classmethod
+    def _parse_ui_labels(cls, value):
+        return parse_ui_labels(value)
 
 
 # ---------------------------------------------------------------------------
