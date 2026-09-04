@@ -30,7 +30,7 @@ async function pipelineFetch(path, init = {}) {
 
 // Create a pipeline registry row (optionally with an activated v1 when both
 // prompt texts are supplied). `name` is the unique registry slug.
-export function createPipelinePrompt({ name, description, componentType, variant, systemPrompt, userPromptTemplate, changeReason }) {
+export function createPipelinePrompt({ name, description, componentType, variant, systemPrompt, userPromptTemplate, changeReason, projectId }) {
   return pipelineFetch('', {
     method: 'POST',
     body: JSON.stringify({
@@ -41,6 +41,10 @@ export function createPipelinePrompt({ name, description, componentType, variant
       system_prompt: systemPrompt || null,
       user_prompt_template: userPromptTemplate || null,
       change_reason: changeReason || 'Initial commit.',
+      // Platform admins only — omitted (null) keeps the prior shared/global
+      // behavior; ignored server-side for a tenant-scoped caller, who is
+      // always stamped with their own project regardless.
+      project_id: projectId ?? null,
     }),
   });
 }

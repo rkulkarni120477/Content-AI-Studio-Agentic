@@ -4,7 +4,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   fetchWorkflowBlocksThunk, submitBlockThunk, approveBlockThunk, requestChangesThunk,
   rejectBlockThunk, publishBlockThunk, archiveBlockThunk, resetDraftBlockThunk,
-  bulkApproveThunk, fetchPendingReviewsThunk,
+  bulkApproveThunk, bulkSubmitThunk, bulkPublishThunk, fetchPendingReviewsThunk,
 } from '@features/workflow/workflowThunks';
 import {
   selectSelectedProject, selectSelectedCourse, selectProjects,
@@ -29,10 +29,10 @@ import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import Select from '@components/common/Select/Select';
 import SearchBar from '@components/common/SearchBar/SearchBar';
 import Button from '@components/common/Button/Button';
-import MultiSelect from '@components/common/MultiSelect/MultiSelect';
 import Loader from '@components/common/Loader/Loader';
 import Modal from '@components/common/Modal/Modal';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
+import BulkActionSection from '@features/workflow/components/BulkActionSection/BulkActionSection';
 import { useLabels } from '@hooks/useLabels';
 import styles from './WorkflowPage.module.scss';
 
@@ -121,8 +121,7 @@ export default function WorkflowPage() {
   const [reviewComment, setReviewComment] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [events, setEvents] = useState([]);
-  const [bulkSelected, setBulkSelected] = useState([]);
-  const [bulkResult, setBulkResult] = useState(null);
+  const [bulkSubmitReviewer, setBulkSubmitReviewer] = useState('');
   const [expandedProjects, setExpandedProjects] = useState({});
   const [adminBreakdown, setAdminBreakdown] = useState([]);
   const [breakdownLoading, setBreakdownLoading] = useState(false);
@@ -268,12 +267,13 @@ export default function WorkflowPage() {
     if (reviewers.length && !reviewerName) setReviewerName(reviewers[0]);
   }, [reviewers, reviewerName]);
 
-  const inReviewBlocks = blocksByState[WORKFLOW_STATES.IN_REVIEW] || [];
-
   useEffect(() => {
-    const opts = inReviewBlocks.map((b) => String(b.id));
-    setBulkSelected(opts);
-  }, [inReviewBlocks.map((b) => b.id).join(',')]);
+    if (reviewers.length && !bulkSubmitReviewer) setBulkSubmitReviewer(reviewers[0]);
+  }, [reviewers, bulkSubmitReviewer]);
+
+  const draftBlocks = blocksByState[WORKFLOW_STATES.DRAFT] || [];
+  const inReviewBlocks = blocksByState[WORKFLOW_STATES.IN_REVIEW] || [];
+  const approvedBlocks = blocksByState[WORKFLOW_STATES.APPROVED] || [];
 
   function handleFilter(key, value) {
     const patch = { [key]: value };
@@ -414,11 +414,6 @@ export default function WorkflowPage() {
   const blockSelectOptions = filteredBlocks.map((b) => ({
     value: String(b.id),
     label: `#${b.id} — ${(b.block_label || '').slice(0, 40)} [${WORKFLOW_STATE_LABELS[b.workflow_state] || b.workflow_state}]`,
-  }));
-
-  const bulkOptions = inReviewBlocks.map((b) => ({
-    value: String(b.id),
-    label: `#${b.id} — ${(b.block_label || '').slice(0, 40)}`,
   }));
 
   const stateKey = approvalBlock?.workflow_state?.toLowerCase();
@@ -878,43 +873,104 @@ export default function WorkflowPage() {
           </>
         )}
 
-        {hasPermission('workflow.bulk_approve') && (
+        {(hasPermission('workflow.bulk_submit')
+          || hasPermission('workflow.bulk_approve')
+          || hasPermission('workflow.bulk_publish')) && (
           <>
             <hr className={styles.divider} />
-            <section className={styles.bulkSection}>
-              <h2 className={styles.sectionTitle}>⚡ Bulk Approve</h2>
-              {inReviewBlocks.length === 0 ? (
-                <p className={styles.emptyHint}>No blocks are currently In Review.</p>
-              ) : (
-                <>
-                  <MultiSelect
-                    label={`Select blocks to approve (${inReviewBlocks.length} in review)`}
-                    options={bulkOptions}
-                    value={bulkSelected}
-                    onChange={setBulkSelected}
+            <h2 className={styles.sectionTitle}>⚡ Bulk Workflow Actions</h2>
+
+            {hasPermission('workflow.bulk_submit') && (
+              <BulkActionSection
+                title="📤 Bulk Move to In Review (Draft)"
+                emptyMessage="No blocks are currently in Draft."
+                items={draftBlocks}
+                actionLabel="Move to In Review"
+                confirmTitle="Move to In Review?"
+                confirmMessage={(n) => `Are you sure you want to move ${n} item(s) to In Review?`}
+                canRun={Boolean(bulkSubmitReviewer)}
+                extraFields={(
+                  <Select
+                    label="Assign Reviewer"
+                    options={(reviewers.length ? reviewers : ['(no reviewers available)']).map((r) => ({
+                      value: r,
+                      label: r,
+                    }))}
+                    value={bulkSubmitReviewer}
+                    onChange={(e) => setBulkSubmitReviewer(e.target.value)}
+                    disabled={!reviewers.length}
                   />
-                  {bulkSelected.length > 0 && (
-                    <Button
-                      variant="primary"
-                      disabled={actionLoading}
-                      onClick={() => runAction(async () => {
-                        const result = await dispatch(
-                          bulkApproveThunk(bulkSelected.map(Number)),
-                        ).unwrap();
-                        setBulkResult(result);
-                      })}
-                    >
-                      ✅ Bulk Approve {bulkSelected.length} block(s)
-                    </Button>
-                  )}
-                  {bulkResult && (
-                    <p className={styles.bulkResult}>
-                      Approved: {bulkResult.approved?.length ?? 0} | Skipped: {bulkResult.skipped?.length ?? 0} | Errors: {bulkResult.errors?.length ?? 0}
-                    </p>
-                  )}
-                </>
-              )}
-            </section>
+                )}
+                onRun={async (ids) => {
+                  const result = await dispatch(
+                    bulkSubmitThunk({ blockIds: ids.map(Number), reviewerUsername: bulkSubmitReviewer }),
+                  ).unwrap();
+                  refresh();
+                  return result;
+                }}
+                renderResult={(result) => (
+                  <>
+                    <p>✅ Moved: {result.succeeded} · ❌ Failed: {result.failed}</p>
+                    {result.failed > 0 && (
+                      <ul className={styles.bulkFailureList}>
+                        {result.results.filter((r) => !r.ok).map((r) => (
+                          <li key={r.block_id}>#{r.block_id}: {r.reason}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+              />
+            )}
+
+            {hasPermission('workflow.bulk_approve') && (
+              <BulkActionSection
+                title="✅ Bulk Approve (In Review)"
+                emptyMessage="No blocks are currently In Review."
+                items={inReviewBlocks}
+                actionLabel="Bulk Approve"
+                confirmTitle="Approve these blocks?"
+                confirmMessage={(n) => `Are you sure you want to approve ${n} item(s)?`}
+                onRun={async (ids) => {
+                  const result = await dispatch(bulkApproveThunk(ids.map(Number))).unwrap();
+                  refresh();
+                  return result;
+                }}
+                renderResult={(result) => (
+                  <p>
+                    Approved: {result.approved?.length ?? 0} | Skipped: {result.skipped?.length ?? 0} | Errors: {result.errors?.length ?? 0}
+                  </p>
+                )}
+              />
+            )}
+
+            {hasPermission('workflow.bulk_publish') && (
+              <BulkActionSection
+                title="🚀 Bulk Publish (Approved)"
+                emptyMessage="No blocks are currently Approved."
+                items={approvedBlocks}
+                actionLabel="Publish"
+                confirmTitle="Publish these blocks?"
+                confirmMessage={(n) => `Are you sure you want to publish ${n} item(s)?`}
+                onRun={async (ids) => {
+                  const result = await dispatch(bulkPublishThunk(ids.map(Number))).unwrap();
+                  refresh();
+                  return result;
+                }}
+                renderResult={(result) => (
+                  <>
+                    <p>✅ Published: {result.succeeded} · ❌ Failed: {result.failed}</p>
+                    {result.failed > 0 && (
+                      <ul className={styles.bulkFailureList}>
+                        {result.results.filter((r) => !r.ok).map((r) => (
+                          <li key={r.block_id}>#{r.block_id}: {r.reason}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+              />
+            )}
           </>
         )}
 

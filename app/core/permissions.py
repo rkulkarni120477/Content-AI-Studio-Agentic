@@ -103,6 +103,8 @@ _PERMISSIONS: dict[str, list[str]] = {
     "workflow.request_changes": [_ADMIN, _REVIEWER],
     "workflow.publish":         [_ADMIN, _REVIEWER],
     "workflow.bulk_approve":    [_ADMIN],
+    "workflow.bulk_submit":     [_ADMIN],
+    "workflow.bulk_publish":    [_ADMIN],
     "workflow.reset_draft":     [_ADMIN, _REVIEWER, _AUTHOR],
     "workflow.archive":         [_ADMIN],
 
@@ -194,6 +196,8 @@ _REVIEWER_BLOCKLIST: frozenset[str] = frozenset({
     "cdd.purge",
     "blueprint.purge",
     "workflow.bulk_approve",
+    "workflow.bulk_submit",
+    "workflow.bulk_publish",
     "workflow.archive",
     "system.clear_db",
     "analytics.view_all",

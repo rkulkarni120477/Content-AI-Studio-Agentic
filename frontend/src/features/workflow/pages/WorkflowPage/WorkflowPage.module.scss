@@ -324,6 +324,11 @@
   margin-bottom: $space-6;
 }
 
+.bulkFailureList {
+  margin: $space-1 0 0;
+  padding-left: $space-5;
+  color: $color-danger;
+}
 .bulkSection {
   margin-bottom: $space-6;
   display: flex;

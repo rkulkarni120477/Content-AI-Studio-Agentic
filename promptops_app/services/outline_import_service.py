@@ -49,9 +49,16 @@ SUPPORTED_EXTS = (".xlsx", ".xls", ".docx", ".pdf")
 #: rather than an LLM call that might not round-trip losslessly.
 _LLM_INPUT_CHAR_CAP = 180_000
 
-#: Output ceiling for the restructure call. One day's outline is far smaller than
-#: a whole-block table, but keep generous headroom so nothing is clipped.
-_LLM_MAX_OUTPUT_TOKENS = 16_000
+#: Output ceiling for the restructure call. Because the restructure PRESERVES the
+#: source verbatim (only reorganizing it), the output is roughly the size of the
+#: input — so a large Outline (e.g. a dense AIM day ~50 KB / ~15k tokens) can
+#: exceed a 16k cap and get truncated, which the truncated-guard then rejects into
+#: a single "Imported Content" section. We ask for the model's full output budget
+#: instead; generate_with_metadata caps this to the model's own max_output_tokens
+#: (64k for the current models), so it is never unsafe, and you only pay for the
+#: tokens actually produced. The truncation guard in _llm_restructure still catches
+#: the rare file too large even for that, falling back losslessly.
+_LLM_MAX_OUTPUT_TOKENS = 64_000
 
 
 @dataclass
@@ -480,9 +487,34 @@ UPLOADED CONTENT:
 """
 
 
+class _RestructureTruncated(RuntimeError):
+    """The restructure reply hit the model's output cap. Distinct from a generic
+    error so the caller can RETRY on a larger-output model before giving up — a
+    16k-ceiling model (e.g. the default) truncates a big Outline that a 64k model
+    handles whole."""
+
+
+def _high_output_model(exclude: str = "") -> Optional[str]:
+    """The catalog model with the largest output budget (ties broken toward a
+    'structured' model), for retrying a restructure the selected model truncated.
+    Excludes the model already tried. None if the catalog can't be read."""
+    try:
+        from promptops_app.core.models import MODEL_CATALOG, resolve_model
+        excluded = resolve_model(exclude).display_name if exclude else ""
+        candidates = [m for m in MODEL_CATALOG if m.display_name != excluded]
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda m: (
+            m.max_output_tokens, "structured" in tuple(getattr(m, "tags", ()) or ())))
+        return best.display_name
+    except Exception:
+        return None
+
+
 def _llm_restructure(content: str, *, model_choice: str, usage_ctx=None) -> str:
     """Ask the LLM to reorganize *content* into DLU Outline markdown, losslessly.
-    Raises on an LLM error so the caller can fall back to a raw wrap rather than
+    Raises ``_RestructureTruncated`` if the reply is cut off at the output cap, and
+    a generic error otherwise, so the caller can escalate or fall back rather than
     persist a half-empty document."""
     from promptops_app.services.llm_service import generate_with_metadata
 
@@ -495,13 +527,45 @@ def _llm_restructure(content: str, *, model_choice: str, usage_ctx=None) -> str:
         raise RuntimeError(f"LLM restructure failed: {result.error_type}")
     # A reply cut off at the output cap (LLMResult.truncated, from the provider's
     # length/max_tokens stop reason) is missing content — and this path stores the
-    # reply AS the document. Storing a half-finished Outline silently drops
-    # material, so treat truncation as a hard failure; the caller demotes to the
-    # lossless raw wrap. (generate_with_metadata already caps max_tokens to the
-    # model's own ceiling, so this is the real signal, not the constant above.)
+    # reply AS the document, so a half-finished Outline would silently drop material.
+    # generate_with_metadata caps max_tokens to the model's own ceiling, so this
+    # fires when the SELECTED model's ceiling is the bottleneck — the caller then
+    # retries on a larger-output model.
     if getattr(result, "truncated", False):
-        raise RuntimeError("LLM restructure truncated (hit the output cap)")
+        raise _RestructureTruncated("LLM restructure truncated (hit the output cap)")
     return result.text or ""
+
+
+def _restructure_with_retry(content: str, *, model_choice: str, usage_ctx, warnings, filename: str) -> Optional[str]:
+    """Restructure into DLU markdown, escalating to a larger-output model when the
+    selected one truncates. Returns the model's reply (which the caller validates),
+    or None on hard failure — in which case a user-facing warning is appended and
+    the caller falls back to a lossless raw wrap."""
+    try:
+        return _llm_restructure(content, model_choice=model_choice, usage_ctx=usage_ctx)
+    except _RestructureTruncated:
+        big = _high_output_model(exclude=model_choice)
+        if big:
+            _log.info("outline_import restructure truncated on %r — retrying on larger-output "
+                      "model %r file=%r", model_choice, big, filename)
+            try:
+                return _llm_restructure(content, model_choice=big, usage_ctx=usage_ctx)
+            except Exception as exc:
+                _log.warning("outline_import restructure retry failed/truncated on %r file=%r "
+                             "error=%s — raw fallback", big, filename, exc)
+        else:
+            _log.warning("outline_import no larger-output model available to retry file=%r", filename)
+        warnings.append(
+            "This Outline was too large to auto-structure into the parts, so its full "
+            "content was imported as a single section.")
+        return None
+    except Exception as exc:
+        _log.warning("outline_import llm restructure failed file=%r error=%s — raw fallback",
+                     filename, exc)
+        warnings.append(
+            "Automatic Outline structuring was unavailable; the full content was "
+            "imported as a single section.")
+        return None
 
 
 def _raw_body(text: str) -> str:
@@ -662,32 +726,28 @@ def normalize_import(filename: str, data: bytes, *,
             body = _raw_body(flat_text)
             method = "raw_fallback"
         else:
-            try:
-                restructured = _llm_restructure(
-                    flat_text, model_choice=model_choice, usage_ctx=usage_ctx,
-                )
-                if _looks_like_dlu(restructured):
-                    body = restructured
-                    method = "llm_restructure"
-                    # Take a nicer topic from the restructured title if we have
-                    # none — but NOT the day (see the unit-resolution note above).
-                    _, r_topic = _detect_day_topic(restructured)
-                    if r_topic and not topic:
-                        topic = r_topic
-                else:
+            # Reorganize into the five-part shape, escalating to a larger-output
+            # model if the selected one truncates on a big file (see
+            # _restructure_with_retry). Warnings for hard failures are appended there.
+            restructured = _restructure_with_retry(
+                flat_text, model_choice=model_choice, usage_ctx=usage_ctx,
+                warnings=warnings, filename=filename,
+            )
+            if restructured is not None and _looks_like_dlu(restructured):
+                body = restructured
+                method = "llm_restructure"
+                # Take a nicer topic from the restructured title if we have none —
+                # but NOT the day (see the unit-resolution note above).
+                _, r_topic = _detect_day_topic(restructured)
+                if r_topic and not topic:
+                    topic = r_topic
+            else:
+                if restructured is not None:
+                    # The model replied but not in the recognizable shape.
                     warnings.append(
                         "Automatic Outline structuring did not apply cleanly; the full "
                         "content was imported as a single section."
                     )
-                    body = _raw_body(flat_text)
-                    method = "raw_fallback"
-            except Exception as exc:
-                _log.warning("outline_import llm restructure failed file=%r error=%s — "
-                             "falling back to raw wrap", filename, exc)
-                warnings.append(
-                    "Automatic Outline structuring was unavailable; the full content "
-                    "was imported as a single section."
-                )
                 body = _raw_body(flat_text)
                 method = "raw_fallback"
         # Stamp the title to the RESOLVED day so the stated day always matches the

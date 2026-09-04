@@ -4,7 +4,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchBlueprintsThunk, generateBlueprintThunk, importBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintsThunk, generateBlueprintThunk, importBlueprintAsyncThunk, resumeOutlineImportJobThunk,
+  setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   fetchArchivedBlueprintsThunk, archiveBlueprintThunk, restoreBlueprintThunk,
@@ -13,7 +14,7 @@ import {
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
   selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
-  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintImporting, selectBlueprintError,
+  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintImporting, selectBlueprintImportJob, selectBlueprintError,
   selectBlueprintGenerationMode, setGenerationMode,
   selectArchivedBlueprints, selectBlueprintArchiving, selectBlueprintArchiveRefusal,
   clearArchiveRefusal,
@@ -81,6 +82,7 @@ export default function BlueprintPage() {
   const isLoading = useAppSelector(selectBlueprintLoading);
   const isGenerating = useAppSelector(selectBlueprintGenerating);
   const isImporting = useAppSelector(selectBlueprintImporting);
+  const importJob = useAppSelector(selectBlueprintImportJob);
   const error = useAppSelector(selectBlueprintError);
   const archivedBlueprints = useAppSelector(selectArchivedBlueprints);
   const isArchiving = useAppSelector(selectBlueprintArchiving);
@@ -163,6 +165,9 @@ export default function BlueprintPage() {
     dispatch(fetchArchivedBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
+    // Reattach to an Outline import already running for this course, so a page
+    // refresh mid-import resumes the progress + completion instead of orphaning it.
+    dispatch(resumeOutlineImportJobThunk({ courseId: Number(courseId) }));
   }, [courseId, projectId, dispatch]);
 
   useEffect(() => {
@@ -375,7 +380,10 @@ export default function BlueprintPage() {
     const unitNumber = (moduleConfirmed && selectedModuleOpt)
       ? selectedModuleOpt.key
       : undefined;
-    const res = await dispatch(importBlueprintThunk({
+    // Async import: the POST returns a job handle quickly (no reverse-proxy 504 on
+    // a slow file); polling reloads the list and pins the new Outline on completion
+    // (handled in the slice). We only need to confirm the job started here.
+    const res = await dispatch(importBlueprintAsyncThunk({
       file: importFile,
       courseId: Number(courseId),
       projectId: selProject?.id ?? projectId,
@@ -386,20 +394,15 @@ export default function BlueprintPage() {
       modelChoice,
       onProgress: setImportProgress,
     }));
-    if (importBlueprintThunk.fulfilled.match(res)) {
+    if (importBlueprintAsyncThunk.fulfilled.match(res)) {
+      // Job started — clear the picker; the "processing" indicator is driven by
+      // importJob/isImporting and the list refreshes when the job completes.
       setImportFile(null);
       setImportProgress(0);
       if (importFileRef.current) importFileRef.current.value = '';
-      if (res.payload?.id) {
-        setViewBpId(res.payload.id);
-        setSelectedBpId(res.payload.id);
-        setViewBpDetail(res.payload);
-        dispatch(fetchBlueprintVersionsThunk(res.payload.id));
-      }
-      dispatch(fetchBlueprintsThunk(courseId));
     } else {
-      // Failed import — clear the stuck progress bar but keep the file selected
-      // so the user can fix the day and retry without re-choosing it.
+      // Enqueue failed — clear the stuck progress bar but keep the file selected
+      // so the user can retry without re-choosing it.
       setImportProgress(0);
     }
   }
@@ -817,8 +820,11 @@ export default function BlueprintPage() {
                 {importProgress > 0 && importProgress < 100 && (
                   <div className={styles.uploadBanner}>Uploading… {importProgress}%</div>
                 )}
-                {isImporting && importProgress >= 100 && (
-                  <div className={styles.uploadBanner}>Processing the file…</div>
+                {isImporting && !(importProgress > 0 && importProgress < 100) && (
+                  <div className={styles.uploadBanner}>
+                    {importJob?.currentStep || 'Processing the file…'}
+                    {importJob?.progress ? ` — ${importJob.progress}%` : ''}
+                  </div>
                 )}
                 <Button
                   variant="primary"
@@ -1083,6 +1089,7 @@ export default function BlueprintPage() {
                           version={versionDetail?.version || displayBp?.active_content?.version}
                           generationParams={versionDetail?.generation_params
                             || displayBp?.active_content?.generation_params}
+                          projectId={selProject?.id ?? projectId}
                         />
                         <BlueprintContentView
                           fullContent={previewFullContent}

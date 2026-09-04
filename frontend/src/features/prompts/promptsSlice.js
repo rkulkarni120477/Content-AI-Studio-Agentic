@@ -11,6 +11,15 @@ const initialState = {
   isLoading:   false,
   isAiGenerating: false,
   error: null,
+  // requestId of the most recently DISPATCHED prompts fetch. Same race this
+  // codebase already guards against for clusters/courses (see dashboardSlice):
+  // switching the selected tenant re-dispatches this fetch with a new
+  // project_id, but a slower response for the PREVIOUS tenant can still land
+  // after the new tenant's faster one — without this guard it would clobber
+  // the dropdown with the wrong tenant's prompts (filteredPrompts in
+  // InlinePromptControls only filters by component_type, not project_id, so
+  // there's no client-side net to catch it).
+  promptsRequestId: null,
 };
 
 const promptsSlice = createSlice({
@@ -22,9 +31,21 @@ const promptsSlice = createSlice({
   },
   extraReducers: (b) => {
     b
-      .addCase(fetchPromptsThunk.pending,   (s) => { s.isLoading = true; s.error = null; })
-      .addCase(fetchPromptsThunk.fulfilled, (s, { payload }) => { s.isLoading = false; s.prompts = payload; })
-      .addCase(fetchPromptsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
+      .addCase(fetchPromptsThunk.pending,   (s, action) => {
+        s.promptsRequestId = action.meta.requestId;
+        s.isLoading = true;
+        s.error = null;
+      })
+      .addCase(fetchPromptsThunk.fulfilled, (s, action) => {
+        if (action.meta.requestId !== s.promptsRequestId) return;
+        s.isLoading = false;
+        s.prompts = action.payload;
+      })
+      .addCase(fetchPromptsThunk.rejected,  (s, action) => {
+        if (action.meta.requestId !== s.promptsRequestId) return;
+        s.isLoading = false;
+        s.error = action.payload;
+      })
 
       .addCase(commitPromptThunk.fulfilled, (s, { payload }) => {
         const exists = s.prompts.find((p) => p.name === payload.name);

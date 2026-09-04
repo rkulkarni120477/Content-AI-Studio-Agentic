@@ -187,10 +187,13 @@ export const BLUEPRINT = {
   LIST:             '/api/v1/blueprints',
   GET:              (id)       => `/api/v1/blueprints/${id}`,
   GENERATE:         '/api/v1/blueprints/generate',
-  // Upload an existing DLU Outline file (Excel/DOCX/PDF) → extracted, normalized
-  // into the day-Outline shape, saved as a blueprint (new version for that day if
-  // one exists, else new), and pinned active. Multipart. See CDD.IMPORT.
+  // Upload an existing Outline file (Excel/DOCX/PDF) → extracted, normalized into
+  // the day/module-Outline shape, saved as a blueprint (new version for that unit
+  // if one exists, else new), and pinned active. Multipart. See CDD.IMPORT.
   IMPORT:           '/api/v1/blueprints/import',
+  // Async variant: returns a job handle (202) immediately; poll GENERATE.JOB_STATUS.
+  // Keeps the slow LLM restructure off the request thread so a proxy can't 504 it.
+  IMPORT_ASYNC:     '/api/v1/blueprints/import-async',
   // Block-wide (digest-pipeline) async generation — see CDD.GENERATE_BLOCK.
   GENERATE_BLOCK:   '/api/v1/blueprints/generate-block',
   VERSIONS:         (id)       => `/api/v1/blueprints/${id}/versions`,
@@ -278,6 +281,8 @@ export const WORKFLOW = {
   RESET_DRAFT:      (id)       => `/api/v1/workflow/blocks/${id}/reset-draft`,
   EVENTS:           (id)       => `/api/v1/workflow/blocks/${id}/events`,
   BULK_APPROVE:     '/api/v1/workflow/bulk-approve',
+  BULK_SUBMIT:      '/api/v1/workflow/bulk-submit',
+  BULK_PUBLISH:     '/api/v1/workflow/bulk-publish',
   PENDING_REVIEWS:  '/api/v1/workflow/pending',
   ADMIN_BREAKDOWN:  '/api/v1/workflow/admin-breakdown',
 };
