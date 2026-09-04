@@ -281,6 +281,8 @@ export const WORKFLOW = {
   RESET_DRAFT:      (id)       => `/api/v1/workflow/blocks/${id}/reset-draft`,
   EVENTS:           (id)       => `/api/v1/workflow/blocks/${id}/events`,
   BULK_APPROVE:     '/api/v1/workflow/bulk-approve',
+  BULK_SUBMIT:      '/api/v1/workflow/bulk-submit',
+  BULK_PUBLISH:     '/api/v1/workflow/bulk-publish',
   PENDING_REVIEWS:  '/api/v1/workflow/pending',
   ADMIN_BREAKDOWN:  '/api/v1/workflow/admin-breakdown',
 };

@@ -289,14 +289,10 @@
   margin-bottom: $space-6;
 }
 
-.bulkSection {
-  margin-bottom: $space-6;
-}
-
-.bulkResult {
-  font-size: $font-size-sm;
-  color: $color-success;
-  margin-top: $space-2;
+.bulkFailureList {
+  margin: $space-1 0 0;
+  padding-left: $space-5;
+  color: $color-danger;
 }
 
 .adminSection {

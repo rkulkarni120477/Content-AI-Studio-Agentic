@@ -33,6 +33,7 @@ vi.mock('../../api/pipeline', () => ({
 vi.mock('../../api/teams', () => ({ fetchTeams: () => Promise.resolve([]) }));
 vi.mock('../../context/ToastContext', () => ({ useToast: () => ({ show: vi.fn() }) }));
 vi.mock('../../context/AuthContext', () => ({ useAuth: () => ({ user: authUser }) }));
+vi.mock('@hooks/useLabels', () => ({ useLabels: () => ({}) }));
 vi.mock('@features/platform/services/platformService', () => ({
   platformService: { listTenants: (...args) => listTenants(...args) },
 }));

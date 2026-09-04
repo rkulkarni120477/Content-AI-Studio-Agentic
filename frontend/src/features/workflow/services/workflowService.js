@@ -17,6 +17,10 @@ export const workflowService = {
   archive:          (id) => api.post(WORKFLOW.ARCHIVE(id)),
   resetDraft:       (id) => api.post(WORKFLOW.RESET_DRAFT(id)),
   bulkApprove:      (ids) => api.post(WORKFLOW.BULK_APPROVE, { block_ids: ids }),
+  bulkSubmit:       (ids, reviewerUsername) => api.post(WORKFLOW.BULK_SUBMIT, {
+    block_ids: ids, reviewer_username: reviewerUsername,
+  }),
+  bulkPublish:      (ids) => api.post(WORKFLOW.BULK_PUBLISH, { block_ids: ids }),
   getEvents:        (id) => api.get(WORKFLOW.EVENTS(id)),
   getAdminBreakdown: () => api.get(WORKFLOW.ADMIN_BREAKDOWN),
 };
