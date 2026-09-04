@@ -5,9 +5,35 @@ import { CDD, COURSES, GENERATE } from '@services/endpoints';
 import { POLL_REQUEST_CONFIG } from '@features/shared/blockJob';
 
 /**
- * Payload for block-wide (digest-pipeline) async generation. Deliberately
- * narrower than the sync path — the digest pipeline builds its own context from
- * DIS enumerate/digests, so reference-doc/style/prompt-override fields don't apply.
+ * Payload for block-wide (digest-pipeline) async generation. Narrower than the
+ * sync path — the digest pipeline builds its own context from DIS
+ * enumerate/digests, so the *_prompt_override fields don't apply.
+ *
+ * Narrower is NOT the same as "drops what the page sent". This mapper is a
+ * whitelist, so a field the page adds reaches the server only when it is also
+ * added here — and style_id/prompt_id were not, from this function's
+ * introduction (989c9d5) until now. CddPage.onGenerateBlock built both (each with a comment
+ * explaining that the server cannot resolve them any other way on this path) and
+ * this function silently discarded them one layer down. Every block-wide CDD
+ * generated in production reached the server with prompt_id absent, so
+ * prompt_guidance could not reach its DB tier and distilled its per-day MAP
+ * guidance from the shipped cdd_generation.md file instead — a middle-school CTE
+ * template — no matter which prompt the user picked in the dropdown. Verified
+ * against prod: 30/30 block-wide jobs recorded prompt_id null and
+ * prompt_capability.prompt_chars 4754, which is that file's exact length.
+ *
+ * The guard against this recurring is behavioural, in blockWidePayload.test.js:
+ * the previous test grepped the PAGE's source for these field names and passed
+ * throughout, because the page did send them.
+ *
+ * reference_document_ids joined the list on 2026-08-27, and is the same shape of
+ * bug caught one step earlier. The page rendered a fully enabled document picker
+ * over a request that could not carry a document selection at all: the field was
+ * absent from BlockWideGenerateRequest, absent here, and the panel's own hint said
+ * the selection "does not apply". It now applies, ADDITIVELY — the pinned documents
+ * are digested on top of every unit the block enumerates, never instead of them, so
+ * a selection can only add context and can never narrow a block-wide deliverable.
+ * An empty array is the default and reproduces the previous request exactly.
  */
 function mapBlockPayload(data) {
   return {
@@ -23,6 +49,20 @@ function mapBlockPayload(data) {
     target_audience: data.target_audience || '',
     expert_domain: data.expert_domain || '',
     estimated_duration_hours: data.estimated_duration_hours ?? undefined,
+    // Null rather than undefined: the server must be able to tell "the user chose
+    // no style" from "this client never sent one", which is the same distinction
+    // the sync path preserves.
+    style_id: data.style_id ?? null,
+    // The prompt selected in the "Prompt Template" dropdown. Without it the server
+    // falls through every DB resolution tier to the generic shipped file template.
+    // An id that doesn't resolve to a pipeline row is ignored server-side.
+    prompt_id: data.prompt_id || undefined,
+    // Documents pinned in the "Reference Documents" picker, added to the block's
+    // own enumerated sources server-side. Always sent (as [] when nothing is
+    // picked) rather than omitted, so the server can tell "nothing selected" from
+    // "this client is too old to send a selection" — the same distinction style_id
+    // preserves above.
+    reference_document_ids: data.reference_document_ids || [],
   };
 }
 

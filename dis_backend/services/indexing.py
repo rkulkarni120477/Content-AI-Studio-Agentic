@@ -18,6 +18,55 @@ log = logging.getLogger(__name__)
 # For query performance, RDS gets a JSONB GIN index and OpenSearch gets dynamic_templates.
 
 
+def _ensure_database_exists(psycopg_module, dsn: str) -> None:
+    """Create the DSN's target database if it doesn't exist yet.
+
+    Postgres has no CREATE DATABASE IF NOT EXISTS, and CREATE DATABASE cannot
+    run inside a transaction or over a connection to the database being
+    created — it needs its own autocommit connection to a different,
+    already-existing database on the same server (the "postgres" maintenance
+    database, always present on RDS). This is one level up from what
+    auto_create_schema already does for schema/tables: a structure_store.url
+    freshly pointed at a database that has never existed (e.g. a new client's own
+    database) self-provisions on first upload instead of needing someone to run
+    CREATE DATABASE by hand first.
+
+    Requires the connecting role to have CREATEDB — if it doesn't, this fails
+    loudly with Postgres's own permission-denied error (caught by
+    rds_upsert's exception handler, not swallowed), the same "fail loud on
+    misconfiguration" behaviour the rest of this module already has.
+
+    Checks via a separate admin connection up front rather than trying
+    ``psycopg.connect(dsn)`` first and creating the database on failure:
+    connecting to a missing database raises a bare OperationalError with no
+    SQLSTATE (confirmed against a real server — it's a connection-time FATAL,
+    not a query error), so telling "database is missing" apart from "server
+    unreachable" or "bad password" would mean matching on the error string.
+    The extra connection this costs on every call is the same tradeoff
+    ensure_schema already makes (full DDL every upsert, not just the first).
+    """
+    parsed = psycopg_module.conninfo.conninfo_to_dict(dsn)
+    dbname = parsed.get("dbname")
+    if not dbname or dbname == "postgres":
+        return
+    admin_dsn = psycopg_module.conninfo.make_conninfo(dsn, dbname="postgres")
+    with psycopg_module.connect(admin_dsn, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+            if cur.fetchone() is not None:
+                return
+            try:
+                cur.execute(
+                    psycopg_module.sql.SQL("CREATE DATABASE {}").format(psycopg_module.sql.Identifier(dbname))
+                )
+                log.info("dis_structure_store: auto-created database %r", dbname)
+            except psycopg_module.errors.DuplicateDatabase:
+                # Another process created it between our check and CREATE — fine,
+                # this is the same race CREATE TABLE IF NOT EXISTS is immune to and
+                # a plain CREATE DATABASE isn't; treat it as success either way.
+                pass
+
+
 def rds_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[str, Any]:
     cfg = tenant_cfg.structure_store
     if not cfg.enabled:
@@ -31,18 +80,25 @@ def rds_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[str, Any
         if getattr(cfg, "provider", "postgres") != "postgres":
             return {"status": "skipped", "reason": f"Unsupported structure store provider: {cfg.provider}. Add adapter in services/adapters/structure_store.py"}
         dsn = cfg.url or get_settings().db_url.replace("postgresql+asyncpg://", "postgresql://")
+        if getattr(cfg, "auto_create_schema", True):
+            _ensure_database_exists(psycopg, dsn)
+        # Same value that already partitions the S3 key for this upload
+        # (api/routers/ingestion.py builds raw/<ns>/<environment>/<job_id>/...).
+        # Stamped here, not read from state, so it can never be influenced by
+        # request data — it is a fact about which server is running this code.
+        environment = get_settings().environment or "development"
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
                 ensure_schema(cur, cfg.schema_name)
-                upsert_job(cur, cfg.schema_name, state)
-                document_id = upsert_document(cur, cfg.schema_name, state)
-                unit_count = upsert_content_units(cur, cfg.schema_name, document_id, state)
+                upsert_job(cur, cfg.schema_name, state, environment)
+                document_id = upsert_document(cur, cfg.schema_name, state, environment)
+                unit_count = upsert_content_units(cur, cfg.schema_name, document_id, state, environment)
                 if state.get("calendar_structure"):
-                    calendar_days = upsert_calendar(cur, cfg.schema_name, document_id, state)
+                    calendar_days = upsert_calendar(cur, cfg.schema_name, document_id, state, environment)
                 else:
                     calendar_days = 0
                 if state.get("syllabus_structure"):
-                    syllabus_rows = upsert_syllabus(cur, cfg.schema_name, document_id, state)
+                    syllabus_rows = upsert_syllabus(cur, cfg.schema_name, document_id, state, environment)
                 else:
                     syllabus_rows = 0
                 conn.commit()
@@ -99,49 +155,62 @@ def ensure_schema(cur, schema: str):
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_units_metadata_gin ON {schema}.dis_content_units USING GIN(metadata_json)")
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_calendar_days ON {schema}.dis_calendar_days(tenant_id, client_id, block, day_number)")
 
+    # Dev/prod bifurcation: which server ingested this row (see rds_upsert's
+    # `environment`). There is no Alembic for this schema — CREATE TABLE IF NOT
+    # EXISTS above is a no-op on a table that already exists, so an existing
+    # deployment needs these ALTERs to actually gain the column. Nullable: a
+    # backfill (`UPDATE ... SET environment = 'prod' WHERE environment IS NULL`)
+    # is a deliberate, one-time, human-run step — see
+    # DIS_ENV_BIFURCATION_WORKFLOW.txt phase 6 — not something this function
+    # should default silently on every startup.
+    for table in ("dis_jobs", "dis_documents", "dis_content_units", "dis_course_calendars", "dis_calendar_days", "dis_syllabus"):
+        cur.execute(f"ALTER TABLE {schema}.{table} ADD COLUMN IF NOT EXISTS environment text")
+    cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_documents_environment ON {schema}.dis_documents(environment)")
+    cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_units_environment ON {schema}.dis_content_units(environment)")
 
-def upsert_job(cur, schema: str, state: Dict[str, Any]):
+
+def upsert_job(cur, schema: str, state: Dict[str, Any], environment: str):
     payload_url = state.get("artifact_urls", {}).get("studio_payload", "")
     validation_url = state.get("artifact_urls", {}).get("validation_report", "")
     cur.execute(f"""
-        INSERT INTO {schema}.dis_jobs(job_id, tenant_id, client_id, status, source_file_name, raw_storage_url, payload_storage_url, validation_report_url, metadata_json, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,now())
+        INSERT INTO {schema}.dis_jobs(job_id, tenant_id, client_id, status, source_file_name, raw_storage_url, payload_storage_url, validation_report_url, metadata_json, environment, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,now())
         ON CONFLICT(job_id) DO UPDATE SET status=EXCLUDED.status, payload_storage_url=EXCLUDED.payload_storage_url,
         validation_report_url=EXCLUDED.validation_report_url, metadata_json=EXCLUDED.metadata_json, updated_at=now()
-    """, (state.get("job_id"), state.get("tenant_id"), state.get("client_id"), "completed", state.get("filename"), state.get("raw_storage_url"), payload_url, validation_url, json.dumps(state.get("doc_metadata", {}))))
+    """, (state.get("job_id"), state.get("tenant_id"), state.get("client_id"), "completed", state.get("filename"), state.get("raw_storage_url"), payload_url, validation_url, json.dumps(state.get("doc_metadata", {})), environment))
 
 
-def upsert_document(cur, schema: str, state: Dict[str, Any]) -> str:
+def upsert_document(cur, schema: str, state: Dict[str, Any], environment: str) -> str:
     doc_id = f"doc_{state.get('job_id')}"
     meta = state.get("doc_metadata", {})
     cur.execute(f"""
-        INSERT INTO {schema}.dis_documents(document_id, job_id, tenant_id, client_id, document_title, document_type, source_file_name, source_file_type, source_relative_path, raw_storage_url, payload_storage_url, metadata_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+        INSERT INTO {schema}.dis_documents(document_id, job_id, tenant_id, client_id, document_title, document_type, source_file_name, source_file_type, source_relative_path, raw_storage_url, payload_storage_url, metadata_json, environment)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
         ON CONFLICT(document_id) DO UPDATE SET metadata_json=EXCLUDED.metadata_json, payload_storage_url=EXCLUDED.payload_storage_url
-    """, (doc_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), meta.get("title") or state.get("filename"), state.get("doc_type"), state.get("filename"), state.get("file_type"), state.get("source_relative_path"), state.get("raw_storage_url"), state.get("artifact_urls", {}).get("studio_payload", ""), json.dumps(meta)))
+    """, (doc_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), meta.get("title") or state.get("filename"), state.get("doc_type"), state.get("filename"), state.get("file_type"), state.get("source_relative_path"), state.get("raw_storage_url"), state.get("artifact_urls", {}).get("studio_payload", ""), json.dumps(meta), environment))
     return doc_id
 
 
-def upsert_content_units(cur, schema: str, document_id: str, state: Dict[str, Any]) -> int:
+def upsert_content_units(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:
     count = 0
     for unit in state.get("content_units", []) or []:
         cur.execute(f"""
-            INSERT INTO {schema}.dis_content_units(content_unit_id, document_id, job_id, tenant_id, client_id, unit_type, unit_number, title, text_content, visual_summary, keywords_json, topics_json, metadata_json, asset_urls_json, content_hash)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+            INSERT INTO {schema}.dis_content_units(content_unit_id, document_id, job_id, tenant_id, client_id, unit_type, unit_number, title, text_content, visual_summary, keywords_json, topics_json, metadata_json, asset_urls_json, content_hash, environment)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
             ON CONFLICT(content_unit_id) DO UPDATE SET title=EXCLUDED.title, text_content=EXCLUDED.text_content, metadata_json=EXCLUDED.metadata_json
-        """, (unit.get("content_unit_id"), document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), unit.get("unit_type"), unit.get("unit_number"), unit.get("title"), unit.get("text"), unit.get("visual_summary"), json.dumps(unit.get("keywords", [])), json.dumps(unit.get("topics", [])), json.dumps(unit.get("metadata", {})), json.dumps(unit.get("assets", [])), unit.get("content_hash", "")))
+        """, (unit.get("content_unit_id"), document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), unit.get("unit_type"), unit.get("unit_number"), unit.get("title"), unit.get("text"), unit.get("visual_summary"), json.dumps(unit.get("keywords", [])), json.dumps(unit.get("topics", [])), json.dumps(unit.get("metadata", {})), json.dumps(unit.get("assets", [])), unit.get("content_hash", ""), environment))
         count += 1
     return count
 
 
-def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any]) -> int:
+def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:
     cal = state.get("calendar_structure") or {}
     calendar_id = f"cal_{state.get('job_id')}"
     cur.execute(f"""
-        INSERT INTO {schema}.dis_course_calendars(calendar_id, document_id, job_id, tenant_id, client_id, course_name, block, total_days, structure_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+        INSERT INTO {schema}.dis_course_calendars(calendar_id, document_id, job_id, tenant_id, client_id, course_name, block, total_days, structure_json, environment)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
         ON CONFLICT(calendar_id) DO UPDATE SET structure_json=EXCLUDED.structure_json, total_days=EXCLUDED.total_days
-    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), block_label(cal.get("block")), len(cal.get("days", [])), json.dumps(cal)))
+    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), block_label(cal.get("block")), len(cal.get("days", [])), json.dumps(cal), environment))
     # Day rows are keyed by day_number, so two parsed days claiming the same number
     # overwrite each other. That is how a Block 13 calendar whose every row parsed as
     # "day 1" stored 2 rows for 11 days and reported success: the collapse is the
@@ -156,10 +225,10 @@ def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any]) -
         seen_days.add(day_number)
         day_id = f"{calendar_id}:day_{day_number}"
         cur.execute(f"""
-            INSERT INTO {schema}.dis_calendar_days(calendar_day_id, calendar_id, document_id, job_id, tenant_id, client_id, block, day_number, week_number, topic, lesson_title, activities_json, assignments_json, assessments_json, source_text, source_location)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
+            INSERT INTO {schema}.dis_calendar_days(calendar_day_id, calendar_id, document_id, job_id, tenant_id, client_id, block, day_number, week_number, topic, lesson_title, activities_json, assignments_json, assessments_json, source_text, source_location, environment)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
             ON CONFLICT(calendar_day_id) DO UPDATE SET topic=EXCLUDED.topic, lesson_title=EXCLUDED.lesson_title, source_text=EXCLUDED.source_text
-        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), block_label(cal.get("block")), day_number, day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location")))
+        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), block_label(cal.get("block")), day_number, day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location"), environment))
         count += 1
     if collapsed:
         # Loud, and carried in the state the pipeline reports: a calendar that stored
@@ -175,14 +244,14 @@ def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any]) -
     return len(seen_days)
 
 
-def upsert_syllabus(cur, schema: str, document_id: str, state: Dict[str, Any]) -> int:
+def upsert_syllabus(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:
     syl = state.get("syllabus_structure") or {}
     syl_id = f"syl_{state.get('job_id')}"
     cur.execute(f"""
-        INSERT INTO {schema}.dis_syllabus(syllabus_id, document_id, job_id, tenant_id, client_id, course_name, block, course_description, learning_outcomes_json, materials_json, grading_policy, attendance_policy, assessment_policy, structure_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s::jsonb)
+        INSERT INTO {schema}.dis_syllabus(syllabus_id, document_id, job_id, tenant_id, client_id, course_name, block, course_description, learning_outcomes_json, materials_json, grading_policy, attendance_policy, assessment_policy, structure_json, environment)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s::jsonb,%s)
         ON CONFLICT(syllabus_id) DO UPDATE SET structure_json=EXCLUDED.structure_json, learning_outcomes_json=EXCLUDED.learning_outcomes_json
-    """, (syl_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), syl.get("course_name"), syl.get("block"), syl.get("course_description"), json.dumps(syl.get("learning_outcomes", [])), json.dumps(syl.get("materials", [])), syl.get("grading_policy"), syl.get("attendance_policy"), syl.get("assessment_policy"), json.dumps(syl)))
+    """, (syl_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), syl.get("course_name"), syl.get("block"), syl.get("course_description"), json.dumps(syl.get("learning_outcomes", [])), json.dumps(syl.get("materials", [])), syl.get("grading_policy"), syl.get("attendance_policy"), syl.get("assessment_policy"), json.dumps(syl), environment))
     return 1
 
 
@@ -195,14 +264,27 @@ def generate_embeddings(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict
         import boto3
         client = boto3.client("bedrock-runtime", region_name=cfg.region or tenant_cfg.storage.s3.region or get_settings().aws_region)
         embedded = []
+        clipped = 0
         for unit in state.get("content_units", []) or []:
-            text = (unit.get("title", "") + "\n" + unit.get("text", ""))[:cfg.max_input_chars]
+            full = unit.get("title", "") + "\n" + unit.get("text", "")
+            if len(full) > cfg.max_input_chars:
+                # The model's own ceiling, so clipping is legitimate — but it must
+                # not be silent: the clipped tail is content the semantic index will
+                # never represent, and nothing downstream can tell it was dropped.
+                clipped += 1
+            text = full[:cfg.max_input_chars]
             body = json.dumps({"inputText": text, "dimensions": cfg.dimension, "normalize": True})
             resp = client.invoke_model(modelId=cfg.model_id, body=body)
             data = json.loads(resp["body"].read())
             embedded.append({**unit, "embedding": data.get("embedding", [])})
         state["embedding_ready_chunks"] = embedded
-        return {"status": "completed", "embeddings_created": len(embedded), "model_id": cfg.model_id, "dimension": cfg.dimension}
+        if clipped:
+            log.warning("embedding_input_clipped units=%d cap=%d model=%s — the clipped "
+                        "tail is not represented in the semantic index",
+                        clipped, cfg.max_input_chars, cfg.model_id)
+        return {"status": "completed", "embeddings_created": len(embedded),
+                "model_id": cfg.model_id, "dimension": cfg.dimension,
+                "units_clipped": clipped}
     except Exception as exc:
         state["embedding_ready_chunks"] = []
         return {"status": "failed", "error": str(exc)}
@@ -263,11 +345,27 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
     try:
         if getattr(cfg, "provider", "opensearch") != "opensearch":
             return {"status": "skipped", "reason": f"Unsupported vector store provider: {cfg.provider}. Add adapter in services/adapters/vector_store.py"}
+        # Decided BEFORE any connection is opened: if this document cannot be
+        # indexed correctly there is nothing to gain from a TLS handshake first.
+        #
+        # An empty embedding_ready_chunks means one of two very different things:
+        # embeddings are switched off (fine — index the text and rely on keyword
+        # search), or generate_embeddings FAILED. Falling back to the raw units in
+        # the second case indexes every unit with "embedding": [] — present in the
+        # index, unreachable by the kNN search that block-wide generation depends
+        # on, and reported as a completed job. 60 AIM units reached prod that way.
+        ready = state.get("embedding_ready_chunks")
+        raw = state.get("content_units", []) or []
+        if getattr(tenant_cfg.embedding, "enabled", False) and raw and not ready:
+            return {"status": "failed", "error":
+                    "embeddings are enabled but none were produced for this document; "
+                    "refusing to index unembedded units, which would be invisible to "
+                    "semantic retrieval while reporting success"}
         # Reuse the OpenSearch write client (P4.3/F7) instead of building a new
         # one — and a fresh TLS handshake / AWS4Auth signing setup — per upsert.
         client = _vector_store_write_client(cfg)
         ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
-        units = state.get("embedding_ready_chunks") or state.get("content_units", []) or []
+        units = ready or raw
 
         # Issue a single batched request (helpers.bulk) instead of one
         # client.index() call per content unit (P6.2/F12). Default op_type

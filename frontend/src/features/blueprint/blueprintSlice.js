@@ -2,7 +2,8 @@ import { createSlice } from '@reduxjs/toolkit';
 import { attachBlockJobReducers } from '@features/shared/blockJob';
 import { attachArchiveReducers } from '@features/shared/documentArchive';
 import {
-  fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintsThunk, generateBlueprintThunk, importBlueprintThunk, setActiveBlueprintThunk,
+  importBlueprintAsyncThunk, pollOutlineImportJobThunk, resumeOutlineImportJobThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, fetchBlueprintComponentsThunk,
   activateBlueprintVersionThunk, generateBlueprintBlockThunk, pollBlueprintJobThunk, resumeBlueprintJobThunk,
   fetchArchivedBlueprintsThunk, blueprintArchiveThunks,
@@ -16,6 +17,10 @@ const initialState = {
   generationMode: 'student',
   isLoading:      false,
   isGenerating:   false,
+  isImporting:    false,
+  // In-flight async Outline import job ({ jobId, status, progress, currentStep }),
+  // or null. Drives the "processing…" indicator and survives a page refresh.
+  importJob:      null,
   error:          null,
   // Block-wide async job tracking (digest pipeline).
   blockJob:       null,  // { jobId, status, progress, currentStep }
@@ -63,6 +68,68 @@ const blueprintSlice = createSlice({
         s.error = payload;
       })
 
+      // Import lands where a generate does: the imported/updated Outline becomes
+      // the selected + active one. It may be a brand-new row or a new version of
+      // an existing day's Outline, so upsert by id rather than always prepending.
+      .addCase(importBlueprintThunk.pending,   (s) => { s.isImporting = true; s.error = null; })
+      .addCase(importBlueprintThunk.fulfilled, (s, { payload }) => {
+        s.isImporting = false;
+        if (payload?.id) {
+          const idx = s.blueprints.findIndex((b) => b.id === payload.id);
+          if (idx >= 0) s.blueprints[idx] = { ...s.blueprints[idx], ...payload };
+          else s.blueprints.unshift(payload);
+          s.activeBlueprint = payload;
+        }
+      })
+      .addCase(importBlueprintThunk.rejected,  (s, { payload }) => { s.isImporting = false; s.error = payload; })
+
+      // Async import (timeout-proof): enqueue → poll. `isImporting` stays true from
+      // enqueue until the poll reaches a terminal state, driving the processing UI.
+      .addCase(importBlueprintAsyncThunk.pending,   (s) => {
+        s.isImporting = true; s.error = null;
+        s.importJob = { jobId: null, status: 'queued', progress: 0, currentStep: null };
+      })
+      .addCase(importBlueprintAsyncThunk.fulfilled, (s, { payload }) => {
+        s.importJob = { jobId: payload?.job_id ?? null, status: payload?.status || 'queued', progress: 0, currentStep: null };
+      })
+      .addCase(importBlueprintAsyncThunk.rejected,  (s, { payload }) => {
+        s.isImporting = false; s.importJob = null; s.error = payload;
+      })
+      .addCase(resumeOutlineImportJobThunk.fulfilled, (s, { payload }) => {
+        if (payload?.job_id) {
+          s.isImporting = true;
+          s.importJob = { jobId: payload.job_id, status: payload.status || 'running', progress: payload.progress ?? 0, currentStep: payload.current_step ?? null };
+        }
+      })
+      .addCase(pollOutlineImportJobThunk.fulfilled, (s, { payload }) => {
+        if (!payload || payload.transientError) return;   // keep prior state on a retried tick
+        const status = String(payload.status || '').toLowerCase();
+        s.importJob = {
+          jobId: payload.job_id ?? s.importJob?.jobId ?? null,
+          status,
+          progress: payload.progress ?? s.importJob?.progress ?? 0,
+          currentStep: payload.current_step ?? s.importJob?.currentStep ?? null,
+        };
+        if (['completed', 'failed', 'cancelled'].includes(status)) {
+          s.isImporting = false;
+          s.importJob = null;
+          // On success, drop the imported/updated Outline in and make it active —
+          // same landing as a generate. The list refetch in the thunk also runs.
+          if (status === 'completed' && payload.blueprint?.id) {
+            const bp = payload.blueprint;
+            const idx = s.blueprints.findIndex((b) => b.id === bp.id);
+            if (idx >= 0) s.blueprints[idx] = { ...s.blueprints[idx], ...bp };
+            else s.blueprints.unshift(bp);
+            s.activeBlueprint = bp;
+          }
+        }
+      })
+      .addCase(pollOutlineImportJobThunk.rejected, (s) => {
+        // Lost contact with the poll endpoint — stop the spinner; the job may still
+        // finish server-side and a page reload will reattach to it.
+        s.isImporting = false; s.importJob = null;
+      })
+
       .addCase(setActiveBlueprintThunk.fulfilled, (s, { payload }) => { s.activeBlueprint = payload; })
 
       .addCase(fetchBlueprintVersionsThunk.fulfilled, (s, { payload }) => { s.versions = payload; })
@@ -102,6 +169,8 @@ export const selectBlueprintVersions   = (s) => s.blueprint.versions;
 export const selectBlueprintGenerationMode = (s) => s.blueprint.generationMode;
 export const selectBlueprintLoading    = (s) => s.blueprint.isLoading;
 export const selectBlueprintGenerating = (s) => s.blueprint.isGenerating;
+export const selectBlueprintImporting  = (s) => s.blueprint.isImporting;
+export const selectBlueprintImportJob  = (s) => s.blueprint.importJob;
 export const selectBlueprintError      = (s) => s.blueprint.error;
 export const selectBlueprintBlockJob   = (s) => s.blueprint.blockJob;
 export const selectArchivedBlueprints  = (s) => s.blueprint.archivedBlueprints;

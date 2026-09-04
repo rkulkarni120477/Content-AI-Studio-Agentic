@@ -93,6 +93,18 @@ class BulkApproveRequest(BaseModel):
     block_ids: list[int] = Field(..., min_length=1)
 
 
+class BulkSubmitRequest(BaseModel):
+    """Body for bulk draft → in_review. A reviewer is mandatory, same as the
+    single-block submit endpoint — one reviewer is assigned to every block."""
+
+    block_ids: list[int] = Field(..., min_length=1, max_length=500)
+    reviewer_username: str = Field(..., min_length=1)
+
+
+class BulkPublishRequest(BaseModel):
+    block_ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
 # ---------------------------------------------------------------------------
 # Transition response
 # ---------------------------------------------------------------------------
@@ -110,6 +122,23 @@ class BulkApproveResponse(BaseModel):
     skipped: list[int]
     errors: list[int]
     total_approved: int
+
+
+class BulkTransitionItemResult(BaseModel):
+    """One block's outcome within a bulk transition — a partial failure has
+    to be legible, not rounded to a bare count."""
+
+    block_id: int
+    ok: bool
+    reason: str | None = None
+
+
+class BulkTransitionResponse(BaseModel):
+    """Shared response shape for bulk-submit and bulk-publish."""
+
+    succeeded: int
+    failed: int
+    results: list[BulkTransitionItemResult]
 
 
 class WorkflowUserBreakdown(BaseModel):

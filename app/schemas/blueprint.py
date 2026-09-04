@@ -273,6 +273,24 @@ class BlueprintGenerateResponse(BaseModel):
     model_used: str
     tokens_used: Optional[int] = None
     auto_pinned: bool = True
+    #: Set when the Source Library could not be reached, so this Blueprint was
+    #: grounded in the CDD and style alone. None means grounding was available —
+    #: including the ordinary case of a library with nothing matching to add.
+    #: Generation deliberately degrades rather than failing here, so this is the
+    #: only thing that distinguishes the two outcomes for the requester.
+    source_context_unavailable: Optional[str] = None
+    # Set only by the import path when a file could not be fully structured (e.g.
+    # imported as one unstructured section); None for a normal generation.
+    import_warnings: Optional[list[str]] = None
+
+
+class OutlineImportJobResponse(BaseModel):
+    """202 handle for an async Outline import — the client polls poll_url
+    (GET /api/v1/jobs/{job_id}); on completion the job's generation_id is the
+    imported blueprint id."""
+    job_id: str
+    status: str
+    poll_url: str
 
 
 class BlueprintComponentsResponse(BaseModel):

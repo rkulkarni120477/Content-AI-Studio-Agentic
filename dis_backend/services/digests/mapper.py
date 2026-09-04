@@ -27,9 +27,12 @@ from services.digests.prompt_template import render as prompt_template_render
 
 log = logging.getLogger(__name__)
 
-DIGEST_SCHEMA_VERSION = "v7"
+DIGEST_SCHEMA_VERSION = "v8"
 # Every bump here is a structural change to what a digest CONTAINS, which cache_key
 # cannot infer on its own — so the version must move for existing digests to rebuild.
+#   v8: added assigned_reading (label/unit_count/files) and made THIN_DAY /
+#       MISSING_SOURCE account for it — a day taught from its assigned handbook
+#       reading is no longer reported as having no source material.
 #   v7: added concept_scope — the AIM reference's Worksheet 4 "Concept Scope" column:
 #       the specific sub-topics/tools/materials covered that day, grounded in that
 #       day's own sources rather than a restatement of the Day Title.
@@ -267,7 +270,8 @@ def has_extraction(digest: Dict[str, Any]) -> bool:
 def cache_key(day_number: int, units: List[Dict[str, Any]], model: str,
               schema_version: str = DIGEST_SCHEMA_VERSION,
               prompt_version: str = "",
-              day_meta: str = "", map_guidance: str = "") -> str:
+              day_meta: str = "", map_guidance: str = "",
+              reference_units: Optional[List[Dict[str, Any]]] = None) -> str:
     """Content-addressed digest key (§4.4).
 
     Invalidates automatically when the digest schema, extractor model, prompt
@@ -286,8 +290,17 @@ def cache_key(day_number: int, units: List[Dict[str, Any]], model: str,
     """
     prompt_version = prompt_version or current_prompt_version()
     unit_hashes = ",".join(sorted((u.get("content_hash") or _est_hash(u)) for u in units))
+    # Hashed as a count plus digest rather than inline with `unit_hashes`, so a
+    # stored digest built before assigned reading existed keys identically when
+    # no reading resolves — an empty reference list must not invalidate every
+    # cached digest in the store on deploy.
+    refs = list(reference_units or [])
+    ref_part = ""
+    if refs:
+        ref_hashes = ",".join(sorted((u.get("content_hash") or _est_hash(u)) for u in refs))
+        ref_part = f"|ref{len(refs)}:{hashlib.sha256(ref_hashes.encode()).hexdigest()[:16]}"
     raw = (f"{schema_version}|{model}|{prompt_version}|day{day_number}|{day_meta}"
-           f"|mg:{map_guidance}|{unit_hashes}")
+           f"|mg:{map_guidance}|{unit_hashes}{ref_part}")
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -517,8 +530,86 @@ def _source_body(llm_units: List[Dict[str, Any]],
     return body, dropped
 
 
+#: Sentinel for "no cap" on _reading_body. NOT 0 — see that function's docstring.
+READING_NO_LIMIT = None
+
+
+def _reading_body(references: Any, limit: Optional[int] = READING_NO_LIMIT
+                  ) -> tuple[str, Dict[str, int]]:
+    """The ASSIGNED READING block: the handbook passages this day's calendar cites.
+
+    Kept out of ``_source_body`` and labelled separately because the two are
+    different kinds of evidence and the model must not conflate them. The day's
+    own units are what the block teaches; this is a shared reference work the
+    calendar points the day at, and a digest that reported handbook prose as the
+    block's own material would be wrong in a way nothing downstream could detect.
+
+    Trims from the END rather than by rank: this is book prose in reading order,
+    so the first pages of the assigned range are the ones the day actually opens
+    on, and dropping the tail keeps a contiguous passage where dropping the
+    lowest-ranked chunks would leave holes mid-argument.
+
+    ``limit`` is a HARD character cap, and ``0`` means "no room" — deliberately
+    NOT ``_source_body``'s "0 = do not trim" convention. The caller computes it
+    as ``budget - len(body)``, which reaches 0 whenever the day's own units
+    already fill the model's window; under the other convention that arithmetic
+    silently meant "unlimited", so exactly when there was no room left the whole
+    chapter was appended to an already-full prompt with an empty ``dropped``
+    dict — no flag, no log, and (with the escalation ladder empty on this
+    account) no larger model to absorb it. Measured: limit=10,000 kept 9,161
+    chars and reported 47 dropped units; limit=0 kept 150,255 and reported none.
+    Pass ``READING_NO_LIMIT`` for the unbounded sizing pass.
+
+    Nothing is force-kept either. ``_source_body`` always retains its first unit
+    because a day must contribute something; assigned reading is supplementary
+    to the day's own material, so when there is no room it yields entirely
+    rather than evicting what it was meant to support.
+    """
+    units = list(getattr(references, "units", None) or [])
+    if not units:
+        return "", {}
+    label = getattr(references, "label", lambda: "")() or "assigned reading"
+    header = (f"\n\n=== ASSIGNED READING — {label} ===\n"
+              f"(Shared reference work cited by this day's calendar row. It is what the "
+              f"day reads FROM, not material this block authored.)\n")
+    kept: List[str] = []
+    used = len(header)
+    dropped_units = dropped_chars = 0
+    withheld = 0
+    for u in units:
+        # The same gate every other unit passes through. Reference works reach
+        # this function straight from a SQL read that filters on document TYPE
+        # only, so without this an answer key bound into a textbook appendix — or
+        # any ebook_reference a future ingestion marks is_answer_key — would enter
+        # the prompt, and "answer keys: never, regardless of audience" is stated
+        # in this module as unconditional. Instructor visibility is fine here:
+        # build_digest fixes the audience to instructor (see its docstring).
+        if not text_allowed_for_digest(u, "instructor"):
+            withheld += 1
+            continue
+        text = u.get("text_content") or ""
+        if MAP_MAX_UNIT_CHARS:
+            text = text[:MAP_MAX_UNIT_CHARS]
+        if not text.strip():
+            continue
+        if limit is not None and used + len(text) > limit:
+            dropped_units += 1
+            dropped_chars += len(text)
+            continue
+        kept.append(text)
+        used += len(text)
+    dropped: Dict[str, int] = {}
+    if dropped_units:
+        dropped = {"reading_units": dropped_units, "reading_chars": dropped_chars}
+    if withheld:
+        dropped["reading_units_withheld"] = withheld
+    if not kept:
+        return "", dropped
+    return header + "\n\n".join(kept), dropped
+
+
 def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: str,
-                 call_llm, safe_json, map_guidance: str = ""
+                 call_llm, safe_json, map_guidance: str = "", references: Any = None
                  ) -> tuple[Dict[str, Any], int, int, Dict[str, int], str, Optional[str]]:
     """Call the extractor and return (fields, tokens_in, tokens_out, dropped,
     model_used, escalation_note).
@@ -536,11 +627,26 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
     # escalating keeps all of the day's evidence, trimming silently discards the very
     # material the extraction is supposed to rest on.
     full_body, _ = _source_body(llm_units, limit=0)
-    model, escalation = select_model_for(model, len(full_body))
+    full_reading, _ = _reading_body(references, limit=READING_NO_LIMIT)
+    model, escalation = select_model_for(model, len(full_body) + len(full_reading))
 
     budget = context_budget_chars(model)
     body, dropped = _source_body(llm_units, limit=budget)
-    if dropped:
+    # The block's own material is sized first and the assigned reading fills what
+    # is left. Deliberately in that order: a handbook chapter is an order of
+    # magnitude larger than a day's lesson units, so sizing them together would let
+    # book prose evict the very material the digest is meant to be about.
+    reading, reading_dropped = _reading_body(references, limit=max(0, budget - len(body)))
+    if reading:
+        body = f"{body}{reading}" if body.strip() else reading.lstrip("\n")
+    dropped = {**dropped, **reading_dropped}
+    if reading_dropped:
+        log.warning("digest MAP day %s: ASSIGNED READING truncated for model %s — "
+                    "dropped %d passage(s) (%d chars) of %s",
+                    day.get("day_number"), model, reading_dropped["reading_units"],
+                    reading_dropped["reading_chars"],
+                    getattr(references, "label", lambda: "?")())
+    if dropped.get("units"):
         log.warning("digest MAP day %s: SOURCES truncated to %d chars for model %s — "
                     "dropped %d lowest-confidence unit(s) (%d chars). No larger model "
                     "was available; see DIS_MAP_ESCALATION_MODELS.",
@@ -633,7 +739,8 @@ def _llm_extract(day: Dict[str, Any], llm_units: List[Dict[str, Any]], model: st
 
 def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
                  model: Optional[str] = None, client_id: str = "", block: str = "",
-                 budget: Optional[Dict[str, int]] = None, map_guidance: str = "") -> Dict[str, Any]:
+                 budget: Optional[Dict[str, int]] = None, map_guidance: str = "",
+                 references: Any = None) -> Dict[str, Any]:
     """Build one per-day digest. Per-day failures are isolated (digest_status=failed),
     never propagated, so one bad day can't sink the block build.
 
@@ -659,6 +766,17 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     acs = sorted({c for u in units for c in _acs_codes(u)}, key=attribution.acs_sort_key)
     substantive = [u for u in units if u.get("unit_type") in SUBSTANTIVE_UNIT_TYPES]
     has_visual_asset = any(u.get("unit_type") in _VISUAL_ASSET_UNIT_TYPES for u in units)
+    # The handbook passages this day's calendar row assigns, already resolved by
+    # ENUMERATE. Only the units whose text may actually reach the prompt count —
+    # a reading that resolves entirely to withheld material fed the extractor
+    # nothing, and calling such a day "not thin" would be the same lie in reverse.
+    reading_units = [u for u in (list(getattr(references, "units", None) or []))
+                     if text_allowed_for_digest(u, "instructor")]
+    reading_files = []
+    for u in reading_units:
+        name = str((u.get("metadata_json") or {}).get("source_file_name") or "")
+        if name and name not in reading_files:
+            reading_files.append(name)
 
     digest: Dict[str, Any] = {
         "digest_id": f"{client_id}:{block}:day{dn}",
@@ -680,10 +798,25 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
         # incident is exactly when this field is needed.
         "prompt_version": current_prompt_version(),
         "extractor_model": model,
-        "cache_key": cache_key(dn, units, model, day_meta=day_signature(day), map_guidance=map_guidance),
+        # Reference units are folded into the SAME hash as the day's own: a day
+        # whose assigned reading resolves differently (a handbook ingested, a
+        # chapter now locatable, a corrected citation) is a different extraction
+        # and must not be served from the cache built before it.
+        "cache_key": cache_key(dn, units, model, day_meta=day_signature(day),
+                               map_guidance=map_guidance,
+                               reference_units=list(getattr(references, "units", None) or [])),
         "map_guidance_applied": bool((map_guidance or "").strip()),
         "digest_status": "ok",
         "review_flags": [],
+        # Provenance for the assigned reading, so the deliverable can name the
+        # handbook a reading-only day was actually taught from instead of
+        # rendering an em dash under "Source Files" for a day whose digest was
+        # built from 70k characters of chapter text.
+        "assigned_reading": {
+            "label": (getattr(references, "label", lambda: "")() or "") if references else "",
+            "unit_count": len(reading_units),
+            "files": reading_files,
+        },
     }
 
     # The LLM sees only text-allowed units; metadata above already used all units.
@@ -692,7 +825,8 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     digest["text_withheld_units"] = len(units) - len(llm_units)
     try:
         fields, ti, to, dropped, model_used, escalation = _llm_extract(
-            day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance)
+            day, llm_units, model, call_llm, safe_json, map_guidance=map_guidance,
+            references=references)
         digest.update(fields)
         # Record the model that actually ran, not the one configured — an escalated
         # day is a different extraction and the cache key is keyed on the model, so
@@ -747,7 +881,17 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
                 digest["extractor_model"] = exc.model
 
     # Structural review flags.
-    if not substantive:
+    #
+    # Assigned reading counts as material. It is not one of the block's own units
+    # — it is a handbook passage the calendar names for this day — but it is real
+    # ingested text that reached the extractor, and every consumer of THIN_DAY
+    # treats the flag as "this day has nothing to teach from". Omitting reading
+    # here is what made a live Block 9 build report 18 of 20 days thin while
+    # ENUMERATE, which DOES account for reading, flagged only one: the two halves
+    # of the same judgment disagreed, and the workbook rendered the wrong one into
+    # High Risk Days, Production Readiness and an Academian Question on every one
+    # of those days asking whether source material was missing.
+    if not substantive and not reading_units:
         digest["review_flags"].append("THIN_DAY — calendar row only")
     # A day with ANY real ingested unit (even one typed outside the "substantive"
     # set above, e.g. a generic 'chunk' unit — the same criterion the Source Files
@@ -760,7 +904,7 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     # non-calendar_day unit) is what actually reflects what the user can see.
     has_other_units = any(u.get("unit_type") != "calendar_day" for u in units)
     for s in ("slide", "guide_section"):
-        if availability.get(s) == "missing" and not has_other_units:
+        if availability.get(s) == "missing" and not (has_other_units or reading_units):
             digest["review_flags"].append(f"MISSING_SOURCE — {s}")
 
     return digest

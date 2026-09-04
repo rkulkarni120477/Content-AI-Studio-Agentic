@@ -1,0 +1,780 @@
+================================================================================
+SUPERSEDED (2026-08-27) — DO NOT FOLLOW THIS RUNBOOK
+================================================================================
+The decision this plan implements was reversed: DIS is now deliberately ONE
+shared corpus for dev and prod, and a store's location comes from the client
+YAML alone (config/clients/<client>.yaml). The env overrides this runbook is
+built on — DIS_STRUCTURE_STORE_URL[_<CLIENT>], DIS_VECTOR_STORE_ENDPOINT /
+DIS_VECTOR_STORE_INDEX[_<CLIENT>] — were REMOVED from config/settings.py on
+2026-08-27 and now do nothing; tests/test_config_env.py pins that they cannot
+repoint a store.
+
+What triggered the reversal: Phase 4 had been applied on the dev box, so dev's
+DIS read dis_db_dev — a database holding 0 calendars and 1 document — while the
+committed YAML named the populated dis_db. Every Block-9 digest build failed
+with "No calendar found for client='aim' block='Block 9'", a message
+indistinguishable from a block that genuinely has no calendar, and the cause was
+invisible in the repo because an unversioned env var outranked the tracked file.
+
+Still valid and KEPT from this work: the `environment` column stamped on the
+dis.* tables (Phase 6) — one shared store that records which environment wrote
+each row is what bifurcation was reaching for, without splitting the corpus.
+
+Kept for the history of the decision. Anything below that sets a store location
+from the environment is now wrong.
+================================================================================
+DEV / PROD BIFURCATION FOR DIS UPLOADS  —  IMPLEMENTATION WORKFLOW
+================================================================================
+Scope  : Separate dev and prod for DIS file uploads across S3, Postgres and
+         OpenSearch, without losing any existing (= production) data.
+
+STATUS (2026-08-26) — everything Claude Code can do from this checkout is
+done and smoke-tested. Everything below that needs real AWS/EC2 access is
+NOT done — this environment has no live AWS credentials and no reach to the
+dev/prod boxes (verified: `aws sts get-caller-identity` fails here). That
+work is yours to run; this file is the runbook for it.
+
+  DONE (code, in this repo):
+    [x] Phase 2 code — .github/workflows/frontend-dev-deploy.yml now syncs
+        to s3://content-ai-studio-dev/CAS/, matching prod's pattern. YAML
+        validated, sync-target pattern diffed against frontend-deploy.yml.
+    [x] Phase 6 code — dis_backend/services/indexing.py: `environment`
+        column added (nullable, additive ALTER ... IF NOT EXISTS) to all six
+        dis.* tables, stamped from get_settings().environment inside
+        rds_upsert (decision D3 — never from request data), threaded through
+        every upsert_* function. Smoke-tested end-to-end against a disposable
+        local Postgres schema (never the real RDS) — see "SMOKE TESTS RUN"
+        below. Full DIS test suite: 285/291 pass; the 6 failures are
+        pre-existing and reproduce identically on the unmodified code (same
+        harness, confirmed via git stash) — a documented test-isolation
+        issue in tests/conftest.py, unrelated to this change.
+    [x] .env.example and dis_backend/.env.example — documented the existing,
+        currently-unused DIS_STRUCTURE_STORE_URL[_<CLIENT>] and
+        DIS_VECTOR_STORE_INDEX_<CLIENT> override vars, and cross-referenced
+        DIS_S3_BUCKET between the two files (CAS's editor-image uploader and
+        DIS's own uploads read the same variable name).
+    [x] Phase 4 database creation itself, automated — added
+        _ensure_database_exists() to indexing.py, called from rds_upsert()
+        before connecting, gated on the SAME auto_create_schema flag every
+        client YAML already sets true. Point DIS_STRUCTURE_STORE_URL at a
+        database that has never existed (e.g. .../dis_db_dev) and the first
+        upload creates it — no "CREATE DATABASE" by hand required. Requires
+        the connecting role (dis_user) to have CREATEDB; if it doesn't, this
+        fails loudly with Postgres's own permission error rather than
+        silently. Smoke-tested: pointed at a genuinely nonexistent database
+        on the disposable local Postgres, confirmed auto-create, confirmed a
+        second call is a no-op, then ran the full ensure_schema + upsert_job
+        + upsert_document flow against the freshly created database and
+        confirmed the environment column round-tripped there too. Full DIS
+        suite re-run after this addition: same 285/291 split, no new
+        failures.
+        NOT automatable the same way: the S3 buckets themselves (DIS never
+        creates a bucket — set DIS_S3_BUCKET to one that already exists) and
+        the OpenSearch index (already auto-creates on first write via
+        auto_create_index — see Phase 5, nothing new needed there).
+
+  DELIBERATELY NOT CHANGED (see "REVISION" note below phase 4/7):
+    [ ] Client YAMLs (config/clients/*.yaml) — NOT edited. The env-override
+        mechanism already fully overrides the committed structure_store.url
+        and vector_store.index_name at runtime with ZERO code/YAML change
+        (config/settings.py:361-370, applied unconditionally after YAML
+        load, confirmed by reading the call site). Leaving the committed
+        values in place means: if a box is deployed before its env var is
+        set, behaviour is byte-identical to today rather than a hard
+        failure. Phases 4 and 5 below are pure environment-variable work.
+
+  NOT DONE — requires real infra access (this is the runbook for it). With
+  Phase 4's database creation now automated, every remaining item is either
+  an env-file edit on an EC2 box or a setting outside this codebase entirely
+  (CloudFront, IAM) — nothing left that "the code" can do:
+    [ ] Phase 1 — read ENVIRONMENT off the live server(s)
+    [ ] Phase 2 infra — CloudFront origin path change, bucket versioning
+    [ ] Phase 3 — confirm/complete S3 bucket env vars + IAM split on both boxes
+    [ ] Phase 4 — set DIS_STRUCTURE_STORE_URL on the dev box (the database it
+        points at is created automatically on first upload — see above)
+    [ ] Phase 5 — set the dev OpenSearch index env vars (index itself
+        auto-creates on first write, already true before this session)
+    [ ] Phase 7.2 — secrets rotation (Postgres/OpenSearch passwords in git)
+    [ ] Final end-to-end verification (upload on both, confirm no leaks)
+
+SMOKE TESTS RUN (2026-08-26, against a disposable local Postgres — port 5433
+on this machine, NOT any real/shared database):
+  - ensure_schema() creates all 6 tables + environment column + 2 new indexes
+  - upsert_job/document/content_units/calendar/syllabus all write and read
+    back environment='dev' correctly across all 6 tables
+  - ensure_schema() re-run against already-existing tables (the ALTER TABLE
+    IF NOT EXISTS path, not CREATE) — idempotent, no error
+  - ON CONFLICT re-upsert of the same job_id with a DIFFERENT environment
+    ('prod') confirmed environment is NOT overwritten — it is a write-once
+    fact about which server first created the row, by design (none of the
+    ON CONFLICT DO UPDATE clauses touch the environment column)
+  - Full dis_backend/tests/ suite (throwaway container, source bind-mounted
+    over the built image — the shipped image excludes tests/ via
+    .dockerignore): 285 passed, 6 pre-existing failures unrelated to this
+    change (verified against unmodified indexing.py via git stash, identical
+    6 failures)
+
+Decisions already taken (confirmed with Vedant):
+  D1. Fix the dev frontend deploy to publish under a prefix, so DIS can share
+      the content-ai-studio-dev bucket safely.
+  D2. Dev and prod get SEPARATE DIS databases, repointed via the existing
+      DIS_STRUCTURE_STORE_URL env override. Not one shared DB.
+  D3. The environment value is stamped SERVER-SIDE from an env var, never
+      derived from the incoming request URL / Origin header.
+  D4. Dev and prod get SEPARATE OpenSearch indexes.
+
+--------------------------------------------------------------------------------
+0. READ THIS FIRST — TWO FINDINGS THAT CHANGE THE ORIGINAL PLAN
+--------------------------------------------------------------------------------
+
+FINDING A — DIS S3 keys ALREADY partition by environment.
+  Every DIS upload key is built as:
+      raw/<namespace>/<ENVIRONMENT>/<job_id>/<relative_path>
+  See dis_backend/api/routers/ingestion.py:544-550
+      env_name = get_settings().environment or "development"
+      s3_key   = f"raw/{namespace}/{env_name}/{job_id}/{safe_rel_path}"
+  Same pattern for batch (ingestion.py:636) and folder-scan (ingestion.py:930),
+  and for processed/ and generated/ prefixes via
+  dis_backend/services/source_library.py:63-77 and
+  dis_backend/services/artifacts.py:79-81.
+
+  CONSEQUENCE — AND THIS IS THE DATA-LOSS TRAP:
+  If you change ENVIRONMENT on the existing (soon-to-be-prod) server, every
+  existing object stops being found, because the code will look under a NEW
+  path. In particular the Source Library index lives at
+      processed/<namespace>/<ENVIRONMENT>/source_index/source_list.json
+  (source_library.py:68-69). Change ENVIRONMENT and DIS reads a different,
+  non-existent key, creates a fresh empty one, and the Source Library UI goes
+  blank. The files are still in S3 but nothing references them.
+  => Phase 1 exists specifically to prevent this. Do not skip it.
+
+FINDING B — The Source Library list is NOT in Postgres.
+  The original premise was "files get stored in postgres". Partly true:
+    - The Source Library listing users actually see is a single JSON blob in
+      S3 (source_list.json above), read/written by
+      dis_backend/services/source_library.py:307 / :326 / :366.
+    - Job state is in memory or Redis, not Postgres
+      (dis_backend/services/job_store.py:142-148).
+    - Postgres (dis.dis_documents / dis.dis_jobs) holds the *structured*
+      record of each ingested document.
+  So bifurcating Postgres alone would NOT separate the Source Library. S3 and
+  OpenSearch must be handled too. All three are covered below.
+
+--------------------------------------------------------------------------------
+1. CURRENT STATE (verified in the code, 2026-08-26)
+--------------------------------------------------------------------------------
+
+1.1 S3
+  Bucket resolution : dis_backend/config/settings.py:728-745
+      DIS_S3_BUCKET        -> sets BOTH raw_bucket and processed_bucket
+      DIS_RAW_BUCKET       -> overrides raw only
+      DIS_PROCESSED_BUCKET -> overrides processed only
+      DIS_S3_BASE_PREFIX   -> top-level prefix (currently "DIS")
+  Region  : DIS_S3_REGION / DIS_AWS_REGION (settings.py:763)
+            NOTE: AWS_REGION is deliberately NOT read here. AWS_REGION points at
+            Bedrock (ap-south-1); the bucket is us-east-1. See the comment block
+            at settings.py:747-762 — reading AWS_REGION here previously caused
+            EndpointConnectionError. Do not "simplify" this.
+  Endpoint/KMS : DIS_S3_ENDPOINT_URL (767), DIS_S3_KMS_KEY_ID (771)
+
+  Today all three client YAMLs hardcode raw_bucket/processed_bucket =
+  content-ai-studio (academian.yaml:117-127, aim.yaml:180-190,
+  cengage.yaml:176-186). Env vars override them, so no YAML edit is required.
+
+  Current S3 layout inside the bucket:
+      DIS/
+        raw/<ns>/<ENV>/<job_id>/<relpath>
+        processed/<ns>/<ENV>/source_index/source_list.json
+        processed/<ns>/<ENV>/<job_id>/studio_payload/payload.json
+        processed/<ns>/<ENV>/<job_id>/source_content/content.json
+        generated/<client_id>/<ENV>/...
+        cas-assets/<uuid>.<ext>          <-- NO environment segment (see Phase 6)
+      CAS/                               <-- prod frontend static site
+
+1.2 Postgres — there are TWO separate databases, not one
+      CAS main   : DATABASE_URL -> atlas-db...ap-south-1.rds.amazonaws.com
+                   / promptops_db   (app/core/config.py:73-75)
+      DIS struct : hardcoded in client YAML ->
+                   dis-dev-postgres...us-east-1.rds.amazonaws.com / dis_db,
+                   schema "dis"     (aim.yaml:519, cengage.yaml:462)
+  DIS never reads DATABASE_URL. The DIS tables are created by raw DDL in
+  dis_backend/services/indexing.py:54-99 using CREATE TABLE IF NOT EXISTS —
+  there is NO Alembic for this schema. Tables:
+      dis.dis_jobs, dis.dis_documents, dis.dis_content_units,
+      dis.dis_course_calendars, dis.dis_calendar_days, dis.dis_syllabus
+  No DB-level foreign keys; children join by convention on document_id/job_id
+  and already carry tenant_id/client_id denormalised.
+
+  The escape hatch already exists and is currently UNUSED anywhere:
+      DIS_STRUCTURE_STORE_URL            (global)
+      DIS_STRUCTURE_STORE_URL_<CLIENT>   (per client, e.g. ..._AIM)
+  Wired at settings.py:326-330, applied at :361-370.
+  Precedence: per-client env > global env > ${VAR}-expanded YAML > YAML literal.
+
+1.3 OpenSearch
+      DIS_VECTOR_STORE_ENDPOINT / _<CLIENT>
+      DIS_VECTOR_STORE_INDEX    / _<CLIENT>      (settings.py:328-329)
+  Current index names are per-CLIENT, with no environment dimension — and they
+  all already contain the word "dev":
+      aim.yaml:526        dis-content-dev-aim
+      cengage.yaml:470    dis-content-dev-cengage
+      academian.yaml:314  dis-content-dev   (vector_store disabled)
+  auto_create_index: true + ensure_index() (indexing.py:288-359) means a NEW
+  index name self-provisions with the correct mapping on first write. No manual
+  index creation needed.
+  GAP: region / auth_mode / username / password have NO env override — YAML only.
+
+1.4 Environment variable naming is inconsistent today
+      CAS : APP_ENV      (app/core/config.py:58-61)  development|staging|production
+      DIS : ENVIRONMENT  (dis_backend/config/settings.py:509) default "development"
+            ^ this is the one that lands in every S3 key
+      Root .env:7 currently sets ENVIRONMENT=local
+      dis_backend/.env.example:2 sets ENVIRONMENT=development
+
+1.5 Docker
+  docker-compose.yml:136-152 — the dis_backend service uses
+      env_file: ./dis_backend/.env
+  ONLY. It cannot see the root .env. Every new DIS var must go in
+  dis_backend/.env. (Already flagged at settings.py:556-559.)
+
+--------------------------------------------------------------------------------
+2. PHASE 1 — VERIFY THE LIVE ENVIRONMENT VALUE  [BLOCKER, DO FIRST]
+--------------------------------------------------------------------------------
+Purpose: find out what ENVIRONMENT the existing server is actually running with,
+because every existing S3 key is under that value. Nothing else can be planned
+safely until this is known.
+
+Steps, on the EXISTING (soon-to-be-production) EC2 box:
+
+  1. Read the value the container actually sees:
+       docker exec contentai_dis_backend printenv ENVIRONMENT
+     Also check the file, in case it differs from the running container:
+       grep -n '^ENVIRONMENT' /path/to/dis_backend/.env
+
+  2. Confirm it against S3 — list what env segments really exist:
+       aws s3 ls s3://content-ai-studio/DIS/raw/ --recursive \
+         | awk -F/ '{print $3}' | sort -u
+     (field 3 = the <ENVIRONMENT> segment; adjust if base_prefix differs)
+     Do the same for processed/:
+       aws s3 ls s3://content-ai-studio/DIS/processed/ --recursive \
+         | awk -F/ '{print $3}' | sort -u
+
+  3. Record the answer here before proceeding:
+       PROD_CURRENT_ENV = ______________   (e.g. "development" / "local" / "production")
+
+DECISION RULE:
+  * Prod KEEPS PROD_CURRENT_ENV unchanged. Do not "tidy" it to "production"
+    as part of this work — that reparents every existing object and blanks the
+    Source Library (see Finding A). Renaming it is a separate, optional
+    migration; see Appendix A.
+  * Dev is given a value that is DIFFERENT from PROD_CURRENT_ENV.
+    - If PROD_CURRENT_ENV is "development", set dev to "dev" (or "development2").
+    - Otherwise set dev to "development".
+  * Because dev also gets its own bucket AND its own database, a value collision
+    would not actually mix data — but keep them distinct anyway so logs, keys and
+    the new environment column stay readable.
+
+--------------------------------------------------------------------------------
+3. PHASE 2 — FIX THE DEV FRONTEND DEPLOY  [BLOCKER, DATA LOSS]
+--------------------------------------------------------------------------------
+THE PROBLEM
+  .github/workflows/frontend-dev-deploy.yml:55-59 runs:
+      aws s3 sync dist/ s3://content-ai-studio-dev/ --delete --exclude "index.html"
+  That targets the BUCKET ROOT with --delete. --delete removes every object in
+  the destination that is not in the source. The moment DIS starts writing
+  DIS/... into content-ai-studio-dev, the next push to `develop` deletes all of
+  it. Silently. There is no S3 versioning assumption to fall back on unless it
+  is enabled on that bucket.
+
+  Prod does NOT have this problem: frontend-deploy.yml:56-60 syncs to
+      s3://content-ai-studio/CAS/
+  a sub-prefix, so --delete is scoped to CAS/ and cannot touch DIS/.
+
+THE FIX (mirror prod)
+  a) Edit .github/workflows/frontend-dev-deploy.yml:
+       - add to the env: block (around line 16-18):
+             S3_PREFIX: CAS
+       - change the sync and cp steps to include the prefix, exactly as
+         frontend-deploy.yml:56-64 does:
+             aws s3 sync dist/ s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/ \
+               --delete --cache-control "..." --exclude "index.html"
+             aws s3 cp dist/index.html \
+               s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/index.html \
+               --cache-control "no-cache,no-store,must-revalidate"
+
+  b) CloudFront must follow, or cas-dev.academian.com 404s.
+     Distribution E142R1AI8LOAMH (named at frontend-dev-deploy.yml:18):
+       - set the S3 origin's Origin Path to  /CAS
+       - keep Default Root Object as index.html
+       - if a CloudFront Function / Lambda@Edge rewrites SPA routes, confirm it
+         still resolves with the origin path applied
+       - invalidate /* after the change
+
+  c) ORDER MATTERS. Do (a) + (b) and confirm the dev site loads BEFORE pointing
+     DIS at content-ai-studio-dev in Phase 3. If DIS writes first, one deploy
+     wipes it.
+
+  d) Belt and braces (recommended regardless):
+       - enable S3 Versioning on content-ai-studio-dev
+       - optionally add a bucket lifecycle rule to expire noncurrent versions
+         after ~30 days so versioning does not grow unbounded
+
+VERIFY
+  - Push a trivial frontend change to `develop`.
+  - Confirm objects land under s3://content-ai-studio-dev/CAS/
+  - Confirm https://cas-dev.academian.com/ still loads and hard-refreshes clean.
+  - Put a throwaway object at s3://content-ai-studio-dev/DIS/canary.txt, deploy
+    again, and confirm canary.txt SURVIVES. This is the actual test that the
+    --delete blast radius is now scoped.
+
+--------------------------------------------------------------------------------
+4. PHASE 3 — S3 BIFURCATION
+--------------------------------------------------------------------------------
+Target layout:
+  PROD -> s3://content-ai-studio/DIS/...        (unchanged, existing data intact)
+  DEV  -> s3://content-ai-studio-dev/DIS/...    (new, starts empty)
+
+4.1 PROD server — dis_backend/.env
+      # DO NOT CHANGE ENVIRONMENT (see Phase 1) — existing keys depend on it
+      ENVIRONMENT=<PROD_CURRENT_ENV>
+      DIS_S3_BUCKET=content-ai-studio
+      DIS_S3_BASE_PREFIX=DIS
+      DIS_S3_REGION=us-east-1
+    Effectively unchanged from today. The point of writing it down explicitly is
+    that it must stop depending on a default.
+
+4.2 DEV server — dis_backend/.env
+      ENVIRONMENT=<DEV_ENV_VALUE from Phase 1>
+      DIS_S3_BUCKET=content-ai-studio-dev
+      DIS_S3_BASE_PREFIX=DIS
+      DIS_S3_REGION=us-east-1
+
+4.3 CAS app env (root .env on each box)
+    CAS reuses the SAME bucket variable name for editor image uploads:
+      app/core/config.py:152  assets_s3_bucket <- DIS_S3_BUCKET
+    So set DIS_S3_BUCKET in the root .env too, matching the box:
+      PROD root .env : DIS_S3_BUCKET=content-ai-studio
+      DEV  root .env : DIS_S3_BUCKET=content-ai-studio-dev
+    CAS has its own credential vars (DIS_S3_ACCESS_KEY_ID /
+    DIS_S3_SECRET_ACCESS_KEY, falling back to AWS_ACCESS_KEY_ID /
+    AWS_SECRET_ACCESS_KEY) — asset_storage.py:69-79.
+
+4.4 IAM
+    Whatever role/keys the dev box uses must be granted on the dev bucket:
+      s3:PutObject, s3:GetObject, s3:DeleteObject, s3:ListBucket
+      on arn:aws:s3:::content-ai-studio-dev and .../content-ai-studio-dev/*
+    If prod and dev share one IAM principal today, split them now — a dev
+    principal should NOT retain write access to content-ai-studio. This is the
+    cheapest hard guarantee that a dev misconfiguration cannot damage prod.
+
+4.5 Public read for editor images
+    cas-assets/ objects must be readable for <img> to render. Replicate on the
+    dev bucket whatever bucket policy content-ai-studio uses for
+    DIS/cas-assets/* (see the note at .env.example:62-73), and mirror the Block
+    Public Access settings. If prod serves these through CloudFront rather than
+    a public bucket policy, do the same for dev instead of opening the bucket.
+
+VERIFY
+  - Upload a file through cas-dev.academian.com Source Library.
+  - Confirm the object appears under s3://content-ai-studio-dev/DIS/raw/...
+  - Confirm NOTHING new appears in s3://content-ai-studio/DIS/ during dev use
+    (compare `aws s3 ls --recursive | wc -l` before and after).
+  - Upload an editor image on dev; confirm it lands in the dev bucket and
+    renders in the editor.
+
+--------------------------------------------------------------------------------
+5. PHASE 4 — POSTGRES BIFURCATION (SEPARATE DATABASES)  [decision D2]
+--------------------------------------------------------------------------------
+Principle: the EXISTING dis_db becomes PROD. Nothing moves. Dev gets a new,
+empty database. This is the zero-data-movement path and directly satisfies
+"we won't miss or lose those files".
+
+Note the existing host is literally named dis-dev-postgres. That name is now
+misleading, but renaming an RDS instance is disruptive and is NOT part of this
+work. Treat the name as cosmetic debt; record it in Appendix B.
+
+5.1 Provision the dev database
+    AUTOMATED — you do not need to run CREATE DATABASE by hand. indexing.py's
+    rds_upsert() now calls _ensure_database_exists() first, which creates the
+    target database if it's missing (requires dis_user to have CREATEDB —
+    it's the owner of the existing dis_db, so it very likely already does).
+    Just set the DSN below with a database name that doesn't exist yet, and
+    the first upload after this code is deployed creates it. If you'd rather
+    provision it explicitly ahead of time (e.g. to run the backfill in 7.3
+    before any dev traffic exists), Option 1 below still works exactly as
+    written — the auto-create is idempotent either way.
+
+    Option 1 (manual, still supported): a new DATABASE on the same RDS instance.
+        CREATE DATABASE dis_db_dev OWNER dis_user;
+      Dev DSN: postgresql://dis_user:<pw>@dis-dev-postgres...:5432/dis_db_dev
+    Option 2 (strongest isolation): a separate RDS instance for dev.
+      Better blast-radius separation; more cost and another security group to
+      manage. Choose this if dev traffic could realistically affect prod load.
+
+    Either way DIS self-creates its schema and tables on first write —
+    ensure_schema() at indexing.py:54-99 runs CREATE SCHEMA IF NOT EXISTS +
+    CREATE TABLE IF NOT EXISTS on every upsert. No manual DDL, no Alembic.
+    Confirm structure_store.auto_create_schema is true (it is, in all client
+    YAMLs) and that dis_user can CREATE SCHEMA in the new database.
+
+5.2 Point each environment at its own DSN — dis_backend/.env
+    PROD:
+      DIS_STRUCTURE_STORE_URL=postgresql://dis_user:<pw>@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db
+    DEV:
+      DIS_STRUCTURE_STORE_URL=postgresql://dis_user:<pw>@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db_dev
+
+    Setting the env var means the YAML literal is ignored entirely, on both
+    boxes independently (settings.py:361-370 applies the override
+    unconditionally, per environment, before anything reads the config) —
+    REVISED from the original draft of this plan: the client YAMLs are
+    deliberately left untouched, not edited later either. Confirmed by
+    reading _apply_store_env_overrides directly: it does not require the
+    YAML to use a ${VAR} placeholder, it overwrites converted["structure_
+    store"]["url"] outright whenever the env var is set. Leaving the
+    committed literal in place costs nothing once the env var is set (dead
+    value, never read), and means a box that hasn't had the env var set yet
+    still runs exactly as it does today instead of failing to connect.
+
+    Per-client override exists if a client ever needs its own DB:
+      DIS_STRUCTURE_STORE_URL_AIM, DIS_STRUCTURE_STORE_URL_CENGAGE
+
+    URL-ENCODING WARNING: the committed password contains '#'
+    (Academian%23123 in aim.yaml:519 — already percent-encoded). Keep it encoded
+    in the DSN; a raw '#' truncates the connection string at the fragment.
+
+5.3 Security group
+    Ensure the DEV EC2 box's IP/SG is allowed to reach the RDS instance.
+    settings.py:274-297 records that this SG currently admits a single
+    hardcoded /32 — expect to add one. Do NOT widen it to 0.0.0.0/0.
+
+VERIFY
+    On DEV:
+      docker exec contentai_dis_backend printenv DIS_STRUCTURE_STORE_URL
+      psql "$DEV_DSN" -c "\dt dis.*"          # tables exist after first upload
+      psql "$DEV_DSN" -c "select count(*) from dis.dis_documents;"
+    On PROD, before and after the change, the count must be IDENTICAL:
+      psql "$PROD_DSN" -c "select count(*) from dis.dis_documents;"
+    Then upload one file on dev and confirm the PROD count is STILL unchanged.
+    That single check is the whole point of this phase.
+
+--------------------------------------------------------------------------------
+6. PHASE 5 — OPENSEARCH BIFURCATION  [decision D4]
+--------------------------------------------------------------------------------
+Without this, dev-ingested content surfaces in prod retrieval and search results
+regardless of any bucket or database split — the vector index is the one store
+that would still be shared.
+
+6.1 Index naming
+    Existing indexes stay as prod (same no-data-movement principle):
+        aim      -> dis-content-dev-aim        (now means PROD; misleading name)
+        cengage  -> dis-content-dev-cengage    (now means PROD)
+    Give DEV new names via env, on the DEV box only:
+        DIS_VECTOR_STORE_INDEX_AIM=dis-content-devenv-aim
+        DIS_VECTOR_STORE_INDEX_CENGAGE=dis-content-devenv-cengage
+    (Any distinct name works. Avoid reusing the literal string
+     "dis-content-dev-*", which is already taken by prod data.)
+
+    auto_create_index: true + ensure_index() (indexing.py:288-359) provisions the
+    new index with the correct mapping on first write. Nothing to create by hand.
+    The mapping lives in code, not config — see the comment at indexing.py:291.
+
+    Optionally pin prod explicitly too, so neither side relies on a YAML literal:
+        DIS_VECTOR_STORE_INDEX_AIM=dis-content-dev-aim        (on PROD box)
+        DIS_VECTOR_STORE_INDEX_CENGAGE=dis-content-dev-cengage (on PROD box)
+
+6.2 Endpoint
+    Both environments currently share one OpenSearch domain
+    (search-ai-platform-opensearch-...us-east-1.es.amazonaws.com). Separate
+    indexes on one domain is acceptable. If a fully separate domain is wanted
+    later, DIS_VECTOR_STORE_ENDPOINT / _<CLIENT> already exists.
+
+6.3 KNOWN GAP
+    region, auth_mode, username and password have NO env override — they are
+    YAML-only (VectorStoreConfig, settings.py:409-421). If dev needs different
+    OpenSearch credentials, either
+      (a) use ${VAR} placeholders in the YAML, which ARE expanded
+          (_expand_env_in_tree, settings.py:314-322), e.g.
+              username: "${DIS_OS_USER:-developer}"
+              password: "${DIS_OS_PASSWORD}"
+          — this needs no code change and is the recommended route; or
+      (b) add two entries to _STORE_ENV_OVERRIDES at settings.py:326-330.
+    Option (a) also gets the committed passwords out of git (see Phase 7).
+
+VERIFY
+    curl the domain and list indices; confirm the new dev index appears only
+    after the first dev ingest, and that prod index doc counts do not move:
+      GET _cat/indices/dis-content-*?v
+    Run a retrieval query on prod and confirm no dev-uploaded document appears.
+
+--------------------------------------------------------------------------------
+7. PHASE 6 — THE `environment` COLUMN (defence in depth, recommended)
+--------------------------------------------------------------------------------
+STATUS: CODE DONE. dis_backend/services/indexing.py already has the column,
+the ALTERs, and every upsert_* threading it through. Smoke-tested — see the
+STATUS block at the top of this file. Nothing left to do here except let it
+run: the ALTER TABLE IF NOT EXISTS in ensure_schema() applies itself to the
+real dis_db the next time any environment ingests a file, no manual DDL
+needed. The backfill UPDATE in 7.3 below is still a manual, one-time step —
+run it once you've confirmed which rows in the real database are prod's.
+
+With D2 (separate databases) the column is NOT required for isolation — the
+databases cannot see each other. It is still worth adding, cheaply, because:
+  * it makes a misconfiguration visible instead of silent. If someone copies the
+    prod DSN into the dev .env, rows land in prod tagged "dev" and a one-line
+    query finds them.
+  * it survives a future decision to merge the databases back.
+  * it makes the S3 URLs in each row self-describing during support work.
+
+7.1 Value source  [decision D3]
+    Stamp it server-side from get_settings().environment — the SAME value that
+    already goes into the S3 key at ingestion.py:545. Do NOT derive it from the
+    request Host/Origin: the pipeline runs in a background task
+    (ingestion.py:595-600) with no request context, and a client-supplied header
+    must never decide which environment a row belongs to.
+
+    `state` already carries everything needed; env is one call away.
+
+7.2 Where it was added  [DONE — this is now "as-built", not a to-do]
+    dis_backend/services/indexing.py
+      a) rds_upsert() computes `environment = get_settings().environment or
+         "development"` once per call and threads it through every upsert_*.
+      b) ensure_schema() — CREATE TABLE IF NOT EXISTS is a no-op on a table
+         that already exists, so a loop of idempotent ALTERs follows the six
+         CREATEs:
+             ALTER TABLE {schema}.{table} ADD COLUMN IF NOT EXISTS environment text
+         for dis_jobs, dis_documents, dis_content_units, dis_course_calendars,
+         dis_calendar_days, dis_syllabus. Denormalised to every child table,
+         matching how tenant_id/client_id are already handled.
+      c) Two new indexes: idx_dis_documents_environment,
+         idx_dis_units_environment.
+      d) `environment` added as a column on all six INSERTs (upsert_job,
+         upsert_document, upsert_content_units, upsert_calendar +
+         upsert_calendar_days, upsert_syllabus). Deliberately NOT added to any
+         ON CONFLICT DO UPDATE clause — it is a write-once fact about who
+         first created the row; a retry/rebuild of the same row must not
+         silently reassign which environment it belongs to. Verified by
+         smoke test (upsert same job_id with environment='dev' then 'prod' —
+         confirmed it stays 'dev').
+
+    NOTE: there is no Alembic for the dis schema. This was NOT added as a
+    migration in migrations/versions/ — that chain (head 000100000025)
+    belongs to the CAS promptops_db, a different database entirely. The
+    ALTERs in ensure_schema() are the correct mechanism here and run
+    automatically the next time either environment ingests a file after this
+    code is deployed — no manual DDL required to GET the column. Manually
+    running the ALTERs first (see 7.3) is only useful if you want the column
+    to exist before deploying, e.g. to run the backfill ahead of time.
+
+7.3 Backfill existing rows as prod
+    Run ONCE, against the PROD database only:
+        UPDATE dis.dis_jobs           SET environment = 'prod' WHERE environment IS NULL;
+        UPDATE dis.dis_documents      SET environment = 'prod' WHERE environment IS NULL;
+        UPDATE dis.dis_content_units  SET environment = 'prod' WHERE environment IS NULL;
+        UPDATE dis.dis_course_calendars SET environment = 'prod' WHERE environment IS NULL;
+        UPDATE dis.dis_calendar_days  SET environment = 'prod' WHERE environment IS NULL;
+        UPDATE dis.dis_syllabus       SET environment = 'prod' WHERE environment IS NULL;
+    Take an RDS snapshot first. Run the ALTERs (via one upload, or manually)
+    BEFORE the UPDATEs.
+
+    Decide and write down the vocabulary now, because it must match what the
+    servers stamp:
+        VALUE_PROD = 'prod'   (or PROD_CURRENT_ENV, if you prefer them identical)
+        VALUE_DEV  = 'dev'
+    If you stamp from get_settings().environment directly, the values will be
+    whatever ENVIRONMENT is set to — so either set ENVIRONMENT to exactly these
+    strings, or map it explicitly in code. Do not let the two drift.
+
+7.4 Read paths that should filter on it (only if the DBs are ever merged)
+    With separate databases these need no change. Listed so the work is known:
+        dis_backend/services/digests/worksheets.py:278-279, 290, 339-340, 480,
+                                                   692-693
+        dis_backend/services/digests/profiles/aim.py:54-55, 77, 88
+        dis_backend/scripts/purge_source.py:28
+
+--------------------------------------------------------------------------------
+8. PHASE 7 — CLOSE THE TWO REMAINING GAPS
+--------------------------------------------------------------------------------
+STATUS: 8.1 — decision recorded, no code change (see below). 8.2 — NOT done;
+needs real AWS access (rotating a live RDS/OpenSearch password) that this
+environment doesn't have. .env.example in both the repo root and
+dis_backend/ now document DIS_STRUCTURE_STORE_URL[_<CLIENT>] and
+DIS_VECTOR_STORE_INDEX_<CLIENT> clearly, so setting the real values is a
+drop-in once you're ready to rotate.
+
+8.1 CAS editor assets have no environment segment
+    app/services/asset_storage.py:117-118 builds:
+        cas-assets/<uuid>.<ext>
+    with no <ENVIRONMENT> in the path, unlike every DIS key. Once dev and prod
+    use different buckets (Phase 3) this is no longer a correctness problem —
+    the bucket separates them. But if the buckets are ever shared again, dev and
+    prod editor images collide in one namespace.
+    Recommended (small, optional): add an environment segment to _ASSET_PREFIX so
+    the layout matches DIS. If you do, note that EXISTING cas-assets objects stay
+    at the old path — any change must keep reading the old prefix, or you break
+    every already-embedded <img> URL in saved content. Safer default: leave it,
+    and rely on bucket separation. Record the decision.
+
+8.2 Secrets are committed to git
+    Postgres passwords : aim.yaml:519, cengage.yaml:462
+    OpenSearch passwords: aim.yaml:528-530, cengage.yaml:472-474
+    settings.py:280 already flags this ("a Postgres password lives in git;
+    rotate it and move it here"). You are touching all of these values anyway, so
+    this is the cheapest moment to fix it:
+      - rotate both passwords
+      - replace the YAML literals with ${VAR} placeholders, which are expanded by
+        _expand_env_in_tree (settings.py:314-322), or delete structure_store.url
+        entirely and rely on DIS_STRUCTURE_STORE_URL
+      - put the real values in dis_backend/.env on each box (git-ignored)
+    Rotating also means the old committed credential stops working, which is the
+    only thing that actually closes the exposure — git history keeps the old one
+    forever.
+
+--------------------------------------------------------------------------------
+9. PHASE 8 — LOCAL DEVELOPMENT
+--------------------------------------------------------------------------------
+Local must not write to either shared bucket or database.
+
+Two options:
+  A. LocalStack (already supported). dis_backend/.env currently has
+       DIS_S3_BUCKET=content-ai-studio-local-test
+       AWS_ENDPOINT_URL / DIS_S3_ENDPOINT_URL=http://host.docker.internal:4566
+     Bootstrap: dis_backend/deploy/localstack_init.sh
+  B. Point at the dev bucket/DB but with a third distinct ENVIRONMENT value,
+     e.g. ENVIRONMENT=local (which is what root .env:7 already uses). Keys then
+     land under .../local/... and cannot collide with dev or prod.
+
+  Either way set a local DIS_STRUCTURE_STORE_URL — pointing at a local Postgres,
+  or at a dis_db_local database. Never leave it unset on a developer machine,
+  because the YAML literal still points at the shared RDS.
+
+  scripts/local_env.sh:40-42 already refuses to run when ENVIRONMENT looks
+  deployed. Keep that guard; extend its case list if you add new env names.
+
+--------------------------------------------------------------------------------
+10. ENVIRONMENT VARIABLE REFERENCE
+--------------------------------------------------------------------------------
+File: dis_backend/.env   (the ONLY file the dis_backend container reads)
+
+  VARIABLE                          PROD                        DEV
+  --------------------------------  --------------------------  --------------------------
+  ENVIRONMENT                       <PROD_CURRENT_ENV>          <DEV_ENV_VALUE>
+                                    (UNCHANGED - Phase 1)
+  DIS_S3_BUCKET                     content-ai-studio           content-ai-studio-dev
+  DIS_S3_BASE_PREFIX                DIS                         DIS
+  DIS_S3_REGION                     us-east-1                   us-east-1
+  DIS_STRUCTURE_STORE_URL           ...:5432/dis_db             ...:5432/dis_db_dev
+  DIS_VECTOR_STORE_INDEX_AIM        dis-content-dev-aim         dis-content-devenv-aim
+  DIS_VECTOR_STORE_INDEX_CENGAGE    dis-content-dev-cengage     dis-content-devenv-cengage
+  DIS_SERVICE_TOKEN                 <distinct per env>          <distinct per env>
+
+File: .env (repo root, read by the CAS api / celery containers)
+
+  DIS_S3_BUCKET                     content-ai-studio           content-ai-studio-dev
+  APP_ENV                           production                  development
+  DATABASE_URL                      <prod promptops_db>         <dev promptops_db>
+  DIS_API_BASE_URL                  <prod DIS>                  <dev DIS>
+
+REMINDERS
+  * AWS_REGION stays pointed at Bedrock (ap-south-1). It is deliberately not the
+    S3 region. settings.py:747-762.
+  * DIS_SERVICE_TOKEN is the shared CAS<->DIS secret. Use a DIFFERENT value per
+    environment, or a leaked dev token authenticates against prod DIS.
+  * Update .env.example and dis_backend/.env.example with the new keys (blank
+    values + a comment), so the next person setting up a box does not miss them.
+
+--------------------------------------------------------------------------------
+11. EXECUTION ORDER & VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+Do these in order. Each gate must pass before starting the next.
+
+  [ ] 1. Phase 1 — record PROD_CURRENT_ENV and DEV_ENV_VALUE
+  [ ] 2. RDS snapshot of dis_db taken
+  [ ] 3. Phase 2 — dev frontend deploys under CAS/, CloudFront origin path set,
+         canary object at DIS/canary.txt survives a deploy
+  [ ] 4. Phase 4 — dev SG allowed, DIS_STRUCTURE_STORE_URL set on BOTH boxes
+         (the dev database itself auto-creates on first upload — nothing to
+         provision by hand unless you want it to exist before that)
+  [ ] 5. Phase 3 — DIS_S3_BUCKET set on both boxes, IAM split, dev bucket
+         policy/versioning in place
+  [ ] 6. Phase 5 — dev OpenSearch index vars set
+  [ ] 7. `docker compose up -d --build` on both boxes (backend-dev-deploy.yml
+         already does this on push to develop for prod's equivalent job, check
+         it does the same for whichever box you're updating by hand); confirm
+         printenv shows the expected values INSIDE the containers, not just
+         in the .env file
+  [ ] 8. Phase 6 — the environment column applies itself on first upload after
+         deploy; only the backfill UPDATE (7.3) is still a manual, one-time
+         step, and only worth running once you're confident which existing
+         rows are prod's
+
+FINAL ACCEPTANCE — the tests that actually prove bifurcation:
+  [ ] Record baselines on PROD:
+        - aws s3 ls s3://content-ai-studio/DIS/ --recursive | wc -l
+        - select count(*) from dis.dis_documents;
+        - GET _cat/indices/dis-content-*?v   (doc counts)
+        - Source Library page on cas.academian.com lists the expected files
+  [ ] Upload a file on cas-dev.academian.com
+  [ ] All FOUR prod baselines above are UNCHANGED
+  [ ] The dev file IS visible in the dev Source Library
+  [ ] The dev file is NOT visible in the prod Source Library
+  [ ] A prod retrieval/search query does not return the dev document
+  [ ] Push a frontend change to `develop`; the dev-uploaded file still exists
+      afterwards  <-- the Phase 2 regression test
+  [ ] Upload a file on PROD; it appears in prod and NOT in dev
+
+--------------------------------------------------------------------------------
+12. ROLLBACK
+--------------------------------------------------------------------------------
+Every change in Phases 3-5 is an environment variable. Rollback is: remove the
+var, restart the container, and the YAML literal takes over again — which is the
+current behaviour. Specifically:
+
+  * Unset DIS_S3_BUCKET          -> back to YAML (content-ai-studio)
+  * Unset DIS_STRUCTURE_STORE_URL-> back to YAML (dis_db)
+  * Unset DIS_VECTOR_STORE_INDEX_*-> back to YAML (dis-content-dev-*)
+  * Do NOT roll back Phase 2 (the frontend prefix). It is strictly safer than
+    the current state, and rolling it back re-arms the --delete blast radius.
+  * The Phase 6 column is additive and nullable; leaving it in place is harmless
+    even if everything else is reverted.
+
+Nothing in this plan deletes or moves an existing object or row. The only
+destructive operations are the ones Phase 2 exists to prevent.
+
+--------------------------------------------------------------------------------
+APPENDIX A — OPTIONAL LATER: RENAME PROD'S ENVIRONMENT VALUE
+--------------------------------------------------------------------------------
+If PROD_CURRENT_ENV turns out to be something confusing like "development" or
+"local" and you later want it to read "production", this is what it costs — do
+NOT bundle it with the work above:
+
+  1. Snapshot RDS; enable/confirm S3 versioning.
+  2. Server-side copy every object from the old env segment to the new one:
+       aws s3 cp --recursive \
+         s3://content-ai-studio/DIS/raw/<ns>/<OLD>/ \
+         s3://content-ai-studio/DIS/raw/<ns>/production/
+     Repeat for processed/ and generated/, for EVERY namespace.
+  3. Rewrite the stored URLs in Postgres — dis_jobs.raw_storage_url,
+     dis_jobs.payload_storage_url, dis_jobs.validation_report_url,
+     dis_documents.raw_storage_url, dis_documents.payload_storage_url,
+     and any asset_urls_json entries in dis_content_units.
+  4. Rewrite the URLs inside each source_list.json blob.
+  5. Flip ENVIRONMENT, restart, verify the Source Library is intact.
+  6. Only then delete the old prefix, after a soak period.
+Steps 3 and 4 are the ones that make this a real project rather than a copy.
+
+--------------------------------------------------------------------------------
+APPENDIX B — KNOWN DEBT SURFACED BY THIS WORK (not fixed here)
+--------------------------------------------------------------------------------
+  * RDS instance is named dis-dev-postgres but will hold production data.
+  * OpenSearch prod indexes are named dis-content-dev-*.
+  * Postgres and OpenSearch passwords are committed in aim.yaml / cengage.yaml.
+  * CAS uses APP_ENV, DIS uses ENVIRONMENT, for the same concept.
+  * DIS_S3_BUCKET is read by BOTH DIS and the CAS asset uploader — one variable
+    controlling two subsystems is a trap for whoever changes it next.
+  * app/services/asset_storage.py has no environment segment in its key.
+  * dis_backend/storage/provider.py:382-386 constructs S3Provider twice
+    (harmless dead call, noticed during this review).
+
+================================================================================
+END
+================================================================================

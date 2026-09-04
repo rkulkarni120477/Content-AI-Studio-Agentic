@@ -36,6 +36,21 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-unit-tests-only")
 os.environ.setdefault("APP_ENV", "development")
 
+# Point away from DIS for tests — never reach a real Source Library backend.
+#
+# Without this the suite inherits DIS_API_BASE_URL from the developer's .env,
+# which is the Compose service hostname (http://dis_backend:8000/v1). Tests run
+# outside the container, so every DIS call spent ~12s failing to resolve that
+# name, times three connect retries, times each call a test makes. One 8-test
+# file cost 442s and the full suite could not finish inside 15 minutes.
+#
+# dis_enabled=False makes DISClient.request_sync short-circuit to the same empty
+# result the failure path already produced ("" context, no source units), so the
+# observable behaviour of every caller is unchanged — only the wait disappears.
+# setdefault, not assignment: exporting DIS_ENABLED=true still lets someone run
+# a deliberate live-DIS check against a reachable backend.
+os.environ.setdefault("DIS_ENABLED", "false")
+
 # NOTE: models live on promptops_app.database's Base — app.core.database's
 # Base is an empty DeclarativeBase; create_all on it would create no tables.
 from promptops_app.database import Base
@@ -207,6 +222,56 @@ def author_headers(client, author_user) -> dict:
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+def _tenant_headers(db, *, username: str, project_id=None, role: str = "admin", is_platform_admin: bool = False):
+    """Build auth headers for a fabricated user, without a real login round-trip.
+
+    Shared by any tenant-isolation test that needs two or more distinct
+    tenants at once (auth_headers/author_headers above are single-tenant,
+    platform-admin-only). See ``two_tenants`` below.
+    """
+    from app.core.security import create_access_token, hash_password
+    from promptops_app.database import TenantMembership, User
+
+    user = User(
+        username=username, password_hash=hash_password("test_password"),
+        role=role, is_active=True, is_platform_admin=is_platform_admin, project_id=project_id,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    if not is_platform_admin and project_id is not None:
+        db.add(TenantMembership(user_id=user.id, project_id=project_id, role=role, active=True))
+        db.commit()
+    token = create_access_token(user.username, role, project_id=project_id, is_platform_admin=is_platform_admin)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def two_tenants(db):
+    """Two isolated tenants (projects) plus a genuine platform admin.
+
+    Generic across resource types (prompts, CDDs, blueprints, styles, …) — any
+    tenant-isolation test can request this instead of hand-rolling its own
+    two-project setup. Returns the two Project rows and three sets of auth
+    headers: ``headers_a``/``headers_b`` (tenant-scoped admins) and
+    ``headers_platform`` (sees every tenant unless explicitly scoped).
+    """
+    from promptops_app.database import Project
+
+    a = Project(name="Tenant A", slug="isolation-tenant-a", is_active=True, status="active")
+    b = Project(name="Tenant B", slug="isolation-tenant-b", is_active=True, status="active")
+    db.add_all([a, b])
+    db.commit()
+    db.refresh(a)
+    db.refresh(b)
+    return {
+        "a": a, "b": b,
+        "headers_a": _tenant_headers(db, username="tenant_a_admin", project_id=a.id),
+        "headers_b": _tenant_headers(db, username="tenant_b_admin", project_id=b.id),
+        "headers_platform": _tenant_headers(db, username="tenant_platform_admin", is_platform_admin=True),
+    }
 
 
 @pytest.fixture()

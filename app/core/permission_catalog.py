@@ -71,6 +71,8 @@ PERMISSION_CATEGORIES: list[dict] = [
             {"key": "workflow.request_changes",  "label": "Request changes"},
             {"key": "workflow.publish",          "label": "Publish"},
             {"key": "workflow.bulk_approve",     "label": "Bulk approve"},
+            {"key": "workflow.bulk_submit",      "label": "Bulk submit for review"},
+            {"key": "workflow.bulk_publish",     "label": "Bulk publish"},
             {"key": "workflow.reset_draft",      "label": "Reset to draft"},
             {"key": "workflow.archive",          "label": "Archive"},
         ],

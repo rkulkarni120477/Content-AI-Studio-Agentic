@@ -61,7 +61,7 @@ vi.mock('@components/common/EmptyState/EmptyState', () => ({
 const { default: dashboardReducer, setSelectedProject, setSelectedCluster } = await import(
   '@features/dashboard/dashboardSlice'
 );
-const { fetchCoursesThunk } = await import('@features/dashboard/dashboardThunks');
+const { fetchCoursesThunk, fetchClustersThunk } = await import('@features/dashboard/dashboardThunks');
 const { default: CoursesPage } = await import('../CoursesPage');
 
 const PROJECT = { id: 23, name: 'AIM' };
@@ -121,6 +121,35 @@ describe('CoursesPage — a cluster switch cannot paint the old cluster´s title
 
     expect(screen.queryByText('Course From A')).toBeNull();
     expect(screen.getByText(/Loading/)).toBeTruthy();
+
+    forB.resolve({ items: [course(20, 'Course From B')], total: 1 });
+    await waitFor(() => expect(screen.getByText('Course From B')).toBeTruthy());
+    expect(screen.queryByText('Course From A')).toBeNull();
+  });
+
+  it('a stale error does not let the previous cluster´s titles paint', async () => {
+    // `state.error` is shared by every dashboard fetch, so a failure that
+    // happened elsewhere (e.g. PromptLibraryLayout's cluster fetch) can still
+    // be set when this page mounts. That makes `coursesPending` false — the
+    // `&& !coursesError` escape hatch that stops the loader spinning forever
+    // on a real failure. The grid branch is checked before the error branch,
+    // so without deriving the items from the marker, cluster A's titles paint
+    // under cluster B's header.
+    listClusters.mockResolvedValue({ items: [CLUSTER_A, CLUSTER_B], total: 2 });
+    const forB = deferred();
+    listCourses.mockReturnValueOnce(forB.promise);
+
+    renderAt('/projects/23/clusters/2/courses', [
+      setSelectedProject(PROJECT),
+      setSelectedCluster(CLUSTER_A),
+      fetchCoursesThunk.pending('r1', 1),
+      fetchCoursesThunk.fulfilled({ items: [course(10, 'Course From A')], total: 1 }, 'r1', 1),
+      // A failure from an unrelated fetch, still sitting in the shared field.
+      fetchClustersThunk.pending('rX', 23),
+      fetchClustersThunk.rejected(new Error('boom'), 'rX', 23, 'boom'),
+    ]);
+
+    expect(screen.queryByText('Course From A')).toBeNull();
 
     forB.resolve({ items: [course(20, 'Course From B')], total: 1 });
     await waitFor(() => expect(screen.getByText('Course From B')).toBeTruthy());

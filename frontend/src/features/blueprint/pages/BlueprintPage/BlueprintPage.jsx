@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
-  fetchBlueprintsThunk, generateBlueprintThunk, setActiveBlueprintThunk,
+  fetchBlueprintsThunk, generateBlueprintThunk, importBlueprintAsyncThunk, resumeOutlineImportJobThunk,
+  setActiveBlueprintThunk,
   fetchBlueprintVersionsThunk, commitBlueprintVersionThunk, exportBlueprintThunk,
   activateBlueprintVersionThunk, regenerateBlueprintItemThunk, regenerateBlueprintSectionThunk,
   fetchArchivedBlueprintsThunk, archiveBlueprintThunk, restoreBlueprintThunk,
@@ -13,7 +14,7 @@ import {
 import { blueprintService } from '@features/blueprint/services/blueprintService';
 import {
   selectBlueprints, selectActiveBlueprint, selectBlueprintVersions,
-  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintError,
+  selectBlueprintLoading, selectBlueprintGenerating, selectBlueprintImporting, selectBlueprintImportJob, selectBlueprintError,
   selectBlueprintGenerationMode, setGenerationMode,
   selectArchivedBlueprints, selectBlueprintArchiving, selectBlueprintArchiveRefusal,
   clearArchiveRefusal,
@@ -56,6 +57,7 @@ import Loader from '@components/common/Loader/Loader';
 import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
+import { applyTerminology } from '@config/tenantLabels';
 import { useLabels } from '@hooks/useLabels';
 import styles from './BlueprintPage.module.scss';
 
@@ -79,6 +81,8 @@ export default function BlueprintPage() {
   const isAdmin = useAppSelector(selectIsAdmin);
   const isLoading = useAppSelector(selectBlueprintLoading);
   const isGenerating = useAppSelector(selectBlueprintGenerating);
+  const isImporting = useAppSelector(selectBlueprintImporting);
+  const importJob = useAppSelector(selectBlueprintImportJob);
   const error = useAppSelector(selectBlueprintError);
   const archivedBlueprints = useAppSelector(selectArchivedBlueprints);
   const isArchiving = useAppSelector(selectBlueprintArchiving);
@@ -103,6 +107,12 @@ export default function BlueprintPage() {
   const [moduleConfirmed, setModuleConfirmed] = useState(false);
   const [showSaveVersion, setShowSaveVersion] = useState(false);
   const [savingSection, setSavingSection] = useState(false);
+
+  // Upload-existing-Outline control (Excel/DOCX/PDF → imported as an active
+  // day Outline). Mirrors the CddPage uploader; see onImportOutline.
+  const importFileRef = useRef(null);
+  const [importFile, setImportFile] = useState(null);
+  const [importProgress, setImportProgress] = useState(0);
 
   const versionForm = useForm({ resolver: zodResolver(commitVersionSchema) });
 
@@ -155,6 +165,9 @@ export default function BlueprintPage() {
     dispatch(fetchArchivedBlueprintsThunk(courseId));
     dispatch(fetchCddsThunk(courseId));
     dispatch(fetchStylesThunk());
+    // Reattach to an Outline import already running for this course, so a page
+    // refresh mid-import resumes the progress + completion instead of orphaning it.
+    dispatch(resumeOutlineImportJobThunk({ courseId: Number(courseId) }));
   }, [courseId, projectId, dispatch]);
 
   useEffect(() => {
@@ -302,6 +315,7 @@ export default function BlueprintPage() {
       isDay: mod.isDay,
       dayTitle: mod.title,
       extraInstructions,
+      blueprintLabel: L.blueprint,
     });
 
     const payload = {
@@ -343,6 +357,53 @@ export default function BlueprintPage() {
       setModuleConfirmed(false);
     } catch {
       /* error surfaced via slice */
+    }
+  }
+
+  function onImportFileChange(e) {
+    setImportFile(e.target.files?.[0] || null);
+    setImportProgress(0);
+  }
+
+  // Import an existing Outline file. The day is read from the file; the currently
+  // selected day (when the source CDD is day-based) is sent only as a fallback for
+  // a file that carries no day. On success the imported Outline is set active (by
+  // the thunk) and shown below like a generated one.
+  async function onImportOutline() {
+    if (!importFile) return;
+    // The kind (day vs module) follows the source's type; the file overrides it
+    // when it names a unit. Only send a fallback unit the user actually confirmed —
+    // the dropdown auto-defaults to the first option, so sending it unconfirmed
+    // could silently file onto the wrong unit. Unconfirmed → send nothing; the
+    // file's own unit is used, or the backend asks the user to pick one.
+    const unitKind = isDluCdd ? 'day' : 'module';
+    const unitNumber = (moduleConfirmed && selectedModuleOpt)
+      ? selectedModuleOpt.key
+      : undefined;
+    // Async import: the POST returns a job handle quickly (no reverse-proxy 504 on
+    // a slow file); polling reloads the list and pins the new Outline on completion
+    // (handled in the slice). We only need to confirm the job started here.
+    const res = await dispatch(importBlueprintAsyncThunk({
+      file: importFile,
+      courseId: Number(courseId),
+      projectId: selProject?.id ?? projectId,
+      documentTitle: documentTitle || '',
+      unitKind,
+      unitNumber,
+      cddId: linkedCddId || undefined,
+      modelChoice,
+      onProgress: setImportProgress,
+    }));
+    if (importBlueprintAsyncThunk.fulfilled.match(res)) {
+      // Job started — clear the picker; the "processing" indicator is driven by
+      // importJob/isImporting and the list refreshes when the job completes.
+      setImportFile(null);
+      setImportProgress(0);
+      if (importFileRef.current) importFileRef.current.value = '';
+    } else {
+      // Enqueue failed — clear the stuck progress bar but keep the file selected
+      // so the user can retry without re-choosing it.
+      setImportProgress(0);
     }
   }
 
@@ -455,7 +516,15 @@ export default function BlueprintPage() {
         toast.error(msg);
         throw new Error(msg);
       }
-      return { updatedSections: {}, newFull: spliced };
+      // The spliced text is authoritative; the sections dict is a denormalised
+      // copy of it, so re-derive it rather than sending {}. Several server-side
+      // readers look a labelled snippet up in that dict with no full_content
+      // fallback (promptops_app/core/shared.py's _find_section and _find), so an
+      // empty one silently starves downstream generation of, among others, the
+      // blueprint's Learning Objectives. A `## `-sectioned document yields the
+      // same dict the old rebuild stored; a document outlined by other levels
+      // yields {} exactly as it did before it was sectioned at all.
+      return { updatedSections: parseSectionsFromText(spliced), newFull: spliced };
     }
     let sections = versionDetail?.sections;
     if (!sections || typeof sections !== 'object' || !Object.keys(sections).length) {
@@ -557,6 +626,7 @@ export default function BlueprintPage() {
       isDay: mod?.isDay,
       dayTitle: mod?.title,
       extraInstructions,
+      blueprintLabel: L.blueprint,
     });
     const md = buildPromptDownloadMd({
       projectName: selProject?.name,
@@ -568,6 +638,7 @@ export default function BlueprintPage() {
       systemPrompt: promptConfig.systemPrompt,
       userPromptTemplate: promptConfig.userPromptTemplate,
       extraInstructions: extraBlock,
+      labels: L,
     });
     downloadBlob(new Blob([md], { type: 'application/msword' }), 'prompt_blueprint_active.doc');
   }
@@ -728,6 +799,44 @@ export default function BlueprintPage() {
                 }}
               />
 
+              <div className={styles.uploadBlock}>
+                <div className={styles.uploadLabel}>📤 Upload existing {L.blueprint}</div>
+                <p className={styles.uploadHint}>
+                  Upload an {L.blueprint} (Excel, Word, PDF). The {isDluCdd ? 'day' : 'module'} is
+                  read from the file; an existing {isDluCdd ? 'day' : 'module'} is saved as a new version.
+                </p>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".xlsx,.xls,.docx,.pdf"
+                  onChange={onImportFileChange}
+                  disabled={isImporting}
+                />
+                {importFile && (
+                  <div className={styles.uploadBanner}>
+                    📄 <strong>{importFile.name}</strong> selected
+                  </div>
+                )}
+                {importProgress > 0 && importProgress < 100 && (
+                  <div className={styles.uploadBanner}>Uploading… {importProgress}%</div>
+                )}
+                {isImporting && !(importProgress > 0 && importProgress < 100) && (
+                  <div className={styles.uploadBanner}>
+                    {importJob?.currentStep || 'Processing the file…'}
+                    {importJob?.progress ? ` — ${importJob.progress}%` : ''}
+                  </div>
+                )}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  onClick={onImportOutline}
+                  disabled={!importFile || isImporting}
+                >
+                  {isImporting ? 'Importing…' : `📤 Import ${L.blueprint}`}
+                </Button>
+              </div>
+
               {moduleOptions.length > 0 ? (
                 <>
                   <div className={styles.moduleLabel}>{isDluCdd ? 'Select Day' : 'Select Module / Title-End Item'}</div>
@@ -866,7 +975,7 @@ export default function BlueprintPage() {
                     options={blueprints.map((bp) => ({
                       value: String(bp.id),
                       label: [
-                        `M${bp.module_number || '?'}: ${bp.title} (ID: ${bp.id})`,
+                        `M${bp.module_number || '?'}: ${applyTerminology(bp.title, L, ['blueprint'])} (ID: ${bp.id})`,
                         formatDate(bp.created_at),
                         bp.created_by,
                       ].filter(Boolean).join(' — '),
@@ -887,6 +996,7 @@ export default function BlueprintPage() {
                       leaving no way to restore what was just archived. */}
                   <DocumentArchivePanel
                     label={L.blueprint}
+                    termKey="blueprint"
                     docs={blueprints}
                     archivedDocs={archivedBlueprints}
                     activeId={activeBlueprint?.id ?? null}
@@ -964,7 +1074,9 @@ export default function BlueprintPage() {
                       )}
 
                       <div className={styles.activeContent}>
-                        <h3 className={styles.activeContent__title}>{displayBp.title}</h3>
+                        <h3 className={styles.activeContent__title}>
+                          {applyTerminology(displayBp.title, L, ['blueprint'])}
+                        </h3>
                         {viewMode && (
                           <p className={styles.configPanel__item}>
                             Mode: <strong>{viewMode === 'teacher' ? 'Teacher' : 'Student'}</strong>
@@ -977,6 +1089,7 @@ export default function BlueprintPage() {
                           version={versionDetail?.version || displayBp?.active_content?.version}
                           generationParams={versionDetail?.generation_params
                             || displayBp?.active_content?.generation_params}
+                          projectId={selProject?.id ?? projectId}
                         />
                         <BlueprintContentView
                           fullContent={previewFullContent}

@@ -22,6 +22,7 @@ from promptops_app.prompt_templates import (
 from promptops_app.core.llm_client import safe_json_loads
 from promptops_app.parsers.markdown_emphasis import repair_emphasis
 from promptops_app.services.llm_service import generate_text as call_llm
+from promptops_app.services.llm_service import generate_with_metadata
 from promptops_app.services.usage_service import UsageLogContext
 
 _log = logging.getLogger(__name__)
@@ -225,6 +226,48 @@ def _strip_leading_bullet(text: str) -> str:
     return _LEADING_BULLET_RE.sub("", text, count=1)
 
 
+def _item_regen_user_prompt(
+    section_title: str, section_content: str, item_index: int, item_text: str,
+    custom_instruction: str, *, learning_signals: str = "", context: str = "",
+) -> str:
+    """The item-regeneration user prompt. Shared by both variants below so the
+    text-only and with-result paths cannot drift apart."""
+    # When the "item" IS the whole section — which is what a markdown table
+    # parses to, since parse_items_from_section recognises lists and headings
+    # but not table rows — appending it again as "Section context" doubles the
+    # prompt for no added information. The check is cheap and the saving is
+    # ~19k tokens on a CDD day table.
+    section_context = "" if section_content.strip() == item_text.strip() else section_content
+    return (
+        f"Section: {section_title}\n\n"
+        f"Current item (index {item_index}): {item_text}\n\n"
+        f"Instruction: {custom_instruction or 'Improve this item.'}"
+        + (f"\n\n{context}" if context else "")
+        + (f"\n\nLEARNED PREFERENCES:\n{learning_signals}" if learning_signals else "")
+        + (f"\n\nSection context:\n{section_context}" if section_context else "")
+    )
+
+
+def _postprocess_item(raw: str, section_title: str, item_index: int) -> str:
+    """Strip a leading bullet and repair unbalanced emphasis. Shared by both variants.
+
+    A second line of defence, on a different failure than the strip. The model can
+    return a label whose delimiters do not pair up, and a malformed line committed
+    here is sticky: every later save preserves untouched lines byte for byte, so it
+    survives until somebody edits that exact line by hand. Repair the one
+    unambiguous shape, and say so when the damage is a guess rather than a fix.
+    """
+    result = _strip_leading_bullet((raw or "").strip())
+    result, emphasis = repair_emphasis(result.strip())
+    if emphasis:
+        _log.warning(
+            "regen_single_item: unbalanced markdown emphasis in the model reply "
+            "for section=%r item=%s — %s",
+            section_title, item_index, "; ".join(f.describe() for f in emphasis),
+        )
+    return result.strip()
+
+
 def regen_single_item(
     section_title: str,
     section_content: str,
@@ -236,7 +279,60 @@ def regen_single_item(
     usage_ctx: Optional["UsageLogContext"] = None,
     context: str = "",
 ) -> str:
+    """Regenerate a single item — text only. See regen_single_item_with_result.
+
+    Kept as-is for the callers that only want the string (cdd.py, regen_jobs.py,
+    core/shared.py). A caller that splices the reply back over stored content
+    should use ``regen_single_item_with_result`` instead: a bare string cannot say
+    whether the reply hit the output ceiling, and a truncated item reads as a
+    finished one right up to the point it is committed.
+
+    No ``max_tokens`` parameter, deliberately. This variant goes through
+    generate_text, which has no way to pass one, so accepting the argument would
+    have meant silently ignoring it — a caller asking for a 64000-token ceiling
+    would have got 16384 with no error and no warning. A parameter that cannot be
+    honoured is worse than one that does not exist; ask for the ceiling on the
+    variant that can request it.
+    """
+    user_p = _item_regen_user_prompt(
+        section_title, section_content, item_index, item_text, custom_instruction,
+        learning_signals=learning_signals, context=context,
+    )
+    # Still generate_text, deliberately. cdd.py, regen_jobs.py and core/shared.py
+    # all reach this wrapper, and none of them has been analysed for the
+    # refuse-on-truncation behaviour the sibling adds. Keeping this call exactly
+    # as it was means their behaviour is unchanged and their tests keep stubbing
+    # the name they always stubbed; the prompt itself is shared, so the two
+    # cannot drift apart.
+    return _postprocess_item(call_llm(model_choice, _ITEM_REGEN_SYSTEM, user_p, usage_ctx),
+                             section_title, item_index)
+
+
+def regen_single_item_with_result(
+    section_title: str,
+    section_content: str,
+    item_index: int,
+    item_text: str,
+    custom_instruction: str,
+    model_choice: str = "GPT-5.4",
+    learning_signals: str = "",
+    usage_ctx: Optional["UsageLogContext"] = None,
+    context: str = "",
+    max_tokens: Optional[int] = None,
+) -> tuple:
     """Regenerate a single item inside a section using the LLM.
+
+    Returns ``(text, LLMResult)``. The result is what lets a caller see whether
+    the reply hit the model's output ceiling — ``generate_text``, which this used
+    to call, collapses that to a bare string, so an item cut off mid-sentence was
+    patched into the document and committed as though it were complete.
+
+    ``max_tokens`` requests the model's real ceiling. Omitting it inherited
+    DEFAULT_MAX_OUTPUT_TOKENS (16384) while the blueprint router's pre-flight
+    check sized the item against ``output_budget`` (64000 on three of the five
+    catalog models) — so an item between those two figures passed the guard and
+    then truncated anyway, which is the exact outcome the guard exists to
+    prevent.
 
     Pass usage_ctx (project/course/user) so this call's cost is attributed in
     llm_usage_logs — this is a real, live LLM-calling path (cdd.py/blueprints.py/
@@ -248,40 +344,17 @@ def regen_single_item(
     app.services.cdd_regen_context). "" reproduces this function's exact
     previous behaviour, which is what the blueprint and block callers still get.
     """
-    # When the "item" IS the whole section — which is what a markdown table
-    # parses to, since parse_items_from_section recognises lists and headings
-    # but not table rows — appending it again as "Section context" doubles the
-    # prompt for no added information. The check is cheap and the saving is
-    # ~19k tokens on a CDD day table.
-    section_context = "" if section_content.strip() == item_text.strip() else section_content
-
-    user_p = (
-        f"Section: {section_title}\n\n"
-        f"Current item (index {item_index}): {item_text}\n\n"
-        f"Instruction: {custom_instruction or 'Improve this item.'}"
-        + (f"\n\n{context}" if context else "")
-        + (f"\n\nLEARNED PREFERENCES:\n{learning_signals}" if learning_signals else "")
-        + (f"\n\nSection context:\n{section_context}" if section_context else "")
+    user_p = _item_regen_user_prompt(
+        section_title, section_content, item_index, item_text, custom_instruction,
+        learning_signals=learning_signals, context=context,
     )
-    sys_p = _ITEM_REGEN_SYSTEM
-    result = call_llm(model_choice, sys_p, user_p, usage_ctx)
-    result = _strip_leading_bullet(result.strip())
-
-    # A second line of defence, on a different failure than the strip above.
-    # _strip_leading_bullet no longer eats emphasis, but the model can still
-    # return a label whose delimiters do not pair up, and a malformed line
-    # committed here is sticky: every later save of the document preserves
-    # untouched lines byte for byte, so it survives until somebody edits that
-    # exact line by hand. Repair the one unambiguous shape, and say so when the
-    # damage is a guess rather than a fix.
-    result, emphasis = repair_emphasis(result.strip())
-    if emphasis:
-        _log.warning(
-            "regen_single_item: unbalanced markdown emphasis in the model reply "
-            "for section=%r item=%s — %s",
-            section_title, item_index, "; ".join(f.describe() for f in emphasis),
-        )
-    return result.strip()
+    llm_result = generate_with_metadata(
+        model_choice, _ITEM_REGEN_SYSTEM, user_p, usage_ctx, max_tokens=max_tokens,
+    )
+    # Same shape generate_text produced, so a caller checking
+    # startswith("ERROR") keeps working unchanged.
+    raw = f"ERROR: {llm_result.text}" if llm_result.is_error else llm_result.text
+    return _postprocess_item(raw, section_title, item_index), llm_result
 
 
 # ---------------------------------------------------------------------------

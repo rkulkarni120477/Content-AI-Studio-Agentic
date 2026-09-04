@@ -1,5 +1,6 @@
 import Loader from '@components/common/Loader/Loader';
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import {
   parseStyleUnderstanding,
   styleUnderstandingText,
@@ -28,7 +29,7 @@ export default function StyleDetailsPanel({
 
   if (!style) return null;
 
-  const understanding = styleUnderstandingText(style);
+  const understanding = applyTerminology(styleUnderstandingText(style), L, ['style']);
   const { sections, preamble, rawFallback } = parseStyleUnderstanding(understanding);
   const refDocs = style.reference_documents || [];
 
@@ -36,7 +37,7 @@ export default function StyleDetailsPanel({
     <div
       className={inModal ? styles.inModal : styles.panel}
       role="region"
-      aria-label={`Style details for ${style.name}`}
+      aria-label={`${L.style} details for ${style.name}`}
     >
       {!inModal && (
         <h3 className={styles.heading}>📋 {L.style} Details — {style.name}</h3>

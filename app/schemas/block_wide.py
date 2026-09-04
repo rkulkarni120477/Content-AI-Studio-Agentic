@@ -23,9 +23,12 @@ class BlockWideGenerateRequest(BaseModel):
     version row, and ``model_choice`` selects only the guidance-distillation model —
     the generation model comes from ``quality_tier``.
 
-    ``reference_document_ids`` is deliberately absent, not dropped: the digest
-    pipeline enumerates every ingested unit in the block, so a document subset has no
-    meaning on this path (the UI's own panel says "from every source in the block").
+    ``reference_document_ids`` is ADDITIVE here, and only additive: the digest
+    pipeline still enumerates every ingested unit in the block, and these ids are
+    pinned on top of that set. They are never a filter and never a replacement —
+    a block-wide deliverable built from a document subset would silently drop days
+    the user can see in the panel, which is the failure this path exists to avoid.
+    Empty (the default) is byte-identical to the pre-existing request.
     """
 
     deliverable: Literal["cdd", "blueprint"] = Field(
@@ -45,6 +48,16 @@ class BlockWideGenerateRequest(BaseModel):
     target_audience: str = Field(default="", max_length=200)
     expert_domain: str = Field(default="", max_length=200)
     estimated_duration_hours: Optional[int] = Field(default=None, ge=1, le=500)
+    reference_document_ids: list[str] = Field(
+        default_factory=list,
+        description="DIS Source Library document/job IDs picked in the 'Reference "
+                    "Documents' selector, pinned ON TOP of the block's enumerated "
+                    "units — never instead of them. Same field name and same "
+                    "meaning as the sync path (app.schemas.cdd), so a form that "
+                    "fills one fills the other; the block path differs only in that "
+                    "the automatic half is the whole block rather than a purpose "
+                    "retrieval. Per-generation only — not stored on the deliverable.",
+    )
     style_id: Optional[int] = Field(
         default=None,
         # Rejected at the boundary rather than coerced away later, matching

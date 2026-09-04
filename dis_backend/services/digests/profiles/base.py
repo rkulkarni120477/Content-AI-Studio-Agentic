@@ -25,6 +25,32 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 
+def store_target(conn_or_cur: Any) -> str:
+    """``host/dbname`` for an open structure-store connection, credentials stripped.
+
+    Takes a connection or a cursor, so a caller that only holds the cursor (every
+    profile read does) needs no extra plumbing.
+
+    Which database a read actually landed in is not otherwise recoverable from the
+    logs, and it is the answer to the most expensive class of enumeration failure.
+    On 2026-08-27 a dev deployment whose ``DIS_STRUCTURE_STORE_URL`` pointed at an
+    empty sibling database reported "No calendar found for block 'Block 9'" — a
+    message indistinguishable from a block that genuinely has no calendar, and
+    settled only by connecting to both databases by hand. Those env overrides are
+    gone now (see settings, "Where the backing stores live"), but a stale image or
+    a hand-edited mounted YAML can still diverge from the committed config, so the
+    store names itself rather than being inferred from a file on someone's disk.
+
+    Host and database only, never the DSN: it carries the store password.
+    """
+    try:
+        info = getattr(conn_or_cur, "connection", conn_or_cur).info
+        return f"{info.host}/{info.dbname}"
+    except Exception:
+        # A logging/diagnostic helper must never be the thing that fails a build.
+        return "unknown-host/unknown-db"
+
+
 @dataclass
 class ScopeData:
     """The tenant-specific inventory the shared assembler needs. ``days`` is the
@@ -36,6 +62,14 @@ class ScopeData:
     total_days: int
     days: List[Dict[str, Any]] = field(default_factory=list)
     units: List[Dict[str, Any]] = field(default_factory=list)
+    #: Shared reference works (handbooks, textbooks) the block's days cite but
+    #: which belong to no single block, so ``units`` — filtered by block tag —
+    #: can never contain them. Kept apart rather than merged in because they must
+    #: NOT be day-attributed by term overlap: a handbook overlaps every day of
+    #: the block and would land wholesale on whichever day scored highest.
+    #: ``services.digests.references`` places them from the calendar's own
+    #: per-day "Reading:" citation instead. Empty for a profile that has none.
+    reference_units: List[Dict[str, Any]] = field(default_factory=list)
     duplicate_calendar_ids: List[str] = field(default_factory=list)
     #: Profile-level observations about the scope it just read, surfaced verbatim
     #: as enumerate flags (e.g. a block whose stored tags disagree on spelling and

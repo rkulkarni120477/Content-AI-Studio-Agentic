@@ -44,6 +44,7 @@ import {
   DEFAULT_DOCUMENT_SOURCE_TYPE,
 } from '@utils/documentRegistry';
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import styles from './StylePage.module.scss';
 
 function documentPreviewText(preview) {
@@ -450,7 +451,7 @@ export default function StylePage() {
                   onChange={(e) => setStyleStateFilter(e.target.value)}
                 />
                 <div className={styles.docSearch}>
-                  <label className={styles.docSearch__label}>Search style</label>
+                  <label className={styles.docSearch__label}>Search {L.style}</label>
                   <SearchBar
                     value={styleSearch}
                     onChange={setStyleSearch}
@@ -479,7 +480,9 @@ export default function StylePage() {
                       <div className={styles.styleItem__info}>
                         <span className={styles.styleItem__name}>{style.name}</span>
                         {style.understanding_preview && (
-                          <span className={styles.styleItem__desc}>{style.understanding_preview}</span>
+                          <span className={styles.styleItem__desc}>
+                            {applyTerminology(style.understanding_preview, L, ['style'])}
+                          </span>
                         )}
                         <span className={styles.styleItem__date}>{formatDate(style.created_at)}</span>
                       </div>
@@ -836,10 +839,10 @@ export default function StylePage() {
         size="sm"
         footer={<Button variant="ghost" onClick={() => { setScopeStyleId(null); setScopeStyleName(''); }}>Cancel</Button>}
       >
-        <p className={styles.scopeIntro}>Where should this style be active?</p>
+        <p className={styles.scopeIntro}>Where should this {L.styleLower} be active?</p>
         <div className={styles.scopeActions}>
           <Button variant="primary" fullWidth onClick={() => onActivateScope('course')}>
-            For This Title
+            For This {L.title}
           </Button>
           <Button variant="secondary" fullWidth onClick={() => onActivateScope('project')}>
             For This Project

@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import Button from '@components/common/Button/Button';
 import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import { formatDate } from '@utils/helpers';
+import { applyTerminology } from '@config/tenantLabels';
+import { useLabels } from '@hooks/useLabels';
 import styles from './DocumentArchivePanel.module.scss';
 
 /**
@@ -30,18 +32,24 @@ function describe(doc) {
 }
 
 /** Why this row is worth keeping — shown so "safe to delete" is never a guess. */
-function describeReferences(doc) {
+function describeReferences(doc, L) {
   const refs = doc.references;
   if (!refs) return '';
   const parts = [];
-  if (refs.blueprint_count) parts.push(`${refs.blueprint_count} blueprint(s)`);
+  if (refs.blueprint_count) parts.push(`${refs.blueprint_count} ${L.blueprintsLower}`);
   if (refs.generation_count) parts.push(`${refs.generation_count} generation(s)`);
   if (refs.feedback_count) parts.push(`${refs.feedback_count} feedback record(s)`);
   return parts.length ? `Used by ${parts.join(', ')}` : '';
 }
 
+function displayTitle(doc, label, L, termKey) {
+  const raw = doc.title || doc.course_title || `${label} ${doc.id}`;
+  return termKey ? applyTerminology(raw, L, [termKey]) : raw;
+}
+
 export default function DocumentArchivePanel({
   label,                  // 'CDD' | 'Blueprint'
+  termKey,                // tenant label key to rewrite in stored titles
   docs = [],              // live documents
   archivedDocs = [],
   activeId = null,        // the pinned one, if any
@@ -57,6 +65,7 @@ export default function DocumentArchivePanel({
   refusal = null,         // { needsUnpin, blockers, message } from a refused call
   onDismissRefusal,
 }) {
+  const L = useLabels();
   const [showArchived, setShowArchived] = useState(false);
   const [confirm, setConfirm] = useState(null);   // { kind, id, title, count }
 
@@ -169,7 +178,8 @@ export default function DocumentArchivePanel({
       <ul className={styles.list}>
         {docs.map((doc) => {
           const isActive = activeId === doc.id;
-          const used = describeReferences(doc);
+          const used = describeReferences(doc, L);
+          const title = displayTitle(doc, label, L, termKey);
           return (
             <li
               key={doc.id}
@@ -179,10 +189,10 @@ export default function DocumentArchivePanel({
                 type="button"
                 className={styles.item__info}
                 onClick={() => onSelect?.(doc.id)}
-                title={`Open ${doc.title || doc.course_title || label}`}
+                title={`Open ${title}`}
               >
                 <span className={styles.item__title}>
-                  {doc.title || doc.course_title || `${label} ${doc.id}`}
+                  {title}
                 </span>
                 <span className={styles.item__meta}>
                   #{doc.id} · {describe(doc)}{used ? ` · ${used}` : ''}
@@ -205,7 +215,7 @@ export default function DocumentArchivePanel({
                   onClick={() => setConfirm({
                     kind: isActive ? 'unpinArchive' : 'archive',
                     id: doc.id,
-                    title: doc.title || doc.course_title || `${label} ${doc.id}`,
+                    title: displayTitle(doc, label, L, termKey),
                   })}
                 >
                   🗄️
@@ -226,7 +236,7 @@ export default function DocumentArchivePanel({
                 <li key={doc.id} className={`${styles.item} ${styles['item--archived']}`}>
                   <div className={styles.item__info}>
                     <span className={styles.item__title}>
-                      {doc.title || doc.course_title || `${label} ${doc.id}`}
+                      {displayTitle(doc, label, L, termKey)}
                     </span>
                     <span className={styles.item__meta}>
                       #{doc.id} · {describe(doc)}
@@ -249,7 +259,7 @@ export default function DocumentArchivePanel({
                         onClick={() => setConfirm({
                           kind: 'purge',
                           id: doc.id,
-                          title: doc.title || doc.course_title || `${label} ${doc.id}`,
+                          title: displayTitle(doc, label, L, termKey),
                         })}
                       >
                         🗑️

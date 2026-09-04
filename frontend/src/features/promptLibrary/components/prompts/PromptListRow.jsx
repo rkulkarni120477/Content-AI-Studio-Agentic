@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { plPrompt, plPromptEdit } from '../../paths';
 import { pipelineStageLabel } from '../../utils/prompt';
+import { useLabels } from '@hooks/useLabels';
 import VisibilityBadge from './VisibilityBadge';
 
 export default function PromptListRow({
@@ -14,6 +15,7 @@ export default function PromptListRow({
   onRestore,
   onTagClick,
 }) {
+  const L = useLabels();
   const vars = p.variables || [];
   const copyLabel = vars.length ? 'Fill' : 'Copy';
   const navigate = useNavigate();
@@ -41,7 +43,7 @@ export default function PromptListRow({
         )}
         {p.description && <div className="list-desc">{p.description}</div>}
       </div>
-      <div className="list-cat">{p.prompt_kind === 'pipeline' ? pipelineStageLabel(p) : p.category || ''}</div>
+      <div className="list-cat">{p.prompt_kind === 'pipeline' ? pipelineStageLabel(p, L) : p.category || ''}</div>
       <div className="list-tags">
         {(p.tags || []).slice(0, 3).map((t) => (
           <span

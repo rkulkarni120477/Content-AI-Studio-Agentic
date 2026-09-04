@@ -75,7 +75,7 @@ def _state(day_numbers):
 def test_a_calendar_that_collapses_says_so():
     """The exact prod shape: every parsed day numbered 1."""
     state = _state([1] * 11)
-    stored = upsert_calendar(_Cur(), "dis", "doc1", state)
+    stored = upsert_calendar(_Cur(), "dis", "doc1", state, "test")
 
     assert stored == 1, "eleven days sharing a number are one stored day, not eleven"
     assert state["errors"], "a collapse must be reported, not returned as a count"
@@ -86,12 +86,12 @@ def test_the_returned_count_is_days_actually_stored():
     """It used to return the number of INSERTs issued, which counted every
     overwrite — so 11 rows written onto 2 keys reported 11 days stored."""
     state = _state([1, 1, 2, 2, 3])
-    assert upsert_calendar(_Cur(), "dis", "doc1", state) == 3
+    assert upsert_calendar(_Cur(), "dis", "doc1", state, "test") == 3
 
 
 def test_a_clean_calendar_reports_nothing():
     state = _state(list(range(1, 21)))
-    assert upsert_calendar(_Cur(), "dis", "doc1", state) == 20
+    assert upsert_calendar(_Cur(), "dis", "doc1", state, "test") == 20
     assert not state.get("errors")
 
 
@@ -101,6 +101,7 @@ def test_day_rows_carry_the_canonical_block_label():
     state = _state([1, 2])
     state["calendar_structure"]["block"] = "Block 09"
     cur = _Cur()
-    upsert_calendar(cur, "dis", "doc1", state)
+    upsert_calendar(cur, "dis", "doc1", state, "test")
     params = [p for p in cur.rows[0] if isinstance(p, str)]
     assert "Block 9" in params and "Block 09" not in params
+    assert "test" in params, "the environment column must still be stamped"

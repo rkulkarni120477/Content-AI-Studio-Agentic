@@ -71,6 +71,8 @@ export function toLabel(name) {
 // (Style, CDD, Blueprint, Assessment, Component, Lesson Generation). The
 // resolution keys themselves never change: quiz → "Assessment",
 // generate → "Lesson Generation", (generate, interactive) → "Component".
+import { FALLBACK_LABELS } from '@config/tenantLabels';
+
 const STAGE_LABELS = {
   style: 'Style',
   cdd: 'CDD',
@@ -79,20 +81,25 @@ const STAGE_LABELS = {
   quiz: 'Assessment',
 };
 
-export function componentCategoryLabel(componentType, variant) {
+export function componentCategoryLabel(componentType, variant, L = FALLBACK_LABELS) {
   if (!componentType) return variant ? `Pipeline / ${variant}` : 'Pipeline';
   if (componentType === 'generate') {
     if (variant === 'interactive') return 'Component';
     if (!variant || variant === 'lesson') return 'Lesson Generation';
   }
-  const base = STAGE_LABELS[componentType] || toLabel(componentType);
+  const key = String(componentType).toLowerCase();
+  const renamed = key === 'style' ? L.style
+    : key === 'cdd' ? L.cdd
+      : key === 'blueprint' ? L.blueprint
+        : STAGE_LABELS[key];
+  const base = renamed || toLabel(componentType);
   return variant ? `${base} / ${variant}` : base;
 }
 
-export function pipelineStageLabel(p) {
+export function pipelineStageLabel(p, L) {
   if (p?.prompt_kind !== 'pipeline') return '';
   const pipe = p.pipeline || {};
-  return componentCategoryLabel(pipe.component_type, pipe.variant);
+  return componentCategoryLabel(pipe.component_type, pipe.variant, L);
 }
 
 // The doc's six CAS workflow categories. CAS_CATEGORIES feeds the unified

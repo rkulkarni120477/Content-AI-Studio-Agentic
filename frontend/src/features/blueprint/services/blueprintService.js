@@ -84,9 +84,69 @@ export const blueprintService = {
   },
 
   /**
+   * Import an existing Outline file (day-based DLU or module-based). Multipart
+   * upload → the server extracts, detects the day/module from the file, then either
+   * appends a new version to the existing Outline for that unit or creates a fresh
+   * one, and pins it. Reloads the full blueprint by id (like generateBlueprint) so
+   * the display gets the same shape a generated Outline has. `unitKind`/`unitNumber`
+   * are only the dropdown hint — the file wins when it names a unit.
+   */
+  importBlueprint: async ({ file, courseId, projectId, documentTitle, unitKind, unitNumber, cddId, modelChoice }, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('course_id', String(courseId));
+    form.append('project_id', String(projectId));
+    if (documentTitle) form.append('document_title', documentTitle);
+    if (unitKind) form.append('unit_kind', unitKind);
+    if (unitNumber != null && unitNumber !== '') form.append('unit_number', String(unitNumber));
+    if (cddId != null) form.append('cdd_id', String(cddId));
+    if (modelChoice) form.append('model_choice', modelChoice);
+    const created = await api.upload(BLUEPRINT.IMPORT, form, onProgress);
+    if (created?.blueprint_id) {
+      const full = await api.get(BLUEPRINT.GET(created.blueprint_id));
+      // The reloaded blueprint doesn't carry the import warnings — thread them
+      // through so the thunk can warn on a degraded (e.g. single-section) import.
+      if (created.import_warnings?.length) full.importWarnings = created.import_warnings;
+      return full;
+    }
+    return created;
+  },
+
+  /**
+   * Async Outline import. Same multipart form as importBlueprint, but the server
+   * runs the extract + LLM restructure in a background job and returns a job
+   * handle `{job_id, status, poll_url}` immediately — the caller polls getJobStatus
+   * until terminal, then reloads the blueprint by the job's generation_id. This is
+   * the timeout-proof path used by the UI (a slow file can't 504 the request).
+   */
+  importBlueprintAsync: async ({ file, courseId, projectId, documentTitle, unitKind, unitNumber, cddId, modelChoice }, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('course_id', String(courseId));
+    form.append('project_id', String(projectId));
+    if (documentTitle) form.append('document_title', documentTitle);
+    if (unitKind) form.append('unit_kind', unitKind);
+    if (unitNumber != null && unitNumber !== '') form.append('unit_number', String(unitNumber));
+    if (cddId != null) form.append('cdd_id', String(cddId));
+    if (modelChoice) form.append('model_choice', modelChoice);
+    return api.upload(BLUEPRINT.IMPORT_ASYNC, form, onProgress);
+  },
+
+  /** The caller's in-flight Outline-import job for this course, or null — lets a
+   *  reloaded page reattach to an import already running server-side. */
+  getActiveOutlineImportJob: (courseId) => api.get(GENERATE.JOB_ACTIVE(courseId, 'outline_import')),
+
+  /**
    * Enqueue a block-wide Block Blueprint build (digest pipeline, async). Returns
    * a job handle {job_id, status, poll_url}; poll getJobStatus until terminal,
    * then reload the blueprint by the job's result entity id.
+   *
+   * style_id/prompt_id are carried for the same reason as the CDD twin — see
+   * cddService.mapBlockPayload, where omitting them meant every block-wide
+   * generation silently distilled its MAP guidance from the shipped file
+   * template rather than the prompt the user selected. reference_document_ids is
+   * carried for the same reason and is additive: pinned documents are digested on
+   * top of the block's enumerated units, never instead of them.
    */
   generateBlueprintBlock: (data) => api.post(BLUEPRINT.GENERATE_BLOCK, {
     deliverable: 'blueprint',
@@ -102,6 +162,9 @@ export const blueprintService = {
     target_audience: data.target_audience || '',
     expert_domain: data.expert_domain || '',
     estimated_duration_hours: data.estimated_duration_hours ?? undefined,
+    style_id: data.style_id ?? null,
+    prompt_id: data.prompt_id || undefined,
+    reference_document_ids: data.reference_document_ids || [],
   }),
   /** Shared job-status endpoint — same one the generate/import flows poll. */
   getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId), POLL_REQUEST_CONFIG),

@@ -2,6 +2,7 @@ import { createAsyncThunk } from '@reduxjs/toolkit';
 import toast from 'react-hot-toast';
 import { extractErrorMessage } from '@utils/helpers';
 import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
+import { labelsFromState } from '@config/tenantLabels';
 
 /**
  * Shared machinery for block-wide (digest-pipeline) async generation, used
@@ -60,8 +61,8 @@ export const MAX_POLL_ERRORS = 20;
  * @param {function} cfg.enqueue       (payload) => Promise<{job_id, status}>
  * @param {function} cfg.getJobStatus  (jobId) => Promise<jobStatus>
  * @param {function} cfg.onComplete    (dispatch, courseId) => void   // e.g. refetch list
- * @param {string}   cfg.completedMessage
- * @param {string}   cfg.failedMessage
+ * @param {string|function} cfg.completedMessage  toast on success; fn receives labels
+ * @param {string|function} cfg.failedMessage     toast on failure; fn receives labels
  */
 export function createBlockJobThunks(cfg) {
   const {
@@ -70,9 +71,19 @@ export function createBlockJobThunks(cfg) {
     completedMessage, failedMessage,
   } = cfg;
 
+  function resolveMsg(msg, getState) {
+    if (typeof msg === 'function') return msg(labelsFromState(getState));
+    return msg;
+  }
+
+  function deliverableLabel(getState) {
+    const L = labelsFromState(getState);
+    return deliverable === 'blueprint' ? L.blueprint : L.cdd;
+  }
+
   const pollThunk = createAsyncThunk(
     `${prefix}/pollBlockJob`,
-    async ({ jobId, courseId, errorCount = 0 }, { dispatch, rejectWithValue }) => {
+    async ({ jobId, courseId, errorCount = 0 }, { dispatch, rejectWithValue, getState }) => {
       try {
         const status = await getJobStatus(jobId);
         // Day counts, when the caller wired them up. Fetched alongside the status
@@ -94,12 +105,13 @@ export function createBlockJobThunks(cfg) {
           return status;
         }
         if (status.status === JOB_STATUSES.COMPLETED) {
-          if (completedMessage) toast.success(completedMessage);
+          const done = resolveMsg(completedMessage, getState);
+          if (done) toast.success(done);
           if (onComplete) onComplete(dispatch, courseId);
         } else if (status.status === JOB_STATUSES.CANCELLED) {
-          toast(`${deliverable === 'blueprint' ? 'Blueprint' : 'CDD'} generation cancelled.`);
+          toast(`${deliverableLabel(getState)} generation cancelled.`);
         } else {
-          toast.error(status.error_message || failedMessage);
+          toast.error(status.error_message || resolveMsg(failedMessage, getState));
         }
         return status;
       } catch (e) {

@@ -13,6 +13,8 @@ export const sourceLibraryApi = {
   searchSource: (jobId, params = {}) => api.get(SOURCE_LIBRARY.SEARCH(jobId), { params }),
   deleteDocument: (jobId, params = {}) => api.delete(SOURCE_LIBRARY.DELETE_DOCUMENT(jobId), { params }),
   uploadDocument: (formData, onProgress) => api.upload(SOURCE_LIBRARY.UPLOAD, formData, onProgress),
+  /** What the server will accept. Fetched, never hardcoded — see get_upload_policy. */
+  getUploadPolicy: () => api.get(SOURCE_LIBRARY.UPLOAD_POLICY),
   scanFolder: (payload, params = {}) => api.post(SOURCE_LIBRARY.FOLDER_SCAN, payload, { params }),
   retrieve: (purpose, payload) => api.post(SOURCE_LIBRARY.RETRIEVE(purpose), payload),
   getAccessConfig: () => api.get(SOURCE_LIBRARY.ACCESS_CONFIG),

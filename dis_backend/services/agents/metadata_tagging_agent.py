@@ -26,6 +26,47 @@ from services.token_guard import TokenLimitError
 from services.client_profiles import enrich_metadata
 
 
+#: Fields describing which block/day a document belongs to. Grouped because a
+#: document that legitimately spans blocks must keep ALL of them blank, not just
+#: the label.
+_BLOCK_SCOPE_FIELDS = ('block', 'block_id', 'block_number', 'day_id', 'day_number')
+
+
+def apply_metadata_hints(meta: Dict[str, Any], hints: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Apply CAS's upload hints over DIS's own inference. Returns a new dict.
+
+    Hints win, because they are facts about the upload rather than guesses about
+    the file: CAS knows which course the user uploaded into, and therefore which
+    block. That is what stops a subject-named folder (``Landing Gear Projects/``)
+    from ingesting block-less and disappearing from every block-scoped retrieval —
+    measured at 148 documents across six AIM courses before it was fixed.
+
+    Two exceptions, both load-bearing:
+
+    * An empty hint never clobbers a good inference, so a caller that has nothing
+      to say can always send the field blank.
+    * A document the client profile deliberately declared block-less keeps that
+      blank. An AKTR knowledge-test rollup carries one sheet per block, so no
+      doc-level block is true of it; enrich_metadata blanks the scope and sets
+      ``spans_multiple_blocks`` (attribution is per content unit instead). Letting
+      a hint overwrite that would re-file all sixteen blocks' data under whichever
+      course the sheet happened to be uploaded under, which is precisely the defect
+      the blanking exists to prevent.
+
+    Kept a module-level function, not inline in ``run``: this is the whole
+    precedence rule, and it needs to be testable without standing up the pipeline.
+    """
+    out = dict(meta)
+    spans_blocks = bool(out.get('spans_multiple_blocks'))
+    for key, value in (hints or {}).items():
+        if value in (None, '', [], {}):
+            continue
+        if spans_blocks and key in _BLOCK_SCOPE_FIELDS:
+            continue
+        out[key] = value
+    return out
+
+
 class MetadataTaggingAgent(BasePipelineAgent):
     """Metadata Tagging agent.
 
@@ -77,9 +118,9 @@ class MetadataTaggingAgent(BasePipelineAgent):
 
         # CAS Source Library can pass user-corrected hints during upload.
         # These fields override AI guesses and drive dynamic filters in CAS.
-        for key, value in (state.get('metadata_hints') or {}).items():
-            if value not in (None, '', [], {}):
-                meta[key] = value
+        # The precedence rule (including why a block-less-on-purpose document keeps
+        # its blank) lives in apply_metadata_hints, so it can be tested directly.
+        meta = apply_metadata_hints(meta, state.get('metadata_hints'))
         purpose = str(meta.get('purpose') or '').strip()
         if purpose:
             safe_purpose = purpose.replace('-', '_')

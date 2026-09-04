@@ -4,6 +4,7 @@ import {
   WHOLE_DOCUMENT_SECTION_TITLE,
   buildBlueprintUiSections,
   buildHeadingFallbackSections,
+  parseSectionsFromText,
   replaceHeadingSection,
 } from '../blueprintContent';
 
@@ -142,11 +143,56 @@ describe('heading fallback — which level wins', () => {
     expect(secs.every((s) => s.locator.level === 4)).toBe(true);
   });
 
-  it('leaves `## ` documents to the existing parser', () => {
+  it('splices `## ` documents by line range too, not by rebuilding them', () => {
+    // This used to assert the opposite. `## ` was the one shape still rebuilt
+    // from a parts dict on save, which rewrote the whole document — dropping the
+    // preamble, flattening other heading levels and reordering sections — every
+    // time one section was edited. It is also the shape the default
+    // blueprint_generation prompt emits, so the common case carried the worst
+    // save path. Titles are unchanged; only the write mechanism is.
     const secs = sectionsOf(STD_H2_DOC);
-    expect(secs.some((s) => s.heading)).toBe(false);
+    expect(secs.every((s) => s.heading)).toBe(true);
+    expect(secs.every((s) => s.locator.level === 2)).toBe(true);
     expect(secs.some((s) => s.whole)).toBe(false);
     expect(secs.map((s) => s.title)).toEqual(['Module Goal', 'Lesson Structure (Topics)']);
+  });
+
+  it('keeps a `## ` document byte-identical when a section is saved unedited', () => {
+    // The property the rebuild could not have: an unedited save is a no-op.
+    const secs = sectionsOf(STD_H2_DOC);
+    secs.forEach((sec) => {
+      expect(replaceHeadingSection(STD_H2_DOC, sec.locator, sec.content)).toBe(STD_H2_DOC);
+    });
+  });
+
+  it('leaves a `## ` document with a re-derivable sections dict after a splice', () => {
+    // BlueprintPage stores parseSectionsFromText(spliced) alongside the text.
+    // It must not come back empty: promptops_app/core/shared.py looks labelled
+    // snippets (Learning Objectives among them) up in that dict with no
+    // full_content fallback, so an empty one silently starves downstream
+    // generation. Verified across all 238 stored `## ` versions.
+    const secs = sectionsOf(STD_H2_DOC);
+    const spliced = replaceHeadingSection(STD_H2_DOC, secs[0].locator, 'NEW BODY');
+    expect(Object.keys(parseSectionsFromText(spliced)))
+      .toEqual(Object.keys(parseSectionsFromText(STD_H2_DOC)));
+    expect(Object.keys(parseSectionsFromText(spliced)).length).toBeGreaterThan(0);
+  });
+
+  it('keeps text above the first `## ` heading editable and intact', () => {
+    const doc = [
+      '# Day 4 Blueprint', '', 'Generated 2026-08-26.', '',
+      '## Module Goal', '', 'goal body', '',
+      '## Lesson Structure', '', 'lesson body',
+    ].join('\n');
+    const secs = sectionsOf(doc);
+    expect(secs[0].title).toBe(DOCUMENT_HEADER_SECTION_TITLE);
+    // Editing a later section must not disturb the preamble — the rebuild
+    // dropped everything above the first `## ` outright.
+    const out = replaceHeadingSection(doc, secs[2].locator, 'new lesson body');
+    expect(out).toContain('# Day 4 Blueprint');
+    expect(out).toContain('Generated 2026-08-26.');
+    expect(out).toContain('goal body');
+    expect(out).toContain('new lesson body');
   });
 
   it('never re-offers `## ` sections the UI deliberately hides', () => {
@@ -366,5 +412,77 @@ describe('the contract the save path depends on', () => {
     const secs = sectionsOf(doc);
     expect(byTitle(secs, 'Screen One').content).toContain('Validation complete');
     expect(replaceHeadingSection(doc, secs[0].locator, secs[0].content)).toBe(doc);
+  });
+});
+
+describe('choosing the heading level is one decision for every document', () => {
+  // Real shape of blueprint_versions 1 and 191: TWO `# ` headings above the real
+  // `## ` outline. Trying `#` first cleared the two-heading floor and collapsed
+  // both documents from 4 and 3 sections into 2 — which is why `#` is ordered
+  // LAST rather than first.
+  const TWO_H1_PLUS_H2 = [
+    '# MODULE 1 BLUEPRINT', '', 'intro', '',
+    '## Step 2: Module Blueprint Overview', '', 'overview body', '',
+    '## Step 3: Lesson-by-Lesson Blueprint', '', 'lessons body', '',
+    '## Step 4: Module-Level Components', '', 'components body', '',
+    '# OUTPUT SCHEMA (User-Facing Format)', '', 'schema body',
+  ].join('\n');
+
+  it('prefers the `## ` outline over two `# ` title headings', () => {
+    const secs = sectionsOf(TWO_H1_PLUS_H2);
+    expect(secs.every((s) => s.locator.level === 2)).toBe(true);
+    expect(secs.map((s) => s.title)).toEqual([
+      DOCUMENT_HEADER_SECTION_TITLE,
+      'Module Blueprint Overview',
+      'Lesson-by-Lesson Blueprint',
+      'Module-Level Components',
+    ]);
+  });
+
+  it('drops to `### ` when a lone `## ` is not an outline', () => {
+    // 220 of 241 stored documents looked like this and rendered as ONE editable
+    // section, so "Regenerate Section" meant "regenerate everything".
+    const doc = [
+      '# Module Blueprint', '', 'preamble', '',
+      '## Module Blueprint Details', '',
+      '### Module Structure', '', 'structure body', '',
+      '### Module Assessment', '', 'assessment body', '',
+      '### Module Components', '', 'components body',
+    ].join('\n');
+    const secs = sectionsOf(doc);
+    expect(secs.every((s) => s.locator.level === 3)).toBe(true);
+    expect(secs.map((s) => s.title)).toEqual([
+      DOCUMENT_HEADER_SECTION_TITLE,
+      'Module Structure', 'Module Assessment', 'Module Components',
+    ]);
+  });
+
+  it('still uses `# ` when nothing else sections the document', () => {
+    const doc = [
+      '# Part One', '', 'body one', '',
+      '# Part Two', '', 'body two',
+    ].join('\n');
+    const secs = sectionsOf(doc);
+    expect(secs.every((s) => s.locator.level === 1)).toBe(true);
+    expect(secs.map((s) => s.title)).toEqual(['Part One', 'Part Two']);
+  });
+
+  it('keeps a single `## ` section rather than falling to whole-document', () => {
+    // No level clears the floor. One `## ` is still what the document offers,
+    // and this is what it did before the levels were unified.
+    const doc = '# Title\n\npre\n\n## Only Section\n\nbody';
+    const secs = sectionsOf(doc);
+    expect(secs.some((s) => s.whole)).toBe(false);
+    expect(secs.map((s) => s.title)).toEqual([
+      DOCUMENT_HEADER_SECTION_TITLE, 'Only Section',
+    ]);
+  });
+
+  it('every level splices back byte-identically when saved unedited', () => {
+    for (const doc of [TWO_H1_PLUS_H2, H3_DOC, STD_H2_DOC]) {
+      for (const sec of sectionsOf(doc)) {
+        expect(replaceHeadingSection(doc, sec.locator, sec.content)).toBe(doc);
+      }
+    }
   });
 });

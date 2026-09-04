@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import httpx
 from fastapi import HTTPException, UploadFile
@@ -187,7 +187,8 @@ class DISClient:
                                  current_user=current_user, client_id=client_id)
 
     def build_digests_sync(self, block: str, force: bool = False, current_user: Any = None,
-                           client_id: str = "", map_guidance: str = "") -> Dict[str, Any]:
+                           client_id: str = "", map_guidance: str = "",
+                           extra_document_ids: Sequence[str] | None = None) -> Dict[str, Any]:
         """Build (or refresh, lazily + cached) the per-day digest tier for a block.
         Returns the build report (built/cached/failed, flags, attribution).
 
@@ -212,6 +213,15 @@ class DISClient:
         promptops_app.services.prompt_guidance.resolve_prompt_guidance) — forwarded to
         every day's MAP call and folded into the cache key on the DIS side. "" (the
         default) reproduces this call's exact pre-existing behavior.
+
+        ``extra_document_ids`` (optional) are Source Library documents the requester
+        pinned in the generation form, to be digested IN ADDITION to the block's own
+        enumerated units. Sent only when non-empty, so an unused selector leaves the
+        request body byte-identical to what DIS has always received. A DIS that does
+        not know the field ignores it (Pydantic ``extra='ignore'`` on
+        DigestBuildRequest) and reports nothing back — the caller must therefore
+        check the report for an acknowledgement rather than assume the pin landed;
+        see promptops_app.services.block_wide_service._extra_documents_state.
         """
         deadline_s = float(_get_setting("dis_digest_build_deadline_seconds", 2400))
         interval_s = float(_get_setting("dis_digest_build_poll_seconds", 5))
@@ -224,7 +234,7 @@ class DISClient:
         for attempt in range(3):
             try:
                 reply = self._start_digest_build(block, force, current_user, client_id,
-                                                 map_guidance)
+                                                 map_guidance, extra_document_ids)
                 break
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -242,10 +252,12 @@ class DISClient:
             return reply
         return self._await_digest_build(block, current_user, client_id,
                                         deadline_s=deadline_s, interval_s=interval_s,
-                                        force=force, map_guidance=map_guidance)
+                                        force=force, map_guidance=map_guidance,
+                                        extra_document_ids=extra_document_ids)
 
     def _start_digest_build(self, block: str, force: bool, current_user: Any,
-                            client_id: str, map_guidance: str) -> Dict[str, Any]:
+                            client_id: str, map_guidance: str,
+                            extra_document_ids: Sequence[str] | None = None) -> Dict[str, Any]:
         """Ask DIS to begin a build. Returns as soon as it is running, not when done.
 
         Idempotent per block: DIS reserves a single-flight slot, so calling this while a
@@ -257,12 +269,19 @@ class DISClient:
         ``map_guidance``, not its own. Two users generating the same block from
         different prompts at the same moment is the only way to reach it, and waiting
         for the running build beats refusing to build at all — but the second user's
-        guidance is not what produced the digests they get.
+        guidance is not what produced the digests they get. The same is true of
+        ``extra_document_ids``: the joiner inherits the running build's pins.
         """
+        payload: Dict[str, Any] = {"block": block, "force": force,
+                                   "map_guidance": map_guidance, "wait": False}
+        # Only when there is something to pin. An empty list would still be a body
+        # DIS has never seen, and this call is the one place a difference could
+        # change a cache key or a code path for every existing caller.
+        if extra_document_ids:
+            payload["extra_document_ids"] = [str(x) for x in extra_document_ids]
         reply = self.request_sync(
             "POST", "/context/digests/build",
-            json={"block": block, "force": force, "map_guidance": map_guidance,
-                  "wait": False},
+            json=payload,
             current_user=current_user, client_id=client_id,
             # Generous only by the standards of a call that no longer waits for the
             # build: DIS reserves its slot and spawns a thread, so this returns in
@@ -273,7 +292,8 @@ class DISClient:
 
     def _await_digest_build(self, block: str, current_user: Any, client_id: str, *,
                             deadline_s: float, interval_s: float,
-                            force: bool, map_guidance: str) -> Dict[str, Any]:
+                            force: bool, map_guidance: str,
+                            extra_document_ids: Sequence[str] | None = None) -> Dict[str, Any]:
         """Poll until the build reaches a terminal state, then return its report.
 
         Three conditions have to be distinguished, and conflating any two of them is
@@ -338,7 +358,7 @@ class DISClient:
                              "re-issuing, attempt %s", block, restarts + 1)
                 try:
                     self._start_digest_build(block, force, current_user, client_id,
-                                             map_guidance)
+                                             map_guidance, extra_document_ids)
                 except Exception as exc:  # noqa: BLE001
                     # A DIS that just restarted may not be accepting requests yet. That
                     # is the same transient condition as a failed poll, and letting it
@@ -393,11 +413,21 @@ class DISClient:
                                  timeout=timeout)
 
     def get_digests_bundle_sync(self, block: str, current_user: Any = None,
-                                client_id: str = "") -> Dict[str, Any]:
+                                client_id: str = "",
+                                extra_document_ids: Sequence[str] | None = None) -> Dict[str, Any]:
         """Fetch the REDUCE bundle for a block: {enumerate, digests}. Read-only —
-        call build_digests_sync first to ensure freshness."""
+        call build_digests_sync first to ensure freshness.
+
+        ``extra_document_ids`` repeats the pins passed to build_digests_sync so the
+        bundle carries their digests alongside the block's own; sent only when
+        non-empty, and dropped without complaint by a DIS that predates the field
+        (FastAPI ignores unknown query params), which is why the caller verifies the
+        answer instead of trusting the request."""
+        params: Dict[str, Any] = {"block": block}
+        if extra_document_ids:
+            params["extra_document_ids"] = [str(x) for x in extra_document_ids]
         return self.request_sync("GET", "/context/digests",
-                                 params={"block": block},
+                                 params=params,
                                  current_user=current_user, client_id=client_id)
 
     def get_day_context_sync(self, block: str, day: int, audience: str = "instructor",

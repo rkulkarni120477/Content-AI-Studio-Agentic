@@ -1,5 +1,5 @@
 import { api } from '@services/apiClient';
-import { FEEDBACK } from '@services/endpoints';
+import { FEEDBACK, GENERATE } from '@services/endpoints';
 
 export const feedbackService = {
   /** List active feedback items for a course. */
@@ -44,12 +44,24 @@ export const feedbackService = {
       blueprint_id: blueprintId == null || blueprintId === '' ? null : Number(blueprintId),
     }),
 
-  /** Apply selected items to regenerate a module's blocks. */
+  /** Queue applying selected items to regenerate a module's blocks.
+   *  Returns a job handle { job_id, status, status_url }; the caller polls
+   *  getJobStatus until terminal, then reads applyResult for the summary.
+   *  Regeneration is one LLM call per block and runs in a background worker,
+   *  so this enqueue call itself returns immediately. */
   apply: ({ itemIds, blueprintId }) =>
     api.post(FEEDBACK.APPLY, {
       item_ids: itemIds,
       blueprint_id: blueprintId == null || blueprintId === '' ? null : Number(blueprintId),
     }),
+
+  /** Poll a background job's status. Short per-request timeout: a status read is
+   *  one indexed DB read, so a stalled poll should retry next tick, not occupy
+   *  the app-wide two-minute default. */
+  getJobStatus: (jobId) => api.get(GENERATE.JOB_STATUS(jobId), { timeout: 15_000 }),
+
+  /** Read the regenerate summary of a completed apply-feedback job. */
+  applyResult: (jobId) => api.get(FEEDBACK.APPLY_RESULT(jobId)),
 
   deleteItem: (itemId) => api.delete(FEEDBACK.DELETE_ITEM(itemId)),
 

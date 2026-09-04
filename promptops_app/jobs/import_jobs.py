@@ -127,6 +127,18 @@ def run_import_job(job_id: str) -> None:
         )
         reconstructed = True   # Editor has real content — never hide/archive past this point
 
+        # The course was created invisible (is_active=False — see start_import
+        # in app/api/v1/routers/imports.py) so a request that fails, or a job
+        # that never runs, can't leave a contentless shell badged "Imported" in
+        # the Titles list. Reconstruction just succeeding is exactly the point
+        # "the package has been successfully imported and its content has been
+        # rebuilt" — unhide it now, before the non-fatal reverse-gen stages
+        # below, which must never gate visibility of an already-usable Editor.
+        course_row = db.get(Course, course_id)
+        if course_row is not None:
+            course_row.is_active = True
+            db.commit()
+
         # ── Stages 5–7 — Reverse-generate design artifacts (non-fatal) ─
         # Runs only after reconstruction succeeded. Any failure here leaves the
         # Editor fully usable and is retryable — it must NEVER fail the import.
@@ -303,7 +315,7 @@ def _mark_failed(db, job, course_import, message: str, *, course_id: int | None 
         # "Imported" in the Titles list (same is_active flag the archive
         # endpoint uses; the course row + any partial content stay in place
         # for support/debugging, just no longer listed — see
-        # course_repository._failed_import_course_ids for the list-side
+        # course_repository._is_empty_import_shell for the list-side
         # exclusion, since the Titles page itself fetches with
         # include_archived=true). A separate commit so this write can't be
         # lost to, or roll back, the course_import status write above.

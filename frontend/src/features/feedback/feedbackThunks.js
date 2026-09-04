@@ -65,11 +65,54 @@ export const updateFeedbackItemThunk = createAsyncThunk(
   },
 );
 
+// Apply is a background job (one LLM call per block, minutes on a large module).
+// Submit, then poll /jobs/{id} to a terminal state. The thunk stays pending for
+// the whole poll, so the modal spinner (isApplying) and toasts work unchanged.
+const APPLY_POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
+const APPLY_MAX_POLLS = 600;        // ~20 min ceiling; the job continues server-side regardless
+const APPLY_MAX_POLL_ERRORS = 5;    // ride out transient network blips before giving up
+
 export const applyFeedbackThunk = createAsyncThunk(
   'feedback/apply',
   async ({ itemIds, blueprintId }, { rejectWithValue }) => {
     try {
-      const result = await feedbackService.apply({ itemIds, blueprintId });
+      const accepted = await feedbackService.apply({ itemIds, blueprintId });
+
+      // Backwards-safe: tolerate the old synchronous summary shape if the server
+      // has not been upgraded yet.
+      let result = accepted?.job_id ? null : accepted;
+
+      if (accepted?.job_id) {
+        const jobId = accepted.job_id;
+        let pollErrors = 0;
+        for (let i = 0; i < APPLY_MAX_POLLS; i += 1) {
+          let status;
+          try {
+            status = await feedbackService.getJobStatus(jobId);
+            pollErrors = 0;
+          } catch (e) {
+            // A poll blip does not mean the job failed — it runs server-side.
+            // Retry a few times before surfacing an error.
+            pollErrors += 1;
+            if (pollErrors >= APPLY_MAX_POLL_ERRORS) throw e;
+          }
+          if (status?.status === 'completed') {
+            result = await feedbackService.applyResult(jobId);
+            break;
+          }
+          if (status?.status === 'failed' || status?.status === 'cancelled') {
+            return rejectWithValue(status.error_message || 'Applying feedback failed. Please try again.');
+          }
+          await new Promise((resolve) => { setTimeout(resolve, APPLY_POLL_INTERVAL_MS); });
+        }
+        if (!result) {
+          return rejectWithValue(
+            'Applying feedback is taking longer than expected. It may still finish — '
+            + 'refresh the module to check.',
+          );
+        }
+      }
+
       const n = result?.regenerated?.length ?? 0;
       const skipped = result?.skipped ?? 0;
       const label = result?.module_label || 'module';

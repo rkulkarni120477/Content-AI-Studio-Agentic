@@ -267,33 +267,38 @@ class EmbeddingConfig(BaseModel):
     model_id: str = "amazon.titan-embed-text-v2:0"
     dimension: int = 1024
     region: str = "us-east-1"
-    max_input_chars: int = 50000
+    # See the client YAMLs: Titan v2 accepts 8,192 tokens, and the old 50000
+    # exceeded that for long units — which failed the embedding and then indexed
+    # the unit with an empty vector rather than failing the job.
+    max_input_chars: int = 24000
 
 # ---------------------------------------------------------------------------
-# Environment-driven store location
+# Where the backing stores live
 #
-# The client YAMLs are committed, so any connection string written into them is
-# baked into the image and every environment is forced onto the same database.
-# That is how local, dev and prod all ended up pointed at one dev RDS whose
-# security group admits a single hard-coded /32 — a setup that fails the moment
-# an IP changes, and that cannot be repointed without editing a tracked file.
-# (It also means a Postgres password lives in git; rotate it and move it here.)
+# The client YAML is the ONLY source of a store's connection details. For AIM
+# that is config/clients/aim.yaml: structure_store.url names the DIS Postgres,
+# vector_store.endpoint/index_name name the OpenSearch domain and index. Every
+# environment — local, dev and prod — reads the same file and therefore the same
+# stores; DIS is one shared corpus, not one per environment.
 #
-# Two mechanisms, both additive — with no environment variables set, behaviour is
-# byte-identical to the YAML literal:
+# There used to be a second, silent path: DIS_STRUCTURE_STORE_URL /
+# DIS_VECTOR_STORE_ENDPOINT / DIS_VECTOR_STORE_INDEX (plus _<CLIENT> forms) that
+# outranked the YAML. It was removed on 2026-08-27, the day it cost an afternoon:
+# dev exported DIS_STRUCTURE_STORE_URL pointing at an empty sibling database, so
+# every Block-9 digest build died with "No calendar found for block 'Block 9'"
+# while the committed YAML — the only file anyone thought to read — named the
+# populated store. An override that repoints a database without appearing in any
+# tracked file makes the deployment undiagnosable from the repo, and env vars are
+# invisible in code review in a way a YAML diff is not.
 #
-#   1. ``${VAR}`` / ``${VAR:-fallback}`` placeholders anywhere in the client
-#      config are expanded from the environment.
-#   2. Explicit overrides for the connection-critical fields, so an environment
-#      can repoint a store without the YAML mentioning it at all:
+# What the environment still decides (deliberately, and none of it a store
+# location): the pipeline's model ids (DIS_MODEL_*, below — model availability is
+# a per-region, per-principal fact the YAML cannot settle) and credentials
+# (AWS_*/DIS_BEDROCK_*, which must never be committed).
 #
-#        DIS_STRUCTURE_STORE_URL          / DIS_STRUCTURE_STORE_URL_<CLIENT>
-#        DIS_VECTOR_STORE_ENDPOINT        / DIS_VECTOR_STORE_ENDPOINT_<CLIENT>
-#        DIS_VECTOR_STORE_INDEX           / DIS_VECTOR_STORE_INDEX_<CLIENT>
-#
-# Precedence: per-client env > global env > expanded YAML > YAML literal. The
-# per-client form exists because tenants may legitimately diverge (separate
-# databases per client) while sharing one image.
+# ``${VAR}`` / ``${VAR:-fallback}`` placeholders in the YAML are still expanded,
+# because there the YAML itself names the variable: the file stays the record of
+# where a store lives, and the secret it needs can live outside git.
 # ---------------------------------------------------------------------------
 
 _ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -322,13 +327,6 @@ def _expand_env_in_tree(node: Any) -> Any:
     return node
 
 
-# (config section, field) -> env var stem
-_STORE_ENV_OVERRIDES = (
-    ("structure_store", "url", "DIS_STRUCTURE_STORE_URL"),
-    ("vector_store", "endpoint", "DIS_VECTOR_STORE_ENDPOINT"),
-    ("vector_store", "index_name", "DIS_VECTOR_STORE_INDEX"),
-)
-
 # Which Bedrock model each pipeline step uses, overridable per environment.
 #
 # Model availability is an environment fact, not a code fact: an ID can be
@@ -356,18 +354,6 @@ def _client_suffix(client_id: str) -> str:
 def _env_for(stem: str, suffix: str) -> str:
     """Per-client variable if set, else the global one. Blank counts as unset."""
     return ((os.getenv(f"{stem}_{suffix}") if suffix else None) or os.getenv(stem) or "").strip()
-
-
-def _apply_store_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
-    """Point the backing stores wherever this environment says, in place."""
-    suffix = _client_suffix(client_id)
-    for section, field, stem in _STORE_ENV_OVERRIDES:
-        value = _env_for(stem, suffix)
-        if not value:
-            continue
-        converted.setdefault(section, {})
-        if isinstance(converted[section], dict):
-            converted[section][field] = value
 
 
 def _apply_model_env_overrides(converted: Dict[str, Any], client_id: str) -> None:
@@ -701,10 +687,10 @@ class TenantRegistry:
             if key in raw:
                 converted[key] = raw[key]
 
-        # Let the environment decide where the backing stores live, so the same
-        # image runs anywhere. See _resolve_env_placeholders / _apply_store_env.
+        # Placeholders only: the store locations themselves come from the YAML and
+        # nothing in the environment may repoint them. See the header comment above
+        # "Where the backing stores live".
         converted = _expand_env_in_tree(converted)
-        _apply_store_env_overrides(converted, client_id)
         _apply_model_env_overrides(converted, client_id)
 
         # Client-specific rule blocks stay available at runtime through cfg.client_rules.

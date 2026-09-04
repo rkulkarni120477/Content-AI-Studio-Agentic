@@ -5,6 +5,7 @@ import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@
 import { resolveProjectId } from '@utils/workspaceContext';
 import { createBlockJobThunks } from '@features/shared/blockJob';
 import { createArchiveThunks } from '@features/shared/documentArchive';
+import { labelsFromState } from '@config/tenantLabels';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -43,13 +44,30 @@ export const fetchBlueprintsThunk = createAsyncThunk(
 
 export const generateBlueprintThunk = createAsyncThunk(
   'blueprint/generate',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.project_id) {
-        return rejectWithValue('Select a project before generating a Blueprint.');
+        return rejectWithValue(`Select a project before generating a ${L.blueprint}.`);
       }
       const result = await blueprintService.generateBlueprint(payload);
-      toast.success('Blueprint generated and set as active.');
+      toast.success(`${L.blueprint} generated and set as active.`);
+      if (result?.source_context_unavailable) {
+        // Generation degrades rather than failing when the Source Library is
+        // unreachable, so the document does exist and is active — the user just
+        // has to be told it was written without its sources. Without this the
+        // two outcomes are indistinguishable: same success toast, same-looking
+        // document, and the only trace is a server log line. toast.error is
+        // this codebase's idiom for a non-blocking caution — the same call the
+        // Blueprint page already makes for "Link a CDD for best results".
+        toast.error(
+          `Generated without Source Library grounding: the library could not be `
+          + `reached, so this ${L.blueprint} used only the ${L.cdd} and the active `
+          + `style. Regenerate once it is available if you need source-grounded `
+          + `content.`,
+          { duration: 9000 },
+        );
+      }
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -77,19 +95,149 @@ export const {
     // Lets resumeThunk refuse to start a duplicate poll chain for a job it is
     // already polling (one per remount would mean one success toast per remount).
     selectBlockJob: (state) => state.blueprint?.blockJob,
-    completedMessage: 'Block Blueprint generated and set as active.',
-    failedMessage: 'Blueprint generation failed.',
+    completedMessage: (L) => `Block ${L.blueprint} generated and set as active.`,
+    failedMessage: (L) => `${L.blueprint} generation failed.`,
     onComplete: (dispatch, courseId) => {
       if (courseId) dispatch(fetchBlueprintsThunk(courseId));
     },
   });
 
+/**
+ * Import an existing Outline file. Mirrors generateBlueprintThunk's outcome — the
+ * server persists AND pins the imported Outline (a new version for that day, or a
+ * new Outline), and this returns the full blueprint object so the slice can drop
+ * it into the list and set it active, showing it exactly like a generated one.
+ */
+export const importBlueprintThunk = createAsyncThunk(
+  'blueprint/import',
+  async (payload, { rejectWithValue }) => {
+    try {
+      if (!payload?.projectId) {
+        return rejectWithValue('Select a project before importing an Outline.');
+      }
+      const result = await blueprintService.importBlueprint(payload, payload.onProgress);
+      toast.success('Outline imported and set as active.');
+      // Degraded import (e.g. the file couldn't be structured and came in as one
+      // section) — tell the user rather than showing only the success toast.
+      if (result?.importWarnings?.length) {
+        toast(result.importWarnings[0], { icon: '⚠️' });
+      }
+      return result;
+    } catch (e) {
+      // Non-technical fallback per CAS-98 AC #5 — the server's own 400 message
+      // (unsupported type, empty file, undetermined day) is surfaced when present.
+      return rejectWithValue(
+        extractErrorMessage(e)
+        || "We couldn't process this file. Please check the file format and try again.",
+      );
+    }
+  },
+);
+
+// ── Async Outline import (timeout-proof) ─────────────────────────────────────
+// The upload POST returns a job handle immediately (no long request → no proxy
+// 504); the slow extract + LLM restructure runs in a background worker and we
+// poll for the result. This is the path the UI uses.
+const IMPORT_POLL_INTERVAL_MS = 2000;
+const IMPORT_MAX_POLL_ERRORS = 20;
+const isTerminalImportStatus = (s) => ['completed', 'failed', 'cancelled'].includes(String(s || '').toLowerCase());
+
+/** Poll one import job to completion, re-scheduling itself until terminal. */
+export const pollOutlineImportJobThunk = createAsyncThunk(
+  'blueprint/pollImport',
+  async ({ jobId, courseId, errorCount = 0 }, { dispatch, rejectWithValue }) => {
+    try {
+      const status = await blueprintService.getJobStatus(jobId);
+      if (!isTerminalImportStatus(status.status)) {
+        setTimeout(
+          () => dispatch(pollOutlineImportJobThunk({ jobId, courseId, errorCount: 0 })),
+          IMPORT_POLL_INTERVAL_MS,
+        );
+        return status;
+      }
+      if (status.status === 'completed') {
+        toast.success('Outline imported and set as active.');
+        // Degraded (single-section) import — the worker records it as the job warning.
+        if (status.warning) toast(status.warning, { icon: '⚠️' });
+        if (courseId) dispatch(fetchBlueprintsThunk(courseId));
+        if (status.generation_id) {
+          try {
+            const blueprint = await blueprintService.getBlueprint(status.generation_id);
+            return { ...status, blueprint };
+          } catch { /* the list refetch above still surfaces the new Outline */ }
+        }
+      } else if (status.status === 'failed') {
+        // AC #5 non-technical messages — the worker's own message (unsupported
+        // type, undetermined day, timeout fallback) is surfaced when present.
+        toast.error(
+          status.error_message
+          || 'Unable to process the file. The file could not be processed at this time. Please try again.',
+        );
+      }
+      return status;
+    } catch (e) {
+      // Transient poll error — retry a bounded number of times. The job keeps
+      // running server-side; we only lost contact with the status endpoint.
+      if (errorCount + 1 < IMPORT_MAX_POLL_ERRORS) {
+        setTimeout(
+          () => dispatch(pollOutlineImportJobThunk({ jobId, courseId, errorCount: errorCount + 1 })),
+          IMPORT_POLL_INTERVAL_MS,
+        );
+        return { status: 'running', transientError: true };
+      }
+      return rejectWithValue({ lostContact: true, message: extractErrorMessage(e) });
+    }
+  },
+);
+
+/** Enqueue an async import, then start polling its job. */
+export const importBlueprintAsyncThunk = createAsyncThunk(
+  'blueprint/importAsync',
+  async (payload, { dispatch, rejectWithValue }) => {
+    try {
+      if (!payload?.projectId) {
+        return rejectWithValue('Select a project before importing an Outline.');
+      }
+      const res = await blueprintService.importBlueprintAsync(payload, payload.onProgress);
+      if (!res?.job_id) {
+        return rejectWithValue('Import did not start. Please try again.');
+      }
+      dispatch(pollOutlineImportJobThunk({ jobId: res.job_id, courseId: Number(payload.courseId) }));
+      return res;   // { job_id, status, poll_url }
+    } catch (e) {
+      return rejectWithValue(
+        extractErrorMessage(e)
+        || "We couldn't process this file. Please check the file format and try again.",
+      );
+    }
+  },
+);
+
+/** On mount, reattach to an import already running for this course (survives a refresh). */
+export const resumeOutlineImportJobThunk = createAsyncThunk(
+  'blueprint/resumeImport',
+  async ({ courseId }, { getState, dispatch }) => {
+    try {
+      if (getState().blueprint?.importJob?.jobId) return null;   // already watching
+      const res = await blueprintService.getActiveOutlineImportJob(Number(courseId));
+      const job = res?.job ?? null;
+      if (job?.job_id) {
+        dispatch(pollOutlineImportJobThunk({ jobId: job.job_id, courseId: Number(courseId) }));
+        return job;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
+);
+
 export const setActiveBlueprintThunk = createAsyncThunk(
   'blueprint/setActive',
-  async ({ blueprintId, courseId }, { rejectWithValue }) => {
+  async ({ blueprintId, courseId }, { getState, rejectWithValue }) => {
     try {
       const result = await blueprintService.pinBlueprint(blueprintId, courseId);
-      toast.success('Active blueprint updated.');
+      toast.success(`Active ${labelsFromState(getState).blueprintLower} updated.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -123,10 +271,10 @@ export const activateBlueprintVersionThunk = createAsyncThunk(
 
 export const commitBlueprintVersionThunk = createAsyncThunk(
   'blueprint/commitVersion',
-  async ({ blueprintId, data }, { rejectWithValue }) => {
+  async ({ blueprintId, data }, { getState, rejectWithValue }) => {
     try {
       const result = await blueprintService.commitVersion(blueprintId, data);
-      toast.success('Blueprint version saved.');
+      toast.success(`${labelsFromState(getState).blueprint} version saved.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -220,6 +368,7 @@ export const fetchArchivedBlueprintsThunk = createAsyncThunk(
 const blueprintArchiveThunks = createArchiveThunks({
   name: 'blueprint',
   label: 'Blueprint',
+  labelKey: 'blueprint',
   api: {
     archive: blueprintService.archiveBlueprint,
     restore: blueprintService.restoreBlueprint,

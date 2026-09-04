@@ -181,6 +181,10 @@ def _is_dlu_prompt(*texts: str) -> bool:
 # the async worker (jobs/block_wide_jobs.py) can share them without a router↔jobs
 # import cycle. These aliases keep the local names used by generate_cdd() and the
 # coverage eval; persist_cdd_and_respond is also the legacy path's shared tail.
+from promptops_app.services.deliverable_labels import (  # noqa: E402
+    filename_slug,
+    label as deliverable_label,
+)
 from promptops_app.services.block_wide_service import (  # noqa: E402
     generate_cdd_via_digests as _generate_cdd_via_digests,
     persist_cdd_and_respond as _persist_and_respond,
@@ -224,17 +228,25 @@ def _reject_if_truncated(result, what: str) -> None:
 # Helper — load CDD or raise 404
 # ---------------------------------------------------------------------------
 
-def _get_cdd_or_404(db: Session, cdd_id: int):
+def _get_cdd_or_404(db: Session, cdd_id: int, current_user):
     """
-    Fetch a CDD by ID from the database.
+    Fetch a CDD by ID from the database, scoped to the caller's tenant.
 
-    Raises ``NotFoundError`` (HTTP 404) if no CDD with that ID exists.
-    Centralising this lookup avoids duplicating the same null-check in every endpoint.
+    Raises ``NotFoundError`` (HTTP 404) if no CDD with that ID exists, OR if
+    it exists but belongs to a different tenant — a cross-tenant CDD 404s
+    exactly like a nonexistent one (no enumeration oracle), same contract as
+    prompts._get_prompt_or_404. ``get_cdd_by_id`` is itself unfiltered, so
+    without this every one of this helper's ~14 callers (get/update/archive/
+    restore/versions/pin/export/…) would let any authenticated user act on
+    any tenant's CDD just by knowing its id.
     """
     from promptops_app.repositories import cdd_repository
+    from app.core.tenant_context import visible_to_tenant
 
     cdd = cdd_repository.get_cdd_by_id(db, cdd_id)
-    if cdd is None:
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    project_id = getattr(current_user, "_project_id", None)
+    if cdd is None or not visible_to_tenant(cdd.project_id, project_id, is_platform_admin):
         raise NotFoundError("CDD", cdd_id)
     return cdd
 
@@ -278,21 +290,32 @@ def list_cdds(
     from promptops_app.repositories import cdd_repository
     from app.services import design_doc_archive as archive_svc
 
-    effective_project_id = project_id if current_user.role == "admin" else (
-        project_id or getattr(current_user, "default_project_id", None)
-    )
+    # ``current_user.role == "admin"`` is a per-tenant membership role, not
+    # platform-admin — a tenant's own admin used to be able to pass another
+    # tenant's project_id (or omit project_id/course_id entirely and fall
+    # through to list_all_cdds, every tenant, unfiltered) and see it. Only a
+    # genuine platform admin may choose an arbitrary/omitted project_id; a
+    # tenant caller is always scoped to their own project regardless of what
+    # they pass, same rule as prompts.list_prompts.
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    effective_project_id = project_id if is_platform_admin else getattr(current_user, "_project_id", None)
 
     if effective_project_id:
         all_cdds = cdd_repository.list_cdds_for_scope(
             db, project_id=effective_project_id, course_id=course_id,
             include_archived=include_archived,
         )
-    elif course_id:
+    elif is_platform_admin and course_id:
         all_cdds = cdd_repository.list_cdds_for_scope(
             db, course_id=course_id, include_archived=include_archived,
         )
-    else:
+    elif is_platform_admin:
         all_cdds = cdd_repository.list_all_cdds(db, include_archived=include_archived)
+    else:
+        # Non-platform-admin with no project assigned at all — nothing to
+        # scope to, so nothing shown rather than every tenant's rows (this
+        # also closes off using a bare course_id to sidestep the boundary).
+        all_cdds = []
 
     total = len(all_cdds)
     start = (page - 1) * page_size
@@ -1021,7 +1044,7 @@ def get_cdd_references(
     """Return the reference/blocker snapshot for one CDD."""
     from app.services import design_doc_archive as archive_svc
 
-    _get_cdd_or_404(db, cdd_id)
+    _get_cdd_or_404(db, cdd_id, current_user)
     return DocumentReferences.from_refs(
         archive_svc.references_for(db, archive_svc.CDD, cdd_id)
     )
@@ -1057,7 +1080,7 @@ def archive_cdd(
     from app.core.exceptions import ResourceInUseError
     from promptops_app.services.audit_service import log_audit_event
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     outcome = archive_svc.archive(
         db, archive_svc.CDD, cdd, actor=current_user.username, unpin=unpin,
     )
@@ -1107,7 +1130,7 @@ def restore_cdd(
     from app.services import design_doc_archive as archive_svc
     from promptops_app.services.audit_service import log_audit_event
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     changed = archive_svc.restore(db, archive_svc.CDD, cdd)
     if changed:
         log_audit_event(
@@ -1154,7 +1177,7 @@ def permanently_delete_cdd(
     from app.services import design_doc_archive as archive_svc
     from promptops_app.services.audit_service import log_audit_event
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     title, course_id, project_id = cdd.title, cdd.course_id, cdd.project_id
 
     refs = archive_svc.purge(db, archive_svc.CDD, cdd)
@@ -1207,7 +1230,7 @@ def get_cdd(
     The active version content is embedded in the response to avoid a second
     API call, matching the Streamlit pattern of loading both simultaneously.
     """
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     return build_cdd_read(db, cdd)
 
 
@@ -1229,7 +1252,7 @@ def list_cdd_versions(
     """Return all saved versions for a CDD, newest first."""
     from promptops_app.repositories import cdd_repository
 
-    _get_cdd_or_404(db, cdd_id)  # validates existence
+    _get_cdd_or_404(db, cdd_id, current_user)  # validates existence
     versions = cdd_repository.list_cdd_versions(db, cdd_id)
     return [CDDVersionListItem.model_validate(v) for v in versions]
 
@@ -1259,7 +1282,7 @@ def get_cdd_version(
     """
     from promptops_app.repositories import cdd_repository
 
-    _get_cdd_or_404(db, cdd_id)
+    _get_cdd_or_404(db, cdd_id, current_user)
     version_record = cdd_repository.get_cdd_version(db, cdd_id, version)
 
     if version_record is None:
@@ -1296,7 +1319,7 @@ def activate_cdd_version(
     """
     from promptops_app.database import CDDVersion
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
 
     version_record = db.query(CDDVersion).filter(
         CDDVersion.cdd_id == cdd_id,
@@ -1356,7 +1379,7 @@ def create_cdd_version(
     from promptops_app.database import CDDVersion
     from promptops_app.services.audit_service import log_audit_event
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
 
     # Deactivate all existing versions before creating the new one.
     db.query(CDDVersion).filter(CDDVersion.cdd_id == cdd_id).update(
@@ -1429,7 +1452,7 @@ def regenerate_cdd_item(
     )
     from promptops_app.services.usage_service import UsageLogContext
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     course_title = getattr(cdd, "course_title", None) or request_body.section_key
 
     original = request_body.section_content or ""
@@ -1845,7 +1868,7 @@ def repair_cdd_digests(
     from app.core.dis_access import resolve_course_dis_client
     from app.services import cdd_deep_context as deep_svc
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     block = deep_svc.resolve_block(db, cdd)
     if not block:
         raise WorkflowError(
@@ -1917,7 +1940,7 @@ def regenerate_cdd_section(
     from promptops_app.services.llm_service import generate_with_metadata
     from promptops_app.services.usage_service import UsageLogContext
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     course_title = getattr(cdd, "course_title", None) or request_body.section_key
 
     # The request body carries no section content — the current text never left
@@ -2097,7 +2120,7 @@ def pin_cdd(
     from promptops_app.repositories.course_repository import set_active_cdd
     from app.services import design_doc_archive as archive_svc
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
     # Pinning an archive would quietly put a document someone deliberately
     # retired back in front of every generation for this course.
     archive_svc.assert_live(cdd, archive_svc.CDD)
@@ -2146,7 +2169,7 @@ def export_cdd(
     from promptops_app.repositories import cdd_repository
     from promptops_app.services.export_service import ExportRequest, export_content
 
-    cdd = _get_cdd_or_404(db, cdd_id)
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
 
     if not cdd.active_version:
         raise WorkflowError("This CDD has no active version to export.")
@@ -2172,7 +2195,12 @@ def export_cdd(
                 sheets.append((label, clean))
         if sheets:
             buf = build_xlsx_worksheets(cdd.title, sheets)
-            fname = f"CDD_{cdd.title.replace(' ', '_')}_{cdd.active_version}.xlsx"
+            # Prefixed with the tenant's own word for the deliverable. A tenant
+            # that calls this a Blueprint was still handed a file named
+            # CDD_<title>.xlsx — and the title itself said CDD too, so the word
+            # appeared twice in a filename for a thing they never call that.
+            fname = (f"{filename_slug(deliverable_label(db, cdd.project_id))}_"
+                     f"{cdd.title.replace(' ', '_')}_{cdd.active_version}.xlsx")
             _log.info(
                 "cdd_exported_dlu_xlsx  user=%s  cdd_id=%d  sheets=%d",
                 current_user.username, cdd_id, len(sheets),
@@ -2226,7 +2254,8 @@ def export_cdd(
         entity_id=cdd.id,
         project_id=cdd.project_id,
         course_id=cdd.course_id,
-        file_name=f"CDD_{cdd.title.replace(' ', '_')}_{cdd.active_version}.{format}",
+        file_name=(f"{filename_slug(deliverable_label(db, cdd.project_id))}_"
+                   f"{cdd.title.replace(' ', '_')}_{cdd.active_version}.{format}"),
     )
 
     result = export_content(db, export_request)

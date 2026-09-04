@@ -84,8 +84,8 @@ export const {
     // Lets resumeThunk refuse to start a duplicate poll chain for a job it is
     // already polling (one per remount would mean one success toast per remount).
     selectBlockJob: (state) => state.cdd?.blockJob,
-    completedMessage: 'CDD generated and set as active.',
-    failedMessage: 'CDD generation failed.',
+    completedMessage: (L) => `${L.cdd} generated and set as active.`,
+    failedMessage: (L) => `${L.cdd} generation failed.`,
     onComplete: (dispatch, courseId) => {
       queueDeferredToast('CDD created and pinned as active.');
       if (courseId) dispatch(fetchCddsThunk(courseId));
@@ -248,6 +248,7 @@ export const fetchArchivedCddsThunk = createAsyncThunk(
 const cddArchiveThunks = createArchiveThunks({
   name: 'cdd',
   label: 'CDD',
+  labelKey: 'cdd',
   api: {
     archive: cddService.archiveCdd,
     restore: cddService.restoreCdd,

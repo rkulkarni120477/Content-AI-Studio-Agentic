@@ -8,12 +8,15 @@ Product rule:
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.locks import source_index_lock
+
+logger = logging.getLogger(__name__)
 
 
 STYLE_DOC_TYPES = {
@@ -305,6 +308,23 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
 
 
 def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
+    """The allow-set every retrieval and the Source Library are built from.
+
+    An empty index is returned on failure so a fresh client — one that has never
+    had an upload, and so has no index object yet — starts from an empty library
+    rather than an error page. That is the ONLY case it is meant to cover.
+
+    It used to cover every case, silently. `except Exception: pass` with no log
+    meant a missing bucket, a denied read, an expired AWS session token and a
+    wrong ENVIRONMENT all produced the same answer the empty-library case does:
+    zero documents, nothing in the logs, nothing in the response to say the
+    difference. Debugging that means guessing, because the one system that knew
+    what went wrong threw it away.
+
+    So NoSuchKey/404 stays quiet — that is the legitimate empty case — and
+    everything else is logged loudly with the bucket and key it was reading, at
+    error level, because it means configured storage the service cannot read.
+    """
     writer = ArtifactWriter(tenant_cfg)
     key = source_index_key(tenant_cfg, client_id)
     try:
@@ -312,8 +332,25 @@ def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any
         if isinstance(data, dict):
             data.setdefault("sources", [])
             return data
-    except Exception:
-        pass
+        logger.error(
+            "source index for client_id=%s at %s is %s, not an object — returning an "
+            "empty library; the file is corrupt or is not a source index",
+            client_id, key, type(data).__name__)
+    except Exception as exc:  # noqa: BLE001 — the library must still render
+        code = getattr(getattr(exc, "response", None), "get", lambda *_: None)("Error") or {}
+        code = (code or {}).get("Code", "") if isinstance(code, dict) else ""
+        if code in {"NoSuchKey", "404", "NoSuchBucket"} or exc.__class__.__name__ == "FileNotFoundError":
+            logger.info(
+                "no source index yet for client_id=%s at bucket=%s key=%s — empty library",
+                client_id, getattr(writer, "processed_bucket", "?"), key)
+        else:
+            logger.error(
+                "CANNOT READ the source index for client_id=%s (bucket=%s key=%s): %s: %s. "
+                "Returning an empty library — every document will look missing and every "
+                "generation will run with no sources. Check the bucket, the credentials "
+                "and that ENVIRONMENT matches the deployment whose data you expect.",
+                client_id, getattr(writer, "processed_bucket", "?"), key,
+                type(exc).__name__, exc)
     return {
         "schema_version": "source_index_v1",
         "tenant_id": tenant_cfg.tenant_id,
@@ -432,6 +469,23 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
     }
 
 
+def extracted_chars(content_doc: Dict[str, Any]) -> int:
+    """How much text a document actually yielded, across its content units.
+
+    total_units cannot answer this. build_clean_content_document falls back to a
+    single unit holding reading_content when chunking produced nothing, so a file
+    the extractor could not read at all still records total_units = 1 — and in
+    production not one of 605 AIM records has total_units = 0, while 109 of 120
+    legacy .doc records have exactly one unit containing zero characters.
+
+    So "did anything come out of this file" is a question about characters, not
+    units, and it is the question the Source Library has to answer: a document
+    with no text cannot reach any generation, and until now it displayed the same
+    "needs_review" as a healthy one.
+    """
+    return sum(len(str(u.get("text") or "")) for u in (content_doc.get("content_units") or []))
+
+
 def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, payload: Dict[str, Any], payload_key: Optional[str] = None) -> Dict[str, str]:
     writer = ArtifactWriter(tenant_cfg)
     job_id = str(payload.get("job_id"))
@@ -441,6 +495,10 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     content_url = writer.write_json(c_key, content_doc)
     record = compact_source_record(payload, p_key, c_key)
     record["total_units"] = int(content_doc.get("total_units") or 0)
+    # Alongside total_units, and for the same reason it is set here rather than in
+    # compact_source_record: both describe the CLEAN content document retrieval
+    # reads, not the raw pipeline payload.
+    record["extracted_chars"] = extracted_chars(content_doc)
     index_url = upsert_source_record(tenant_cfg, client_id, record)
     return {"content_key": c_key, "content_url": content_url, "index_url": index_url}
 

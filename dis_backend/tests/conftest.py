@@ -30,3 +30,12 @@ def _reset_preflight_memo():
     _clear()
     yield
     _clear()
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_ambient_probe: exercise services.pipeline.common.ambient_aws_credentials "
+        "itself, opting out of the autouse patch that pins it to False so assertions "
+        "do not depend on whether the test machine has an instance role or ~/.aws",
+    )

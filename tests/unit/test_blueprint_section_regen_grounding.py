@@ -65,6 +65,25 @@ def blueprint(db, project, course):
     return bp
 
 
+def _regen_call(calls):
+    """The regeneration call, selected by content rather than by index.
+
+    Section regeneration now makes up to two LLM calls: prompt_guidance distils
+    the authoring prompt's conventions first, then the revision itself runs. The
+    distillation is memoized on a hash of the prompt text, so whether it happens
+    at all depends on what ran before it in the process — indexing calls[0] would
+    pass or fail depending on test ORDER. Selecting the call that carries the
+    revision contract is stable either way.
+    """
+    hits = [c for c in calls if "Revise the current content above" in (c["user"] or "")
+            or "REVISION INSTRUCTIONS" in (c["user"] or "")]
+    assert hits, (
+        "no regeneration call found; calls were: "
+        + repr([(c["user"] or "")[:80] for c in calls])
+    )
+    return hits[-1]
+
+
 @pytest.fixture()
 def stub_llm(monkeypatch):
     """Record the prompts and return canned text — no network, no cost.
@@ -125,7 +144,7 @@ class TestCurrentContentReachesTheModel:
         self, client, auth_headers, blueprint, stub_llm,
     ):
         _regen(client, auth_headers, blueprint.id, section_content=CURRENT)
-        prompt = stub_llm[0]["user"]
+        prompt = _regen_call(stub_llm)["user"]
         # Not a paraphrase or a summary — the actual rows the instruction is about.
         assert "| AM.I.B      | N/A             | N/A                 |" in prompt
         assert "Approval Blocker: Confirm the handbook edition for Days 14-16." in prompt
@@ -138,7 +157,7 @@ class TestCurrentContentReachesTheModel:
         # refused outright — see TestItRefusesRatherThanTruncate.
         big = "\n".join(f"| ROW-{i:04d} | data | more |" for i in range(500))
         _regen(client, auth_headers, blueprint.id, section_content=big)
-        prompt = stub_llm[0]["user"]
+        prompt = _regen_call(stub_llm)["user"]
         assert "| ROW-0000 | data | more |" in prompt
         assert "| ROW-0499 | data | more |" in prompt, "the tail was dropped"
 
@@ -148,13 +167,13 @@ class TestCurrentContentReachesTheModel:
         # No max_tokens meant inheriting a flat default, capping a capable model
         # at a fraction of its range.
         _regen(client, auth_headers, blueprint.id, section_content=CURRENT)
-        assert stub_llm[0]["max_tokens"] == 16384
+        assert _regen_call(stub_llm)["max_tokens"] == 16384
 
     def test_the_revise_dont_redraft_guardrail_travels_with_it(
         self, client, auth_headers, blueprint, stub_llm,
     ):
         _regen(client, auth_headers, blueprint.id, section_content=CURRENT)
-        prompt = stub_llm[0]["user"]
+        prompt = _regen_call(stub_llm)["user"]
         assert "source of truth" in prompt
         assert "Do NOT replace it with a fresh draft" in prompt
 
@@ -162,13 +181,13 @@ class TestCurrentContentReachesTheModel:
         self, client, auth_headers, blueprint, stub_llm,
     ):
         _regen(client, auth_headers, blueprint.id, section_content=CURRENT)
-        assert "ACS Alignment & Source is N/A" in stub_llm[0]["user"]
+        assert "ACS Alignment & Source is N/A" in _regen_call(stub_llm)["user"]
 
     def test_teacher_mode_is_grounded_too(
         self, client, auth_headers, blueprint, stub_llm,
     ):
         _regen(client, auth_headers, blueprint.id, section_content=CURRENT, teacher_mode=True)
-        prompt = stub_llm[0]["user"]
+        prompt = _regen_call(stub_llm)["user"]
         assert "Approval Blocker: Confirm the handbook edition for Days 14-16." in prompt
         assert "Do NOT replace it with a fresh draft" in prompt
 
@@ -186,7 +205,7 @@ class TestCallersThatCannotSupplyContent:
         self, client, auth_headers, blueprint, stub_llm,
     ):
         _regen(client, auth_headers, blueprint.id, section_content="")
-        assert "If the current content above is empty" in stub_llm[0]["user"]
+        assert "If the current content above is empty" in _regen_call(stub_llm)["user"]
 
 
 class TestTheTemplatesThemselves:
@@ -359,7 +378,7 @@ class TestTheCddContextIsScopedNotClipped:
         self, client, auth_headers, grounded_blueprint, stub_llm,
     ):
         _regen(client, auth_headers, grounded_blueprint.id, section_content=CURRENT)
-        prompt = stub_llm[0]["user"]
+        prompt = _regen_call(stub_llm)["user"]
         assert "Test — Block 2: Final Exam" in prompt
         assert "Full-block coverage (AM.I.B, AM.I.E, AM.I.G" in prompt
 
@@ -371,7 +390,7 @@ class TestTheCddContextIsScopedNotClipped:
         # instruction, so the route has to supply the scope itself.
         _regen(client, auth_headers, grounded_blueprint.id,
                feedback="fix the coverage cells", section_content=CURRENT)
-        prompt = stub_llm[0]["user"]
+        prompt = _regen_call(stub_llm)["user"]
         assert "Test — Block 2: Final Exam" in prompt, "Day 20 was not scoped in"
         assert "Introduction to Aircraft Drawings" not in prompt, "Day 1 leaked in"
 
@@ -379,7 +398,7 @@ class TestTheCddContextIsScopedNotClipped:
         self, client, auth_headers, grounded_blueprint, stub_llm,
     ):
         _regen(client, auth_headers, grounded_blueprint.id, section_content=CURRENT)
-        assert "authoritative" in stub_llm[0]["user"].lower()
+        assert "authoritative" in _regen_call(stub_llm)["user"].lower()
 
 
 class TestContextFallbacks:
@@ -388,7 +407,7 @@ class TestContextFallbacks:
     ):
         # `blueprint` has no cdd_id.
         _regen(client, auth_headers, blueprint.id, section_content=CURRENT)
-        assert "No CDD linked." in stub_llm[0]["user"]
+        assert "No CDD linked." in _regen_call(stub_llm)["user"]
 
     def test_the_builder_reports_which_path_it_took(self, db, grounded_blueprint):
         import app.api.v1.routers.blueprints as R
@@ -410,3 +429,239 @@ class TestContextFallbacks:
         )
         assert prov == {"grounded": False, "reason": "no_cdd"}
         assert text == "No CDD linked."
+
+
+# ---------------------------------------------------------------------------
+# Item regeneration — the same grounding, and the same refusal
+# ---------------------------------------------------------------------------
+
+SECTION_WITH_ITEMS = (
+    "- First bullet about drawings.\n"
+    "- Second bullet about materials.\n"
+    "- Third bullet about corrosion.\n"
+)
+
+
+@pytest.fixture()
+def stub_item_llm(monkeypatch):
+    """Capture what the item-regeneration prompt actually contains.
+
+    Patches ``generate_with_metadata``, which is what the item path calls now:
+    it needs the result object to request the model's real output ceiling and to
+    see whether the reply hit it. This fixture used to patch ``call_llm`` (the
+    parser's re-export of ``generate_text``); left alone after that switch it
+    would have stopped intercepting anything and quietly made real API calls.
+    """
+    from promptops_app.core.llm_client import LLMResult
+
+    calls: list[dict] = []
+
+    def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
+        calls.append({
+            "system": system_prompt, "user": user_prompt,
+            "max_tokens": kwargs.get("max_tokens"),
+        })
+        return LLMResult(
+            text="Regenerated bullet.", model="mock-model",
+            prompt_tokens=10, completion_tokens=20, stop_reason="end_turn",
+        )
+
+    # Patched on the PARSER's own binding, not llm_service's. blueprint_parser
+    # does `from ... import generate_with_metadata` at module scope, so it holds
+    # its own reference and patching the source module would not reach it — the
+    # section path's fixture can patch llm_service only because its import is
+    # inside the request handler and re-read per call.
+    monkeypatch.setattr(
+        "promptops_app.parsers.blueprint_parser.generate_with_metadata", fake)
+    return calls
+
+
+def _regen_item(client, auth_headers, bp_id, **overrides):
+    body = {
+        "section_key": "Part I — DLU-Wide Information",
+        "section_content": SECTION_WITH_ITEMS,
+        "item_index": 1,
+        "feedback": "why is the ACS alignment N/A",
+        "model_choice": "GPT-5.4",
+    }
+    body.update(overrides)
+    resp = client.post(
+        f"/api/v1/blueprints/{bp_id}/regenerate-item", json=body, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+class TestItemRegenerationIsGroundedToo:
+    def test_it_gets_the_scoped_day_rows_not_a_300_char_slice(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        _regen_item(client, auth_headers, grounded_blueprint.id)
+        prompt = stub_item_llm[0]["user"]
+        assert "Test — Block 2: Final Exam" in prompt
+        assert "Full-block coverage (AM.I.B, AM.I.E, AM.I.G" in prompt
+
+    def test_the_instruction_is_no_longer_polluted_with_document_text(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        # The CDD blob used to be concatenated onto the requester's words, so the
+        # model read "why is the ACS alignment N/A Module: Module 20. CDD
+        # context: # Course Design Doc..." as one instruction.
+        _regen_item(client, auth_headers, grounded_blueprint.id)
+        prompt = stub_item_llm[0]["user"]
+        line = next(l for l in prompt.split("\n") if l.startswith("Instruction:"))
+        assert line.strip() == "Instruction: why is the ACS alignment N/A"
+        assert "CDD context:" not in prompt
+
+    def test_the_module_identity_survives_the_move(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        _regen_item(client, auth_headers, grounded_blueprint.id)
+        assert "Module: Module 20" in stub_item_llm[0]["user"]
+
+    def test_an_item_too_large_to_return_is_refused_before_spending(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        # A markdown table parses to ONE item, so "one item" can be a whole day
+        # table — the case where a spliced fragment silently loses rows.
+        huge = "- " + ("word " * 200_000)
+        resp = client.post(
+            f"/api/v1/blueprints/{grounded_blueprint.id}/regenerate-item",
+            json={"section_key": "Part I", "section_content": huge, "item_index": 0,
+                  "feedback": "tidy", "model_choice": "GPT-5.4"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "REGENERATION_TOO_LARGE"
+        assert stub_item_llm == [], "the model was called despite the refusal"
+
+    def test_a_normal_item_regeneration_still_works(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm,
+    ):
+        body = _regen_item(client, auth_headers, grounded_blueprint.id)
+        assert body["patched_item"] == "Regenerated bullet."
+        # Siblings untouched.
+        assert "First bullet about drawings." in body["updated_content"]
+        assert "Third bullet about corrosion." in body["updated_content"]
+        assert "Second bullet about materials." not in body["updated_content"]
+
+
+class TestItemRegenerationRefusesATruncatedReply:
+    """The item path could not see truncation at all.
+
+    It went through ``regen_single_item``, which returned a bare string via
+    ``generate_text`` — so a reply cut off at the output ceiling was patched over
+    a line of the stored document and committed as if finished. Worse, the
+    pre-flight ``assert_can_emit`` sized the item against ``output_budget``
+    (64000 on three catalog models) while the call itself passed no max_tokens
+    and inherited 16384: an item between those two figures passed the guard and
+    then truncated anyway, which is precisely what the guard exists to stop.
+    """
+
+    def _truncating_stub(self, monkeypatch, stop_reason="length"):
+        from promptops_app.core.llm_client import LLMResult
+
+        calls: list[dict] = []
+
+        def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
+            calls.append({"max_tokens": kwargs.get("max_tokens")})
+            return LLMResult(
+                text="Half an ans", model="mock-model", prompt_tokens=10,
+                completion_tokens=20, stop_reason=stop_reason,
+            )
+
+        monkeypatch.setattr(
+            "promptops_app.parsers.blueprint_parser.generate_with_metadata", fake)
+        return calls
+
+    @pytest.mark.parametrize("stop_reason", ["length", "max_tokens"])
+    def test_a_truncated_item_is_refused(
+        self, client, auth_headers, grounded_blueprint, monkeypatch, stop_reason
+    ):
+        self._truncating_stub(monkeypatch, stop_reason)
+
+        resp = client.post(
+            f"/api/v1/blueprints/{grounded_blueprint.id}/regenerate-item",
+            json={
+                "section_key": "Part I — DLU-Wide Information",
+                "section_content": SECTION_WITH_ITEMS,
+                "item_index": 1,
+                "feedback": "why is the ACS alignment N/A",
+                "model_choice": "GPT-5.4",
+            },
+            headers=auth_headers,
+        )
+
+        assert resp.status_code >= 400, resp.text
+        assert "output room" in resp.text
+
+    def test_the_call_asks_for_the_ceiling_the_guard_checked_against(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm
+    ):
+        """GPT-5.4's catalog ceiling is 16384 and Claude Sonnet 5's is 64000.
+        The point is that max_tokens is now requested at all — inherited, it was
+        flat 16384 regardless of the model the guard had sized against."""
+        from promptops_app.core.models import resolve_model
+
+        _regen_item(client, auth_headers, grounded_blueprint.id,
+                    model_choice="Claude Sonnet 5 (Bedrock)")
+
+        expected = resolve_model("Claude Sonnet 5 (Bedrock)").max_output_tokens
+        assert expected == 64000, "catalog changed; update this test"
+        assert stub_item_llm[0]["max_tokens"] == expected
+
+    def test_a_complete_item_still_goes_through(
+        self, client, auth_headers, grounded_blueprint, stub_item_llm
+    ):
+        """Control: the guard must not be passing by refusing everything."""
+        out = _regen_item(client, auth_headers, grounded_blueprint.id)
+
+        assert "Regenerated bullet." in out["updated_content"]
+
+
+class TestTheTextOnlyWrapperStillWorks:
+    def test_regen_single_item_returns_a_string(self, monkeypatch):
+        """cdd.py, regen_jobs.py and core/shared.py all unpack a bare string.
+
+        Stubbed at ``call_llm`` on purpose: the text-only wrapper deliberately
+        still goes through generate_text, so those three callers' behaviour is
+        untouched and their own tests keep stubbing the name they always did.
+        Only the blueprint item route takes the with-result path.
+        """
+        from promptops_app.parsers import blueprint_parser
+
+        monkeypatch.setattr(blueprint_parser, "call_llm",
+                            lambda *a, **k: "- Fixed item.")
+
+        out = blueprint_parser.regen_single_item(
+            "Section", "- a\n- b", 1, "- b", "improve",
+        )
+
+        assert isinstance(out, str)
+        assert out == "Fixed item."
+
+    def test_both_variants_send_the_same_prompt(self, monkeypatch):
+        """The two paths share _item_regen_user_prompt, so they cannot drift."""
+        from promptops_app.core.llm_client import LLMResult
+        from promptops_app.parsers import blueprint_parser
+
+        seen = {}
+
+        def fake_text(model, system, user, usage_ctx=None):
+            seen["text_only"] = user
+            return "x"
+
+        def fake_meta(model, system, user, usage_ctx=None, **kwargs):
+            seen["with_result"] = user
+            return LLMResult(text="x", model="m", prompt_tokens=1,
+                             completion_tokens=1, stop_reason="end_turn")
+
+        monkeypatch.setattr(blueprint_parser, "call_llm", fake_text)
+        monkeypatch.setattr(blueprint_parser, "generate_with_metadata", fake_meta)
+
+        args = ("Section", "- a\n- b", 1, "- b", "improve")
+        blueprint_parser.regen_single_item(*args, context="GROUNDING")
+        blueprint_parser.regen_single_item_with_result(*args, context="GROUNDING")
+
+        assert seen["text_only"] == seen["with_result"]
+        assert "GROUNDING" in seen["text_only"]

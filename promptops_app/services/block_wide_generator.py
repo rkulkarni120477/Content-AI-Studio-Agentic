@@ -35,6 +35,24 @@ DEFAULT_BATCH_SIZE = 10
 _ACS_SEGMENT_RE = re.compile(r"^([A-Za-z]*)(\d*)$")
 
 
+def _collapse_days(day_nums) -> str:
+    """"1-8, 16" — contiguous runs collapsed, so an edition cited on eighteen
+    consecutive days reads as a range instead of eighteen comma-separated
+    numbers repeated once per edition line."""
+    nums = sorted(set(int(d) for d in day_nums))
+    if not nums:
+        return ""
+    runs, start, prev = [], nums[0], nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        runs.append((start, prev))
+        start = prev = n
+    runs.append((start, prev))
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in runs)
+
+
 def _acs_sort_key(code: str):
     """Natural sort per dot-separated ACS-code segment (e.g. 'AM.I.G.K10' vs
     'AM.I.G.K2') — a plain string sort orders K10-K19 before K2 since '1' < '2'
@@ -598,20 +616,30 @@ class BlockWideGenerator:
         unrelated block of non-indented text landing mid-template."""
         learn_while_doing = sorted(r["day_number"] for r in rows if r.get("projects_today"))
 
-        editions_by_day = {r["day_number"]: r["handbook_reference"] for r in rows if r.get("handbook_reference")}
+        # The designator DIS parsed from the citation, not a second regex over the
+        # rendered cell. Re-matching here needed the "FAA-H-" spelling, which the
+        # Handbook Reference cell does not use, so every day fell through to the
+        # raw citation TEXT as its edition key — and a delivered Block 9 workbook
+        # declared eighteen distinct "editions" and a CONFLICT for what is three
+        # chapters of two ordinary handbooks, one page range per day.
         seen_editions: Dict[str, List[int]] = {}
-        for dn in sorted(editions_by_day):
-            # Generic FAA handbook code, not hardcoded to "8083" — the earlier
-            # version of this regex only matched AM's own handbook series, so any
-            # block citing a different handbook fell back to the raw citation
-            # text as the "edition" key, meaning two different page ranges of the
-            # SAME handbook (which real citations often are) would be
-            # miscounted as two different editions.
-            m = re.search(r"(FAA-H-\d{4}-\d+[A-Z]?)", editions_by_day[dn])
-            edition = m.group(1) if m else editions_by_day[dn]
-            seen_editions.setdefault(edition, []).append(dn)
-        has_conflict = len(seen_editions) > 1
-        edition_summary = "; ".join(f"{ed} on days {','.join(map(str, ds))}" for ed, ds in seen_editions.items())
+        for r in sorted(rows, key=lambda x: x["day_number"]):
+            for ed in str(r.get("handbook_edition") or "").split(";"):
+                ed = ed.strip()
+                if ed:
+                    seen_editions.setdefault(ed, []).append(r["day_number"])
+        # A conflict is one HANDBOOK cited at two revisions — FAA-H-8083-31A
+        # beside FAA-H-8083-31B — which a build genuinely cannot reconcile.
+        # Citing two different handbooks is what a curriculum normally does and
+        # is not a conflict; reporting it as one sent reviewers to an SME to
+        # adjudicate between a landing-gear handbook and an airworthiness AC.
+        by_series: Dict[str, set] = {}
+        for ed in seen_editions:
+            by_series.setdefault(re.sub(r"[A-Z]$", "", ed.upper()), set()).add(ed)
+        conflicting = {s: eds for s, eds in by_series.items() if len(eds) > 1}
+        has_conflict = bool(conflicting)
+        edition_summary = "; ".join(
+            f"{ed} on days {_collapse_days(seen_editions[ed])}" for ed in sorted(seen_editions))
 
         high_risk = coverage.thin_days + coverage.failed_days
 
@@ -653,9 +681,14 @@ class BlockWideGenerator:
                                        f"new content is introduced ({len(learn_while_doing)} of "
                                        f"{coverage.enumerated_days} days).") if learn_while_doing
                                        else "No learn-while-doing days detected.",
-            "handbook_edition_conflicts": (f"CONFLICT: multiple handbook editions cited — {edition_summary}. "
-                                           "Verify with SME which edition/volume is actually intended."
-                                           if has_conflict else f"No edition conflicts detected. {edition_summary}."),
+            "handbook_edition_conflicts": (
+                "CONFLICT: the same handbook is cited at more than one revision — "
+                + "; ".join(f"{' and '.join(sorted(eds))}" for eds in conflicting.values())
+                + f". Cited across: {edition_summary}. Verify with SME which revision is intended."
+                if has_conflict else
+                (f"No edition conflicts detected. Cited: {edition_summary}."
+                 if edition_summary else
+                 "No handbook citations found in this block's calendar rows.")),
             "missing_source_summary": missing_summary,
         }
 

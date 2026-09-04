@@ -1,0 +1,38 @@
+{
+  "_notes": [
+    "Which file types the Source Library accepts, and why it refuses the rest.",
+    "Edit this file to change the policy - no code change is needed. The server",
+    "reads it on each request (cached on the file's mtime), and the browser reads",
+    "the same list from GET /api/v1/source-library/upload-policy, so the two",
+    "cannot drift apart.",
+    "",
+    "Why refusing matters: a type the pipeline cannot read is not rejected",
+    "downstream, it is stored, listed as 'Processed', and silently contributes",
+    "nothing to any generation. 110 of AIM's 121 .doc files went in exactly that",
+    "way and nobody noticed for a month. A refusal costs the user one re-save.",
+    "",
+    "supported_extensions: lowercase, no leading dot. Anything not listed here is",
+    "refused, so adding a new type is a deliberate act.",
+    "",
+    "blocked_extensions: refused with this exact message. Use it for a type that",
+    "LOOKS supported but is not, so the user gets a reason instead of a generic",
+    "'unsupported' - each message should say what to do next.",
+    "",
+    "2026-08-27: doc/ppt/xls are all pre-2007 OLE2 binaries. python-docx,",
+    "python-pptx and openpyxl read the modern OOXML containers only. .doc has an",
+    "antiword fallback and the binary is now in the DIS image, but it stays",
+    "blocked on purpose: antiword was shown to EXTRACT these files, which is not",
+    "the same as extracting them faithfully. Re-open .doc once someone has",
+    "compared its output against the originals - move it to supported_extensions."
+  ],
+
+  "supported_extensions": [
+    "pdf", "docx", "pptx", "xlsx", "csv", "txt", "md", "json", "jpg", "jpeg", "png"
+  ],
+
+  "blocked_extensions": {
+    "doc": "Legacy Word (.doc) is not accepted yet. Its text extraction has not been verified against the original documents, and an inaccurate extraction is worse than none - it reads as usable content. Re-save as .docx and upload that.",
+    "ppt": "Legacy PowerPoint (.ppt) cannot be read - the extractor supports the modern .pptx container only, so the upload would produce no text at all. Re-save as .pptx and upload that.",
+    "xls": "Legacy Excel (.xls) cannot be read - the extractor supports the modern .xlsx container only, so the upload would produce no text at all. Re-save as .xlsx and upload that."
+  }
+}
