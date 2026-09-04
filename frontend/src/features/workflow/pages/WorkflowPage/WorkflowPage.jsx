@@ -30,6 +30,7 @@ import Select from '@components/common/Select/Select';
 import SearchBar from '@components/common/SearchBar/SearchBar';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
+import Modal from '@components/common/Modal/Modal';
 import WorkflowStatusBadge from '@features/editor/components/WorkflowStatusBadge/WorkflowStatusBadge';
 import BulkActionSection from '@features/workflow/components/BulkActionSection/BulkActionSection';
 import { useLabels } from '@hooks/useLabels';
@@ -125,9 +126,12 @@ export default function WorkflowPage() {
   const [adminBreakdown, setAdminBreakdown] = useState([]);
   const [breakdownLoading, setBreakdownLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [kanbanBusy, setKanbanBusy] = useState(false);
   const [dragBlockId, setDragBlockId] = useState(null);
   const [dragFromState, setDragFromState] = useState(null);
   const [dropTargetState, setDropTargetState] = useState(null);
+  const [changeRequestPending, setChangeRequestPending] = useState(null);
+  const [changeRequestReason, setChangeRequestReason] = useState('');
   const approvalCenterRef = useRef(null);
   const suppressKanbanClickRef = useRef(false);
 
@@ -311,7 +315,13 @@ export default function WorkflowPage() {
     return (KANBAN_DROP_TARGETS[fromState] || []).includes(toState);
   }, []);
 
-  async function applyKanbanTransition(blockId, fromState, toState) {
+  function closeChangeRequestModal() {
+    setChangeRequestPending(null);
+    setChangeRequestReason('');
+  }
+
+  async function applyKanbanTransition(blockId, fromState, toState, changeReason = null) {
+    if (kanbanBusy) return;
     if (fromState === toState) return;
     if (!canDropOnColumn(fromState, toState)) {
       toast.error(
@@ -327,6 +337,18 @@ export default function WorkflowPage() {
       return;
     }
 
+    // Changes-requested needs a reason — open the in-app modal before the API call.
+    if (
+      fromState === WORKFLOW_STATES.IN_REVIEW
+      && toState === WORKFLOW_STATES.CHANGES_REQUESTED
+      && changeReason == null
+    ) {
+      setChangeRequestReason('');
+      setChangeRequestPending({ blockId, fromState, toState });
+      return;
+    }
+
+    setKanbanBusy(true);
     try {
       if (toState === WORKFLOW_STATES.IN_REVIEW && SUBMITTABLE.has(fromState)) {
         await dispatch(submitBlockThunk({
@@ -342,12 +364,10 @@ export default function WorkflowPage() {
         fromState === WORKFLOW_STATES.IN_REVIEW
         && toState === WORKFLOW_STATES.CHANGES_REQUESTED
       ) {
-        const reason = window.prompt('Reason for requesting changes:');
-        if (!reason?.trim()) {
-          toast.error('A reason is required to request changes.');
-          return;
-        }
-        await dispatch(requestChangesThunk({ blockId, reason: reason.trim() })).unwrap();
+        await dispatch(requestChangesThunk({
+          blockId,
+          reason: String(changeReason || '').trim(),
+        })).unwrap();
       } else if (
         toState === WORKFLOW_STATES.PUBLISHED
         && fromState === WORKFLOW_STATES.APPROVED
@@ -371,7 +391,21 @@ export default function WorkflowPage() {
       refresh();
     } catch (err) {
       toast.error(typeof err === 'string' ? err : (err?.message || 'Status change failed'));
+    } finally {
+      setKanbanBusy(false);
     }
+  }
+
+  function confirmChangeRequest() {
+    if (!changeRequestPending) return;
+    const reason = changeRequestReason.trim();
+    if (!reason) {
+      toast.error('Please describe what changes are needed.');
+      return;
+    }
+    const { blockId, fromState, toState } = changeRequestPending;
+    closeChangeRequestModal();
+    void applyKanbanTransition(blockId, fromState, toState, reason);
   }
 
   const scopeProjId = filters.projectId ?? (!isAdmin ? selProject?.id : null) ?? selCourse?.project_id;
@@ -383,6 +417,13 @@ export default function WorkflowPage() {
   }));
 
   const stateKey = approvalBlock?.workflow_state?.toLowerCase();
+
+  const changeRequestBlock = changeRequestPending
+    ? allRawBlocks.find((b) => b.id === changeRequestPending.blockId)
+    : null;
+  const changeRequestBlockLabel = changeRequestBlock?.block_label
+    ? truncate(changeRequestBlock.block_label, 60)
+    : (changeRequestPending ? `Block #${changeRequestPending.blockId}` : '');
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Workflow' }]} noPadding>
@@ -479,12 +520,20 @@ export default function WorkflowPage() {
         {isLoading ? (
           <div className={styles.loading}><Loader size="xl" /></div>
         ) : (
-          <div className={styles.kanban}>
+          <div className={styles.kanbanWrap}>
+            {kanbanBusy && (
+              <div className={styles.kanbanBusy} role="status" aria-live="polite" aria-busy="true">
+                <Loader size="lg" />
+                <span>Updating status…</span>
+              </div>
+            )}
+            <div className={styles.kanban}>
             {KANBAN_COLUMNS.map((state) => {
               const colBlocks = blocksByState[state] || [];
               const color = WORKFLOW_KANBAN_COLORS[state];
               const label = WORKFLOW_STATE_LABELS[state];
-              const isDropTarget = dropTargetState === state
+              const isDropTarget = !kanbanBusy
+                && dropTargetState === state
                 && canDropOnColumn(dragFromState, state);
               return (
                 <div
@@ -506,7 +555,7 @@ export default function WorkflowPage() {
                   <div
                     className={styles.column__cards}
                     onDragOver={(e) => {
-                      if (!canDropOnColumn(dragFromState, state)) return;
+                      if (kanbanBusy || !canDropOnColumn(dragFromState, state)) return;
                       e.preventDefault();
                       e.dataTransfer.dropEffect = 'move';
                       if (dropTargetState !== state) setDropTargetState(state);
@@ -518,6 +567,7 @@ export default function WorkflowPage() {
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
+                      if (kanbanBusy) return;
                       const raw = e.dataTransfer.getData('application/json')
                         || e.dataTransfer.getData('text/plain');
                       let payload;
@@ -543,7 +593,7 @@ export default function WorkflowPage() {
                           <button
                             type="button"
                             key={block.id}
-                            draggable
+                            draggable={!kanbanBusy}
                             className={[
                               styles.kanbanCard,
                               isSelected ? styles['kanbanCard--selected'] : '',
@@ -553,6 +603,10 @@ export default function WorkflowPage() {
                             title="Click to open in Approval Center · Drag to change status"
                             onClick={() => selectKanbanBlock(block.id)}
                             onDragStart={(e) => {
+                              if (kanbanBusy) {
+                                e.preventDefault();
+                                return;
+                              }
                               e.dataTransfer.effectAllowed = 'move';
                               e.dataTransfer.setData(
                                 'application/json',
@@ -586,6 +640,7 @@ export default function WorkflowPage() {
                 </div>
               );
             })}
+            </div>
           </div>
         )}
 
@@ -762,41 +817,46 @@ export default function WorkflowPage() {
                     </div>
                   )}
 
-                  {stateKey === WORKFLOW_STATES.APPROVED && hasPermission('workflow.publish') && (
-                    <Button
-                      variant="primary"
-                      disabled={actionLoading}
-                      onClick={() => runAction(() =>
-                        dispatch(publishBlockThunk(approvalBlock.id)).unwrap(),
+                  {((stateKey === WORKFLOW_STATES.APPROVED && hasPermission('workflow.publish'))
+                    || (RESETTABLE.has(stateKey) && hasPermission('workflow.reset_draft'))
+                    || ([WORKFLOW_STATES.APPROVED, WORKFLOW_STATES.PUBLISHED].includes(stateKey)
+                      && hasPermission('workflow.archive'))) && (
+                    <div className={styles.actionBtns}>
+                      {stateKey === WORKFLOW_STATES.APPROVED && hasPermission('workflow.publish') && (
+                        <Button
+                          variant="primary"
+                          disabled={actionLoading}
+                          onClick={() => runAction(() =>
+                            dispatch(publishBlockThunk(approvalBlock.id)).unwrap(),
+                          )}
+                        >
+                          🚀 Publish Block
+                        </Button>
                       )}
-                    >
-                      🚀 Publish Block
-                    </Button>
-                  )}
-
-                  {RESETTABLE.has(stateKey) && hasPermission('workflow.reset_draft') && (
-                    <Button
-                      variant="secondary"
-                      disabled={actionLoading}
-                      onClick={() => runAction(() =>
-                        dispatch(resetDraftBlockThunk(approvalBlock.id)).unwrap(),
+                      {RESETTABLE.has(stateKey) && hasPermission('workflow.reset_draft') && (
+                        <Button
+                          variant="secondary"
+                          disabled={actionLoading}
+                          onClick={() => runAction(() =>
+                            dispatch(resetDraftBlockThunk(approvalBlock.id)).unwrap(),
+                          )}
+                        >
+                          ↩️ Reset to Draft
+                        </Button>
                       )}
-                    >
-                      ↩️ Reset to Draft
-                    </Button>
-                  )}
-
-                  {[WORKFLOW_STATES.APPROVED, WORKFLOW_STATES.PUBLISHED].includes(stateKey)
-                    && hasPermission('workflow.archive') && (
-                    <Button
-                      variant="ghost"
-                      disabled={actionLoading}
-                      onClick={() => runAction(() =>
-                        dispatch(archiveBlockThunk(approvalBlock.id)).unwrap(),
+                      {[WORKFLOW_STATES.APPROVED, WORKFLOW_STATES.PUBLISHED].includes(stateKey)
+                        && hasPermission('workflow.archive') && (
+                        <Button
+                          variant="ghost"
+                          disabled={actionLoading}
+                          onClick={() => runAction(() =>
+                            dispatch(archiveBlockThunk(approvalBlock.id)).unwrap(),
+                          )}
+                        >
+                          🗄️ Archive Block
+                        </Button>
                       )}
-                    >
-                      🗄️ Archive Block
-                    </Button>
+                    </div>
                   )}
 
                   {stateKey === WORKFLOW_STATES.PUBLISHED && (
@@ -972,6 +1032,44 @@ export default function WorkflowPage() {
           </>
         )}
       </div>
+
+      <Modal
+        open={Boolean(changeRequestPending)}
+        onClose={closeChangeRequestModal}
+        title="Request Changes"
+        size="sm"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={closeChangeRequestModal}>
+              Cancel
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={confirmChangeRequest}
+              disabled={!changeRequestReason.trim()}
+            >
+              Request Changes
+            </Button>
+          </>
+        )}
+      >
+        <p className={styles.changeRequestHint}>
+          Describe what needs to change for <strong>{changeRequestBlockLabel}</strong> before
+          moving it to Changes Requested.
+        </p>
+        <label className={styles.metaLine} htmlFor="kanban-change-reason">
+          Reason (required)
+        </label>
+        <textarea
+          id="kanban-change-reason"
+          className={styles.textarea}
+          placeholder="Explain what changes are needed…"
+          value={changeRequestReason}
+          onChange={(e) => setChangeRequestReason(e.target.value)}
+          rows={4}
+          autoFocus
+        />
+      </Modal>
     </PageContainer>
   );
 }
