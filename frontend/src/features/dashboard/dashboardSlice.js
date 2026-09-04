@@ -95,6 +95,11 @@ const dashboardSlice = createSlice({
       if (payload.target_audience)   state.targetAudience   = payload.target_audience;
       if (payload.audience_category) state.audienceCategory = payload.audience_category;
     },
+    patchSelectedProjectUiLabels(state, { payload }) {
+      const { projectId, ui_labels } = payload || {};
+      if (!projectId || !state.selectedProject || state.selectedProject.id !== projectId) return;
+      state.selectedProject.ui_labels = ui_labels || {};
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -149,7 +154,7 @@ const dashboardSlice = createSlice({
 export const {
   setSelectedProject, setSelectedCluster, setSelectedCourse,
   setModelChoice, setExpertDomain, setTargetAudience, setAudienceCategory,
-  clearError, applyWorkspaceConfig,
+  clearError, applyWorkspaceConfig, patchSelectedProjectUiLabels,
 } = dashboardSlice.actions;
 
 export default dashboardSlice.reducer;
