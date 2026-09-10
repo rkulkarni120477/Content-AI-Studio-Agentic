@@ -589,3 +589,110 @@ class TestPlatformAdminCreateHonorsViewAsProject:
         assert resp.status_code == 201, resp.text
         row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
         assert row.project_id == two_tenants["a"].id
+
+
+class TestPromoteOverrideTenantIsolation:
+    """POST /api/v1/prompts/from-generation (promote a captured CDD/Blueprint
+    override into a registry prompt). Two distinct problems, same endpoint:
+
+    1. It read the source CDD/Blueprint by id with NO tenant-ownership check
+       at all (get_cdd_version/get_blueprint_version are unfiltered id
+       lookups) — any admin holding prompt.pipeline.edit (a per-tenant role,
+       not platform-admin-only) could promote, i.e. READ, another tenant's
+       captured prompt-override text just by guessing/incrementing
+       artifact_id. Worse than the create-side leak: this exfiltrates
+       another tenant's actual prompt content, not just a dropdown listing.
+    2. Like the plain /api/v1/prompts create path before it was fixed, a
+       platform admin's own project is always null, so a promotion made
+       while viewing tenant A's CDD/Blueprint landed shared/global instead
+       of scoped to tenant A — the request schema had no project_id field
+       to even express that.
+    """
+
+    def _cdd_with_override(self, db, *, project_id, version="v1"):
+        from promptops_app.database import CDDVersion, CourseDesignDocument
+
+        cdd = CourseDesignDocument(
+            title="Source CDD", course_title="Source Course", project_id=project_id,
+        )
+        db.add(cdd)
+        db.commit()
+        db.refresh(cdd)
+        db.add(CDDVersion(
+            cdd_id=cdd.id, version=version, version_number=1,
+            full_content="content", is_active=True,
+            generation_params='{"prompt_source": "override", '
+                              '"system_prompt_override": "PROMO SYS", '
+                              '"user_prompt_override": "PROMO USER {{topic}}"}',
+        ))
+        db.commit()
+        return cdd
+
+    def test_tenant_b_cannot_promote_tenant_a_override(self, client, db, two_tenants):
+        cdd = self._cdd_with_override(db, project_id=two_tenants["a"].id)
+        resp = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd.id, "version": "v1"},
+            headers=two_tenants["headers_b"],
+        )
+        assert resp.status_code == 404
+
+    def test_tenant_a_can_promote_its_own_override(self, client, db, two_tenants):
+        cdd = self._cdd_with_override(db, project_id=two_tenants["a"].id)
+        resp = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd.id, "version": "v1"},
+            headers=two_tenants["headers_a"],
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["system_prompt"] == "PROMO SYS"
+
+    def test_platform_admin_can_promote_any_tenants_override(self, client, db, two_tenants):
+        cdd = self._cdd_with_override(db, project_id=two_tenants["a"].id)
+        resp = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd.id, "version": "v1"},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 201, resp.text
+
+    def test_platform_admin_promoting_while_viewing_tenant_a_scopes_to_tenant_a(self, client, db, two_tenants):
+        from promptops_app.database import Prompt
+
+        cdd = self._cdd_with_override(db, project_id=two_tenants["a"].id)
+        resp = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd.id, "version": "v1",
+                 "project_id": two_tenants["a"].id},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 201, resp.text
+        row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
+        assert row.project_id == two_tenants["a"].id
+
+    def test_platform_admin_promoting_with_no_project_id_still_lands_global(self, client, db, two_tenants):
+        from promptops_app.database import Prompt
+
+        cdd = self._cdd_with_override(db, project_id=two_tenants["a"].id)
+        resp = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd.id, "version": "v1"},
+            headers=two_tenants["headers_platform"],
+        )
+        assert resp.status_code == 201, resp.text
+        row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
+        assert row.project_id is None
+
+    def test_tenant_caller_cannot_use_project_id_to_promote_for_another_tenant(self, client, db, two_tenants):
+        from promptops_app.database import Prompt
+
+        cdd = self._cdd_with_override(db, project_id=two_tenants["a"].id)
+        resp = client.post(
+            "/api/v1/prompts/from-generation",
+            json={"source_type": "cdd", "artifact_id": cdd.id, "version": "v1",
+                 "project_id": two_tenants["b"].id},
+            headers=two_tenants["headers_a"],
+        )
+        assert resp.status_code == 201, resp.text
+        row = db.query(Prompt).filter_by(id=resp.json()["id"]).first()
+        assert row.project_id == two_tenants["a"].id

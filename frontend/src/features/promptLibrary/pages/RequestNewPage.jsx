@@ -4,10 +4,12 @@ import { getHostPromptDetail, listAllPrompts } from '../api/flow';
 import { createRequest } from '../api/requests';
 import { useToast } from '../context/ToastContext';
 import { componentCategoryLabel } from '../utils/prompt';
+import { useLabels } from '@hooks/useLabels';
 import { buildRequestDescription } from '../utils/requestProposal';
 import { plRequests } from '../paths';
 
 export default function RequestNewPage() {
+  const L = useLabels();
   const [searchParams] = useSearchParams();
   const linkedPromptId = searchParams.get('promptId') || '';
   // Deep-link prefill from the CAS generation tabs (Phase 12d): which
@@ -15,7 +17,7 @@ export default function RequestNewPage() {
   // requester was working in.
   const component = searchParams.get('component') || '';
   const context = searchParams.get('context') || '';
-  const componentLabel = component ? componentCategoryLabel(component, null) : '';
+  const componentLabel = component ? componentCategoryLabel(component, null, L) : '';
   const navigate = useNavigate();
   const { show } = useToast();
 
@@ -153,7 +155,7 @@ export default function RequestNewPage() {
               <strong>{detailMeta?.name || `prompt #${linkedPromptId}`}</strong>
               {detailMeta?.component && (
                 <span style={{ color: 'var(--muted)' }}>
-                  {' '}— {componentCategoryLabel(detailMeta.component, detailMeta.variant || null)}
+                  {' '}— {componentCategoryLabel(detailMeta.component, detailMeta.variant || null, L)}
                 </span>
               )}
             </p>
@@ -171,7 +173,7 @@ export default function RequestNewPage() {
                   <option key={p.id} value={p.id}>
                     {p.name}
                     {p.component_type
-                      ? ` — ${componentCategoryLabel(p.component_type, p.variant)}`
+                      ? ` — ${componentCategoryLabel(p.component_type, p.variant, L)}`
                       : ''}
                     {p.is_default ? ' ★' : ''}
                   </option>

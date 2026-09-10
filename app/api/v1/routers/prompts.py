@@ -411,6 +411,7 @@ def create_from_generation(
 
     from promptops_app.database import Prompt, PromptVersion
     from promptops_app.repositories import blueprint_repository, cdd_repository, prompt_repository
+    from promptops_app.repositories.prompt_repository import visible_to_tenant
     from promptops_app.services.prompt_library_service import (
         slugify_prompt_name,
         unique_prompt_name,
@@ -423,6 +424,18 @@ def create_from_generation(
               else blueprint_repository.get_blueprint_version)
     row = getter(db, request_body.artifact_id, request_body.version)
     if row is None:
+        raise NotFoundError(
+            "GenerationVersion", f"{source} {request_body.artifact_id} {request_body.version}")
+    # The source CDD/blueprint's own project_id, not the caller's — nothing
+    # upstream of this getter ever checked tenant ownership (get_cdd_version/
+    # get_blueprint_version are unfiltered id lookups), so without this an
+    # admin holding prompt.pipeline.edit (a per-tenant role, not platform-admin
+    # only) could promote — i.e. READ — another tenant's captured prompt
+    # override text just by guessing/incrementing artifact_id.
+    parent = row.cdd if source == "cdd" else row.blueprint
+    caller_project_id = getattr(current_user, "_project_id", None)
+    caller_is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    if parent is None or not visible_to_tenant(parent.project_id, caller_project_id, caller_is_platform_admin):
         raise NotFoundError(
             "GenerationVersion", f"{source} {request_body.artifact_id} {request_body.version}")
     try:
@@ -440,6 +453,15 @@ def create_from_generation(
     base = slugify_prompt_name(
         request_body.name or f"{source}_override_{request_body.artifact_id}_{row.version}")
     name = unique_prompt_name(db, base)
+    # A platform admin's own _project_id is always None — without this, an
+    # override promoted while viewing tenant A's CDD/Blueprint would land
+    # shared/global (visible to every tenant) instead of scoped to tenant A,
+    # same asymmetry list_prompts/create_prompt were already fixed for.
+    is_platform_admin = getattr(current_user, "_is_platform_admin", False)
+    if is_platform_admin and request_body.project_id is not None:
+        owner_project_id = request_body.project_id
+    else:
+        owner_project_id = getattr(current_user, "_project_id", None)
     prompt = Prompt(
         name=name,
         description=(request_body.description or (
@@ -450,7 +472,7 @@ def create_from_generation(
         component_type=source,
         is_default=False,
         active_version="v1",
-        project_id=getattr(current_user, "_project_id", None),
+        project_id=owner_project_id,
     )
     prompt_repository.set_prompt_tags(db, prompt, source)
     db.add(prompt)

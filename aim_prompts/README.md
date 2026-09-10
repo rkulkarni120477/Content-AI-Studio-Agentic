@@ -8,15 +8,43 @@ per component.
 
 | File | Component | Route | Status |
 |---|---|---|---|
-| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as DB prompt id 82, v3 |
-| `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | **Live** as DB prompt id 91, v1 |
-| `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
-| `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | Not yet in the DB |
+| `AIM_BLOCK_BLUEPRINT_PROMPT.md` | `cdd` — "Blueprint" in the UI | `POST /cdd/generate` and the block-wide digest pipeline | **Live** as id 82, v3 (dev + prod) |
+| `AIM_DLU_OUTLINE_PROMPT.md` | `blueprint` — one Day, selected on the Blueprint page | `POST /blueprints/generate`, legacy single-call path | **Live** as id 91, v1 (dev + prod) |
+| `AIM_TODAYS_MISSION_PROMPT.md` | `generate` | `content_generation` | **Live** as id 89, v1 (dev + prod) |
+| `AIM_LEARN_IT_PROMPT.md` | `generate` | `content_generation` | **Live** as id 88, v1 (dev + prod) |
+| `AIM_DAY_REFLECTION_PROMPT.md` | `generate` | `content_generation` | **Live** as id 86, v1 (dev + prod) |
+| `AIM_UP_NEXT_IN_CLASS_PROMPT.md` | `generate` | `content_generation` | **Live** as id 90, v1 (dev + prod) |
+| `AIM_INSTRUCTOR_MANUAL_PROMPT.md` | `generate` | `content_generation` | **Live** as id 87, v1 (dev + prod) |
+| `AIM_DLU_PRODUCTION_SPEC_PROMPT.md` | `generate` — the whole day, one reply | `content_generation`, `dlu_day` component | **Live** as `AIM_DLU_STORYBOARD_PROMPT` v1 — dev id 99, prod id 97 |
 | `AIM_DOMAIN_CONTEXT_BLOCK.md` | — | pasted into Extra instructions | Context layer, not a prompt |
 | `AIM_STYLE_GUIDE.md` | — | Style record + Extra instructions | Content artifact, not a prompt |
+
+**Both environments carry the whole set, and the ids agree.** Dev and prod are
+separate RDS instances — `cas_dev_db` on `content-ai-studio-dev-rds`, `cas-prod-db`
+on `content-ai-studio` — and every row above exists in both under the same id,
+which is why one number serves for both. The one exception is
+`AIM_DLU_PRODUCTION_SPEC_PROMPT.md`, loaded on 2026-09-02 after the others and
+therefore landing on each instance's own next id: **99 in dev, 97 in prod**.
+
+**The DB row is named `AIM_DLU_STORYBOARD_PROMPT`, and the document it produces
+calls itself a production specification.** That mismatch is deliberate, and it is
+the one naming point worth understanding before touching either. The row name is
+what a person picks out of the Prompt Template dropdown, so it uses AIM's own word
+for the artifact — the source drafts are titled "AIM16 Storyboard". The document's
+self-description cannot use that word, because `generation_jobs.py:483` strips it
+from every reply and would leave a hole in the title line. A row name is metadata
+and never enters a model's context: it reaches only the usage log, as
+`UsageLogContext(prompt_template=...)`. So the scrub cannot touch it, and the two
+names can differ safely. Do not "fix" the fenced text to match the row name.
+
+Verified 2026-09-02 against both endpoints: all eight rows resolve through
+`list_prompts_by_component`, and each stored system and user text is
+byte-identical to this directory's fences — except ids 82 and 86, which differ
+from their files by a single trailing character in both environments (similarity
+1.000, so a paste artifact rather than drift). The dev endpoint is
+`PubliclyAccessible=false` and resolves only to its private address, so reaching
+it needs the SSM port-forward through the `CAS-dev` bastion; a plain connection
+from a developer machine times out.
 
 The five DLU/manual prompts match the DLU parts the frontend already recognises
 (`frontend/src/utils/dluBlueprint.js`): Today's Mission, Learn It, Quick Check, Up
@@ -24,6 +52,15 @@ Next, Day Reflection. **Quick Check has no prompt** — the source documents def
 it as a downstream output, as a Blueprint targeting field, and as an item-outline
 plan inside the DLU Outline, but none of them writes a prompt that produces the
 items. Nor does any write one for Summative Assessment.
+
+`AIM_DLU_PRODUCTION_SPEC_PROMPT.md` is the sixth `generate` prompt and the only
+one that writes the **whole day in one reply** — every component, every Section,
+every screen, with per-screen metadata. It is not an alternative phrasing of the
+five: it is the artifact the `dlu_day` component ("Full DLU — Day N: topic",
+`blueprint_parser.py:495-506`) actually asks for, and the five stay useful for
+regenerating one part of a day that already exists. See **The whole-DLU
+production specification** below for what it was transcribed from and what
+changed.
 
 ## File format
 
@@ -117,6 +154,20 @@ Note what is **not** there: `block` and `extra_instructions` exist on the `cdd` 
 `blueprint` routes only. The five day-level prompts use `{{course_name}}` where the
 Blueprint uses `{{block}}` — on this project a course *is* a Block.
 
+**`{{course_name}}` renders empty on the `generate` route.** It is declared in
+`build_context_variables`' signature, so it is always *supplied* and never trips
+the strict-render guard — but the `generate` call site never passes it
+(`generation_jobs.py:377-390` passes twelve names, and `course_name` is not one),
+and neither does the router that builds the job (`generations.py:160-190`). So it
+defaults to `""` and the five day-level prompts' "in {{course_name}}" renders as
+"in ". Verified by rendering their fences against the route's real dict. Nothing
+breaks, but the Block is silently not named. `AIM_DLU_PRODUCTION_SPEC_PROMPT.md`
+therefore declares only variables the call site actually passes — `{{topic}}`,
+`{{context_injection}}`, `{{style_guidelines}}`, `{{target_audience}}`,
+`{{learning_objectives}}` — and reads the Block identifier out of the supplied
+Blueprint the way the DLU Outline does. Worth fixing at the call site for the
+other five rather than working around it in five prompts.
+
 **The DLU Outline does not declare `{{block}}`,** though its route supplies the
 name. The Blueprint page never sends `block` (`BlueprintPage.jsx:312-331` sends
 `selected_module` and `day_number`), so the route resolves it to `""` and the
@@ -182,15 +233,22 @@ from promptops_app.prompts.prompt_builder import render, extract_variables
 ## What the model actually receives
 
 Neither route hands the prompt a labelled field per fact. The day's facts arrive
-through two code-injected channels, and every day-level prompt here is written to
+through three code-injected channels, and every day-level prompt here is written to
 read them:
 
 - **`{{context_injection}}`** — the CDD and Blueprint summaries for the pinned
   documents, built by `build_context_injection`.
-- **Appended source context** — the retrieved documents, each wrapped as
+- **Appended source context** — the selected and linked documents, each wrapped as
   `[START SOURCE: filename] … [END SOURCE: filename]`, appended to the user message
   *after* rendering. For a `dlu_day` component the day's plan is prepended to this
   block as `--- DLU DAY BLUEPRINT ---`.
+- **`extra_instructions`** — delivered as `**Additional Instructions:**` at the end
+  of the user message. On the `generate` route this field carries the user's own
+  direction **and** whichever DIS pack was retrieved, headed `COURSE GENERATION
+  CONTEXT FROM DIS SOURCE LIBRARY`, in either the blob shape or the day-scoped
+  shape. Adaptation 11 under **The whole-DLU production specification** has the
+  three shapes and their exact renderings; the five section prompts predate that
+  finding and describe only the `[START SOURCE:]` one.
 
 So the source document's "Block number: [fill] / Day number: [fill] / SOURCE 1 —
 [PASTE]" pattern, which assumes a human pastes eighteen fields and six documents,
@@ -269,6 +327,194 @@ rather than leaving them implied in prose, and why it emits a `Day Type Flag` fr
 the closed Content-Delivery / Project-Application / Review-Assessment set those
 prompts branch on, alongside the source document's own Teaching / Project / Review
 Day naming that the existing artifacts use.
+
+## The whole-DLU production specification
+
+`AIM_DLU_PRODUCTION_SPEC_PROMPT.md` is transcribed from the two Aug 31, 2026
+drafts in `drafts/` — a 68-section system prompt and a 23-section user prompt for
+the AIM 16-Block DLU generator. Together they describe one generation that
+produces a whole day: the document title, the DLU title, the SME Review
+Checklist, DLU Information, Requires Human Expertise, Today's Mission, the Learn
+It Introduction, every approved Section and screen, the applicable special
+treatments and provisional briefs, the Quick Check placeholder, Up Next in Class,
+Day Reflection, per-screen metadata, image metadata, direct/support ACS
+classification, source traceability and estimated duration — plus a stop-and-validate
+sequence of thirteen checks run against the finished draft.
+
+It sits one step below `AIM_DLU_OUTLINE_PROMPT.md` in the same chain: the Block
+Blueprint plans the block one row per day, the DLU Outline turns one row into a
+day-level design, and this prompt turns that design into the manuscript. That is
+why it reads the outline as *approved architecture* and changes it only as a last
+resort, with every change recorded under Unresolved Questions.
+
+Ten changes from the drafts, each forced by how this repo generates or by
+something the drafts leave unactionable. Each is listed so it can be reversed if
+the reasoning stops holding.
+
+1. **The 23 pasted input sections became four supplied channels.** The user
+   prompt draft is a paste-and-attach form: `Block number: [ ]`,
+   `Calendar file: [attach]`, `ACS source file: [attach]`, `### Source 1 / File:
+   [attach]`, and so on through twenty-three headings. Nothing on this route
+   attaches a file. The prompt names the four channels that do exist — the
+   `--- DLU DAY BLUEPRINT ---` block, `{{context_injection}}`, the appended
+   `[START SOURCE: filename]` blocks, and the style/audience fields — and says
+   which facts live in each. The draft's per-input instructions survive as
+   instructions about what to *find* in those channels, which is why the user
+   fence still enumerates the calendar, the authoritative ACS source, the FAA
+   pages, the other approved sources, both mappings, the project and hangar
+   documentation, the style guide, the checklist and the image inventory
+   one by one. The draft's own rule — identify a named-but-missing source rather
+   than substituting general knowledge — carries the whole burden the `[attach]`
+   markers used to carry.
+
+2. **Word output became markdown, and the Word rendering rules were dropped.**
+   The route stores the reply as the deliverable, so §53–66 of the draft — point
+   sizes, font, heading colour, table borders, page setup, the `X + 2Y` spacing
+   arithmetic — has nothing to act on: a model returning markdown cannot set a
+   typeface or a margin, and text of that kind in a fence is either inert or gets
+   printed into the document as though it were content. Only the *hierarchy*
+   those sections encode is actionable, and it is in the prompt's `OUTPUT SHAPE`
+   as literal markdown levels: `#` for the two-line document title, `##` for the
+   DLU title, `###` for an A-head in FULL CAPS (title case marks an
+   administrative heading at the same level), `####` for a Learn It Section,
+   `#####` for `Screen: [Title]`. Screens stay unnumbered, screen type stays in
+   the metadata rather than in a heading, and the reusable template's example
+   Section names stay out of a real DLU. Everything else in those sections
+   belongs to whoever builds the Word or Canvas artifact downstream, and is not
+   carried here: **this directory holds prompts, and a prompt is the only thing
+   in it that reaches production.** An earlier draft of this work kept the
+   rendering rules in a companion file. That was wrong on its own terms — nothing
+   in this repo consumes them, they cannot affect a generation, and the file made
+   a document-formatting appendix look like part of the prompt set. The drafts
+   remain the record for anyone building that artifact, and they stay outside the
+   repo.
+
+3. **The artifact is renamed, and the banned word is never spelled.**
+   `generation_jobs.py:483` runs `re.sub(r'(?i)\bstoryboard\b', '', out)` over
+   every reply, so a document titled after the drafts would be delivered with a
+   hole in its title line. The artifact is a *production specification*
+   throughout, matching `AIM_STYLE_GUIDE.md`'s Part A. The prompt states the rule
+   by describing the word rather than printing it, in both fences, so the prompt
+   text itself cannot be the thing the model echoes. "Canvas" and "Storyline"
+   stay — both are live build treatments and neither is scrubbed.
+
+4. **Citations were reconciled with the code-injected instruction.**
+   `generation_jobs.py:344-347` appends "cite it as [Source: filename]. At the end
+   of EACH block, include a 'Sources Used' list" to the system prompt, which
+   collides with the draft's "Do not clutter learner-facing copy with citations
+   after individual sentences." The prompt resolves it explicitly: traceability
+   lives in the `Content Source` and `Image Source` metadata fields and in a
+   final `### Sources Used` section, and learner-facing prose stays clean. Both
+   requirements are then satisfied and the model is not left choosing between two
+   instructions it was handed in the same message.
+
+5. **Images are specified, not inserted.** The draft's `Image(s)` field says
+   "Insert the actual selected image when available", and its process has the
+   model inspect figures, captions and labels directly. Source material reaches
+   this route as extracted text — no image is ever passed in and no image can be
+   returned. So the prompt has the model write a *locator* (document, volume,
+   page, figure number, original figure title) into `Image(s)`, complete the
+   remaining image metadata, flag `REQUIRES_ID_JUDGMENT` where the supplied text
+   describes a figure only by caption or reference, and record a needed-but-
+   unavailable image under Still Needs to Be Done. Every other image rule —
+   functional use only, narrowest useful figure, crop and callout
+   recommendations, alt text, the image–text relationship — is unaffected and
+   kept verbatim in substance.
+
+6. **Requires Human Expertise kept its two buckets; the flag names come from this
+   directory.** The drafts route everything to Unresolved Questions or Still
+   Needs to Be Done and never name a flag. The other prompts here share one
+   closed vocabulary (`MISSING_SOURCE`, `REVIEW NEEDED`, `REQUIRES_ID_JUDGMENT`,
+   `CONFLICTING_SOURCES`, `SOURCE_VERSION_CONFLICT`). Both are preserved: the
+   buckets are the output structure, and each line inside them carries a flag
+   from the vocabulary plus the screen or field it applies to. Without that, a
+   day generated by this prompt and a day regenerated part-by-part with the five
+   section prompts would report the same problem in two different languages.
+
+7. **A missing authoritative source is a flag, not a fallback.** The draft
+   insists every ACS check runs against the authoritative ACS source and never
+   against the calendar, the Blueprint, the outline or model memory — but it
+   assumes that source is attached. Here it may simply not be among the source
+   blocks. The prompt records the assigned codes as given, marks the validation
+   as not performed, and flags `MISSING_SOURCE`, rather than quietly validating
+   from a downstream artifact. The same rule shape applies to the Master Mechanic
+   Moment and previous-media mappings, where "no mapping document supplied" is
+   distinguished from "mapped: none" — the draft's `N/A` means the second, so
+   reading absence as `N/A` would launder a missing input into a decision.
+
+8. **Neighbouring days are read where they exist.** The draft's alignment check
+   inspects preceding and following days. On this route they arrive only if the
+   block-level context carries the day-by-day map — which it usually does, since
+   `extract_cdd_summary` falls back to the CDD's full content for a worksheet
+   document. The prompt says to read them out of the map where present and not to
+   assume them otherwise.
+
+9. **The A-head/B-head split survives as a caps test.** The draft separates
+   28 pt FULL CAPS component headings from 20 pt black administrative subheads.
+   Markdown has no point sizes, so both land on `###` and are told apart by case:
+   an A-head is FULL CAPS and comes from a closed set of five, everything else at
+   that level is administrative and title case. That keeps the mapping in the
+   design spec deterministic in both directions. Screen numbers stay banned, the
+   eleven screen types stay a closed list, and the reusable template's example
+   Section names ("Regular Screens", "Irregular Screens") are explicitly
+   forbidden in a real DLU, as the draft requires.
+
+10. **The provisional list is preserved as a rule, not as a footnote.** The
+    draft's §68 names ten unsettled matters. The prompt carries them as a
+    `PROVISIONAL RULES` block with the instruction not to harden any of them into
+    policy — including the item the draft calls "CAS-specific output-marker or
+    technical implementation requirements", which is this application. Every
+    section the draft marks provisional (interactive, job aid, Master Mechanic
+    Moment, Explore/Previous Media, Key Term, Safety Reminder) says so in its own
+    text too, for the same reason the governing rules are restated in every file:
+    unconditional beats DRY when the alternative is a rule that quietly vanishes.
+
+11. **Retrieved source material arrives in three shapes, and one of them arrives
+    in the wrong field.** The draft assumes attachments. This route assembles
+    source material three ways: whole documents wrapped as
+    `[START SOURCE: filename]` and appended after the user message
+    (`generation_jobs.py:236-272`); a DIS blob pack whose units carry
+    `Source: <filename>` / `Title:` / text / optional `Visual Summary:`
+    (`context_retrieval.py:1305-1314`); and, when the request pins a block and a
+    day and the digest pipeline is on for the client, a day-scoped bundle
+    rendering `DAY SOURCE UNITS` and `RELATED HANDBOOK PAGES` as
+    `• [unit_type] Title` bullets with **no filename at all**
+    (`dis_day_context.py:42-84`). Both DIS shapes are appended to
+    `extra_instructions` by `generations.py:128-165`, which
+    `generation_jobs.py:443-444` then delivers under `**Additional
+    Instructions:**` — so on this route retrieved *source material* is handed to
+    the model in the field that otherwise carries *direction*. The prompt
+    describes all three shapes, says a heading of that name inside Additional
+    Instructions is source material rather than direction, identifies a source by
+    filename where one is given and by unit title where none is (the same rule
+    the DLU Outline prompt uses, and the only rule satisfiable under the
+    day-scoped shape), treats a `(restricted — title only)` unit as no evidence,
+    and reads a `Visual Summary` as evidence about a figure — which is the one
+    channel that says anything at all about what a source page depicts, and so
+    the only support the image-specification rules have. It also carries the
+    code's own "do not expose internal DIS metadata" instruction forward as a
+    concrete list of what not to print.
+
+12. **Two rules were added that the drafts do not contain.** Both are in the
+    fences because the pipeline forces them, and both are listed here so they can
+    be reversed if the pipeline changes. First, **every list must be flat**: the
+    2-or-more-space collapse at `generation_jobs.py:484` re-levels a nested bullet
+    as a sibling of its own parent, so the prompt forbids sub-items and points at
+    a table or a lead-in sentence instead. Second, **an absent day plan is a
+    declared degradation**: because the `dlu_day` normalisation lives only in the
+    frontend, the plan block can be missing with no error, so the prompt builds
+    from the Blueprint row, records every screen title, Section boundary and SME
+    scenario it had to originate as its own proposal under Unresolved Questions,
+    and flags the missing outline rather than presenting an invented architecture
+    as approved. Both are in **Known gaps** with the code that forces them.
+
+Nothing else was dropped. The 45-minute hard maximum and the whole time budget,
+the two global instructional principles and their test questions, the pacing
+arithmetic (150 words ≈ 1 minute, image +1, table +1, no unbroken prose block over
+~100 words), the five interactive templates, the eleven screen types, the fifteen
+screen-metadata fields, the SME checklist's fifteen coverage points, the
+thirteen final validation checks, the per-component duration targets and
+the style rules are all in the fences.
 
 ## Adaptations from the source document
 
@@ -414,7 +660,13 @@ _is_quiz = (_comp_type == "assessment"
 DLU day components are labelled `Day 11: <topic>`, so a day whose *topic* contains
 "assessment" or "quiz" — a review or exam day — resolves `quiz_generation` rather
 than `content_generation`, and would pick up the quiz default instead of the DLU
-section default. Explicit selection is immune; a default is not.
+section default. Explicit selection is immune; a default is not. The whole-DLU
+component carries the same hazard: for a DLU course the dropdown is built by
+`_list_dlu_day_components` (`blueprints.py:1701-1745`), which labels it
+`Day 11: <topic>` exactly as above; `parse_blueprint_components` is the fallback
+for a DLU blueprint with no course, and labels it `Full DLU — Day 11: <topic>`
+(`blueprint_parser.py:495-501`). Either way the same substring test reads the same
+topic.
 
 ## Known gaps
 
@@ -448,6 +700,105 @@ section default. Explicit selection is immune; a default is not.
   no error shown. Nothing in the prompt can detect that, which is one reason its
   output shape carries the appendix as label lines rather than prose. Worth porting
   the guard to that route.
+- **The `generate` route has no truncation guard either**, and the whole-DLU
+  production specification is the largest artifact anything here asks a model to
+  produce in one reply. `generation_jobs.py:465` checks only
+  `_llm_result.is_error`; the response's `stop_reason` is captured
+  (`llm_client.py:47-65` collects exactly the `length` / `max_tokens` values that
+  mean "cut off") and then never read on this path, so a document truncated at the
+  output cap is stored, CE-validated and shown as a completed generation. Nothing
+  in a prompt can detect this. Until the guard is ported, generate this artifact
+  on a high-output-cap model and check that the reply ends with `### Sources Used`.
+- **CE validation rewrites the reply after the prompt's own style pass.**
+  `generation_jobs.py:496-504` runs `run_ce_validation`, which re-prompts a model
+  to auto-fix the output against the `CE_Checklist` style record or, failing that,
+  the active style's Writing Rules. So the stored document is not byte-identical
+  to what this prompt produced, and a checklist rule that contradicts the draft's
+  style rules will win silently. Worth reading the pinned `CE_Checklist` before
+  blaming the prompt for a style regression. The same stage is also where the
+  `storyboard` scrub and a double-space collapse (`generation_jobs.py:483-485`)
+  have already run.
+- **Not yet generated with.** Every check on the production-specification prompt
+  is static: both fences render against the route's real variable dict with no
+  placeholder left behind and no undeclared variable; the five declared variables
+  are all supplied at the call site; the file is ASCII with exactly two `text`
+  fences; `legacy_blockers` returns empty on the rendered pair; and the document
+  title survives the `storyboard` regex intact. **It is in prod but has never run
+  a generation.** Loaded 2026-09-02 as prompt id 97, v1, registered the way prompt
+  91 is: `component_type` `generate`, `prompt_kind` `pipeline`, `is_default` False,
+  `project_id` NULL, no variant, `visibility` `draft`, one v1 version with
+  `workflow_state` `active` and `is_active` True, and no `PromptVariable`
+  declarations — so what gets enforced is `content_generation`'s registry pair,
+  `topic` + `learning_objectives` (`prompt_loader.py:137-147`), both of which this
+  file declares and the route supplies. Verified after loading: it appears in
+  `list_prompts_by_component(db, "generate")`, `build_prompt_resolved(...,
+  prompt_id=97)` resolves and renders with no placeholder left behind, the stored
+  text is byte-identical to this file's fences, and `default_generate_prompt`
+  (id 6) is still the only `generate` default. Being `is_default` False it changes
+  no generation until someone picks it in the Prompt Template dropdown.
+
+  **The `component_type` must be `generate`, not `content_generation`** — the
+  latter is the registry *stem* name, which `_STEM_COMPONENT` maps to the component
+  `generate` (`prompt_loader.py:61-66`), and the Generate page's dropdown keeps a
+  row only when `!p.component_type || p.component_type === 'generate'`
+  (`InlinePromptControls.jsx:120`), so a row filed under the stem name is invisible
+  in the picker. That is the one mistake to avoid when loading any of these into
+  another environment.
+- **Loaded into both environments as `AIM_DLU_STORYBOARD_PROMPT`, with different
+  ids.** dev id 99, prod id 97 — the rest of the AIM set shares one id across both,
+  this one does not, so a script or note that assumes a single id will target the
+  wrong row. Renamed from `AIM_DLU_PRODUCTION_SPEC_PROMPT` on 2026-09-02, after
+  loading; selection resolves by `prompt_id`, so the rename changed no behaviour
+  and both rows still resolve, render clean and match this file's fences byte for
+  byte. Reaching dev at all needs the SSM port-forward through the `CAS-dev`
+  bastion, since the dev endpoint is not publicly accessible.
+- **The output cap is 16,384 tokens and this artifact is the one that will hit
+  it.** `DEFAULT_MAX_OUTPUT_TOKENS = 16384` (`llm_client.py:43`) is hardcoded, not
+  env-driven, and the generate path never passes a `max_tokens` override, so it
+  cannot be raised per generation. A whole DLU costs roughly 6,000–8,000 tokens of
+  learner-facing prose (30–45 minutes at ~150 words per minute) plus ~3,400 for
+  fifteen screens of fifteen metadata fields plus the checklist, DLU Information,
+  the briefs, the TOC and Sources Used: about 11,000–13,000 tokens for a typical
+  day, and over the cap for a rich one carrying both briefs, a Master Mechanic
+  Moment, an Explore asset and many images. With no `stop_reason` check on this
+  path (above), that lands as a silently truncated document — which is exactly
+  what this project's no-silent-truncation rule exists to prevent. Raising the
+  constant, or passing a model-aware cap on this path, is the fix; splitting the
+  artifact is not, since the drafts require one document.
+- **CE validation judges the first 8,000 characters and rewrites all of them.**
+  `ce_validation_service.py:144` validates `content[:8000]` — on a whole DLU that
+  is roughly the title, checklist, DLU Information and Requires Human Expertise,
+  i.e. the administrative front matter, so a style checklist is applied to almost
+  none of the learner-facing prose. If it then reports any issue,
+  `ce_validation_service.py:170-176` re-prompts with the **full** content under a
+  generic "fix the content" system prompt that knows none of the DLU rules, and
+  the reply replaces the document — subject to the same 16,384-token cap, so the
+  rewrite can truncate a document that was complete. `_fetch_ce_checklist` also
+  falls back to an unscoped registry search for any active document whose name
+  contains `CE_Checklist` (`ce_validation_service.py:44-50`), so the rewrite can
+  be driven by a checklist belonging to another project. For this artifact the
+  stage is a net risk: check what `CE_Checklist` resolves to before running it.
+- **Nested lists do not survive delivery.** `generation_jobs.py:484` collapses
+  every run of two or more spaces to one, so a 2-space and a 4-space list indent
+  both become 1 space and every sub-item is re-levelled as a sibling of its
+  parent. Verified by running the three substitutions over a representative
+  document: markdown tables survive intact (padding collapses harmlessly, the
+  alignment row keeps its dashes), flat `- [ ]` checklists survive, nesting does
+  not. The prompt therefore requires every list to be flat and says why in one
+  line, and the `OUTPUT SHAPE` uses only tables and flat lists.
+- **The `dlu_day` component contract is enforced in the frontend only.** The
+  day-plan prepend is gated on `selected_component["value"] == "dlu_day"`
+  (`generation_jobs.py:286`), an exact compare. `_list_dlu_day_components` emits
+  `dlu_day::<blueprint_id>` (`blueprints.py:1737`) and nothing in the backend
+  parses that suffix; `GeneratePage.jsx:264-273` is what normalises it back to
+  `dlu_day` and moves the id into `blueprint_id`. Through the UI this is correct
+  and the day plan arrives. An API client that posts the component value it was
+  handed by `GET /blueprints/{id}/components` gets no day plan, no error, and a
+  DLU written without its approved outline. The prompt now detects that case and
+  degrades explicitly — it builds from the Blueprint row, records every screen
+  title and scenario it originated as its own proposal, and flags the missing
+  outline — but the backend should accept the `::<id>` form rather than rely on
+  one caller to normalise it.
 - **No Quick Check or Summative Assessment prompt**, per the note above.
 - **Domains 2 and 3 are a template**, not content. The source document describes
   only General Studies.

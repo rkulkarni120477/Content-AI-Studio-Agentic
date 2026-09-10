@@ -17,12 +17,15 @@ import { fetchTeams } from '../api/teams';
 import { useToast } from '../context/ToastContext';
 import { canManagePipelinePrompts } from '../utils/permissions';
 import { useAuth } from '../context/AuthContext';
+import { platformService } from '@features/platform/services/platformService';
 import TeamMultiSelect from '../components/TeamMultiSelect';
 import { extractVarNames, findLegacyVarNames, toLabel } from '../utils/prompt';
+import { useLabels } from '@hooks/useLabels';
 import { APPLY_PROPOSAL_KEY } from '../utils/requestProposal';
 import { plCourses, plHome, plPrompt } from '../paths';
 
 export default function PromptFormPage() {
+  const L = useLabels();
   const { id } = useParams();
   const isEdit = Boolean(id);
   const navigate = useNavigate();
@@ -62,6 +65,27 @@ export default function PromptFormPage() {
   // Creation is always pipeline (all prompts are CAS prompts now); editing
   // follows the loaded row's kind so the 20 legacy library rows stay editable.
   const isPipeline = isEdit ? loadedPrompt?.prompt_kind === 'pipeline' : true;
+
+  // Tenant scope — platform-admin only, create only. A platform admin's own
+  // project is always null, so a pipeline prompt they create here landed
+  // shared/global (visible to every tenant) unless explicitly stamped with a
+  // tenant — see createPipelinePrompt. A tenant-scoped admin is always
+  // stamped with their own project server-side regardless, so this control
+  // would do nothing for them and stays hidden. Not offered on edit: the
+  // registry has no endpoint to re-scope an existing row's project_id.
+  const isPlatformAdmin = Boolean(user?.is_platform_admin);
+  const [tenantOptions, setTenantOptions] = useState([]);
+  const [tenantId, setTenantId] = useState('');
+
+  useEffect(() => {
+    if (!isPlatformAdmin || isEdit) return;
+    platformService.listTenants()
+      .then((tenants) => setTenantOptions((tenants || []).map((t) => ({
+        value: String(t.id),
+        label: t.slug ? `${t.name} (${t.slug})` : t.name,
+      }))))
+      .catch(() => {});
+  }, [isPlatformAdmin, isEdit]);
 
   useEffect(() => {
     void fetchTeams().then(setTeamOptions);
@@ -176,6 +200,7 @@ export default function PromptFormPage() {
           systemPrompt: systemPrompt,
           userPromptTemplate: content,
           changeReason: changeNote.trim() || 'Created via console.',
+          projectId: isPlatformAdmin && tenantId ? Number(tenantId) : null,
         });
         show('Pipeline prompt created!');
         navigate(plPrompt(created.id));
@@ -391,9 +416,9 @@ export default function PromptFormPage() {
                   disabled={isEdit && (!canPipeline || loadedPrompt?.pipeline?.is_default)}
                 >
                   <option value="">— none —</option>
-                  <option value="style">Style (style)</option>
-                  <option value="cdd">CDD (cdd)</option>
-                  <option value="blueprint">Blueprint (blueprint)</option>
+                  <option value="style">{L.style} (style)</option>
+                  <option value="cdd">{L.cdd} (cdd)</option>
+                  <option value="blueprint">{L.blueprint} (blueprint)</option>
                   <option value="generate">Lesson Generation (generate)</option>
                   <option value="quiz">Assessment (quiz)</option>
                 </select>
@@ -419,6 +444,21 @@ export default function PromptFormPage() {
                 This row is the component default — clear the default flag (on
                 the detail page) before re-keying component/variant.
               </p>
+            )}
+            {!isEdit && isPlatformAdmin && (
+              <div className="field">
+                <label>Tenant (optional)</label>
+                <select value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+                  <option value="">— Shared / global (all tenants) —</option>
+                  {tenantOptions.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+                <p className="var-tip" style={{ marginTop: 6 }}>
+                  Leave as shared/global only for a prompt genuinely meant for
+                  every tenant. Pick a tenant to keep this prompt private to it.
+                </p>
+              </div>
             )}
             <div className="field">
               <label>System prompt *</label>

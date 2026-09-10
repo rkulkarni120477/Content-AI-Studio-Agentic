@@ -275,11 +275,34 @@ def archive_block(
 
 # ── Bulk operations ───────────────────────────────────────────────────────────
 
-def bulk_approve(db, block_ids: list, actor: str) -> dict:
+def _tenant_scoped_block(db, block_id: int, project_id, is_platform_admin: bool):
+    """Fetch a block by id, or None if missing OR out of the caller's tenant.
+
+    A bare ``db.query(Block).filter(Block.id == bid).first()`` (what every
+    bulk_* function did before this) has no tenant boundary at all — the ids
+    in a bulk request come straight from the request body, not from a
+    same-tenant-filtered list the caller was shown, so nothing upstream can
+    be trusted to have already scoped them. Mirrors
+    app.api.v1.routers.workflow._get_block_or_404's tenant check exactly, so
+    a cross-tenant id fails the same way here as it would through the
+    single-block endpoint.
+    """
+    from app.core.tenant_context import visible_to_tenant
+
+    blk = db.query(Block).filter(Block.id == block_id).first()
+    if blk is None:
+        return None
+    row_project_id = getattr(blk.generation, "project_id", None) if blk.generation else None
+    if not visible_to_tenant(row_project_id, project_id, is_platform_admin):
+        return None
+    return blk
+
+
+def bulk_approve(db, block_ids: list, actor: str, *, project_id=None, is_platform_admin: bool = False) -> dict:
     """Approve multiple in_review blocks. Admin only."""
     results = {"approved": [], "skipped": [], "errors": []}
     for bid in block_ids:
-        blk = db.query(Block).filter(Block.id == bid).first()
+        blk = _tenant_scoped_block(db, bid, project_id, is_platform_admin)
         if not blk:
             results["errors"].append(bid); continue
         ok, _ = approve_block(db, blk, actor, comment="Bulk approved")
@@ -292,6 +315,72 @@ def bulk_approve(db, block_ids: list, actor: str) -> dict:
         db, actor, "workflow.bulk_approved",
         entity_type="block", entity_id=None,
         metadata={"approved": results["approved"], "skipped": results["skipped"], "errors": results["errors"]},
+    )
+    return results
+
+
+def _bulk_transition(db, block_ids: list, actor: str, transition_fn, *,
+                      project_id=None, is_platform_admin: bool = False) -> list[dict]:
+    """Shared runner for bulk_submit_for_review/bulk_publish.
+
+    Applies transition_fn(db, block, actor) to each id and collects a per-id
+    (ok, reason) result — a partial failure has to be legible, not rounded to
+    a bare count, per the bulk-workflow ticket's error-handling requirement.
+    A missing OR cross-tenant id is reported as "not found" (no enumeration
+    oracle), same contract as _get_block_or_404.
+    """
+    results = []
+    for bid in block_ids:
+        blk = _tenant_scoped_block(db, bid, project_id, is_platform_admin)
+        if blk is None:
+            results.append({"block_id": bid, "ok": False, "reason": "Block not found."})
+            continue
+        ok, reason = transition_fn(db, blk, actor)
+        results.append({"block_id": bid, "ok": ok, "reason": None if ok else reason})
+    return results
+
+
+def bulk_submit_for_review(db, block_ids: list, reviewer_username: str, actor: str, *,
+                           project_id=None, is_platform_admin: bool = False) -> list[dict]:
+    """Draft | Rejected | Changes Requested → in_review, for many blocks at once.
+
+    One reviewer is assigned to every block submitted — mirrors the
+    single-block submit endpoint's own contract (see submit_for_review).
+    """
+    results = _bulk_transition(
+        db, block_ids, actor,
+        lambda db, blk, actor: submit_for_review(db, blk, reviewer_username, actor),
+        project_id=project_id, is_platform_admin=is_platform_admin,
+    )
+    succeeded = sum(1 for r in results if r["ok"])
+
+    log_event(db, "bulk_submit_for_review", actor,
+              f"Bulk-submitted {succeeded} of {len(block_ids)} blocks → '{reviewer_username}'",
+              {"results": results})
+    log_audit_event(
+        db, actor, "workflow.bulk_submitted",
+        entity_type="block", entity_id=None,
+        metadata={"reviewer": reviewer_username, "results": results},
+    )
+    return results
+
+
+def bulk_publish(db, block_ids: list, actor: str, *,
+                  project_id=None, is_platform_admin: bool = False) -> list[dict]:
+    """approved → published, for many blocks at once."""
+    results = _bulk_transition(
+        db, block_ids, actor, publish_block,
+        project_id=project_id, is_platform_admin=is_platform_admin,
+    )
+    succeeded = sum(1 for r in results if r["ok"])
+
+    log_event(db, "bulk_publish", actor,
+              f"Bulk-published {succeeded} of {len(block_ids)} blocks",
+              {"results": results})
+    log_audit_event(
+        db, actor, "workflow.bulk_published",
+        entity_type="block", entity_id=None,
+        metadata={"results": results},
     )
     return results
 

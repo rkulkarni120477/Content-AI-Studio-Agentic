@@ -63,7 +63,7 @@ export const generateBlueprintThunk = createAsyncThunk(
         toast.error(
           `Generated without Source Library grounding: the library could not be `
           + `reached, so this ${L.blueprint} used only the ${L.cdd} and the active `
-          + `style. Regenerate once it is available if you need source-grounded `
+          + `${L.styleLower}. Regenerate once it is available if you need source-grounded `
           + `content.`,
           { duration: 9000 },
         );
@@ -134,12 +134,110 @@ export const importBlueprintThunk = createAsyncThunk(
   },
 );
 
+// ── Async Outline import (timeout-proof) ─────────────────────────────────────
+// The upload POST returns a job handle immediately (no long request → no proxy
+// 504); the slow extract + LLM restructure runs in a background worker and we
+// poll for the result. This is the path the UI uses.
+const IMPORT_POLL_INTERVAL_MS = 2000;
+const IMPORT_MAX_POLL_ERRORS = 20;
+const isTerminalImportStatus = (s) => ['completed', 'failed', 'cancelled'].includes(String(s || '').toLowerCase());
+
+/** Poll one import job to completion, re-scheduling itself until terminal. */
+export const pollOutlineImportJobThunk = createAsyncThunk(
+  'blueprint/pollImport',
+  async ({ jobId, courseId, errorCount = 0 }, { dispatch, rejectWithValue }) => {
+    try {
+      const status = await blueprintService.getJobStatus(jobId);
+      if (!isTerminalImportStatus(status.status)) {
+        setTimeout(
+          () => dispatch(pollOutlineImportJobThunk({ jobId, courseId, errorCount: 0 })),
+          IMPORT_POLL_INTERVAL_MS,
+        );
+        return status;
+      }
+      if (status.status === 'completed') {
+        toast.success('Outline imported and set as active.');
+        // Degraded (single-section) import — the worker records it as the job warning.
+        if (status.warning) toast(status.warning, { icon: '⚠️' });
+        if (courseId) dispatch(fetchBlueprintsThunk(courseId));
+        if (status.generation_id) {
+          try {
+            const blueprint = await blueprintService.getBlueprint(status.generation_id);
+            return { ...status, blueprint };
+          } catch { /* the list refetch above still surfaces the new Outline */ }
+        }
+      } else if (status.status === 'failed') {
+        // AC #5 non-technical messages — the worker's own message (unsupported
+        // type, undetermined day, timeout fallback) is surfaced when present.
+        toast.error(
+          status.error_message
+          || 'Unable to process the file. The file could not be processed at this time. Please try again.',
+        );
+      }
+      return status;
+    } catch (e) {
+      // Transient poll error — retry a bounded number of times. The job keeps
+      // running server-side; we only lost contact with the status endpoint.
+      if (errorCount + 1 < IMPORT_MAX_POLL_ERRORS) {
+        setTimeout(
+          () => dispatch(pollOutlineImportJobThunk({ jobId, courseId, errorCount: errorCount + 1 })),
+          IMPORT_POLL_INTERVAL_MS,
+        );
+        return { status: 'running', transientError: true };
+      }
+      return rejectWithValue({ lostContact: true, message: extractErrorMessage(e) });
+    }
+  },
+);
+
+/** Enqueue an async import, then start polling its job. */
+export const importBlueprintAsyncThunk = createAsyncThunk(
+  'blueprint/importAsync',
+  async (payload, { dispatch, rejectWithValue }) => {
+    try {
+      if (!payload?.projectId) {
+        return rejectWithValue('Select a project before importing an Outline.');
+      }
+      const res = await blueprintService.importBlueprintAsync(payload, payload.onProgress);
+      if (!res?.job_id) {
+        return rejectWithValue('Import did not start. Please try again.');
+      }
+      dispatch(pollOutlineImportJobThunk({ jobId: res.job_id, courseId: Number(payload.courseId) }));
+      return res;   // { job_id, status, poll_url }
+    } catch (e) {
+      return rejectWithValue(
+        extractErrorMessage(e)
+        || "We couldn't process this file. Please check the file format and try again.",
+      );
+    }
+  },
+);
+
+/** On mount, reattach to an import already running for this course (survives a refresh). */
+export const resumeOutlineImportJobThunk = createAsyncThunk(
+  'blueprint/resumeImport',
+  async ({ courseId }, { getState, dispatch }) => {
+    try {
+      if (getState().blueprint?.importJob?.jobId) return null;   // already watching
+      const res = await blueprintService.getActiveOutlineImportJob(Number(courseId));
+      const job = res?.job ?? null;
+      if (job?.job_id) {
+        dispatch(pollOutlineImportJobThunk({ jobId: job.job_id, courseId: Number(courseId) }));
+        return job;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
+);
+
 export const setActiveBlueprintThunk = createAsyncThunk(
   'blueprint/setActive',
   async ({ blueprintId, courseId }, { getState, rejectWithValue }) => {
     try {
       const result = await blueprintService.pinBlueprint(blueprintId, courseId);
-      toast.success(`Active ${labelsFromState(getState).blueprintLower} updated.`);
+      toast.success(`Active ${labelsFromState(getState).blueprint} updated.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));

@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { importService } from './services/importService';
 import { extractErrorMessage } from '@utils/helpers';
 import { JOB_STATUSES } from '@utils/constants';
+import { labelsFromState } from '@config/tenantLabels';
 
 // Reuse the same poll cadence the generate flow uses.
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
@@ -47,7 +48,7 @@ export const fetchImportRecordThunk = createAsyncThunk(
 
 export const pollImportJobThunk = createAsyncThunk(
   'import/pollJob',
-  async (jobId, { dispatch, rejectWithValue }) => {
+  async (jobId, { dispatch, getState, rejectWithValue }) => {
     try {
       const status = await importService.getJobStatus(jobId);
       if (ACTIVE_STATUSES.includes(status.status)) {
@@ -55,7 +56,7 @@ export const pollImportJobThunk = createAsyncThunk(
         return status;
       }
       if (status.status === JOB_STATUSES.COMPLETED) {
-        toast.success('Title imported!');
+        toast.success(`${labelsFromState(getState).title} imported!`);
       } else if (status.status === JOB_STATUSES.FAILED) {
         toast.error(status.error_message || 'Import failed.');
       }

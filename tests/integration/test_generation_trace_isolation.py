@@ -166,3 +166,125 @@ class TestCrossTenantIsolation:
                 assert resp.status_code == 404
             assert "secret prompt" not in resp.text
             assert "secret response" not in resp.text
+
+
+class TestGenerationByIdTenantIsolation:
+    """The plain by-id Generation endpoints (get/export/completion-status) had
+    NO tenant check at all before this fix — unlike /trace above, which was
+    already scoped via get_scoped_or_404. Same fixtures/helpers as the trace
+    tests above; reused rather than the generic `two_tenants` fixture so this
+    file stays internally consistent."""
+
+    def test_get_404s_for_another_tenant(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        assert client.get(f"/api/v1/generations/{gen_a.id}", headers=two_tenant_setup["headers_b"]).status_code == 404
+        assert client.get(f"/api/v1/generations/{gen_a.id}", headers=two_tenant_setup["headers_a"]).status_code == 200
+
+    def test_platform_admin_still_reaches_every_tenants_generation(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        resp = client.get(f"/api/v1/generations/{gen_a.id}", headers=two_tenant_setup["headers_admin"])
+        assert resp.status_code == 200
+
+    # get_module_completion (/completion-status) is not exercised here: it
+    # unconditionally imports promptops_app.core.shared, whose module-level
+    # `@st.cache_data` decorator NameErrors on import (Streamlit reference
+    # with no `st` import) — a pre-existing, unrelated bug that 500s the
+    # endpoint for every caller, tenant check or not. Not this fix's to carry.
+
+    def test_export_404s_for_another_tenant(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        resp = client.get(
+            f"/api/v1/generations/{gen_a.id}/export", headers=two_tenant_setup["headers_b"],
+        )
+        assert resp.status_code == 404
+
+    def test_null_project_generation_not_visible_to_a_tenant_but_platform_admin_reaches_it(
+        self, client, db, two_tenant_setup,
+    ):
+        """get_scoped_or_404 (the pre-existing, already-tested /trace idiom
+        this fix reuses) has no NULL-is-shared carve-out — unlike CDD/Style's
+        visible_to_tenant, a NULL project_id row here is invisible to every
+        tenant, reachable only by a platform admin. Pinning the ACTUAL,
+        already-established semantics rather than assuming CDD/Style's
+        convention carries over to a different helper."""
+        from promptops_app.database import Generation
+
+        gen = Generation(
+            prompt_name="p", prompt_version="v1", block_type="lesson", topic="orphan row",
+            output_text="output", project_id=None, created_by="tester",
+        )
+        db.add(gen)
+        db.commit()
+        db.refresh(gen)
+        for hdrs in (two_tenant_setup["headers_a"], two_tenant_setup["headers_b"]):
+            assert client.get(f"/api/v1/generations/{gen.id}", headers=hdrs).status_code == 404
+        assert client.get(f"/api/v1/generations/{gen.id}", headers=two_tenant_setup["headers_admin"]).status_code == 200
+
+
+class TestListGenerationsTenantIsolation:
+    def test_tenant_b_cannot_see_tenant_a_generation(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        resp = client.get("/api/v1/generations", headers=two_tenant_setup["headers_b"])
+        assert resp.status_code == 200
+        ids = [g["id"] for g in resp.json()["items"]]
+        assert gen_a.id not in ids
+
+    def test_tenant_a_sees_its_own_generation(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        resp = client.get("/api/v1/generations", headers=two_tenant_setup["headers_a"])
+        assert resp.status_code == 200
+        ids = [g["id"] for g in resp.json()["items"]]
+        assert gen_a.id in ids
+
+    def test_tenant_cannot_use_project_id_param_to_see_another_tenant(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        resp = client.get(
+            "/api/v1/generations",
+            params={"project_id": two_tenant_setup["project_a"].id},
+            headers=two_tenant_setup["headers_b"],
+        )
+        assert resp.status_code == 200
+        ids = [g["id"] for g in resp.json()["items"]]
+        assert gen_a.id not in ids
+
+    def test_platform_admin_with_no_project_id_sees_every_tenant(self, client, two_tenant_setup):
+        gen_a = two_tenant_setup["gen_a"]
+        resp = client.get("/api/v1/generations", headers=two_tenant_setup["headers_admin"])
+        assert resp.status_code == 200
+        ids = [g["id"] for g in resp.json()["items"]]
+        assert gen_a.id in ids
+
+
+class TestCourseCompletionTenantIsolation:
+    """GET /generations/course/{course_id}/completion-status — same unfiltered
+    by-id lookup bug, on Course rather than Generation."""
+
+    def _course(self, db, *, project_id):
+        from promptops_app.database import Course
+
+        course = Course(project_id=project_id, name="Isolation course")
+        db.add(course)
+        db.commit()
+        db.refresh(course)
+        return course
+
+    def test_404s_for_another_tenant(self, client, db, two_tenant_setup):
+        course = self._course(db, project_id=two_tenant_setup["project_a"].id)
+        resp = client.get(
+            f"/api/v1/generations/course/{course.id}/completion-status", headers=two_tenant_setup["headers_b"],
+        )
+        assert resp.status_code == 404
+
+    def test_works_for_own_tenant(self, client, db, two_tenant_setup):
+        course = self._course(db, project_id=two_tenant_setup["project_a"].id)
+        resp = client.get(
+            f"/api/v1/generations/course/{course.id}/completion-status", headers=two_tenant_setup["headers_a"],
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_platform_admin_still_reaches_every_tenants_course(self, client, db, two_tenant_setup):
+        course = self._course(db, project_id=two_tenant_setup["project_a"].id)
+        resp = client.get(
+            f"/api/v1/generations/course/{course.id}/completion-status", headers=two_tenant_setup["headers_admin"],
+        )
+        assert resp.status_code == 200, resp.text

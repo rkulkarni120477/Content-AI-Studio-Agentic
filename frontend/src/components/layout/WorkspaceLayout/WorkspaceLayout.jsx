@@ -19,23 +19,24 @@ export default function WorkspaceLayout() {
 
   useEffect(() => {
     if (!cid) return;
-    if (selCourse?.id === cid) {
-      dispatch(fetchWorkspaceConfigThunk(cid));
-      return;
-    }
+
     async function loadCourse() {
       try {
-        const course = await dashboardService.getCourse(cid);
+        const course = selCourse?.id === cid
+          ? selCourse
+          : await dashboardService.getCourse(cid);
         if (course.project_id) {
           const p = await dashboardService.getProject(course.project_id);
           dispatch(setSelectedProject(p));
         }
-        if (course.project_id && course.cluster_id) {
-          const cl = await dashboardService.listClusters(course.project_id);
-          const cluster = cl?.items?.find((x) => x.id === course.cluster_id);
-          if (cluster) dispatch(setSelectedCluster(cluster));
+        if (selCourse?.id !== cid) {
+          if (course.project_id && course.cluster_id) {
+            const cl = await dashboardService.listClusters(course.project_id);
+            const cluster = cl?.items?.find((x) => x.id === course.cluster_id);
+            if (cluster) dispatch(setSelectedCluster(cluster));
+          }
+          dispatch(setSelectedCourse(course));
         }
-        dispatch(setSelectedCourse(course));
         dispatch(fetchWorkspaceConfigThunk(cid));
       } catch {
         /* redirect handled below */

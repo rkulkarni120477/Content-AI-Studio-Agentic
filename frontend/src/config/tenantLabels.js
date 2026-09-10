@@ -128,26 +128,56 @@ export const FALLBACK_LABELS = buildLabels({});
 
 /** Build labels from a project row (or null → defaults). */
 export function labelsFromProject(project) {
-  return buildLabels(project?.ui_labels);
+  let raw = project?.ui_labels ?? project?.uiLabels;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = {};
+    }
+  }
+  return buildLabels(raw);
 }
 
-/** Build labels from Redux state (thunks / non-React code). */
-export function labelsFromState(getState) {
+/**
+ * Build labels from Redux state (thunks / non-React code).
+ * Accepts `getState` or an already-read state object.
+ */
+export function labelsFromState(getStateOrState) {
   try {
-    return labelsFromProject(getState()?.dashboard?.selectedProject);
+    const state = typeof getStateOrState === 'function'
+      ? getStateOrState()
+      : getStateOrState;
+    const selected = state?.dashboard?.selectedProject;
+    const listed = (state?.dashboard?.projects?.items || [])
+      .find((p) => p?.id === selected?.id);
+    const hasOverrides = (p) => {
+      const raw = p?.ui_labels ?? p?.uiLabels;
+      if (!raw) return false;
+      if (typeof raw === 'string') return raw.trim().length > 2;
+      return typeof raw === 'object' && Object.keys(raw).length > 0;
+    };
+    return labelsFromProject(hasOverrides(selected) ? selected : (listed || selected));
   } catch {
     return FALLBACK_LABELS;
   }
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Soft-replace default product terms in display/generated text with the tenant's
- * wording. Word-boundary only — does not touch identifiers like blueprint_id.
- * Pass `keys` to limit which vocabulary is rewritten (e.g. ['blueprint']).
+ * wording. Word-boundary only by default — does not touch identifiers like
+ * blueprint_id. Pass `{ identifiers: true }` to also rewrite snake_case slugs
+ * such as default_style_prompt. Pass `keys` to limit which vocabulary is
+ * rewritten (e.g. ['blueprint']).
  */
-export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS) {
+export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS, options = {}) {
   if (!text || typeof text !== 'string') return text;
   let out = text;
+  const identifiers = Boolean(options?.identifiers);
   const all = {
     title: [
       ['Titles', L.titles], ['Title', L.title],
@@ -167,9 +197,23 @@ export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS) {
     ],
   };
   for (const key of keys) {
-    for (const [from, to] of (all[key] || [])) {
+    const pairs = identifiers
+      ? ({
+        title: [['Titles', L.titles], ['titles', L.titles], ['Title', L.title], ['title', L.title]],
+        style: [['Styles', L.styles], ['styles', L.styles], ['Style', L.style], ['style', L.style]],
+        cdd: [['CDDs', L.cdds], ['cdds', L.cdds], ['CDD', L.cdd], ['cdd', L.cdd]],
+        blueprint: [
+          ['Blueprints', L.blueprints], ['blueprints', L.blueprints],
+          ['Blueprint', L.blueprint], ['blueprint', L.blueprint],
+        ],
+      }[key] || [])
+      : (all[key] || []);
+    for (const [from, to] of pairs) {
       if (!to || to === from) continue;
-      out = out.replace(new RegExp(`\\b${from}\\b`, 'g'), to);
+      const pattern = identifiers
+        ? new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(from)}(?![A-Za-z0-9])`, 'g')
+        : new RegExp(`\\b${escapeRegExp(from)}\\b`, 'g');
+      out = out.replace(pattern, to);
     }
   }
   return out;

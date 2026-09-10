@@ -206,9 +206,22 @@ class TestFeedbackApplyApi:
         body = str(resp.json()).lower()
         assert "module" in body
 
-    def test_apply_with_target_succeeds_when_no_blocks(
-        self, client, platform_headers, feedback_graph,
+    def test_apply_with_target_queues_job(
+        self, client, platform_headers, feedback_graph, monkeypatch, db,
     ):
+        # Apply is now a background job (one LLM call per block). The endpoint
+        # validates + enqueues and returns a job handle; stub the dispatch so this
+        # asserts the enqueue contract without running the worker.
+        submitted = {}
+
+        def _fake_submit(fn, job_id):
+            submitted["fn"] = fn
+            submitted["job_id"] = job_id
+
+        monkeypatch.setattr(
+            "promptops_app.jobs.dispatch.submit", _fake_submit, raising=True,
+        )
+
         item = feedback_graph["item"]
         bp = feedback_graph["bp"]
         resp = client.post(
@@ -216,9 +229,69 @@ class TestFeedbackApplyApi:
             json={"item_ids": [item.id], "blueprint_id": bp.id},
             headers=platform_headers,
         )
+        assert resp.status_code == 202, resp.text
+        data = resp.json()
+        assert data["job_id"]
+        assert data["status"] == "queued"
+        assert data["status_url"].endswith(data["job_id"])
+        # The worker was handed the job we returned.
+        assert submitted["job_id"] == data["job_id"]
+
+        # A queued apply_feedback job row exists, carrying the resolved target.
+        from promptops_app.database import GenerationJob
+
+        job = db.query(GenerationJob).filter(GenerationJob.id == data["job_id"]).first()
+        assert job is not None
+        assert job.job_type == "apply_feedback"
+        import json as _json
+        params = _json.loads(job.request_json)
+        assert params["blueprint_id"] == bp.id
+        assert params["item_ids"] == [item.id]
+
+    def test_apply_result_returns_summary_for_completed_job(
+        self, client, platform_headers, feedback_graph, db,
+    ):
+        # Seed a completed apply_feedback job as the worker would leave it, then
+        # read its summary back through the result endpoint the frontend polls.
+        import json as _json
+
+        from promptops_app.database import GenerationJob
+
+        bp = feedback_graph["bp"]
+        job = GenerationJob(
+            id="applyjob_test_0001",
+            job_type="apply_feedback",
+            status="completed",
+            progress=100,
+            current_step="Completed",
+            created_by="fb_platform_admin",
+            result_entity_id=bp.id,
+            result_json=_json.dumps({
+                "instruction": "Reviewer feedback to apply:\nNeed more examples",
+                "regenerated": [{"block_id": 7, "block_label": "Intro - Body"}],
+                "skipped": 1,
+                "blueprint_id": bp.id,
+                "module_label": "Module 1 — Intro",
+            }),
+        )
+        db.add(job)
+        db.commit()
+
+        resp = client.get(
+            f"/api/v1/feedback/apply-result/{job.id}",
+            headers=platform_headers,
+        )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["blueprint_id"] == bp.id
         assert data["module_label"] == "Module 1 — Intro"
-        assert data["regenerated"] == []
+        assert data["skipped"] == 1
+        assert data["regenerated"] == [{"block_id": 7, "block_label": "Intro - Body"}]
         assert "Need more examples" in data["instruction"]
+
+    def test_apply_result_unknown_job_is_404(self, client, platform_headers):
+        resp = client.get(
+            "/api/v1/feedback/apply-result/does_not_exist",
+            headers=platform_headers,
+        )
+        assert resp.status_code == 404, resp.text

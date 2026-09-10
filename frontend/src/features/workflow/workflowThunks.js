@@ -108,3 +108,25 @@ export const bulkApproveThunk = createAsyncThunk(
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
+
+export const bulkSubmitThunk = createAsyncThunk(
+  'workflow/bulkSubmit',
+  async ({ blockIds, reviewerUsername }, { rejectWithValue }) => {
+    try {
+      const result = await workflowService.bulkSubmit(blockIds, reviewerUsername);
+      toast.success(`Moved to In Review: ${result.succeeded} | Failed: ${result.failed}`);
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);
+
+export const bulkPublishThunk = createAsyncThunk(
+  'workflow/bulkPublish',
+  async (blockIds, { rejectWithValue }) => {
+    try {
+      const result = await workflowService.bulkPublish(blockIds);
+      toast.success(`Published: ${result.succeeded} | Failed: ${result.failed}`);
+      return result;
+    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
+  },
+);

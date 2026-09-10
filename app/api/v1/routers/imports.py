@@ -141,12 +141,26 @@ async def start_import(
 
     # Course shell — same construction as scratch create, plus additive import
     # metadata (source_type is display/analytics only; never branched on).
+    #
+    # is_active=False: this row exists so the wizard has a course_id to attach
+    # the job to and the user can watch progress, not because the title should
+    # already be "created". Reconstruction hasn't run yet — nothing has been
+    # imported. run_import_job flips this to True the moment editor_builder.build
+    # actually succeeds (see `reconstructed` there). Until then, and if the job
+    # never runs at all (worker crash, dropped dispatch, a failure in THIS
+    # request after the commit below but before the job is even enqueued), the
+    # shell stays invisible via the same is_active + import_id exclusion
+    # _mark_failed already used for an explicit failure — see
+    # course_repository._is_empty_import_shell. Previously this defaulted to
+    # True, so any of those gaps left a contentless course permanently visible,
+    # badged "Imported".
     course = Course(
         name=name,
         project_id=project_id,
         cluster_id=cluster_id,
         created_by=current_user.username,
         source_type=source_type,
+        is_active=False,
     )
     db.add(course)
     db.commit()
