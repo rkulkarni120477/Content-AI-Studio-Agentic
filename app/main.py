@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
     #init_db()
     #_log.info("startup_db_migrations_complete")
      from promptops_app.database import ensure_phoenix_database, init_db
-      from app.core.database import wait_for_database
+     from app.core.database import wait_for_database
 
     # Wait for AWS RDS to become reachable before running migrations.
     # This handles EC2 + RDS being started at approximately the same time.
