@@ -55,17 +55,18 @@ def platform_admin(db):
 
 
 @pytest.fixture()
-def digest_pipeline_on():
-    """Enable the digest pipeline for every client for the duration of a test."""
-    orig_enabled = settings.digest_pipeline_enabled
-    orig_clients = settings.digest_pipeline_clients
-    settings.digest_pipeline_enabled = True
-    settings.digest_pipeline_clients = ""  # empty allowlist ⇒ all clients
-    try:
-        yield
-    finally:
-        settings.digest_pipeline_enabled = orig_enabled
-        settings.digest_pipeline_clients = orig_clients
+def digest_pipeline_on(monkeypatch):
+    """Enable the digest pipeline for every client for the duration of a test.
+
+    Stubs digest_pipeline_on_for itself rather than clearing the allowlist:
+    an empty DIGEST_PIPELINE_CLIENTS now means no clients (fail closed, S2 in
+    AIM_PIPELINE_SHORTCOMINGS.txt), not every client, and these tests do not
+    care which specific client platform_admin resolves to -- only that the
+    capability flag reads True end to end.
+    """
+    # settings is a pydantic model -- setattr on the INSTANCE only accepts
+    # declared fields, so the method is patched on the class instead.
+    monkeypatch.setattr(type(settings), "digest_pipeline_on_for", lambda self, client_id: True)
 
 
 def _login(client) -> dict:
