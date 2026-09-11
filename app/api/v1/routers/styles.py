@@ -628,6 +628,14 @@ def generate_style_intelligence(
     # Persist the result.
     understanding_text = result if isinstance(result, str) else str(result)
     style.generated_summary = understanding_text
+    # understanding_status is set to "stale" only when a document is linked
+    # (add_files_to_style, database.py) and to "fresh" only inside
+    # create_style_version (restore / IMSCC import) -- this route, the one a
+    # user actually clicks Generate/Refine on, never touched it. So a style
+    # correctly marked stale after a file was added stayed stale forever, even
+    # once regenerated from that exact file -- telling the author their current
+    # understanding was outdated when it no longer was.
+    style.understanding_status = "fresh"
     db.commit()
     _upsert_generated_style_to_dis(style, current_user)
 
