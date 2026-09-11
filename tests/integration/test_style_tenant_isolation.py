@@ -164,3 +164,54 @@ class TestListStylesTenantIsolation:
         assert resp.status_code == 200
         ids = [s["id"] for s in resp.json()["items"]]
         assert style_b_course.id not in ids
+
+
+class TestStyleUnderstandReadsItsOwnTenantsLibrary:
+    """S1 (AIM_PIPELINE_SHORTCOMINGS.txt): _retrieve_dis_style_context was the
+    only Source Library retrieval in the codebase that never passed client_id,
+    so it read the CALLING user's default tenant rather than the STYLE's own —
+    a platform admin (default client 'cengage') generating Style Intelligence
+    for an AIM style queried cengage's library, not AIM's.
+    """
+
+    def test_retrieval_is_scoped_to_the_styles_own_project_client(
+        self, client, db, two_tenants, monkeypatch
+    ):
+        from promptops_app.database import Project
+
+        # two_tenants' projects carry no client_name; give tenant A one so the
+        # resolved client_id is observable and distinct from the platform
+        # admin's own default ('cengage', per auth.py's seeded test user).
+        proj = db.get(Project, two_tenants["a"].id)
+        proj.client_name = "AIM"
+        db.commit()
+
+        style = _style(db, project_id=two_tenants["a"].id)
+
+        calls = []
+
+        def fake_retrieve(purpose, payload, current_user=None, client_id=""):
+            calls.append(client_id)
+            return {"combined_context": ""}
+
+        monkeypatch.setattr(
+            "app.api.v1.routers.styles.dis_client.retrieve_context_sync", fake_retrieve)
+        # generate_style_understanding does the actual LLM call; stub it so this
+        # test is purely about what retrieval was asked for, not generation.
+        monkeypatch.setattr(
+            "promptops_app.services.style_service.generate_style_understanding",
+            lambda *a, **k: "Stubbed style understanding.",
+        )
+
+        resp = client.post(
+            f"/api/v1/styles/{style.id}/understand",
+            json={"document_ids": ["doc-1"]},
+            headers=two_tenants["headers_platform"],
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert calls, "retrieve_context_sync was never called"
+        assert calls[0] == "aim", (
+            f"expected retrieval scoped to the style's own tenant ('aim'), got {calls[0]!r} "
+            "-- this is the platform admin's personal default leaking through instead"
+        )

@@ -131,3 +131,36 @@ def test_resolve_day_context_block_falls_through_on_dis_failure(digest_pipeline_
         lambda *a, **k: ("", []),  # mirrors _dis_day_context_block's own DIS-failure fallback
     )
     assert resolve_day_context_block(3, "aim", None, "L", "Block 2 — X") == ""
+
+
+def test_resolve_day_context_block_logs_when_no_block_label_parseable(
+    digest_pipeline_on_for_aim_only, monkeypatch, caplog
+):
+    """B5: no stored course-to-block linkage exists, so this gate can fire for
+    a request that genuinely wanted day-scoped grounding — unlike the other
+    two gates (day_number missing / client not allowlisted), which are
+    deliberate no-ops for a request that never asked for it. Distinguishing
+    them means this ONE gate logs; the other two must stay silent."""
+    import logging
+
+    _fail_if_dis_day_context_called(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="app.core.dis_day_context"):
+        result = resolve_day_context_block(3, "aim", None, "L", "Module 2 — Pharmacology Basics")
+
+    assert result == ""
+    assert any("day_scoped_grounding_skipped_no_block_label" in r.message for r in caplog.records)
+
+
+def test_resolve_day_context_block_does_not_log_for_the_deliberate_noop_gates(
+    digest_pipeline_on_for_aim_only, monkeypatch, caplog
+):
+    """The other two gates are the ordinary case for most requests/tenants —
+    logging them would just be noise trained to be ignored."""
+    import logging
+
+    _fail_if_dis_day_context_called(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="app.core.dis_day_context"):
+        resolve_day_context_block(None, "aim", None, "L", "Block 2 — X")
+        resolve_day_context_block(3, "cengage", None, "L", "Block 2 — X")
+
+    assert not any("day_scoped_grounding_skipped_no_block_label" in r.message for r in caplog.records)

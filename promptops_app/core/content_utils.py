@@ -230,8 +230,18 @@ def build_regeneration_context(db, generation, *, target_audience: str = "") -> 
 
     # 2. Active instructional Style.
     try:
-        _style     = get_active_style(db, project_id=project_id, course_id=course_id)
-        _style_inj = build_style_context(db, _style) if _style else ""
+        from promptops_app.database import Course
+
+        # cluster_id threads in the course's cluster-level auto-injected prompts
+        # (build_style_context step 1) -- omitting it meant a cluster prompt
+        # applied at CDD/Blueprint generation and then silently disappeared on
+        # every regeneration of the same content.
+        _course_row = db.query(Course).filter(Course.id == course_id).first() if course_id else None
+        _style      = get_active_style(db, project_id=project_id, course_id=course_id)
+        _style_inj  = (
+            build_style_context(db, _style, cluster_id=_course_row.cluster_id if _course_row else None)
+            if _style else ""
+        )
         if _style_inj:
             parts.append(
                 "--- ACTIVE INSTRUCTIONAL STYLE ---\n"

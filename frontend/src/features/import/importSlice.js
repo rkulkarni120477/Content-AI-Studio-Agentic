@@ -74,6 +74,7 @@ const importSlice = createSlice({
 
       // ── Poll job ──────────────────────────────────────────────────
       .addCase(pollImportJobThunk.fulfilled, (s, { payload }) => {
+        if (!payload) return;   // transient poll failure — keep last known progress
         s.job = payload;
         if (payload?.status === 'completed') {
           s.step = 'done';

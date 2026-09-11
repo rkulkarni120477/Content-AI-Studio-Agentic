@@ -374,12 +374,28 @@ def generate_blueprint(
         extra_block = f"{extra_block}\n\n{day_context_block}".strip()
     if dis_context_block:
         extra_block = f"{extra_block}\n\n{dis_context_block}".strip()
-    if style_context:
-        extra_block = f"**ACTIVE STYLE:**\n{style_context}\n\n{extra_block}"
+    # style_context is NOT prepended here — it is carried by the named
+    # style_guidelines variable below. A template that renders both this and
+    # extra_instructions used to receive the style twice, verbatim.
 
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # extra_block (built above) folds in extra_instructions and the day/dis
+        # grounding block — appended separately below to avoid duplicating
+        # whichever one fired, so style_context and extra_instructions are
+        # appended here directly instead, from the same variables the
+        # non-override build reads (style_context is never in extra_block —
+        # see the comment where extra_block is built, a few lines up). This
+        # branch used to append neither: an inline-edited prompt replaces the
+        # TEMPLATE, which is the intent, but was also silently dropping the
+        # Style the user still had selected and the text still sitting in
+        # Additional Instructions. Same section order as the non-override
+        # build above (style + instructions, then grounding).
+        if style_context:
+            user_prompt = f"{user_prompt}\n\n**ACTIVE STYLE:**\n{style_context}"
+        if request_body.extra_instructions:
+            user_prompt = f"{user_prompt}\n\n{request_body.extra_instructions}"
         # day_context_block and dis_context_block are mutually exclusive (the
         # latter is only ever computed when the former came up empty, above) —
         # fold in whichever one actually succeeded. Flagged by adversarial

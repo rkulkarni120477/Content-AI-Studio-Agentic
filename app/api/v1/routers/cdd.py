@@ -91,7 +91,18 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
+                       client_id: str = "") -> tuple[str, list, str]:
+    """Retrieved Source Library context, its units, and why there is none.
+
+    Third element mirrors blueprints.py's own _dis_context_block: "" when DIS
+    answered (including with nothing — the ordinary shape for a library with no
+    matching material), a short reason when the lookup itself failed. Before
+    this, a CDD generated with an unreachable Source Library was
+    byte-indistinguishable from one whose library genuinely had nothing to add
+    — the only trace was a log line nobody reads while looking at a document
+    that looks fine.
+    """
     try:
         result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
@@ -103,10 +114,14 @@ def _dis_context_block(purpose: str, payload: dict, current_user, label: str, cl
                 "Do not expose internal DIS metadata.\n\n"
                 f"{ctx}\n---\n",
                 units,
+                "",
             )
     except Exception as exc:
         _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
-    return "", []
+        # The class name, not str(exc): stored on the version and shown to the
+        # requester, and an upstream message can carry a host, URL or token.
+        return "", [], type(exc).__name__
+    return "", [], ""
 
 
 def _merge_source_units(primary: list, extra: list) -> list:
@@ -467,7 +482,7 @@ def generate_cdd(
         project_id=getattr(request_body, "project_id", None),
     )
 
-    dis_context_block, dis_source_units = _dis_context_block(
+    dis_context_block, dis_source_units, dis_unavailable = _dis_context_block(
         "cdd",
         {
             "purpose": "cdd",
@@ -502,7 +517,10 @@ def generate_cdd(
     # — _dis_context_block swallows any DIS error and returns "", so a failure here
     # degrades to today's cdd-only behaviour rather than breaking generation.
     if is_dlu:
-        gen_block, gen_units = _dis_context_block(
+        # Supplementary pass on top of the primary retrieval above; its own
+        # failure reason is intentionally not recorded — the code comment
+        # above already documents why a failure here degrades silently.
+        gen_block, gen_units, _gen_unavailable = _dis_context_block(
             "course-generation",
             {
                 "purpose": "course-generation",
@@ -535,7 +553,10 @@ def generate_cdd(
         str(x).strip() for x in (request_body.reference_document_ids or []) if str(x).strip()
     ]
     if selected_ref_ids:
-        pinned_block, pinned_units = _dis_context_block(
+        # Same as the DLU pass above: a user-pinned reference lookup failing is
+        # not recorded as the row's source_context_unavailable reason — only
+        # the primary retrieval's reachability is.
+        pinned_block, pinned_units, _pinned_unavailable = _dis_context_block(
             "cdd",
             {
                 "purpose": "cdd",
@@ -562,12 +583,29 @@ def generate_cdd(
             len(selected_ref_ids), bool(pinned_block),
         )
 
+    # Resolved unconditionally (not only on the else/non-override branch below)
+    # so the override branch can also deliver Style and the requester's own
+    # Extra Instructions — it used to build neither, silently dropping both the
+    # moment a prompt was edited inline.
+    course = get_course_by_id(db, request_body.course_id)
+    style_context = ""
+    if request_body.style_id:
+        style = style_repository.get_style_by_id(db, request_body.style_id)
+        if style:
+            style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
+
     # ── Step 1: Build prompts ──────────────────────────────────────────────────
     # Use the custom override if the user edited the prompt in the UI,
     # otherwise build from the prompt library (falls back to inline constants).
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # Same section order as the non-override build below: style, then the
+        # requester's own instructions, then whichever grounding block fired.
+        if style_context:
+            user_prompt = f"{user_prompt}\n\n**ACTIVE STYLE — Apply throughout:**\n{style_context}"
+        if request_body.extra_instructions:
+            user_prompt = f"{user_prompt}\n\n{request_body.extra_instructions}"
         if dis_context_block:
             user_prompt = f"{user_prompt}\n\n{dis_context_block}"
         # Persist the override with the artifact (PL↔CAS sync review, plan
@@ -579,18 +617,12 @@ def generate_cdd(
             "user_prompt_override": request_body.user_prompt_override,
         }
     else:
-        course = get_course_by_id(db, request_body.course_id)
-        style_context = ""
-        if request_body.style_id:
-            style = style_repository.get_style_by_id(db, request_body.style_id)
-            if style:
-                style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
-
         extra_block = request_body.extra_instructions or ""
         if dis_context_block:
             extra_block = f"{extra_block}\n\n{dis_context_block}".strip()
-        if style_context:
-            extra_block = f"**ACTIVE STYLE — Apply throughout:**\n{style_context}\n\n{extra_block}"
+        # style_context is NOT prepended here — it is carried by the named
+        # style_guidelines variable below. A template that renders both this
+        # and extra_instructions used to receive the style twice, verbatim.
 
         # Duration is optional on the form, so it can be absent here. "unspecified"
         # rather than a stand-in number: a template that prints
@@ -677,6 +709,19 @@ def generate_cdd(
             prompt_provenance.get("prompt_source"),
         )
         prompt_provenance["source_context_dropped"] = True
+
+    # Companion to the flag above. That one means the prompt had no slot for the
+    # context we retrieved; this one means there was no context to put anywhere,
+    # because the Source Library could not be reached. Both leave a document
+    # grounded in less than the caller asked for, and neither is visible in the
+    # document itself, so both are recorded on the version — same contract
+    # blueprints.py already keeps for its own generation.
+    if dis_unavailable:
+        prompt_provenance["source_context_unavailable"] = dis_unavailable
+        _log.warning(
+            "cdd_generated_without_source_grounding  user=%s  course=%s  reason=%s",
+            current_user.username, request_body.course_id, dis_unavailable,
+        )
 
     # ── Step 2: Call the LLM ───────────────────────────────────────────────────
     usage_context = UsageLogContext(

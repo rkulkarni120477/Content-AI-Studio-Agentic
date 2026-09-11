@@ -2336,13 +2336,18 @@ def build_style_context(db, style: "Style", cluster_id: int | None = None) -> st
     parts.append(f"## Active Instructional Style: {style.name}")
     if style.generated_summary:
         parts.append(f"### Style Intelligence Layer (validated understanding)\n{style.generated_summary}")
-    else:
-        if style.custom_instructions:
-            parts.append(f"### Custom Instructions\n{style.custom_instructions}")
-        for sd in style.style_documents:
-            doc = sd.document
-            if doc and doc.content:
-                parts.append(f"### Style Reference: {doc.filename}\n{doc.content}")
+    # Custom Instructions and reference documents are inputs an author resolved
+    # (typed, uploaded) independently of whether an AI summary exists — they used
+    # to be dropped the moment generated_summary was present (an if/else, not a
+    # merge), so editing them after the first "Generate Style Intelligence" had
+    # no effect on any future generation. Always include them: the summary is a
+    # distillation, not a replacement.
+    if style.custom_instructions:
+        parts.append(f"### Custom Instructions\n{style.custom_instructions}")
+    for sd in style.style_documents:
+        doc = sd.document
+        if doc and doc.content:
+            parts.append(f"### Style Reference: {doc.filename}\n{doc.content}")
     return "\n\n".join(parts)
 
 
