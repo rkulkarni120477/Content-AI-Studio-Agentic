@@ -177,8 +177,12 @@ export const exportGenerationThunk = createAsyncThunk(
       downloadBlob(response.data, filename);
       toast.success('Export downloaded.');
     } catch (e) {
-      toast.error('Export failed.');
-      return rejectWithValue(extractErrorMessage(e));
+      // The server maps builder failures to something the Author can act on
+      // (export_service._user_facing_error). Showing a constant instead threw
+      // that away and left every failure looking identical.
+      const msg = extractErrorMessage(e);
+      toast.error(msg || 'Export failed.');
+      return rejectWithValue(msg);
     }
   },
 );
@@ -191,8 +195,12 @@ export const exportCourseThunk = createAsyncThunk(
       downloadBlob(response.data, filename);
       toast.success('Export downloaded.');
     } catch (e) {
-      toast.error('Export failed.');
-      return rejectWithValue(extractErrorMessage(e));
+      // The server maps builder failures to something the Author can act on
+      // (export_service._user_facing_error). Showing a constant instead threw
+      // that away and left every failure looking identical.
+      const msg = extractErrorMessage(e);
+      toast.error(msg || 'Export failed.');
+      return rejectWithValue(msg);
     }
   },
 );

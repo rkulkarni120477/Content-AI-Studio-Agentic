@@ -44,6 +44,7 @@ dependencies = [
     # --- Export ---
     "python-docx>=1.1",
     "pypdf>=4.2",
+    "reportlab>=4.2",     # PDF export (promptops_app/exporters/pdf_exporter.py)
     "openpyxl>=3.1",
 
     # --- Document extraction ---
