@@ -3,7 +3,8 @@
 Product rule:
 - CAS Source Library should list a compact document catalogue, not full DIS metadata.
 - View should return readable extracted content only.
-- The catalogue is persisted as one JSON file per client/workspace so it survives API restarts.
+- The catalogue is persisted in DIS Postgres (``structure_store``) when enabled,
+  otherwise as one JSON file per client/workspace on S3.
 """
 from __future__ import annotations
 
@@ -15,6 +16,12 @@ from typing import Any, Dict, List, Optional
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.locks import source_index_lock
+from services.metadata_framework.adapters import (
+    project_filter_options_map,
+    project_index_metadata,
+)
+from services.metadata_framework.registry import registry_for_tenant
+from services import source_index_pg
 
 logger = logging.getLogger(__name__)
 
@@ -220,12 +227,18 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key: str) -> Dict[str, Any]:
+def compact_source_record(
+    payload: Dict[str, Any],
+    payload_key: str,
+    content_key: str,
+    tenant_cfg: Optional[TenantConfig] = None,
+) -> Dict[str, Any]:
     meta = payload.get("metadata", {}) or {}
     source = payload.get("source_file", {}) or {}
     document_type = str(meta.get("document_type") or meta.get("doc_type") or source.get("type") or "document")
     purpose = normalize_purpose(str(meta.get("purpose") or ""), document_type)
     now = datetime.utcnow().isoformat()
+    registry = registry_for_tenant(tenant_cfg)
 
     def _first_unit_value(key: str):
         """Fallback: first non-empty value of `key` across content-unit metadata.
@@ -246,7 +259,7 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
             v = _first_unit_value(key)
         return v if v not in (None, "", []) else default
 
-    return {
+    record = {
         "document_id": payload.get("job_id"),
         "job_id": payload.get("job_id"),
         "tenant_id": payload.get("tenant_id"),
@@ -277,80 +290,16 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "source_relative_path": source.get("relative_path") or "",
         "created_at": payload.get("created_at") or now,
         "updated_at": now,
-        # Optional simple filter values only. No internal metadata dump.
-        "course_name": meta.get("course_name") or "",
-        "block": meta.get("block") or "",
-        "day": meta.get("day") or "",
-        "chapter": meta.get("chapter") or "",
-        "module_name": meta.get("module_name") or "",
-        "learning_objective": meta.get("learning_objective") or "",
-        # Filter / calendar-join keys promoted from the processed payload, so the
-        # retrieval allow-set and the block/day/quiz/project filters can be
-        # evaluated from the source index alone — no per-query content-file
-        # reads. Additive only; absent values stay empty/None.
-        "content_type": meta.get("content_type") or "",
-        "block_id": meta.get("block_id") or meta.get("block") or "",
-        "block_number": meta.get("block_number") or "",
-        "day_number": _promote("day_number", None),
-        "day_id": _promote("day_id"),
-        "mapped_day": meta.get("mapped_day") or "",
-        "filename_day_id": meta.get("filename_day_id") or "",
-        "quiz_number": _promote("quiz_number", None),
-        "project_number": _promote("project_number"),
-        "lesson_name": meta.get("lesson_name") or "",
-        "subject_unit": _promote("subject_unit"),
-        "course_id": meta.get("course_id") or "",
-        "program_id": meta.get("program_id") or "",
-        "calendar_mapping_required": bool(meta.get("calendar_mapping_required")),
-        "is_generation_candidate": meta.get("is_generation_candidate"),
-        "is_archive_or_working_version": bool(meta.get("is_archive_or_working_version")),
     }
+    # Optional simple filter / calendar-join keys. Driven by the Field Registry
+    # (tenant metadata_framework when present; else DEFAULT_REGISTRY). Additive
+    # only; absent values stay empty/None. AIM profile transforms still write
+    # into payload.metadata first.
+    record.update(project_index_metadata(meta, _promote, registry))
+    return record
 
 
-def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
-    """The allow-set every retrieval and the Source Library are built from.
-
-    An empty index is returned on failure so a fresh client — one that has never
-    had an upload, and so has no index object yet — starts from an empty library
-    rather than an error page. That is the ONLY case it is meant to cover.
-
-    It used to cover every case, silently. `except Exception: pass` with no log
-    meant a missing bucket, a denied read, an expired AWS session token and a
-    wrong ENVIRONMENT all produced the same answer the empty-library case does:
-    zero documents, nothing in the logs, nothing in the response to say the
-    difference. Debugging that means guessing, because the one system that knew
-    what went wrong threw it away.
-
-    So NoSuchKey/404 stays quiet — that is the legitimate empty case — and
-    everything else is logged loudly with the bucket and key it was reading, at
-    error level, because it means configured storage the service cannot read.
-    """
-    writer = ArtifactWriter(tenant_cfg)
-    key = source_index_key(tenant_cfg, client_id)
-    try:
-        data = writer.read_json(key)
-        if isinstance(data, dict):
-            data.setdefault("sources", [])
-            return data
-        logger.error(
-            "source index for client_id=%s at %s is %s, not an object — returning an "
-            "empty library; the file is corrupt or is not a source index",
-            client_id, key, type(data).__name__)
-    except Exception as exc:  # noqa: BLE001 — the library must still render
-        code = getattr(getattr(exc, "response", None), "get", lambda *_: None)("Error") or {}
-        code = (code or {}).get("Code", "") if isinstance(code, dict) else ""
-        if code in {"NoSuchKey", "404", "NoSuchBucket"} or exc.__class__.__name__ == "FileNotFoundError":
-            logger.info(
-                "no source index yet for client_id=%s at bucket=%s key=%s — empty library",
-                client_id, getattr(writer, "processed_bucket", "?"), key)
-        else:
-            logger.error(
-                "CANNOT READ the source index for client_id=%s (bucket=%s key=%s): %s: %s. "
-                "Returning an empty library — every document will look missing and every "
-                "generation will run with no sources. Check the bucket, the credentials "
-                "and that ENVIRONMENT matches the deployment whose data you expect.",
-                client_id, getattr(writer, "processed_bucket", "?"), key,
-                type(exc).__name__, exc)
+def _empty_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
     return {
         "schema_version": "source_index_v1",
         "tenant_id": tenant_cfg.tenant_id,
@@ -360,11 +309,106 @@ def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any
     }
 
 
+def _read_source_index_s3(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
+    """S3 source_list.json path — used when structure_store is disabled."""
+    writer = ArtifactWriter(tenant_cfg)
+    key = source_index_key(tenant_cfg, client_id)
+    # Logical key omits storage.base_prefix (e.g. DIS/); the object on S3 is
+    # base_prefix + key. Log both so a wrong-prefix failure is obvious.
+    bp = (getattr(writer, "base_prefix", "") or "").strip().strip("/")
+    storage_key = f"{bp}/{key}" if bp else key
+    try:
+        data = writer.read_json(key)
+        if isinstance(data, dict):
+            data.setdefault("sources", [])
+            return data
+        logger.error(
+            "source index for client_id=%s at %s is %s, not an object — returning an "
+            "empty library; the file is corrupt or is not a source index",
+            client_id, storage_key, type(data).__name__)
+    except Exception as exc:  # noqa: BLE001 — the library must still render
+        code = getattr(getattr(exc, "response", None), "get", lambda *_: None)("Error") or {}
+        code = (code or {}).get("Code", "") if isinstance(code, dict) else ""
+        if code in {"NoSuchKey", "404", "NoSuchBucket"} or exc.__class__.__name__ == "FileNotFoundError":
+            logger.info(
+                "no source index yet for client_id=%s at bucket=%s key=%s — empty library",
+                client_id, getattr(writer, "processed_bucket", "?"), storage_key)
+        else:
+            logger.error(
+                "CANNOT READ the source index for client_id=%s (bucket=%s key=%s): %s: %s. "
+                "Returning an empty library — every document will look missing and every "
+                "generation will run with no sources. Check the bucket, the credentials "
+                "and that ENVIRONMENT matches the deployment whose data you expect.",
+                client_id, getattr(writer, "processed_bucket", "?"), storage_key,
+                type(exc).__name__, exc)
+    return _empty_index(tenant_cfg, client_id)
+
+
+def _warn_if_s3_has_unmigrated_data(tenant_cfg: TenantConfig, client_id: str) -> None:
+    """Loud signal when PG is empty but S3 still has a catalogue (deploy without backfill)."""
+    try:
+        s3_index = _read_source_index_s3(tenant_cfg, client_id)
+        s3_n = len(s3_index.get("sources") or [])
+    except Exception:  # noqa: BLE001
+        return
+    if s3_n > 0:
+        logger.error(
+            "source_index table empty for client_id=%s environment=%s but S3 still has "
+            "%s catalogue row(s). Run scripts/migrate_source_index_to_pg.py --apply "
+            "--client %s before expecting the Source Library to list documents.",
+            client_id, source_index_pg.environment_name(), s3_n, client_id,
+        )
+
+
+def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
+    """The allow-set every retrieval and the Source Library are built from.
+
+    When ``structure_store`` is enabled, rows come from Postgres ``source_index``.
+    Otherwise the legacy S3 ``source_list.json`` is used.
+
+    An empty index is returned on failure so a fresh client — one that has never
+    had an upload — starts from an empty library rather than an error page. That
+    is the ONLY case it is meant to cover for a missing store. Connection /
+    permission failures are logged loudly.
+    """
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        try:
+            sources = source_index_pg.read_sources(tenant_cfg, client_id)
+            if not sources:
+                _warn_if_s3_has_unmigrated_data(tenant_cfg, client_id)
+            return {
+                "schema_version": "source_index_v1",
+                "tenant_id": tenant_cfg.tenant_id,
+                "client_id": client_id,
+                "updated_at": datetime.utcnow().isoformat(),
+                "sources": sources,
+            }
+        except Exception as exc:  # noqa: BLE001 — the library must still render
+            logger.error(
+                "CANNOT READ the Postgres source_index for client_id=%s "
+                "(schema=%s environment=%s): %s: %s. Returning an empty library — "
+                "every document will look missing and every generation will run with "
+                "no sources. Check structure_store.url and that the migrate script "
+                "has been applied.",
+                client_id,
+                getattr(tenant_cfg.structure_store, "schema_name", "dis"),
+                source_index_pg.environment_name(),
+                type(exc).__name__,
+                exc,
+            )
+            return _empty_index(tenant_cfg, client_id)
+    return _read_source_index_s3(tenant_cfg, client_id)
+
+
 def write_source_index(tenant_cfg: TenantConfig, client_id: str, index: Dict[str, Any]) -> str:
+    """Persist a full catalogue. PG path replaces all rows for client+environment."""
     index["schema_version"] = "source_index_v1"
     index["tenant_id"] = tenant_cfg.tenant_id
     index["client_id"] = client_id
     index["updated_at"] = datetime.utcnow().isoformat()
+    sources = list(index.get("sources") or [])
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        return source_index_pg.replace_index(tenant_cfg, client_id, sources)
     return ArtifactWriter(tenant_cfg).write_json(source_index_key(tenant_cfg, client_id), index)
 
 
@@ -383,9 +427,13 @@ def update_source_record_status(
     so already-finalized ("processed") records with real content are never
     disturbed.
     """
-    # Tier 2 Step 3: the whole read→modify→write is held under a per-client lock so
-    # the API and the (future) worker can't both read version N and clobber each
-    # other's update. No-op today (NullLock until DIS_REDIS_URL is set).
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        updated, ref = source_index_pg.update_status(
+            tenant_cfg, client_id, job_id, status, extra=extra, only_if_status=only_if_status,
+        )
+        return ref if updated else ""
+
+    # S3 path: whole read→modify→write under a per-client lock.
     with source_index_lock(tenant_cfg.tenant_id, client_id):
         index = read_source_index(tenant_cfg, client_id)
         for rec in index.get("sources", []):
@@ -401,9 +449,10 @@ def update_source_record_status(
 
 
 def upsert_source_record(tenant_cfg: TenantConfig, client_id: str, record: Dict[str, Any]) -> str:
-    # Tier 2 Step 3: read→modify→write under the per-client index lock (see
-    # update_source_record_status). This is the hot path — both the API's immediate
-    # preview and the worker's ProcessedStorageAgent land here.
+    """Insert or replace one compact catalogue row (ingest / metadata save hot path)."""
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        return source_index_pg.upsert_record(tenant_cfg, client_id, record)
+
     with source_index_lock(tenant_cfg.tenant_id, client_id):
         index = read_source_index(tenant_cfg, client_id)
         sources = [s for s in index.get("sources", []) if s.get("job_id") != record.get("job_id")]
@@ -447,18 +496,16 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
 
     opensearch_result = opensearch_delete_by_job(tenant_cfg, job_id)
 
-    # Tier 2 Step 3: re-read the index UNDER THE LOCK before removing the record —
-    # the `index` read at the top is now stale (slow S3/OpenSearch deletes ran in
-    # between, during which a concurrent writer may have updated the index). Writing
-    # the stale copy would resurrect or drop unrelated records. Run off the event
-    # loop because the lock's acquire is blocking.
-    def _locked_remove() -> None:
+    def _remove_index_row() -> None:
+        if source_index_pg.use_pg_source_index(tenant_cfg):
+            source_index_pg.delete_record(tenant_cfg, client_id, job_id)
+            return
         with source_index_lock(tenant_cfg.tenant_id, client_id):
             fresh = read_source_index(tenant_cfg, client_id)
             fresh["sources"] = [r for r in fresh.get("sources", []) if str(r.get("job_id")) != str(job_id)]
             write_source_index(tenant_cfg, client_id, fresh)
 
-    await asyncio.to_thread(_locked_remove)
+    await asyncio.to_thread(_remove_index_row)
 
     return {
         "job_id": job_id,
@@ -493,7 +540,7 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     c_key = source_content_key(tenant_cfg, client_id, job_id)
     content_doc = build_clean_content_document(payload)
     content_url = writer.write_json(c_key, content_doc)
-    record = compact_source_record(payload, p_key, c_key)
+    record = compact_source_record(payload, p_key, c_key, tenant_cfg=tenant_cfg)
     record["total_units"] = int(content_doc.get("total_units") or 0)
     # Alongside total_units, and for the same reason it is set here rather than in
     # compact_source_record: both describe the CLEAN content document retrieval
@@ -503,19 +550,11 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     return {"content_key": c_key, "content_url": content_url, "index_url": index_url}
 
 
-def source_filter_options(records: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    fields = {
-        "document_types": "document_type",
-        "source_file_types": "source_file_type",
-        "purposes": "purpose",
-        "status": "status",
-        "course_name": "course_name",
-        "blocks": "block",
-        "days": "day",
-        "chapter": "chapter",
-        "module": "module_name",
-        "learning_objective": "learning_objective",
-    }
+def source_filter_options(
+    records: List[Dict[str, Any]],
+    tenant_cfg: Optional[TenantConfig] = None,
+) -> Dict[str, List[str]]:
+    fields = project_filter_options_map(registry_for_tenant(tenant_cfg))
     out: Dict[str, set] = {k: set() for k in fields}
     for r in records:
         for out_key, field in fields.items():

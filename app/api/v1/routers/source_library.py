@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from app.core.dis_access import (
     save_dis_access_config,
 )
 from app.core.dis_client import dis_client
+from app.core.source_library_filter_forward import build_cas_documents_library_params
 from app.core.upload_formats import load_upload_formats, unsupported_reasons
 
 log = logging.getLogger(__name__)
@@ -205,6 +206,7 @@ async def get_source_ui_config(
 
 @router.get("/documents")
 async def list_source_documents(
+    request: Request,
     client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
     project_id: int | None = Query(default=None),
     course_id: int | None = Query(default=None),
@@ -225,25 +227,32 @@ async def list_source_documents(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
+    """List Source Library documents.
+
+    Named filter query params remain stable. Extra query keys are forwarded to
+    DIS, which authorizes them against the tenant Field Registry filter_options
+    promote (Phase 3). CAS does not maintain a per-field allowlist.
+    """
     if all_courses and str(getattr(current_user, "role", "") or "").lower() != "admin":
         raise HTTPException(403, "Only admins can view all courses' documents")
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
-    params = {
-        "purpose": purpose,
-        "document_type": document_type,
-        "visibility": visibility,
-        "status": status,
-        "search": search,
-        "block": block,
-        "day": day,
-        "chapter": chapter,
-        "module_name": module_name,
-        "learning_objective": learning_objective,
-        "course_name": course_name,
-        "course_id": "all" if all_courses else (str(course_id) if course_id is not None else ""),
-        "limit": limit,
-        "offset": offset,
-    }
+    params = build_cas_documents_library_params(
+        purpose=purpose,
+        document_type=document_type,
+        visibility=visibility,
+        status=status,
+        search=search,
+        block=block,
+        day=day,
+        chapter=chapter,
+        module_name=module_name,
+        learning_objective=learning_objective,
+        course_name=course_name,
+        course_id="all" if all_courses else (str(course_id) if course_id is not None else ""),
+        limit=limit,
+        offset=offset,
+        query_params=request.query_params,
+    )
     return await dis_client.documents_library(params=params, current_user=current_user, client_id=resolved_client)
 
 
@@ -444,6 +453,46 @@ async def delete_generated_document(
 ) -> Dict[str, Any]:
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.generated_delete(generated_doc_id, current_user=current_user, client_id=resolved_client)
+
+@router.get("/documents/{job_id}/metadata")
+async def get_document_metadata_route(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.source_metadata(job_id=job_id, current_user=current_user, client_id=resolved_client)
+
+
+@router.patch("/documents/{job_id}/metadata")
+async def patch_document_metadata_route(
+    job_id: str,
+    body: Dict[str, Any] = Body(...),
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.patch_source_metadata(job_id=job_id, payload=body, current_user=current_user, client_id=resolved_client)
+
+
+@router.post("/documents/{job_id}/metadata/revert-ai")
+async def revert_document_metadata_route(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.revert_source_metadata(job_id=job_id, current_user=current_user, client_id=resolved_client)
+
 
 @router.get("/documents/{job_id}/overview")
 async def get_source_overview(

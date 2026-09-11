@@ -312,7 +312,12 @@ def create_tenant(
     # (not awaited inline) so a slow/unreachable DIS backend never adds
     # latency to this response or ties up a worker thread on its HTTP call.
     from app.services.dis_provisioning import provision_dis_client
-    background_tasks.add_task(provision_dis_client, project.client_name or project.name, project.name)
+    background_tasks.add_task(
+        provision_dis_client,
+        project.client_name or project.name,
+        project.name,
+        template=body.template,
+    )
 
     _log.info("tenant_created  by=%s  slug=%s  admin=%s",
               current_user.username, project.slug, admin_user.username)

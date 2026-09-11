@@ -141,6 +141,8 @@ export const SOURCE_LIBRARY = {
   UNIT_DETAIL:      (jobId, unitId) => `/api/v1/source-library/documents/${jobId}/content/units/${unitId}`,
   SEARCH:           (jobId) => `/api/v1/source-library/documents/${jobId}/search`,
   DELETE_DOCUMENT:  (jobId) => `/api/v1/source-library/documents/${jobId}`,
+  METADATA:         (jobId) => `/api/v1/source-library/documents/${jobId}/metadata`,
+  METADATA_REVERT:  (jobId) => `/api/v1/source-library/documents/${jobId}/metadata/revert-ai`,
   UPLOAD:           '/api/v1/source-library/documents/upload',
   UPLOAD_POLICY:    '/api/v1/source-library/upload-policy',
   FOLDER_SCAN:      '/api/v1/source-library/folder-scan',

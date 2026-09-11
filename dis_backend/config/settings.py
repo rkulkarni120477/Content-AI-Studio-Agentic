@@ -146,6 +146,17 @@ class MetadataSchema(BaseModel):
     required_fields: List[MetadataField] = []
     optional_fields: List[MetadataField] = []
 
+
+class MetadataFrameworkConfig(BaseModel):
+    """Client YAML ``metadata_framework`` (Phase 0+).
+
+    Phase 0: permissive passthrough so nested content survives TenantConfig load.
+    Phase 1: ``services.metadata_framework.registry.registry_from_config`` reads
+    optional ``fields``; empty/missing falls back to the hardcoded DEFAULT_REGISTRY.
+    """
+    model_config = ConfigDict(extra="allow")
+
+
 class DocumentTypeRule(BaseModel):
     doc_type: str
     filename_keywords: List[str] = []
@@ -443,6 +454,8 @@ class TenantConfig(BaseModel):
     pipeline: PipelineConfig = PipelineConfig()
     document_processing: DocumentProcessingConfig = DocumentProcessingConfig()
     metadata_schemas: Dict[str, MetadataSchema] = {}
+    # Phase 0: client YAML `metadata_framework` survives load for later phases.
+    metadata_framework: MetadataFrameworkConfig = Field(default_factory=MetadataFrameworkConfig)
     storage: StorageConfig = StorageConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
     security: SecurityConfig = SecurityConfig()
@@ -683,7 +696,7 @@ class TenantRegistry:
             "users": users,
             "clients": [client_obj],
         }
-        for key in ["ingestion", "processing", "pipeline", "document_processing", "metadata_schemas", "storage", "retrieval", "security", "embedding", "structure_store", "vector_store", "deduplication", "monitoring", "client_rules"]:
+        for key in ["ingestion", "processing", "pipeline", "document_processing", "metadata_schemas", "metadata_framework", "storage", "retrieval", "security", "embedding", "structure_store", "vector_store", "deduplication", "monitoring", "client_rules"]:
             if key in raw:
                 converted[key] = raw[key]
 

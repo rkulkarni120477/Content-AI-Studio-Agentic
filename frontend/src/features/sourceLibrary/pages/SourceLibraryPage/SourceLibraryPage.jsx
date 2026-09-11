@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useSelector } from 'react-redux';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import RetrievalStatus from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
 import { acceptAttribute, rejectionReason as policyRejectionReason } from '@features/sourceLibrary/utils/uploadPolicy';
+import {
+  optionsKeyForTaxonomyKey,
+  taxonomyFiltersFromUiConfig,
+  toSourceLibraryApiFilters,
+} from '@features/sourceLibrary/utils/taxonomyFilters';
+import {
+  documentTypeFromUiConfig,
+  uploadControlType,
+  uploadMetadataFieldsFromUiConfig,
+} from '@features/sourceLibrary/utils/uploadFields';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
@@ -109,6 +119,7 @@ export default function SourceLibraryPage() {
   // (not state) avoids a re-render race between the click and the submit.
   const uploadAsGlobalRef = useRef(false);
   const { courseId } = useParams();
+  const navigate = useNavigate();
   const selectedProject = useSelector(selectSelectedProject);
   const selectedCourse = useSelector(selectSelectedCourse);
   const scopedCourseId = selectedCourse?.id || courseId || "";
@@ -207,7 +218,9 @@ export default function SourceLibraryPage() {
     }
     setLoading(true);
     try {
-      const data = await sourceLibraryApi.listDocuments(withScope(nextFilters));
+      // Server-side filtering owns pagination; map UI keys (e.g. module → module_name)
+      // and never re-filter only the current page client-side.
+      const data = await sourceLibraryApi.listDocuments(withScope(toSourceLibraryApiFilters(nextFilters)));
       const list = data.documents || data.sources || [];
       setDocuments(list);
       writeCachedDocuments(docsCacheKey, list);
@@ -575,6 +588,9 @@ export default function SourceLibraryPage() {
   }
 
   const documentTypeOptions = useMemo(() => unique(filterOptions.document_types), [filterOptions]);
+  const taxonomyFilters = useMemo(() => taxonomyFiltersFromUiConfig(uiConfig), [uiConfig]);
+  const uploadMetadataFields = useMemo(() => uploadMetadataFieldsFromUiConfig(uiConfig), [uiConfig]);
+  const documentTypeUpload = useMemo(() => documentTypeFromUiConfig(uiConfig), [uiConfig]);
   useEffect(() => {
     let cancelled = false;
     sourceLibraryApi.getUploadPolicy()
@@ -605,20 +621,10 @@ export default function SourceLibraryPage() {
   }, [uploadQueue, uploadStatusFilters, documents]);
   const uploadPurposeOptions = useMemo(() => unique((uploadQueue || []).map((i) => i.purpose)), [uploadQueue]);
   const uploadDocTypeOptions = useMemo(() => unique((uploadQueue || []).map((i) => i.document_type)), [uploadQueue]);
-  const displayedDocuments = useMemo(() => {
-    const q = String(filters.search || '').trim().toLowerCase();
-    return (documents || []).filter((doc) => {
-      if (filters.purpose && doc.purpose !== filters.purpose) return false;
-      if (filters.document_type && doc.document_type !== filters.document_type) return false;
-      if (filters.status && String(doc.status || 'processed') !== filters.status) return false;
-      if (!q) return true;
-      return [doc.title, doc.source_file_name, doc.document_type, doc.purpose, doc.document_id, doc.job_id]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-        .includes(q);
-    });
-  }, [documents, filters]);
+  // Documents are already filtered server-side (including search/purpose/type/status
+  // and configured taxonomy filters). Re-filtering the current page would hide
+  // matches that fall outside this page of results.
+  const displayedDocuments = documents || [];
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Source Library' }]} noPadding>
@@ -678,9 +684,45 @@ export default function SourceLibraryPage() {
                 </select>
               </div>
               <div>
-                <label className={styles.label}>Document Type</label>
-                <input className={styles.input} name="document_type" placeholder="Optional, auto-detect if blank" />
+                <label className={styles.label}>{documentTypeUpload.label}</label>
+                {documentTypeUpload.control === 'select' ? (
+                  <select className={styles.select} name="document_type" defaultValue="">
+                    <option value="">Auto-detect if blank</option>
+                    {documentTypeUpload.options.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : (
+                  <input className={styles.input} name="document_type" placeholder={documentTypeUpload.placeholder} />
+                )}
               </div>
+              {uploadMetadataFields.map((field) => {
+                const control = uploadControlType(field);
+                const label = field.label || field.key;
+                if (control === 'select') {
+                  return (
+                    <div key={field.key}>
+                      <label className={styles.label}>{label}</label>
+                      <select className={styles.select} name={field.key} defaultValue="">
+                        <option value="">—</option>
+                        {(field.options || []).map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </div>
+                  );
+                }
+                if (control === 'textarea') {
+                  return (
+                    <div key={field.key}>
+                      <label className={styles.label}>{label}</label>
+                      <textarea className={styles.input} name={field.key} placeholder={field.placeholder || label} rows={3} />
+                    </div>
+                  );
+                }
+                return (
+                  <div key={field.key}>
+                    <label className={styles.label}>{label}</label>
+                    <input className={styles.input} name={field.key} placeholder={field.placeholder || label} />
+                  </div>
+                );
+              })}
             </div>
             <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <button type="submit" className={styles.button} disabled={uploading} onClick={() => { uploadAsGlobalRef.current = false; }}>{uploading ? `Uploading ${uploadProgress}%` : 'Upload and Ingest'}</button>
@@ -794,6 +836,39 @@ export default function SourceLibraryPage() {
               <option value="">All statuses</option>
               {statusOptions.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
+            {taxonomyFilters.map((tf) => {
+              const key = tf.key;
+              const label = tf.label || key;
+              const type = String(tf.type || 'select').toLowerCase();
+              const optionsKey = optionsKeyForTaxonomyKey(key);
+              const options = unique(filterOptions[optionsKey] || []);
+              if (type === 'text') {
+                return (
+                  <div key={key}>
+                    <label className={styles.label}>{label}</label>
+                    <input
+                      className={styles.input}
+                      value={filters[key] || ''}
+                      onChange={(e) => updateFilter(key, e.target.value)}
+                      placeholder={label}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div key={key}>
+                  <label className={styles.label}>{label}</label>
+                  <select
+                    className={styles.select}
+                    value={filters[key] || ''}
+                    onChange={(e) => updateFilter(key, e.target.value)}
+                  >
+                    <option value="">{`All ${label}`}</option>
+                    {options.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              );
+            })}
           </div>
         </aside>
 
@@ -831,6 +906,13 @@ export default function SourceLibraryPage() {
                       <td>
                         <div className={styles.rowActions}>
                           <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button>
+                          <button
+                            type="button"
+                            className={`${styles.button} ${styles.buttonSecondary}`}
+                            onClick={() => navigate(`/workspace/${courseId}/sources/${doc.job_id || doc.document_id}/metadata?tab=ai`)}
+                          >
+                            Edit metadata
+                          </button>
                           {isAdmin && (
                             <button
                               type="button"

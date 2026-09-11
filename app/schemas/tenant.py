@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.ui_labels import MAX_LABEL_LENGTH, UI_LABEL_KEYS, parse_ui_labels
+
+ProvisioningTemplate = Literal["minimal", "academic", "publishing"]
 
 
 class TenantRead(BaseModel):
@@ -54,6 +56,10 @@ class TenantCreateRequest(BaseModel):
     admin_username: str = Field(..., min_length=1, max_length=150)
     admin_password: str = Field(..., min_length=6, max_length=256)
     admin_display_name: Optional[str] = Field(default=None, max_length=200)
+    template: ProvisioningTemplate = Field(
+        default="minimal",
+        description="DIS metadata template family for Source Library provisioning.",
+    )
 
 
 class TenantUpdateRequest(BaseModel):

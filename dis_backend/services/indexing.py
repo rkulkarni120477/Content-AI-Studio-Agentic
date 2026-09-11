@@ -155,6 +155,53 @@ def ensure_schema(cur, schema: str):
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_units_metadata_gin ON {schema}.dis_content_units USING GIN(metadata_json)")
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_calendar_days ON {schema}.dis_calendar_days(tenant_id, client_id, block, day_number)")
 
+    # Source Library compact catalog (replaces S3 source_list.json when
+    # structure_store is enabled). job_id remains the document identity.
+    cur.execute(f"""
+    CREATE TABLE IF NOT EXISTS {schema}.source_index (
+        id                BIGSERIAL PRIMARY KEY,
+        job_id            TEXT NOT NULL,
+        client_id         TEXT NOT NULL,
+        tenant_id         TEXT NOT NULL,
+        environment       TEXT NOT NULL,
+        title             TEXT,
+        source_file_name  TEXT,
+        document_type     TEXT,
+        purpose           TEXT,
+        status            TEXT,
+        visibility        TEXT,
+        restricted        BOOLEAN DEFAULT FALSE,
+        block             TEXT,
+        day               TEXT,
+        course_name       TEXT,
+        module_name       TEXT,
+        payload_key       TEXT,
+        content_key       TEXT,
+        raw_key           TEXT,
+        extracted_chars   INTEGER,
+        total_units       INTEGER,
+        created_at        TIMESTAMPTZ,
+        updated_at        TIMESTAMPTZ,
+        record_json       JSONB NOT NULL,
+        CONSTRAINT uq_source_index_client_env_job UNIQUE (client_id, environment, job_id)
+    )""")
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_purpose_status "
+        f"ON {schema}.source_index (client_id, environment, purpose, status)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_block_day "
+        f"ON {schema}.source_index (client_id, environment, block, day)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_updated "
+        f"ON {schema}.source_index (client_id, environment, updated_at DESC)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_record_gin "
+        f"ON {schema}.source_index USING GIN (record_json)"
+    )
+
     # Dev/prod bifurcation: which server ingested this row (see rds_upsert's
     # `environment`). There is no Alembic for this schema — CREATE TABLE IF NOT
     # EXISTS above is a no-op on a table that already exists, so an existing
