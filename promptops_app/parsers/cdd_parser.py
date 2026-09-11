@@ -339,6 +339,17 @@ def extract_cdd_summary(cdd_version, max_chars: int = 0) -> str:
     """Extract a concise summary from a CDDVersion for context injection."""
     if not cdd_version:
         return "No CDD available."
+    # A DLU day document's sections (Overview, Today's Mission, Learn It, Quick
+    # Check, Up Next in Class, Day Reflection) match none of the priority keys
+    # below, which today makes the fallback-to-full-content path fire by
+    # coincidence rather than by design: a substring match against ANY OTHER
+    # section (e.g. an appendix that happens to contain "Key Concepts") would
+    # return that ONE section alone and silently drop the other five. Route
+    # DLU-shaped documents around the priority-key matching entirely.
+    from promptops_app.parsers.blueprint_parser import is_dlu_blueprint
+
+    if is_dlu_blueprint(cdd_version):
+        return _cap(cdd_version.full_content or "", max_chars)
     sections = safe_json_loads(cdd_version.sections) if cdd_version.sections else {}
     if not sections:
         return _cap(cdd_version.full_content or "", max_chars)
@@ -409,6 +420,13 @@ def extract_blueprint_summary(bp_version, max_chars: int = 0) -> str:
     """Extract a concise summary from a BlueprintVersion for context injection."""
     if not bp_version:
         return "No Blueprint available."
+    # Same reasoning as extract_cdd_summary above: a DLU day Outline's parts
+    # match none of the priority keys below by design, but the substring match
+    # is a trap, not a guarantee -- route DLU-shaped documents around it.
+    from promptops_app.parsers.blueprint_parser import is_dlu_blueprint
+
+    if is_dlu_blueprint(bp_version):
+        return _cap(bp_version.full_content or "", max_chars)
     sections = safe_json_loads(bp_version.sections) if bp_version.sections else {}
     if not sections:
         return _cap(bp_version.full_content or "", max_chars)
