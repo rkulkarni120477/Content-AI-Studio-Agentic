@@ -484,8 +484,12 @@ def test_digest_pipeline_flag_gate():
         settings.digest_pipeline_clients = "aim"
         assert settings.digest_pipeline_on_for("aim") is True
         assert settings.digest_pipeline_on_for("cengage") is False
+        # Clearing the allowlist fails CLOSED (no clients), not open (every
+        # client) -- an empty config is not a wildcard. See S2 in
+        # AIM_PIPELINE_SHORTCOMINGS.txt.
         settings.digest_pipeline_clients = ""
-        assert settings.digest_pipeline_on_for("cengage") is True
+        assert settings.digest_pipeline_on_for("cengage") is False
+        assert settings.digest_pipeline_on_for("aim") is False
     finally:
         settings.digest_pipeline_enabled, settings.digest_pipeline_clients = orig_enabled, orig_clients
 
@@ -578,7 +582,10 @@ def test_run_block_wide_sync_resolves_and_threads_prompt_guidance(monkeypatch):
     orig_enabled, orig_clients = settings.digest_pipeline_enabled, settings.digest_pipeline_clients
     try:
         settings.digest_pipeline_enabled = True
-        settings.digest_pipeline_clients = ""  # open to all clients
+        # Matches resolve_course_dis_client's mock above ("aim") -- an empty
+        # allowlist no longer means "every client" (S2), so the client this
+        # request actually resolves to must be named explicitly.
+        settings.digest_pipeline_clients = "aim"
         req = types.SimpleNamespace(block="Block 2", course_id=1, project_id=1)
         w.run_block_wide_sync(db=None, deliverable="cdd", request_body=req, current_user=None)
     finally:
