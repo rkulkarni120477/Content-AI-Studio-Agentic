@@ -114,6 +114,18 @@ def resolve_day_context_block(day_number: Optional[int], dis_client_id: str, cur
         return ""
     block_label = infer_block_label(*titles)
     if not block_label:
+        # Distinct from the two gates above: those are deliberate no-ops for a
+        # tenant/request that never asked for day-scoped grounding. This one
+        # means it WAS applicable and silently failed anyway, because no
+        # course/CDD title in scope happened to contain a parseable "Block N" —
+        # there is no stored course-to-block linkage, so a routine rename can
+        # turn this off with nothing else changing. Logged, not fixed: the
+        # underlying gap needs a stored column (a migration), out of scope here.
+        _log.warning(
+            "day_scoped_grounding_skipped_no_block_label  day=%s  client=%s  "
+            "titles=%r",
+            day_number, dis_client_id, titles,
+        )
         return ""
     day_context_block, _ = _dis_day_context_block(
         block_label, day_number, current_user, label, client_id=dis_client_id,

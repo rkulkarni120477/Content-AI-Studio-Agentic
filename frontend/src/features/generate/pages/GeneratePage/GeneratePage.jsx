@@ -279,6 +279,13 @@ export default function GeneratePage() {
       audience_category: audienceCategory,
       extra_instructions: extraInstructions,
       assessment_override: assessmentOverride,
+      // Day-scoped structured grounding (§7): a DLU day component's own
+      // metadata already carries its day_number (parse_blueprint_components,
+      // blueprint_parser.py) -- this was resolved but never sent, so Generate
+      // always fell through to the free-text blob query for a DLU day. No
+      // block label sent from here; the server derives it from the course/CDD
+      // title when day is present and block is not.
+      day: selectedComponent.metadata?.day_number ?? undefined,
       context_document_names: [],
       supplementary_files,
       // Non-default library prompt selection drives content generation server-side.

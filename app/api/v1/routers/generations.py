@@ -30,7 +30,7 @@ from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.core.config import settings
 from app.core.dis_client import dis_client
 from app.core.dis_access import resolve_course_dis_client
-from app.core.dis_day_context import _dis_day_context_block, _render_day_context
+from app.core.dis_day_context import _dis_day_context_block, _render_day_context, infer_block_label
 from app.schemas.generation import (
     CompletionStatusResponse,
     GenerationLaunchRequest,
@@ -43,7 +43,15 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
+                       client_id: str = "") -> tuple[str, list, str]:
+    """Retrieved Source Library context, its units, and why there is none.
+
+    Third element mirrors blueprints.py's own _dis_context_block: "" when DIS
+    answered (including with nothing), a short reason when the lookup itself
+    failed. Before this, a generation whose Source Library was unreachable was
+    indistinguishable from one whose library genuinely had nothing to add.
+    """
     try:
         result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
@@ -55,10 +63,14 @@ def _dis_context_block(purpose: str, payload: dict, current_user, label: str, cl
                 "Do not expose internal DIS metadata.\n\n"
                 f"{ctx}\n---\n",
                 units,
+                "",
             )
     except Exception as exc:
         _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
-    return "", []
+        # The class name, not str(exc): this ends up on the Generation's audit
+        # metadata, and an upstream message can carry a host, URL or token.
+        return "", [], type(exc).__name__
+    return "", [], ""
 
 
 @router.post(
@@ -92,12 +104,14 @@ def launch_generation(
     eff_cdd_id = request_body.cdd_id
     eff_bp_id = request_body.blueprint_id
 
-    if not eff_cdd_id or not eff_bp_id:
-        from promptops_app.repositories import course_repository
-        course = course_repository.get_course_by_id(db, request_body.course_id)
-        if course:
-            eff_cdd_id = eff_cdd_id or course.active_cdd_id
-            eff_bp_id = eff_bp_id or course.active_blueprint_id
+    # Fetched unconditionally (not only on the id-fallback branch below) so its
+    # name is available for the block-label derivation further down, the same
+    # signal blueprints.py already uses for its own day-scoped grounding.
+    from promptops_app.repositories import course_repository
+    course = course_repository.get_course_by_id(db, request_body.course_id)
+    if course:
+        eff_cdd_id = eff_cdd_id or course.active_cdd_id
+        eff_bp_id = eff_bp_id or course.active_blueprint_id
 
     # Completion gate — check if module/course prerequisites are met.
     if not request_body.assessment_override and eff_bp_id:
@@ -123,19 +137,45 @@ def launch_generation(
         db, course_id=request_body.course_id, project_id=request_body.project_id,
     )
 
-    dis_context_block, dis_source_units = "", []
+    dis_context_block, dis_source_units, dis_unavailable = "", [], ""
     # §7 structured-first: when the request pins a block+day and the digest
     # pipeline is on for this client, ground on the complete day bundle (units +
     # digest + bounded kNN) instead of the free-text blob query (§5.4 anti-pattern).
     # Any DIS failure returns ('', []) and we fall through to the legacy path.
-    if request_body.block and request_body.day and settings.digest_pipeline_on_for(gen_client_id):
+    #
+    # `block` is a free-text label the caller may not have (the Generate UI's
+    # own request only ever supplied `day`, from a DLU component's own
+    # metadata.day_number, never a block string) — so it is derived here the
+    # same way blueprints.py's day-scoped grounding already does, from the
+    # course/CDD title, rather than requiring the caller to parse it. A caller
+    # that DOES pass block still wins; this only fills the gap.
+    gen_block = request_body.block
+    if not gen_block and request_body.day:
+        cdd_title = ""
+        if eff_cdd_id:
+            cdd_row = cdd_repository.get_cdd_by_id(db, eff_cdd_id)
+            cdd_title = cdd_row.title if cdd_row else ""
+        gen_block = infer_block_label(course.name if course else None, cdd_title)
+        if not gen_block:
+            # day was supplied but no course/CDD title in scope contained a
+            # parseable "Block N" -- day-scoped grounding silently falls
+            # through to the legacy blob query below. There is no stored
+            # course-to-block linkage (a migration would be needed to add
+            # one, out of scope here), so this is logged rather than fixed.
+            _log.warning(
+                "day_scoped_grounding_skipped_no_block_label  course=%s  day=%s  "
+                "cdd_title=%r",
+                request_body.course_id, request_body.day, cdd_title,
+            )
+
+    if gen_block and request_body.day and settings.digest_pipeline_on_for(gen_client_id):
         dis_context_block, dis_source_units = _dis_day_context_block(
-            request_body.block, request_body.day, current_user,
+            gen_block, request_body.day, current_user,
             "COURSE GENERATION CONTEXT", client_id=gen_client_id,
         )
 
     if not dis_context_block:
-        dis_context_block, dis_source_units = _dis_context_block(
+        dis_context_block, dis_source_units, dis_unavailable = _dis_context_block(
             "course-generation",
             {
                 "purpose": "course_generation",
@@ -187,6 +227,11 @@ def launch_generation(
         "supplementary_files": [f.model_dump() for f in request_body.supplementary_files],
         "extra_instructions":  (request_body.extra_instructions or "") + (dis_context_block or ""),
         "dis_source_units":    dis_source_units,
+        # "" when DIS answered (including with nothing); a reason when the
+        # lookup itself failed. Read back onto the Generation's own audit
+        # metadata in generation_jobs.py, same contract cdd.py/blueprints.py
+        # already keep on their own stored versions.
+        "source_context_unavailable": dis_unavailable,
         # User-selected pipeline prompt (dropdown). None → default resolution.
         "prompt_id":           request_body.prompt_id,
     }
