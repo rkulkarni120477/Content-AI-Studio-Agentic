@@ -661,14 +661,17 @@ async def patch_source_metadata(job_id: str, body: MetadataPatchRequest, request
             if key in rel and rel[key] is not None:
                 rel[key] = [i if isinstance(i, dict) else i for i in rel[key]]
     try:
+        # run_sync does not forward kwargs; bind keyword-only args with partial.
         return await anyio.to_thread.run_sync(
-            patch_document_metadata,
-            tenant,
-            client_id,
-            job_id,
-            ai_metadata=ai,
-            taxonomy_standards=tax,
-            relationships=rel,
+            functools.partial(
+                patch_document_metadata,
+                tenant,
+                client_id,
+                job_id,
+                ai_metadata=ai,
+                taxonomy_standards=tax,
+                relationships=rel,
+            )
         )
     except (DocumentNotFoundError, UnauthorizedDocumentError, InvalidRelationshipTargetError, MetadataEditorError) as exc:
         raise _metadata_editor_http_error(exc) from exc
