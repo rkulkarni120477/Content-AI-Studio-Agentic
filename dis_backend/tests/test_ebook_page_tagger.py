@@ -144,3 +144,37 @@ def test_tagger_rejects_unusable_dict():
     )
     assert units[0]["metadata"]["tagging_status"] == "failed"
     assert errors and "got dict" in errors[0]
+
+
+def test_parse_tag_json_recovers_truncated_array():
+    from services.ebook_page_tagger import _parse_tag_json, _normalize_tag_response
+
+    # Truncated mid-object — same failure mode as max_tokens=1200 cutoffs.
+    raw = (
+        '[{"pdf_page": 1, "topics": ["a"], "acs_codes": [], "summary": "one"},'
+        '{"pdf_page": 2, "topics": ["b"], "acs_codes": [], "summary": "tw'
+    )
+    parsed = _normalize_tag_response(_parse_tag_json(raw))
+    assert [x["pdf_page"] for x in parsed] == [1]
+
+
+def test_parse_tag_json_extracts_array_after_preamble():
+    from services.ebook_page_tagger import _parse_tag_json, _normalize_tag_response
+
+    raw = 'Here you go:\n[{"pdf_page": 3, "topics": ["c"], "acs_codes": [], "summary": "s"}]\n'
+    parsed = _normalize_tag_response(_parse_tag_json(raw))
+    assert parsed[0]["pdf_page"] == 3
+
+
+def test_tagger_rejects_empty_dict_from_blank_parse():
+    units = _units(1)
+    errors = []
+
+    def fake_llm(model, prompt, max_tokens=1200):
+        return "not json at all {{{", 1, 1
+
+    tag_ebook_page_units(
+        units, call_llm_fn=fake_llm, model_id="m", batch_size=10, enabled=True, errors=errors,
+    )
+    assert units[0]["metadata"]["tagging_status"] == "failed"
+    assert errors and ("unparseable" in errors[0] or "empty" in errors[0])

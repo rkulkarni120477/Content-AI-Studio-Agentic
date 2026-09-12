@@ -18,12 +18,11 @@ heuristic topics and empty ACS/summary, but failed pages are flagged for retry.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
-
-from services.pipeline.common import safe_json
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +32,9 @@ _ACS_RE = re.compile(r"^AM\.[IVX]+\.[A-Z]\.[KRS]\d+[A-Za-z]?$", re.IGNORECASE)
 
 _DEFAULT_BATCH_SIZE = 10
 _MAX_PAGE_CHARS = 3500  # keep batch prompts bounded
+#: 10 pages × topics/ACS/summary easily exceeds 1200 tokens; truncation made
+#: ``safe_json`` fall back to ``{}`` → ``got dict keys=[]`` on every batch.
+_TAG_MAX_TOKENS = 4096
 
 TAGGING_OK = "ok"
 TAGGING_FAILED = "failed"
@@ -147,6 +149,112 @@ _TAG_LIST_KEYS = (
 )
 
 
+def _strip_fences(text: str) -> str:
+    clean = (text or "").strip()
+    if clean.startswith("```"):
+        clean = clean.removeprefix("```json").removeprefix("```").strip()
+        if clean.endswith("```"):
+            clean = clean[:-3].strip()
+    return clean
+
+
+def _extract_balanced(text: str, open_ch: str, close_ch: str) -> Optional[str]:
+    """Return the first balanced ``open…close`` span, respecting JSON strings."""
+    start = text.find(open_ch)
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+            continue
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _collect_json_objects(text: str) -> List[Dict[str, Any]]:
+    """Salvage complete ``{...}`` objects from truncated array payloads."""
+    out: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(text):
+        if text[i] != "{":
+            i += 1
+            continue
+        frag = _extract_balanced(text[i:], "{", "}")
+        if not frag:
+            break
+        try:
+            obj = json.loads(frag)
+            if isinstance(obj, dict):
+                out.append(obj)
+        except Exception:
+            pass
+        i += len(frag)
+    return out
+
+
+def _parse_tag_json(text: str) -> Any:
+    """Parse tagger LLM output, including arrays ``safe_json`` cannot recover.
+
+    ``safe_json`` only retries on ``{...}`` and returns ``{}`` on failure — which
+    surfaced as ``got dict keys=[]`` when Bedrock truncated a JSON array.
+    """
+    clean = _strip_fences(text)
+    if not clean:
+        raise ValueError("empty LLM response")
+
+    try:
+        return json.loads(clean)
+    except Exception:
+        pass
+
+    arr = _extract_balanced(clean, "[", "]")
+    if arr:
+        try:
+            return json.loads(arr)
+        except Exception:
+            objs = _collect_json_objects(arr)
+            if objs:
+                return objs
+
+    objs = _collect_json_objects(clean)
+    if objs:
+        if len(objs) == 1 and any(k in objs[0] for k in _TAG_LIST_KEYS):
+            return objs[0]
+        # Prefer page-like objects when a wrapper and pages are both present.
+        page_like = [
+            o for o in objs
+            if "pdf_page" in o or "topics" in o or "acs_codes" in o
+        ]
+        return page_like or objs
+
+    obj = _extract_balanced(clean, "{", "}")
+    if obj:
+        try:
+            return json.loads(obj)
+        except Exception:
+            pass
+
+    preview = clean[:180].replace("\n", " ")
+    raise ValueError(f"unparseable tag JSON (len={len(clean)}): {preview!r}")
+
+
 def _normalize_tag_response(parsed: Any) -> List[Dict[str, Any]]:
     """Coerce LLM JSON into a list of per-page tag dicts.
 
@@ -160,6 +268,11 @@ def _normalize_tag_response(parsed: Any) -> List[Dict[str, Any]]:
 
     if not isinstance(parsed, dict):
         raise ValueError(f"expected JSON array, got {type(parsed).__name__}")
+
+    if not parsed:
+        raise ValueError(
+            "expected JSON array, got empty dict (likely truncated/unparseable LLM JSON)"
+        )
 
     for key in _TAG_LIST_KEYS:
         inner = parsed.get(key)
@@ -221,14 +334,18 @@ def tag_ebook_page_units(
         try:
             if token_guard is not None:
                 # Rough budget: ~4 chars/token on the prompt + room for JSON out.
-                token_guard.check_or_raise(max(1500, len(prompt) // 3 + 800), "ebook_page_tagging")
-            resp, tokens_in, tokens_out = call_llm_fn(model_id, prompt, max_tokens=1200)
+                token_guard.check_or_raise(
+                    max(2000, len(prompt) // 3 + _TAG_MAX_TOKENS), "ebook_page_tagging",
+                )
+            resp, tokens_in, tokens_out = call_llm_fn(
+                model_id, prompt, max_tokens=_TAG_MAX_TOKENS,
+            )
             if token_guard is not None:
                 token_guard.record_usage(
                     tokens_in + tokens_out, "ebook_page_tagging",
                     tokens_in=tokens_in, tokens_out=tokens_out, model=model_id,
                 )
-            parsed = _normalize_tag_response(safe_json(resp))
+            parsed = _normalize_tag_response(_parse_tag_json(resp))
 
             by_page: Dict[int, Dict[str, Any]] = {}
             for item in parsed:
