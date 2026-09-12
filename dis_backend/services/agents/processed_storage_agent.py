@@ -50,7 +50,14 @@ class ProcessedStorageAgent(BasePipelineAgent):
             urls['quiz_structure'] = ctx.writer.write_json(f'{prefix}/extracted/quiz_structure.json', state.get('quiz_structure', {}))
         if state.get('project_structure'):
             urls['project_structure'] = ctx.writer.write_json(f'{prefix}/extracted/project_structure.json', state.get('project_structure', {}))
-        urls['studio_payload'] = ctx.writer.write_json(f'{prefix}/studio_payload/payload.json', state.get('studio_payload', {}))
+        payload = dict(state.get('studio_payload') or {})
+        meta = dict(payload.get('metadata') or {})
+        # Immediate upload wrote status=processing. This is the first moment the
+        # catalogue should look finished to Source Library.
+        meta['status'] = 'processed'
+        payload['metadata'] = meta
+        state['studio_payload'] = payload
+        urls['studio_payload'] = ctx.writer.write_json(f'{prefix}/studio_payload/payload.json', payload)
 
         # Refresh the compact source index/content with the FINAL, fully-classified
         # metadata. Upload-time (upload_file/_create_job_record_and_upload) writes an
@@ -61,7 +68,7 @@ class ProcessedStorageAgent(BasePipelineAgent):
         # stale pre-classification metadata there forever.
         client_id = state.get('client_id')
         if client_id:
-            write_source_content_and_index(ctx.cfg, client_id, state.get('studio_payload', {}), payload_key=urls['studio_payload'])
+            write_source_content_and_index(ctx.cfg, client_id, payload, payload_key=urls['studio_payload'])
         return ctx.step_done(state, 'processed_storage')
 
         # =============================================================================

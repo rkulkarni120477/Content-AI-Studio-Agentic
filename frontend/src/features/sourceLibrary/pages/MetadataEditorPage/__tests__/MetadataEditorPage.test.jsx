@@ -180,6 +180,16 @@ describe('MetadataEditorPage', () => {
     expect(screen.queryByText(/Unsaved changes/)).toBeNull();
   });
 
+  it('view Content tab shows a processing banner while ingest is still running', async () => {
+    getOverview.mockResolvedValue({
+      preview: 'doc preview',
+      status: 'processing',
+      tagging_failed_count: 0,
+    });
+    renderPage('content', { view: true });
+    expect(await screen.findByText(/Background processing is still running/)).toBeTruthy();
+  });
+
   it('view Content tab loads sections and raw text', async () => {
     renderPage('content', { view: true });
     expect(await screen.findByText('Sections')).toBeTruthy();

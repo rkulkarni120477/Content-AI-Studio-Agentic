@@ -287,9 +287,11 @@ def _build_source_library_payload(
     """Build the immediate Source Library payload shown right after upload.
 
     When ``extract_text`` is False (large files), inline text extraction is
-    skipped: the document is published as ``status="processing"`` with empty
-    preview text, and the background pipeline fills in the real content later.
-    This keeps the upload request fast and off the heavy parse path.
+    skipped and only a cheap first-pages preview is stored. In both cases the
+    compact record is published as ``status="processing"`` until the background
+    pipeline's processed_storage step replaces it with the final units. The
+    Source Library must not look finished while page-chunking / tagging / index
+    are still running.
 
     NOTE: this function is CPU/IO-bound (PDF parsing, sha256 over the whole
     file). Callers on the async event loop MUST run it via ``asyncio.to_thread``
@@ -304,13 +306,15 @@ def _build_source_library_payload(
         extracted = _extract_text_for_source_library(filename, content)
         if not extracted:
             extracted = f"No readable text could be extracted from {filename}."
-        doc_status = "processed"
     else:
         # Deferred: the background pipeline does the full extraction, but grab a
         # cheap first-pages preview now so the record is never empty even if that
         # pipeline is delayed, stopped by dedup, or fails.
         extracted = _preview_text_for_source_library(filename, content)
-        doc_status = "processing"
+    # Always processing until processed_storage writes the real catalogue row.
+    # A 15 MB ebook used to flip to "processed" after the one-blob preview,
+    # so the UI showed Not indexed / two fake sections while tagging ran.
+    doc_status = "processing"
     file_type = Path(filename or "").suffix.lower().lstrip(".") or (content_type or "application/octet-stream")
     sha = hashlib.sha256(content).hexdigest()
     now_iso = datetime.utcnow().isoformat()
@@ -406,8 +410,8 @@ async def _publish_immediate_payload(
     * Runs the CPU/IO-bound build+write via ``asyncio.to_thread`` — never blocks
       the event loop, even for a 100+ MB PDF.
     * Files larger than ``_IMMEDIATE_EXTRACT_MAX_BYTES`` skip inline text
-      extraction: they publish as ``status="processing"`` and the background
-      pipeline fills in the text later.
+      extraction (cheap preview only). Every upload still publishes as
+      ``status="processing"`` until the background pipeline finalizes.
     * **Never raises.** The raw file is already stored in S3 and the pipeline
       will still extract + index it, so a preview-build hiccup must not fail the
       upload (that previously surfaced as a misleading "DIS could not process

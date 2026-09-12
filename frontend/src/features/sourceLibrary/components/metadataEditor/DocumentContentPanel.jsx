@@ -72,6 +72,30 @@ export default function DocumentContentPanel({ jobId, scopeParams = {} }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, JSON.stringify(scopeParams)]);
 
+  const ingestStatus = String(overview?.status || '').toLowerCase();
+  const isProcessing = ingestStatus === 'processing' || ingestStatus === 'pending';
+
+  useEffect(() => {
+    if (!jobId || !isProcessing) return undefined;
+    const timer = window.setInterval(async () => {
+      try {
+        const ov = await sourceLibraryApi.getOverview(jobId, scopeParams);
+        setOverview(ov);
+        const un = await sourceLibraryApi.getUnits(jobId, scopeParams);
+        setUnits(un);
+        const done = !['processing', 'pending'].includes(String(ov?.status || '').toLowerCase());
+        if (done && (un.units || [])[0]?.unit_id) {
+          const detail = await sourceLibraryApi.getUnitDetail(jobId, un.units[0].unit_id, scopeParams);
+          setSelectedUnit(detail.unit || null);
+          setSectionIndex(0);
+        }
+      } catch {
+        // Keep the last preview; list polling will catch a later success/fail.
+      }
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [jobId, isProcessing, JSON.stringify(scopeParams)]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function loadSectionByIndex(nextIndex) {
     if (!units?.units?.length) return;
     const safeIndex = Math.min(Math.max(0, nextIndex), units.units.length - 1);
@@ -127,7 +151,15 @@ export default function DocumentContentPanel({ jobId, scopeParams = {} }) {
 
   return (
     <div className={styles.contentPanel}>
-      {needsRetry > 0 && (
+      {isProcessing && (
+        <div className={styles.processingBanner}>
+          <span className={styles.processingWarn}>
+            Background processing is still running. These sections are a preview —
+            page units appear when extract, tagging, and indexing finish.
+          </span>
+        </div>
+      )}
+      {needsRetry > 0 && !isProcessing && (
         <div className={styles.taggingBanner}>
           <span className={styles.taggingWarn}>
             {needsRetry} page{needsRetry === 1 ? '' : 's'} need content tagging
