@@ -53,6 +53,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true", help="write (default: plan only)")
     ap.add_argument("--client", default="aim")
+    ap.add_argument("--job-id", default="", help="re-index only this job_id")
     ap.add_argument("--block", default="", help="limit to one block label, e.g. 'Block 2'")
     ap.add_argument("--limit", type=int, default=0, help="stop after N documents (proving run)")
     ap.add_argument("--batch-size", type=int, default=100,
@@ -98,7 +99,10 @@ def main() -> int:
         meta = d["metadata_json"] or {}
         if isinstance(meta, str):
             meta = json.loads(meta)
-        if d["job_id"] in indexed_jobs:
+        if args.job_id and d["job_id"] != args.job_id:
+            skipped["not requested job_id"] += 1
+            continue
+        if d["job_id"] in indexed_jobs and not args.job_id:
             skipped["already in the index"] += 1
             continue
         if not d["n_units"]:

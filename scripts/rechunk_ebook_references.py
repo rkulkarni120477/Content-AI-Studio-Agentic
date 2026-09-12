@@ -70,7 +70,7 @@ def _already_page_tagged(cur, job_id: str) -> bool:
 
 
 def _has_failed_or_pending_tags(cur, job_id: str) -> int:
-    """Count units with tagging_status failed or pending."""
+    """Count units that still need LLM tagging (failed, pending, or unset)."""
     cur.execute("""
         SELECT metadata_json
           FROM dis.dis_content_units
@@ -79,7 +79,8 @@ def _has_failed_or_pending_tags(cur, job_id: str) -> int:
     n = 0
     for r in cur.fetchall():
         md = _meta(r["metadata_json"] if isinstance(r, dict) else r[0])
-        if str(md.get("tagging_status") or "").lower() in {"failed", "pending"}:
+        status = str(md.get("tagging_status") or "").lower()
+        if status != "ok":
             n += 1
     return n
 
@@ -195,12 +196,38 @@ def _refresh_artifacts(tenant_cfg, client_id: str, state: Dict[str, Any],
     write_source_content_and_index(tenant_cfg, client_id, payload, payload_key=p_key)
 
 
+def _tagging_status_histogram(cur, job_id: str) -> Dict[str, int]:
+    cur.execute("""
+        SELECT metadata_json
+          FROM dis.dis_content_units
+         WHERE job_id = %s
+    """, (job_id,))
+    hist: Dict[str, int] = defaultdict(int)
+    for r in cur.fetchall():
+        md = _meta(r["metadata_json"] if isinstance(r, dict) else r[0])
+        status = str(md.get("tagging_status") or "").lower() or "(unset)"
+        hist[status] += 1
+    return dict(hist)
+
+
+def _unit_count(cur, job_id: str) -> int:
+    cur.execute(
+        "SELECT count(*) AS n FROM dis.dis_content_units WHERE job_id = %s",
+        (job_id,),
+    )
+    row = cur.fetchone()
+    if isinstance(row, dict):
+        return int(row.get("n") or 0)
+    return int(row[0] if row else 0)
+
+
 def _run_retag_failed(args, tenant_cfg, env: str, dis_url: str) -> int:
     """Re-tag failed/pending pages from Postgres text — no S3 PDF download."""
     import psycopg2
     import psycopg2.extras
     from services.ebook_page_retag import retag_ebook_pages
 
+    retag_all = bool(getattr(args, "retag_all", False))
     conn = psycopg2.connect(dis_url)
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         sql = """
@@ -221,19 +248,34 @@ def _run_retag_failed(args, tenant_cfg, env: str, dis_url: str) -> int:
     todo = []
     skipped = defaultdict(int)
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if args.job_id and not records:
+            print(f"\n! job_id {args.job_id} not found in source_index "
+                  f"(client={args.client} env={env})")
+            return 2
         for rec in records:
+            total = _unit_count(cur, rec["job_id"])
+            hist = _tagging_status_histogram(cur, rec["job_id"])
+            if retag_all:
+                if total <= 0:
+                    skipped["no content units in Postgres"] += 1
+                    print(f"  ! {rec['job_id']}: 0 PG units  hist={hist}")
+                    continue
+                todo.append((rec, total))
+                continue
             n = _has_failed_or_pending_tags(cur, rec["job_id"])
             if n <= 0:
-                skipped["no failed/pending tagging"] += 1
+                skipped["no units needing tagging (all ok or empty)"] += 1
+                print(f"  skip {rec['job_id']}: pg_units={total} hist={hist}")
                 continue
             todo.append((rec, n))
 
     if args.limit:
         todo = todo[:args.limit]
 
-    print(f"\n{'APPLYING' if args.apply else 'PLAN (dry run — nothing will be written)'}  --retag-failed")
+    mode = "--retag-all" if retag_all else "--retag-failed"
+    print(f"\n{'APPLYING' if args.apply else 'PLAN (dry run — nothing will be written)'}  {mode}")
     print(f"client={args.client}  environment={env}")
-    print(f"\n{len(todo)} ebook_reference document(s) with failed/pending tags:\n")
+    print(f"\n{len(todo)} ebook_reference document(s) to re-tag:\n")
     for rec, n in todo:
         print(f"  {rec['job_id']}  {rec.get('source_file_name')}  ({n} pages to re-tag)")
     if skipped:
@@ -248,10 +290,12 @@ def _run_retag_failed(args, tenant_cfg, env: str, dis_url: str) -> int:
     for rec, n in todo:
         job_id = rec["job_id"]
         client_id = rec.get("client_id") or args.client
-        print(f"\n→ {rec.get('source_file_name')} ({job_id}) — {n} pages")
+        print(f"\n→ {rec.get('source_file_name')} ({job_id}) — {n} pages", flush=True)
         try:
             result = retag_ebook_pages(
-                tenant_cfg, client_id, job_id, all_failed=True,
+                tenant_cfg, client_id, job_id,
+                all_failed=not retag_all,
+                all_units=retag_all,
             )
         except Exception as exc:
             print(f"  ! {exc}")
@@ -281,8 +325,11 @@ def main() -> int:
     ap.add_argument("--skip-llm-tagging", action="store_true",
                     help="location tags only (no Bedrock content-tagging calls)")
     ap.add_argument("--retag-failed", action="store_true",
-                    help="only re-run LLM tagging for failed/pending pages "
+                    help="only re-run LLM tagging for failed/pending/unset pages "
                          "(no PDF download / re-extract)")
+    ap.add_argument("--retag-all", action="store_true",
+                    help="re-run LLM tagging for EVERY page unit of the job "
+                         "(ignores tagging_status; use when the UI banner is stale)")
     ap.add_argument("--batch-size", type=int, default=100,
                     help="units per OpenSearch bulk request (default 100)")
     args = ap.parse_args()
@@ -298,7 +345,7 @@ def main() -> int:
         print("structure_store.url is empty in client YAML — refusing to guess.")
         return 2
 
-    if args.retag_failed:
+    if args.retag_failed or args.retag_all:
         return _run_retag_failed(args, tenant_cfg, env, dis_url)
 
     from services.indexing import (

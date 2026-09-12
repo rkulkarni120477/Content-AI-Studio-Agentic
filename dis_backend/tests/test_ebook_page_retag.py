@@ -14,10 +14,9 @@ def test_retag_selection_filters_failed_and_pending_only():
     ]
     selected = [
         r for r in rows
-        if str((r.get("metadata") or {}).get("tagging_status") or "").lower()
-        in {TAGGING_FAILED, TAGGING_PENDING}
+        if str((r.get("metadata") or {}).get("tagging_status") or "").lower() != TAGGING_OK
     ]
-    assert [r["content_unit_id"] for r in selected] == ["j:page_2", "j:page_3"]
+    assert [r["content_unit_id"] for r in selected] == ["j:page_2", "j:page_3", "j:page_4"]
 
 
 def test_retag_selection_by_unit_ids():
