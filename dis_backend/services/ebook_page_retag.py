@@ -13,8 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from config.settings import TenantConfig
 from services.artifacts import ArtifactWriter
 from services.ebook_page_tagger import (
-    TAGGING_FAILED,
-    TAGGING_PENDING,
+    TAGGING_OK,
     tag_ebook_page_units,
     tagger_config_from_pipeline,
     tagging_counts,
@@ -48,6 +47,7 @@ def _load_units_from_pg(
     *,
     unit_ids: Optional[Sequence[str]] = None,
     all_failed: bool = False,
+    all_units: bool = False,
 ) -> List[Dict[str, Any]]:
     cfg = tenant_cfg.structure_store
     if not cfg.enabled or not cfg.url:
@@ -78,8 +78,12 @@ def _load_units_from_pg(
         meta = _parse_meta(r.get("metadata_json"))
         status = str(meta.get("tagging_status") or "").lower()
         uid = str(r.get("content_unit_id") or "")
-        if all_failed:
-            if status not in {TAGGING_FAILED, TAGGING_PENDING}:
+        if all_units:
+            pass
+        elif all_failed:
+            # Anything not successfully tagged — includes unset status after
+            # --skip-llm-tagging / stale content banners that say "failed".
+            if status == TAGGING_OK:
                 continue
         elif wanted:
             if uid not in wanted:
@@ -239,14 +243,20 @@ def retag_ebook_pages(
     *,
     unit_ids: Optional[Sequence[str]] = None,
     all_failed: bool = False,
+    all_units: bool = False,
 ) -> Dict[str, Any]:
     """Re-run LLM content tagging for selected (or all failed/pending) page units."""
-    if not all_failed and not unit_ids:
-        return {"status": "failed", "error": "provide unit_ids or set all_failed=true", "retagged": 0}
+    if not all_failed and not all_units and not unit_ids:
+        return {
+            "status": "failed",
+            "error": "provide unit_ids or set all_failed/all_units=true",
+            "retagged": 0,
+        }
 
     doc = _load_doc_context(tenant_cfg, job_id)
     units = _load_units_from_pg(
-        tenant_cfg, job_id, unit_ids=unit_ids, all_failed=all_failed,
+        tenant_cfg, job_id,
+        unit_ids=unit_ids, all_failed=all_failed, all_units=all_units,
     )
     if not units:
         return {
