@@ -87,7 +87,11 @@ def _has_failed_or_pending_tags(cur, job_id: str) -> int:
 def _download_raw(tenant_cfg, raw_key: str) -> bytes:
     from storage.provider import get_storage_provider
     provider = get_storage_provider(tenant_cfg)
-    return asyncio.run(provider.download(raw_key))
+    print(f"  downloading s3://…/{raw_key} …", flush=True)
+    t0 = time.time()
+    data = asyncio.run(provider.download(raw_key))
+    print(f"  downloaded {len(data):,} bytes in {time.time() - t0:.1f}s", flush=True)
+    return data
 
 
 def _build_units(job_id: str, raw_bytes: bytes, doc_meta: Dict[str, Any],
@@ -414,15 +418,17 @@ def main() -> int:
         }
 
         # Replace old unit_N ids before writing page_N.
+        print("  writing Postgres units…", flush=True)
         del_pg = delete_content_units_by_job(tenant_cfg, job_id)
         del_os = opensearch_delete_by_job(tenant_cfg, job_id)
-        print(f"  deleted old units: pg={del_pg.get('deleted')} os={del_os.get('deleted')}")
+        print(f"  deleted old units: pg={del_pg.get('deleted')} os={del_os.get('deleted')}", flush=True)
 
         rds = rds_upsert(tenant_cfg, state)
         if rds.get("status") != "completed":
             print(f"  ! rds_upsert failed: {rds}")
             failed += 1
             continue
+        print(f"  rds_upsert ok ({len(units)} units)", flush=True)
 
         # Embed + index in batches (handbooks are large).
         indexed = 0
@@ -430,6 +436,7 @@ def main() -> int:
         for i in range(0, len(units), args.batch_size):
             batch = units[i:i + args.batch_size]
             batch_state = {**state, "content_units": batch}
+            print(f"  embed+index [{i}:{i + len(batch)}]…", flush=True)
             for attempt in range(4):
                 emb = generate_embeddings(tenant_cfg, batch_state)
                 if emb.get("status") != "completed":
@@ -439,6 +446,7 @@ def main() -> int:
                 up = opensearch_upsert(tenant_cfg, batch_state)
                 if up.get("status") == "completed":
                     indexed += int(up.get("documents_indexed") or 0)
+                    print(f"  indexed {indexed}/{len(units)}", flush=True)
                     break
                 if attempt == 3:
                     print(f"  ! opensearch failed [{i}:{i+len(batch)}]: {up.get('error')}")
@@ -449,12 +457,14 @@ def main() -> int:
                 break
 
         try:
+            print("  refreshing source-content artifacts…", flush=True)
             _refresh_artifacts(
                 tenant_cfg, client_id, state,
                 raw_key=rec["raw_key"],
                 content_key=rec.get("content_key") or "",
                 payload_key=rec.get("payload_key") or "",
             )
+            print("  artifacts refreshed", flush=True)
         except Exception as exc:
             print(f"  ! artifact refresh failed: {exc}")
             doc_ok = False
