@@ -37,6 +37,8 @@ class PipelineState(TypedDict, total=False):
     page_count: int
     has_images: bool
     slide_texts: List[str]
+    # Per-page PDF extraction for ebook_reference page-chunking.
+    page_texts: List[Dict[str, Any]]
     tables: List[Any]
     doc_type: str
     classification: str

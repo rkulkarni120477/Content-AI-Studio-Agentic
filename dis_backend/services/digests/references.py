@@ -224,12 +224,48 @@ def parse_citations(source_text: str) -> List[Citation]:
     return out
 
 
+def _unit_meta(unit: Dict[str, Any]) -> Dict[str, Any]:
+    """Unit metadata — structure-store rows use ``metadata_json``; pipeline units use ``metadata``."""
+    return unit.get("metadata_json") or unit.get("metadata") or {}
+
+
+def _explicit_chapter(unit: Dict[str, Any]) -> Optional[int]:
+    md = _unit_meta(unit)
+    try:
+        if md.get("chapter") is None or md.get("chapter") == "":
+            return None
+        return int(md.get("chapter"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _printed_page(unit: Dict[str, Any]) -> Optional[int]:
+    md = _unit_meta(unit)
+    try:
+        if md.get("printed_page") is not None and md.get("printed_page") != "":
+            return int(md.get("printed_page"))
+    except (TypeError, ValueError):
+        pass
+    # Fall back to parsing page_number "13-1".
+    pn = str(md.get("page_number") or "")
+    m = _PAGE_RE.search(pn)
+    return int(m.group(2)) if m else None
+
+
+def _units_have_explicit_chapters(units: Sequence[Dict[str, Any]]) -> bool:
+    """True when a majority of units carry an explicit chapter tag (page-chunked ebooks)."""
+    if not units:
+        return False
+    tagged = sum(1 for u in units if _explicit_chapter(u) is not None)
+    return tagged >= max(1, len(units) // 2)
+
+
 def _chunk_index(unit: Dict[str, Any]) -> int:
     """Ordering position of a unit within its source file.
 
     Falls back to 0 when absent so a file with no chunk indices degrades to
     "one undifferentiated document" rather than raising."""
-    md = unit.get("metadata_json") or {}
+    md = _unit_meta(unit)
     try:
         return int(md.get("chunk_index") or 0)
     except (TypeError, ValueError):
@@ -249,12 +285,19 @@ def chapter_runs(units: Sequence[Dict[str, Any]]) -> Dict[int, Tuple[int, int]]:
     into that sequence, not chunk_index values, so a file with gaps in its
     indices still slices correctly.
 
+    When units carry explicit ``metadata.chapter`` (page-chunked ebook_reference),
+    those tags win. Otherwise falls back to figure/page-token inference used for
+    legacy 512-word chunks.
+
     Verified against 8083-31B (1,233 chunks): returns 17 contiguous,
     non-overlapping chapters covering chunks 22-1151, and chapter 13's start
     (861) is the chunk that contains the string "Aircraft Landing Gear Systems
     Chapter 13".
     """
-    raw = [_dominant_chapter(u.get("text_content") or "") for u in units]
+    if _units_have_explicit_chapters(units):
+        raw = [_explicit_chapter(u) for u in units]
+    else:
+        raw = [_dominant_chapter(u.get("text_content") or u.get("text") or "") for u in units]
     smoothed: List[Optional[int]] = []
     for i in range(len(raw)):
         window = [c for c in raw[max(0, i - _SMOOTH_RADIUS):i + _SMOOTH_RADIUS + 1]
@@ -278,7 +321,10 @@ def chapter_runs(units: Sequence[Dict[str, Any]]) -> Dict[int, Tuple[int, int]]:
                 current = [nxt]
         if len(current) > len(best):
             best = current
-        if len(best) >= _MIN_CHAPTER_CHUNKS:
+        # Explicit chapter tags are already trusted; figure-token inference needs
+        # a longer run so TOC/index noise does not invent a chapter.
+        min_chunks = 1 if _units_have_explicit_chapters(units) else _MIN_CHAPTER_CHUNKS
+        if len(best) >= min_chunks:
             runs[chapter] = (best[0], best[-1])
     return _monotonic_only(runs)
 
@@ -402,6 +448,20 @@ def units_for_citation(citation: Citation,
     units = units_by_file[filename]
 
     if citation.chapter is not None:
+        # Prefer explicit page tags when present (page-chunked ebook_reference).
+        # A citation "Ch. 13 pgs. 13-1 to 13-14" can then slice by printed_page
+        # instead of attaching the whole chapter.
+        if citation.page_from is not None and _units_have_explicit_chapters(units):
+            sliced = [
+                u for u in units
+                if _explicit_chapter(u) == citation.chapter
+                and (pp := _printed_page(u)) is not None
+                and citation.page_from <= pp <= (citation.page_to or citation.page_from)
+            ]
+            if sliced:
+                return sliced, ""
+            # Tagged file but the printed range missed — fall through to whole chapter.
+
         span = chapter_runs(units).get(citation.chapter)
         if span:
             lo, hi = span
@@ -465,7 +525,7 @@ def index_by_file(units: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, A
     """Group reference units by source filename, each list ordered by chunk_index."""
     out: Dict[str, List[Dict[str, Any]]] = {}
     for u in units:
-        name = str((u.get("metadata_json") or {}).get("source_file_name") or "")
+        name = str(_unit_meta(u).get("source_file_name") or "")
         if name:
             out.setdefault(name, []).append(u)
     for name in out:

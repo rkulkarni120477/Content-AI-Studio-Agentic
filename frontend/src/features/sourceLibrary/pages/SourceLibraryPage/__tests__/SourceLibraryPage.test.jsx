@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 
@@ -72,6 +72,11 @@ const CENGAGE_UI = {
   },
 };
 
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
+}
+
 function renderPage() {
   const store = configureStore({
     reducer: { auth: authReducer, dashboard: dashboardReducer },
@@ -86,8 +91,12 @@ function renderPage() {
   });
   return render(
     <Provider store={store}>
-      <MemoryRouter>
-        <SourceLibraryPage />
+      <MemoryRouter initialEntries={['/workspace/10/sources']}>
+        <Routes>
+          <Route path="/workspace/:courseId/sources" element={<><SourceLibraryPage /><LocationProbe /></>} />
+          <Route path="/workspace/:courseId/sources/:jobId/view" element={<LocationProbe />} />
+          <Route path="/workspace/:courseId/sources/:jobId/metadata" element={<LocationProbe />} />
+        </Routes>
       </MemoryRouter>
     </Provider>,
   );
@@ -168,5 +177,15 @@ describe('SourceLibraryPage taxonomy filters', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Kept By Server')).toBeTruthy());
     expect(screen.getByText('Also Kept')).toBeTruthy();
+  });
+
+  it('navigates to view page when View is clicked', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Ch 1 Guide')).toBeTruthy());
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).toContain('/workspace/10/sources/j1/view');
+    });
+    expect(screen.getByTestId('location').textContent).toContain('tab=ai');
   });
 });

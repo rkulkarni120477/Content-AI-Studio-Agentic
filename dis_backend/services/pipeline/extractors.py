@@ -29,11 +29,18 @@ class ExtractionResult:
     has_images: bool = False
     tables: List[List[List[str]]] = None   # list of tables, each is rows of cells
     slide_texts: List[str] = None          # for PPTX: per-slide text
+    # Per-page PDF text for ebook_reference page-chunking. Each item is
+    # ``{"pdf_page": int, "text": str}``. Absent / empty for non-PDF types.
+    page_texts: List[dict] = None
     raw_metadata: dict = None
 
     def __post_init__(self):
         if self.tables is None:
             self.tables = []
+        if self.slide_texts is None:
+            self.slide_texts = []
+        if self.page_texts is None:
+            self.page_texts = []
         if self.raw_metadata is None:
             self.raw_metadata = {}
 
@@ -87,17 +94,27 @@ def extract_pdf(content: bytes, vision_fn=None, options: dict | None = None) -> 
         import pdfplumber
         all_text = []
         tables = []
+        page_texts = []
         page_count = 0
+        total = 0
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             page_count = len(pdf.pages)
             for page_num, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text() or ""
+                page_texts.append({"pdf_page": page_num, "text": text})
                 all_text.append(f"[Page {page_num}]\n{text}")
+                total += len(text)
                 for tbl in page.extract_tables() or []:
                     tables.append(tbl)
+                if max_chars and total >= max_chars:
+                    page_count = page_num
+                    break
         joined = "\n\n".join(all_text)
         if joined.strip():
-            return ExtractionResult(text=joined, page_count=page_count, has_images=False, tables=tables)
+            return ExtractionResult(
+                text=joined, page_count=page_count, has_images=False,
+                tables=tables, page_texts=page_texts,
+            )
         log.warning("[PDF] pdfplumber returned no text; trying pypdf")
     except Exception as exc:
         log.warning("[PDF] pdfplumber failed (%s), trying pypdf", exc)
@@ -106,9 +123,21 @@ def extract_pdf(content: bytes, vision_fn=None, options: dict | None = None) -> 
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(content))
-        text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        page_texts = []
+        parts = []
+        total = 0
+        for i, p in enumerate(reader.pages, start=1):
+            t = p.extract_text() or ""
+            page_texts.append({"pdf_page": i, "text": t})
+            parts.append(f"[Page {i}]\n{t}")
+            total += len(t)
+            if max_chars and total >= max_chars:
+                break
+        text = "\n\n".join(parts)
         if text.strip():
-            return ExtractionResult(text=text, page_count=len(reader.pages))
+            return ExtractionResult(
+                text=text, page_count=len(page_texts), page_texts=page_texts,
+            )
         log.warning("[PDF] pypdf returned no text; trying pdfium")
     except Exception as e2:
         log.warning("[PDF] pypdf failed (%s), trying pdfium", e2)
@@ -132,6 +161,7 @@ def _extract_pdf_pdfium(content: bytes, max_chars: int = 0) -> ExtractionResult:
     try:
         n = len(doc)
         parts: List[str] = []
+        page_texts: List[dict] = []
         total = 0
         pages_read = n  # stays n if we read the whole doc; set to i+1 on early stop
         for i in range(n):
@@ -142,6 +172,7 @@ def _extract_pdf_pdfium(content: bytes, max_chars: int = 0) -> ExtractionResult:
             finally:
                 textpage.close()
                 page.close()
+            page_texts.append({"pdf_page": i + 1, "text": txt})
             parts.append(f"[Page {i+1}]\n{txt}")
             total += len(txt)
             if max_chars and total >= max_chars:
@@ -151,7 +182,10 @@ def _extract_pdf_pdfium(content: bytes, max_chars: int = 0) -> ExtractionResult:
         # Report pages ACTUALLY read, so page_count agrees with the (possibly
         # truncated) text rather than claiming the full document's page count.
         log.info("[PDF] pdfium extracted %d chars from %d/%d pages", total, pages_read, n)
-        return ExtractionResult(text="\n\n".join(parts), page_count=pages_read, has_images=False)
+        return ExtractionResult(
+            text="\n\n".join(parts), page_count=pages_read,
+            has_images=False, page_texts=page_texts,
+        )
     finally:
         doc.close()
 

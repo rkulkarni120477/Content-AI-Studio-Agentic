@@ -737,6 +737,38 @@ async def source_content_unit_detail(job_id: str, unit_id: str, request: Request
         raise HTTPException(404, f"Source unit not found: {exc}")
 
 
+class RetagBody(BaseModel):
+    unit_ids: List[str] = Field(default_factory=list)
+    all_failed: bool = False
+
+
+@router.post("/sources/{job_id}/content/retag")
+async def source_content_retag(job_id: str, body: RetagBody, request: Request):
+    """Re-run per-page LLM content tagging for selected (or all failed) ebook pages.
+
+    Uses text already stored in Postgres — does not re-download the PDF.
+    """
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    from services.ebook_page_retag import retag_ebook_pages
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: retag_ebook_pages(
+                tenant, client_id, job_id,
+                unit_ids=body.unit_ids or None,
+                all_failed=bool(body.all_failed),
+            )
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        log.exception("retag failed job_id=%s", job_id)
+        raise HTTPException(500, f"Re-tag failed: {exc}")
+    if result.get("status") == "failed":
+        raise HTTPException(400, result.get("error") or "Re-tag failed")
+    return result
+
+
 @router.get("/sources/{job_id}/search")
 async def source_content_search(
     job_id: str,

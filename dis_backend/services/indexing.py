@@ -244,10 +244,45 @@ def upsert_content_units(cur, schema: str, document_id: str, state: Dict[str, An
         cur.execute(f"""
             INSERT INTO {schema}.dis_content_units(content_unit_id, document_id, job_id, tenant_id, client_id, unit_type, unit_number, title, text_content, visual_summary, keywords_json, topics_json, metadata_json, asset_urls_json, content_hash, environment)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
-            ON CONFLICT(content_unit_id) DO UPDATE SET title=EXCLUDED.title, text_content=EXCLUDED.text_content, metadata_json=EXCLUDED.metadata_json
+            ON CONFLICT(content_unit_id) DO UPDATE SET
+                title=EXCLUDED.title,
+                text_content=EXCLUDED.text_content,
+                metadata_json=EXCLUDED.metadata_json,
+                keywords_json=EXCLUDED.keywords_json,
+                topics_json=EXCLUDED.topics_json
         """, (unit.get("content_unit_id"), document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), unit.get("unit_type"), unit.get("unit_number"), unit.get("title"), unit.get("text"), unit.get("visual_summary"), json.dumps(unit.get("keywords", [])), json.dumps(unit.get("topics", [])), json.dumps(unit.get("metadata", {})), json.dumps(unit.get("assets", [])), unit.get("content_hash", ""), environment))
         count += 1
     return count
+
+
+def delete_content_units_by_job(tenant_cfg: TenantConfig, job_id: str) -> Dict[str, Any]:
+    """Delete every content unit for one job_id from the structure store.
+
+    Required before rechunking: upsert is keyed by content_unit_id, so switching
+    from ``{job}:unit_N`` to ``{job}:page_N`` would otherwise leave the old
+    word-window units orphaned in Postgres.
+    """
+    cfg = tenant_cfg.structure_store
+    if not cfg.enabled:
+        return {"status": "skipped", "reason": "structure_store.enabled=false", "deleted": 0}
+    try:
+        import psycopg
+    except Exception as exc:
+        return {"status": "failed", "error": f"psycopg not installed: {exc}", "deleted": 0}
+    try:
+        dsn = cfg.url or get_settings().db_url.replace("postgresql+asyncpg://", "postgresql://")
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM {cfg.schema_name}.dis_content_units WHERE job_id = %s",
+                    (job_id,),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        return {"status": "completed", "deleted": deleted}
+    except Exception as exc:
+        log.exception("delete_content_units_by_job failed job_id=%s", job_id)
+        return {"status": "failed", "error": str(exc), "deleted": 0}
 
 
 def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:
@@ -361,6 +396,9 @@ def _build_bulk_actions(
             "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
             "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
             "day_number": meta.get("day_number"),
+            "chapter": meta.get("chapter"),
+            "pdf_page": meta.get("pdf_page"),
+            "page_number": meta.get("page_number"),
             "unit_type": unit.get("unit_type"),
             "unit_number": unit.get("unit_number"),
             "title": unit.get("title"),
@@ -509,6 +547,9 @@ def ensure_index(client, index_name: str, dimension: int):
                 "course_name": {"type": "keyword"},
                 "block": {"type": "keyword"},
                 "day_number": {"type": "integer"},
+                "chapter": {"type": "integer"},
+                "pdf_page": {"type": "integer"},
+                "page_number": {"type": "keyword"},
                 "unit_type": {"type": "keyword"},
                 "unit_number": {"type": "integer"},
                 "title": {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 256}}},

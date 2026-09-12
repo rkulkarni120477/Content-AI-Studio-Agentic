@@ -350,3 +350,139 @@
   font-weight: 700;
   cursor: pointer;
 }
+
+.input[readonly],
+.textarea[readonly],
+.inputNarrow[readonly] {
+  background: #f8fafc;
+  color: #334155;
+  cursor: default;
+}
+
+.contentPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.taggingBanner {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  border-radius: 10px;
+}
+
+.taggingWarn {
+  color: #92400e;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mutedNote {
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.sectionsBox {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.sectionNavHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.contentSelect {
+  min-width: 160px;
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.contentButton,
+.contentButtonSecondary {
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.contentButton {
+  background: #4f46e5;
+  color: #fff;
+}
+
+.contentButton:disabled,
+.contentButtonSecondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.contentButtonSecondary {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.unitDetail {
+  margin-top: 4px;
+}
+
+.previewText {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 800;
+  background: #e2e8f0;
+  color: #334155;
+  text-transform: capitalize;
+}
+
+.statusFailed {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+@media (max-width: 900px) {
+  .sectionNavHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

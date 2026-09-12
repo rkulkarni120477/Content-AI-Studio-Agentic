@@ -104,6 +104,10 @@ class ModelConfig(BaseModel):
     structure_extraction: str = _TEXT_MODEL
     quality_check: str = _TEXT_MODEL
     vision: str = _TEXT_MODEL
+    # Per-page ebook_reference content tagging (topics / ACS / summary). Shared
+    # Sonnet pin so quality matches the rest of ingest; switch to Haiku in YAML
+    # when cost matters more than tag richness.
+    ebook_page_tagging: str = _TEXT_MODEL
     # Per-day digest extraction (MAP) for block-wide CDD/Blueprint. The design pins
     # this to a cheap model (Haiku) so the digest cache is shared across quality
     # tiers (D2) — only the REDUCE model varies by tier, on the app/promptops side.
@@ -123,6 +127,9 @@ class PipelineConfig(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 64
     vision_enabled: bool = True
+    # Batched per-page LLM tags for ebook_reference (topics, ACS, summary).
+    ebook_page_tagging_enabled: bool = True
+    ebook_page_tagging_batch_size: int = 10
     # Digest MAP fan-out (plan D4/D7). When true, block digest builds run as a
     # LangGraph Send fan-out (per-day checkpoint/resume, bounded concurrency)
     # instead of the sequential loop; falls back to sequential if langgraph is
