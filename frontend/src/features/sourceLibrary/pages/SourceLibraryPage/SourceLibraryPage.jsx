@@ -199,13 +199,13 @@ export default function SourceLibraryPage() {
     }
   }
 
-  async function loadDocuments(nextFilters = filters) {
+  async function loadDocuments(nextFilters = filters, { silent = false } = {}) {
     const cached = readCachedDocuments(docsCacheKey);
     if (cached.length && documents.length === 0) {
       setDocuments(cached);
       setIsShowingCached(true);
     }
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       // Server-side filtering owns pagination; map UI keys (e.g. module → module_name)
       // and never re-filter only the current page client-side.
@@ -250,6 +250,19 @@ export default function SourceLibraryPage() {
   useEffect(() => {
     if (silentRetryTick > 0) loadDocuments(filters);
   }, [silentRetryTick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hasProcessingDocs = documents.some((doc) => {
+    const st = String(doc?.status || '').toLowerCase();
+    return st === 'processing' || st === 'pending';
+  });
+
+  useEffect(() => {
+    if (!hasProcessingDocs) return undefined;
+    const timer = window.setInterval(() => {
+      loadDocuments(filters, { silent: true });
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [hasProcessingDocs, filters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     async function boot() {

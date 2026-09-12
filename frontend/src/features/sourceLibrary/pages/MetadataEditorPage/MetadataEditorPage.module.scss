@@ -365,6 +365,24 @@
   gap: 12px;
 }
 
+.processingBanner {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  border-radius: 10px;
+}
+
+.processingWarn {
+  color: #1d4ed8;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .taggingBanner {
   display: flex;
   justify-content: space-between;
