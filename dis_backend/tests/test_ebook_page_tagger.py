@@ -80,3 +80,67 @@ def test_tagger_batches_calls():
         units, call_llm_fn=fake_llm, model_id="m", batch_size=10, enabled=True,
     )
     assert len(calls) == 2  # 10 + 2
+
+
+def test_tagger_accepts_pages_wrapper_dict():
+    units = _units(1)
+
+    def fake_llm(model, prompt, max_tokens=1200):
+        return json.dumps({
+            "pages": [{
+                "pdf_page": 1, "topics": ["hydraulics"],
+                "acs_codes": ["AM.I.D.K1"], "summary": "Hydraulics overview.",
+            }],
+        }), 5, 5
+
+    tag_ebook_page_units(
+        units, call_llm_fn=fake_llm, model_id="m", batch_size=10, enabled=True,
+    )
+    assert units[0]["metadata"]["tagging_status"] == "ok"
+    assert units[0]["topics"] == ["hydraulics"]
+
+
+def test_tagger_accepts_results_wrapper_and_page_keyed_dict():
+    from services.ebook_page_tagger import _normalize_tag_response
+
+    wrapped = _normalize_tag_response({
+        "results": [{"pdf_page": 2, "topics": ["a"], "acs_codes": [], "summary": "s"}],
+    })
+    assert wrapped[0]["pdf_page"] == 2
+
+    keyed = _normalize_tag_response({
+        "1": {"topics": ["t1"], "acs_codes": ["AM.I.A.K1"], "summary": "one"},
+        "page_2": {"topics": ["t2"], "acs_codes": [], "summary": "two"},
+    })
+    by_page = {int(x["pdf_page"]): x for x in keyed}
+    assert by_page[1]["topics"] == ["t1"]
+    assert by_page[2]["topics"] == ["t2"]
+
+    units = _units(2)
+
+    def fake_llm(model, prompt, max_tokens=1200):
+        return json.dumps({
+            "1": {"topics": ["oleo"], "acs_codes": ["AM.I.D.K1"], "summary": "A"},
+            "2": {"topics": ["brakes"], "acs_codes": [], "summary": "B"},
+        }), 5, 5
+
+    tag_ebook_page_units(
+        units, call_llm_fn=fake_llm, model_id="m", batch_size=10, enabled=True,
+    )
+    assert units[0]["metadata"]["tagging_status"] == "ok"
+    assert units[1]["metadata"]["tagging_status"] == "ok"
+    assert units[0]["topics"] == ["oleo"]
+
+
+def test_tagger_rejects_unusable_dict():
+    units = _units(1)
+    errors = []
+
+    def fake_llm(model, prompt, max_tokens=1200):
+        return json.dumps({"status": "ok", "message": "no tags here"}), 1, 1
+
+    tag_ebook_page_units(
+        units, call_llm_fn=fake_llm, model_id="m", batch_size=10, enabled=True, errors=errors,
+    )
+    assert units[0]["metadata"]["tagging_status"] == "failed"
+    assert errors and "got dict" in errors[0]
