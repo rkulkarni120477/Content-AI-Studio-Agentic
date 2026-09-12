@@ -113,7 +113,8 @@ def _pages_via_pdfium(content: bytes, max_chars: int = 0) -> List[Dict[str, Any]
     try:
         pages: List[Dict[str, Any]] = []
         total = 0
-        for i in range(len(doc)):
+        n = len(doc)
+        for i in range(n):
             page = doc[i]
             textpage = page.get_textpage()
             try:
@@ -123,6 +124,8 @@ def _pages_via_pdfium(content: bytes, max_chars: int = 0) -> List[Dict[str, Any]
                 page.close()
             pages.append({"pdf_page": i + 1, "text": txt})
             total += len(txt)
+            if (i + 1) % 50 == 0 or (i + 1) == n:
+                print(f"    pdfium extract {i + 1}/{n} pages…", flush=True)
             if max_chars and total >= max_chars:
                 break
         return pages

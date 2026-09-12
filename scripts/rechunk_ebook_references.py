@@ -102,9 +102,13 @@ def _build_units(job_id: str, raw_bytes: bytes, doc_meta: Dict[str, Any],
     from services.ebook_page_tagger import tag_ebook_page_units, tagger_config_from_pipeline
     from services.pipeline.common import call_llm
 
+    t0 = time.time()
     pages = extract_pdf_pages(raw_bytes, max_chars=0)
+    print(f"  extracted {len(pages)} PDF pages in {time.time() - t0:.1f}s", flush=True)
     title = doc_meta.get("title") or filename or "Source"
     unit_type = tenant_cfg.document_processing.unit_type_map.get("ebook_reference", "page")
+    print("  reading PDF outline / building units…", flush=True)
+    t1 = time.time()
     units = build_ebook_page_units(
         job_id=job_id,
         pages=pages,
@@ -113,6 +117,7 @@ def _build_units(job_id: str, raw_bytes: bytes, doc_meta: Dict[str, Any],
         title=title,
         outline_map=outline_chapter_map(raw_bytes),
     )
+    print(f"  unit build done ({len(units)} units) in {time.time() - t1:.1f}s", flush=True)
     if skip_llm or not units:
         return units
 
@@ -358,7 +363,7 @@ def main() -> int:
     for rec in todo:
         job_id = rec["job_id"]
         filename = rec.get("source_file_name") or "ebook.pdf"
-        print(f"\n→ {filename} ({job_id})")
+        print(f"\n→ {filename} ({job_id})", flush=True)
         try:
             raw_bytes = _download_raw(tenant_cfg, rec["raw_key"])
         except Exception as exc:
@@ -367,6 +372,7 @@ def main() -> int:
             continue
 
         # Document metadata from dis_documents (system of record for doc-level tags).
+        print("  loading document row from Postgres…", flush=True)
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT document_id, tenant_id, client_id, document_type,
@@ -377,6 +383,7 @@ def main() -> int:
                  LIMIT 1
             """, (job_id,))
             doc = cur.fetchone()
+        print("  document row loaded", flush=True)
 
         doc_meta = _meta(doc["metadata_json"] if doc else None)
         if not doc_meta:
@@ -391,10 +398,11 @@ def main() -> int:
         file_type = (doc or {}).get("source_file_type") or "pdf"
 
         t0 = time.time()
+        print("  extracting PDF pages (this can take several minutes on large files)…", flush=True)
         units = _build_units(
             job_id, raw_bytes, doc_meta, filename, tenant_cfg, args.skip_llm_tagging,
         )
-        print(f"  built {len(units)} page units in {time.time() - t0:.1f}s")
+        print(f"  built {len(units)} page units in {time.time() - t0:.1f}s", flush=True)
         if not units:
             print("  ! no text pages extracted — skipping write")
             failed += 1
