@@ -10,15 +10,18 @@ export default function MetadataTagInput({
   onAdd,
   onRemove,
   maxItems,
+  readOnly = false,
 }) {
   const chipClass = tone === 'green' ? styles.chipGreen : styles.chip;
 
   return (
     <div className={styles.fieldBlock}>
-      <div className={styles.fieldHeader}>
-        <label className={styles.fieldLabel}>{label}</label>
-        {countLabel ? <span className={styles.fieldCount}>{countLabel}</span> : null}
-      </div>
+      {(label || countLabel) ? (
+        <div className={styles.fieldHeader}>
+          {label ? <label className={styles.fieldLabel}>{label}</label> : <span />}
+          {countLabel ? <span className={styles.fieldCount}>{countLabel}</span> : null}
+        </div>
+      ) : null}
       <div className={styles.chipWrap}>
         {items.map((item, idx) => {
           const text = typeof item === 'string' ? item : (item.label || item.job_id || '');
@@ -26,18 +29,20 @@ export default function MetadataTagInput({
           return (
             <span key={key} className={chipClass}>
               {text}
-              <button
-                type="button"
-                className={styles.chipRemove}
-                aria-label={`Remove ${text}`}
-                onClick={() => onRemove?.(idx)}
-              >
-                ×
-              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className={styles.chipRemove}
+                  aria-label={`Remove ${text}`}
+                  onClick={() => onRemove?.(idx)}
+                >
+                  ×
+                </button>
+              )}
             </span>
           );
         })}
-        {(!maxItems || items.length < maxItems) && (
+        {!readOnly && (!maxItems || items.length < maxItems) && (
           <button type="button" className={styles.chipAdd} onClick={onAdd}>
             {addLabel}
           </button>
@@ -56,4 +61,5 @@ MetadataTagInput.propTypes = {
   onAdd: PropTypes.func,
   onRemove: PropTypes.func,
   maxItems: PropTypes.number,
+  readOnly: PropTypes.bool,
 };

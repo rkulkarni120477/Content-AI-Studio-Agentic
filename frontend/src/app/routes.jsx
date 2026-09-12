@@ -84,6 +84,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="sources" replace /> },
       { path: 'sources',   element: wrap(<SourceLibraryPage />) },
+      { path: 'sources/:jobId/view', element: wrap(<MetadataEditorPage />) },
       { path: 'sources/:jobId/metadata', element: wrap(<MetadataEditorPage />) },
       { path: 'style',     element: wrap(<StylePage />) },
       { path: 'cdd',       element: wrap(<CddPage />) },

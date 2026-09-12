@@ -96,6 +96,10 @@ pipeline:
     # changes the digest cache key and rebuilds every day of every block, so it
     # wants to be a deliberate change with a rebuild window, not a drive-by edit.
     digest_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    # Per-page ebook_reference content tags (topics / ACS / summary). Shared
+    # Sonnet pin so quality matches the rest of ingest; switch to Haiku in YAML
+    # when cost matters more than tag richness.
+    ebook_page_tagging: global.anthropic.claude-sonnet-4-5-20250929-v1:0
   # Digest MAP fan-out (plan D4). Sequential MAP is O(days) and Block 2 has 20, which
   # does not fit the product: a cold build measured ~6.5 min locally and EXCEEDED the
   # 1200s ceiling on build_digests_sync in prod on 2026-08-13 (~22 min), failing the
@@ -121,6 +125,9 @@ pipeline:
   llm_provider: bedrock
   bedrock_enabled: true
   anthropic_enabled: false
+  # Batched per-page LLM tags for ebook_reference units.
+  ebook_page_tagging_enabled: true
+  ebook_page_tagging_batch_size: 10
 metadata_schemas:
   aim:
     required_fields:

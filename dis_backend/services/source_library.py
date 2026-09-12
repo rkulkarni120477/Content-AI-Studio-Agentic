@@ -56,6 +56,26 @@ BLUEPRINT_DOC_TYPES = {"course_calendar", "syllabus", "chapter_outline", "module
 #: what a Block 6 request would have received.
 PER_UNIT_DOC_TYPES = {"knowledge_test_report"}
 
+#: ebook_reference is page-chunked: one unit per physical PDF page, each carrying
+#: chapter / page_number / ACS / topics. Collapsing to full_document would erase
+#: those tags and make assigned-reading page slices impossible.
+PAGE_CHUNK_DOC_TYPES = {"ebook_reference"}
+
+#: Unit-level metadata a ``per_unit`` / ``page`` document carries into the content
+#: file. A short allow-list, not the whole unit metadata dict: this file is what
+#: CAS prompts read, and the product rule for it is "no internal DIS metadata".
+_PER_UNIT_METADATA_KEYS = frozenset({
+    "block", "block_id", "block_number", "day_number", "acs_codes", "missed_codes",
+    "document_type", "content_type", "visibility", "sheet_name",
+})
+
+_PAGE_CHUNK_METADATA_KEYS = frozenset({
+    "chapter", "page_number", "printed_page", "pdf_page", "acs_codes",
+    "topics", "summary", "chunking_strategy", "chunk_index",
+    "document_type", "content_type", "visibility",
+    "tagging_status", "tagging_error", "tagging_attempted_at",
+})
+
 
 def normalize_visibility(value: str) -> str:
     v = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -126,20 +146,13 @@ def chunking_strategy(purpose: str, document_type: str) -> str:
     d = (document_type or "").strip().lower()
     if d in PER_UNIT_DOC_TYPES:
         return "per_unit"
+    if d in PAGE_CHUNK_DOC_TYPES:
+        return "page"
     if p in {"style", "cdd", "blueprint"}:
         return "full_document"
     if d in STYLE_DOC_TYPES | CDD_DOC_TYPES | BLUEPRINT_DOC_TYPES:
         return "full_document"
     return "semantic_chunk"
-
-
-#: Unit-level metadata a ``per_unit`` document carries into the content file. A short
-#: allow-list, not the whole unit metadata dict: this file is what CAS prompts read, and
-#: the product rule for it is "no internal DIS metadata".
-_PER_UNIT_METADATA_KEYS = frozenset({
-    "block", "block_id", "block_number", "day_number", "acs_codes", "missed_codes",
-    "document_type", "content_type", "visibility", "sheet_name",
-})
 
 
 def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -188,6 +201,11 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
                     # filtering behaviour changes.
                     clean_unit["metadata"] = {k: v for k, v in (u.get("metadata") or {}).items()
                                               if k in _PER_UNIT_METADATA_KEYS}
+                elif strategy == "page":
+                    # ebook_reference page units: keep chapter / page_number / ACS /
+                    # topics so assigned reading and retrieval can filter by them.
+                    clean_unit["metadata"] = {k: v for k, v in (u.get("metadata") or {}).items()
+                                              if k in _PAGE_CHUNK_METADATA_KEYS}
                 clean_units.append(clean_unit)
         if not clean_units:
             clean_units = [{
@@ -197,6 +215,10 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "title": title,
                 "text": reading_content,
             }]
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(clean_units) if strategy == "page" else {
+        "tagging_failed_count": 0, "tagging_pending_count": 0,
+    }
     return {
         "schema_version": "source_content_v1",
         "job_id": job_id,
@@ -224,6 +246,8 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
         "reading_content": reading_content,
         "preview": reading_content[:12000],
         "content_units": clean_units,
+        "tagging_failed_count": counts["tagging_failed_count"],
+        "tagging_pending_count": counts["tagging_pending_count"],
     }
 
 
@@ -296,6 +320,19 @@ def compact_source_record(
     # only; absent values stay empty/None. AIM profile transforms still write
     # into payload.metadata first.
     record.update(project_index_metadata(meta, _promote, registry))
+    # Ebook page-tagging retry badges (0 for non-page docs).
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(payload.get("content_units") or [])
+    record["tagging_failed_count"] = int(
+        payload.get("tagging_failed_count")
+        if payload.get("tagging_failed_count") is not None
+        else counts["tagging_failed_count"]
+    )
+    record["tagging_pending_count"] = int(
+        payload.get("tagging_pending_count")
+        if payload.get("tagging_pending_count") is not None
+        else counts["tagging_pending_count"]
+    )
     return record
 
 
@@ -546,6 +583,8 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     # compact_source_record: both describe the CLEAN content document retrieval
     # reads, not the raw pipeline payload.
     record["extracted_chars"] = extracted_chars(content_doc)
+    record["tagging_failed_count"] = int(content_doc.get("tagging_failed_count") or 0)
+    record["tagging_pending_count"] = int(content_doc.get("tagging_pending_count") or 0)
     index_url = upsert_source_record(tenant_cfg, client_id, record)
     return {"content_key": c_key, "content_url": content_url, "index_url": index_url}
 
@@ -617,14 +656,25 @@ def _view_units_for_content(content_doc: Dict[str, Any]) -> List[Dict[str, Any]]
     out: List[Dict[str, Any]] = []
     for i, u in enumerate(units, start=1):
         text = str(u.get("text") or "")
-        out.append({
+        meta = u.get("metadata") or {}
+        item = {
             "unit_id": str(u.get("content_unit_id") or f"unit_{i}"),
             "unit_number": int(u.get("unit_number") or i),
             "unit_type": u.get("unit_type") or "content_unit",
             "title": u.get("title") or f"Section {i}",
             "preview": text[:800],
             "char_count": len(text),
-        })
+        }
+        # Surface ebook page tagging flags so Source Library can badge / retry.
+        if meta.get("tagging_status"):
+            item["tagging_status"] = meta.get("tagging_status")
+        if meta.get("tagging_error"):
+            item["tagging_error"] = meta.get("tagging_error")
+        if meta.get("page_number"):
+            item["page_number"] = meta.get("page_number")
+        if meta.get("pdf_page") is not None:
+            item["pdf_page"] = meta.get("pdf_page")
+        out.append(item)
     return out
 
 
@@ -632,6 +682,8 @@ def build_view_manifest(content_doc: Dict[str, Any]) -> Dict[str, Any]:
     text = str(content_doc.get("reading_content") or "")
     pages = _split_text_for_view(text)
     units = _view_units_for_content(content_doc)
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(content_doc.get("content_units") or [])
     return {
         "schema_version": "source_view_manifest_v1",
         "job_id": content_doc.get("job_id"),
@@ -647,6 +699,16 @@ def build_view_manifest(content_doc: Dict[str, Any]) -> Dict[str, Any]:
         "content_too_large_for_single_view": len(text) > LARGE_VIEW_CHAR_THRESHOLD or len(pages) > 8,
         "preview": str(content_doc.get("preview") or text[:12000]),
         "units": units,
+        "tagging_failed_count": int(
+            content_doc.get("tagging_failed_count")
+            if content_doc.get("tagging_failed_count") is not None
+            else counts["tagging_failed_count"]
+        ),
+        "tagging_pending_count": int(
+            content_doc.get("tagging_pending_count")
+            if content_doc.get("tagging_pending_count") is not None
+            else counts["tagging_pending_count"]
+        ),
     }
 
 
@@ -696,7 +758,23 @@ def content_units_response(content_doc: Dict[str, Any]) -> Dict[str, Any]:
     # in the UI instead of one huge section.
     if len(units) <= 1 and len(text) > PAGE_VIEW_CHARS:
         units = _page_units_for_content(content_doc)
-    return {"job_id": content_doc.get("job_id"), "units": units, "total_units": len(units)}
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(content_doc.get("content_units") or [])
+    return {
+        "job_id": content_doc.get("job_id"),
+        "units": units,
+        "total_units": len(units),
+        "tagging_failed_count": int(
+            content_doc.get("tagging_failed_count")
+            if content_doc.get("tagging_failed_count") is not None
+            else counts["tagging_failed_count"]
+        ),
+        "tagging_pending_count": int(
+            content_doc.get("tagging_pending_count")
+            if content_doc.get("tagging_pending_count") is not None
+            else counts["tagging_pending_count"]
+        ),
+    }
 
 
 def content_unit_detail_response(content_doc: Dict[str, Any], unit_id: str) -> Dict[str, Any]:

@@ -1,24 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import Modal from '@components/common/Modal/Modal';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
-import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
+import { selectSelectedProject } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import DocumentSummaryPanel from '@features/sourceLibrary/components/metadataEditor/DocumentSummaryPanel';
+import DocumentContentPanel from '@features/sourceLibrary/components/metadataEditor/DocumentContentPanel';
 import MetadataField from '@features/sourceLibrary/components/metadataEditor/MetadataField';
 import MetadataTagInput from '@features/sourceLibrary/components/metadataEditor/MetadataTagInput';
 import MetadataEditorFooter from '@features/sourceLibrary/components/metadataEditor/MetadataEditorFooter';
 import ProvenanceBanner from '@features/sourceLibrary/components/metadataEditor/ProvenanceBanner';
 import styles from './MetadataEditorPage.module.scss';
 
-const TABS = [
+const EDIT_TABS = [
   { id: 'ai', label: 'AI Metadata' },
   { id: 'taxonomy', label: 'Taxonomy & Standards' },
   { id: 'relationships', label: 'Relationships' },
+];
+
+const VIEW_TABS = [
+  ...EDIT_TABS,
+  { id: 'content', label: 'Content' },
 ];
 
 const EMPTY_FORM = {
@@ -73,11 +79,14 @@ function errorMessage(err, fallback) {
 export default function MetadataEditorPage() {
   const { courseId, jobId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const project = useSelector(selectSelectedProject);
-  const course = useSelector(selectSelectedCourse);
 
-  const activeTab = TABS.some((t) => t.id === searchParams.get('tab'))
+  const isView = /\/view\/?$/.test(location.pathname);
+  const tabs = isView ? VIEW_TABS : EDIT_TABS;
+
+  const activeTab = tabs.some((t) => t.id === searchParams.get('tab'))
     ? searchParams.get('tab')
     : 'ai';
 
@@ -97,11 +106,12 @@ export default function MetadataEditorPage() {
   }), [courseId, project?.id]);
 
   const isDirty = useMemo(
-    () => JSON.stringify(form) !== JSON.stringify(savedForm),
-    [form, savedForm],
+    () => !isView && JSON.stringify(form) !== JSON.stringify(savedForm),
+    [form, savedForm, isView],
   );
 
   const keywordsMax = serverData?.limits?.keywords_max || 12;
+  const pageTitle = isView ? 'View document' : 'Edit metadata';
 
   const loadMetadata = useCallback(async () => {
     setLoading(true);
@@ -126,14 +136,17 @@ export default function MetadataEditorPage() {
   }
 
   function updateAi(field, value) {
+    if (isView) return;
     setForm((f) => ({ ...f, ai_metadata: { ...f.ai_metadata, [field]: value } }));
   }
 
   function updateTaxonomy(field, value) {
+    if (isView) return;
     setForm((f) => ({ ...f, taxonomy_standards: { ...f.taxonomy_standards, [field]: value } }));
   }
 
   function updateRelationships(field, value) {
+    if (isView) return;
     setForm((f) => ({ ...f, relationships: { ...f.relationships, [field]: value } }));
   }
 
@@ -208,8 +221,8 @@ export default function MetadataEditorPage() {
   }
 
   function handleCancel() {
-    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
-    setForm(cloneForm(savedForm));
+    if (!isView && isDirty && !window.confirm('Discard unsaved changes?')) return;
+    if (!isView) setForm(cloneForm(savedForm));
     navigate(`/workspace/${courseId}/sources`);
   }
 
@@ -227,14 +240,14 @@ export default function MetadataEditorPage() {
 
   if (loading) {
     return (
-      <PageContainer title="Edit metadata">
+      <PageContainer title={pageTitle}>
         <Loader size="lg" overlay />
       </PageContainer>
     );
   }
 
   return (
-    <PageContainer title="Edit metadata">
+    <PageContainer title={pageTitle}>
       <div className={styles.page}>
         <button type="button" className={styles.backLink} onClick={handleCancel}>
           ← Source Library
@@ -242,8 +255,12 @@ export default function MetadataEditorPage() {
 
         <div className={styles.headerRow}>
           <div>
-            <h1 className={styles.title}>Edit metadata</h1>
-            <p className={styles.subtitle}>Review and refine the tags extracted from this document</p>
+            <h1 className={styles.title}>{pageTitle}</h1>
+            <p className={styles.subtitle}>
+              {isView
+                ? 'Review document metadata, sections, and raw content'
+                : 'Review and refine the tags extracted from this document'}
+            </p>
           </div>
           {isDirty ? <span className={styles.unsavedBadge}>● Unsaved changes</span> : null}
         </div>
@@ -255,7 +272,7 @@ export default function MetadataEditorPage() {
 
           <div className={styles.editorCard}>
             <div className={styles.tabs}>
-              {TABS.map((tab) => (
+              {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   type="button"
@@ -270,24 +287,28 @@ export default function MetadataEditorPage() {
             {activeTab === 'ai' && (
               <>
                 <ProvenanceBanner>
-                  {`Extracted by AI on ${aiDate} · edits override the extracted values`}
+                  {isView
+                    ? `Extracted by AI on ${aiDate}`
+                    : `Extracted by AI on ${aiDate} · edits override the extracted values`}
                 </ProvenanceBanner>
                 <div className={styles.grid2}>
-                  <MetadataField label="Title" value={form.ai_metadata.title} onChange={(v) => updateAi('title', v)} />
-                  <MetadataField label="Author" value={form.ai_metadata.author} onChange={(v) => updateAi('author', v)} />
-                  <MetadataField label="Subject" value={form.ai_metadata.subject} onChange={(v) => updateAi('subject', v)} />
-                  <MetadataField label="Language" value={form.ai_metadata.language} onChange={(v) => updateAi('language', v)} />
+                  <MetadataField readOnly={isView} label="Title" value={form.ai_metadata.title} onChange={(v) => updateAi('title', v)} />
+                  <MetadataField readOnly={isView} label="Author" value={form.ai_metadata.author} onChange={(v) => updateAi('author', v)} />
+                  <MetadataField readOnly={isView} label="Subject" value={form.ai_metadata.subject} onChange={(v) => updateAi('subject', v)} />
+                  <MetadataField readOnly={isView} label="Language" value={form.ai_metadata.language} onChange={(v) => updateAi('language', v)} />
                 </div>
                 <div className={styles.fieldBlock}>
                   <label className={styles.fieldLabel}>Description</label>
                   <textarea
                     className={styles.textarea}
                     rows={3}
+                    readOnly={isView}
                     value={form.ai_metadata.description}
-                    onChange={(e) => updateAi('description', e.target.value)}
+                    onChange={isView ? undefined : (e) => updateAi('description', e.target.value)}
                   />
                 </div>
                 <MetadataTagInput
+                  readOnly={isView}
                   label="Keywords"
                   items={form.ai_metadata.keywords}
                   countLabel={`${form.ai_metadata.keywords.length} of ${keywordsMax} max`}
@@ -305,20 +326,22 @@ export default function MetadataEditorPage() {
                   Derived from Cengage taxonomy v4 · aligned to AACSB and AMA frameworks
                 </ProvenanceBanner>
                 <div className={styles.grid2}>
-                  <MetadataField label="Subject area" value={form.taxonomy_standards.subject_area} onChange={(v) => updateTaxonomy('subject_area', v)} />
-                  <MetadataField label="Domain" value={form.taxonomy_standards.domain} onChange={(v) => updateTaxonomy('domain', v)} />
-                  <MetadataField label="Subdomain" value={form.taxonomy_standards.subdomain} onChange={(v) => updateTaxonomy('subdomain', v)} />
-                  <MetadataField label="Bloom's level" value={form.taxonomy_standards.blooms_level} onChange={(v) => updateTaxonomy('blooms_level', v)} />
+                  <MetadataField readOnly={isView} label="Subject area" value={form.taxonomy_standards.subject_area} onChange={(v) => updateTaxonomy('subject_area', v)} />
+                  <MetadataField readOnly={isView} label="Domain" value={form.taxonomy_standards.domain} onChange={(v) => updateTaxonomy('domain', v)} />
+                  <MetadataField readOnly={isView} label="Subdomain" value={form.taxonomy_standards.subdomain} onChange={(v) => updateTaxonomy('subdomain', v)} />
+                  <MetadataField readOnly={isView} label="Bloom's level" value={form.taxonomy_standards.blooms_level} onChange={(v) => updateTaxonomy('blooms_level', v)} />
                 </div>
                 <div className={styles.fieldBlock}>
                   <label className={styles.fieldLabel}>Skill level</label>
                   <input
                     className={styles.inputNarrow}
+                    readOnly={isView}
                     value={form.taxonomy_standards.skill_level}
-                    onChange={(e) => updateTaxonomy('skill_level', e.target.value)}
+                    onChange={isView ? undefined : (e) => updateTaxonomy('skill_level', e.target.value)}
                   />
                 </div>
                 <MetadataTagInput
+                  readOnly={isView}
                   label="Learning standards"
                   items={form.taxonomy_standards.learning_standards}
                   countLabel={`${form.taxonomy_standards.learning_standards.length} mapped`}
@@ -327,6 +350,7 @@ export default function MetadataEditorPage() {
                   onRemove={(idx) => updateTaxonomy('learning_standards', form.taxonomy_standards.learning_standards.filter((_, i) => i !== idx))}
                 />
                 <MetadataTagInput
+                  readOnly={isView}
                   label="Skills mapped"
                   items={form.taxonomy_standards.skills_mapped}
                   countLabel={`${form.taxonomy_standards.skills_mapped.length} mapped`}
@@ -342,11 +366,13 @@ export default function MetadataEditorPage() {
                   Links detected across the Source Library · edits affect retrieval, not file storage
                 </ProvenanceBanner>
                 <MetadataField
+                  readOnly={isView}
                   label="Series / collection"
                   value={form.relationships.series_collection}
                   onChange={(v) => updateRelationships('series_collection', v)}
                 />
                 <MetadataTagInput
+                  readOnly={isView}
                   label="Related documents"
                   items={form.relationships.related_documents}
                   countLabel={`${form.relationships.related_documents.length} linked`}
@@ -364,12 +390,15 @@ export default function MetadataEditorPage() {
                   {form.relationships.prerequisites.length === 0 ? (
                     <div className={styles.emptyRel}>
                       No prerequisites — this document stands alone
-                      <button type="button" className={styles.chipAdd} style={{ marginLeft: 12 }} onClick={() => addTextRelationship('prerequisites')}>
-                        + Add...
-                      </button>
+                      {!isView && (
+                        <button type="button" className={styles.chipAdd} style={{ marginLeft: 12 }} onClick={() => addTextRelationship('prerequisites')}>
+                          + Add...
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <MetadataTagInput
+                      readOnly={isView}
                       label=""
                       items={form.relationships.prerequisites}
                       onAdd={() => openRelationshipPicker('prerequisites', { allowTextOnly: true })}
@@ -378,6 +407,7 @@ export default function MetadataEditorPage() {
                   )}
                 </div>
                 <MetadataTagInput
+                  readOnly={isView}
                   label="Cross-references"
                   items={form.relationships.cross_references}
                   countLabel={`${form.relationships.cross_references.length} linked`}
@@ -387,52 +417,60 @@ export default function MetadataEditorPage() {
               </>
             )}
 
-            <MetadataEditorFooter
-              onRevert={handleRevert}
-              onCancel={handleCancel}
-              onSave={handleSave}
-              saving={saving}
-              revertDisabled={!serverData?.ai_baseline_available}
-            />
+            {isView && activeTab === 'content' && (
+              <DocumentContentPanel jobId={jobId} scopeParams={scopeParams} />
+            )}
+
+            {!isView && (
+              <MetadataEditorFooter
+                onRevert={handleRevert}
+                onCancel={handleCancel}
+                onSave={handleSave}
+                saving={saving}
+                revertDisabled={!serverData?.ai_baseline_available}
+              />
+            )}
           </div>
         </div>
       </div>
 
-      <Modal
-        open={Boolean(picker)}
-        onClose={() => setPicker(null)}
-        title="Select document"
-        footer={<Button variant="secondary" onClick={() => setPicker(null)}>Close</Button>}
-      >
-        <input
-          className={styles.pickerSearch}
-          placeholder="Search documents..."
-          value={pickerSearch}
-          onChange={(e) => setPickerSearch(e.target.value)}
-        />
-        <div className={styles.pickerList}>
-          {filteredPickerDocs.map((doc) => {
-            const id = doc.job_id || doc.document_id;
-            const label = doc.title || doc.source_file_name || id;
-            return (
-              <button
-                key={id}
-                type="button"
-                className={styles.pickerItem}
-                onClick={() => addRelationshipItem(picker.relType, { job_id: String(id), label })}
-              >
-                <span>{label}</span>
-                <span className={styles.fieldCount}>{doc.document_type || ''}</span>
+      {!isView && (
+        <Modal
+          open={Boolean(picker)}
+          onClose={() => setPicker(null)}
+          title="Select document"
+          footer={<Button variant="secondary" onClick={() => setPicker(null)}>Close</Button>}
+        >
+          <input
+            className={styles.pickerSearch}
+            placeholder="Search documents..."
+            value={pickerSearch}
+            onChange={(e) => setPickerSearch(e.target.value)}
+          />
+          <div className={styles.pickerList}>
+            {filteredPickerDocs.map((doc) => {
+              const id = doc.job_id || doc.document_id;
+              const label = doc.title || doc.source_file_name || id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={styles.pickerItem}
+                  onClick={() => addRelationshipItem(picker.relType, { job_id: String(id), label })}
+                >
+                  <span>{label}</span>
+                  <span className={styles.fieldCount}>{doc.document_type || ''}</span>
+                </button>
+              );
+            })}
+            {picker?.allowTextOnly ? (
+              <button type="button" className={styles.chipAdd} onClick={() => addTextRelationship(picker.relType)}>
+                + Add by name...
               </button>
-            );
-          })}
-          {picker?.allowTextOnly ? (
-            <button type="button" className={styles.chipAdd} onClick={() => addTextRelationship(picker.relType)}>
-              + Add by name...
-            </button>
-          ) : null}
-        </div>
-      </Modal>
+            ) : null}
+          </div>
+        </Modal>
+      )}
     </PageContainer>
   );
 }

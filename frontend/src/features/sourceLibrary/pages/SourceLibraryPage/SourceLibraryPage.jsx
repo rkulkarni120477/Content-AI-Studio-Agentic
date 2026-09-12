@@ -135,17 +135,6 @@ export default function SourceLibraryPage() {
   const [uploadPolicy, setUploadPolicy] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [selected, setSelected] = useState(null);
-  const [structure, setStructure] = useState(null);
-  const [overview, setOverview] = useState(null);
-  const [pages, setPages] = useState(null);
-  const [sectionIndex, setSectionIndex] = useState(0);
-  const [showSectionList, setShowSectionList] = useState(false);
-  const [units, setUnits] = useState(null);
-  const [selectedUnit, setSelectedUnit] = useState(null);
-  const [sectionLoading, setSectionLoading] = useState(false);
-  const [insideSearch, setInsideSearch] = useState('');
-  const [searchResults, setSearchResults] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -287,69 +276,6 @@ export default function SourceLibraryPage() {
     loadDocuments(next);
   }
 
-  async function openStructure(doc) {
-    const jobId = doc.job_id || doc.document_id;
-    setSelected(doc);
-    setStructure(null);
-    setOverview(null);
-    setPages(null);
-    setUnits(null);
-    setSelectedUnit(null);
-    setSectionLoading(false);
-    setInsideSearch('');
-    setSearchResults(null);
-    setSectionIndex(0);
-    setShowSectionList(false);
-    try {
-      const ov = await sourceLibraryApi.getOverview(jobId, withScope({}));
-      setOverview(ov);
-      const [pg, un] = await Promise.all([
-        sourceLibraryApi.getPages(jobId, withScope({ page: 1, page_size: 1 })),
-        sourceLibraryApi.getUnits(jobId, withScope({})),
-      ]);
-      setPages(pg);
-      setUnits(un);
-      const firstUnit = (un.units || [])[0];
-      if (firstUnit?.unit_id) {
-        setSectionLoading(true);
-        const detail = await sourceLibraryApi.getUnitDetail(jobId, firstUnit.unit_id, withScope({}));
-        setSelectedUnit(detail.unit || null);
-        setSectionLoading(false);
-      }
-      // Keep legacy shape for old small-file UI fallbacks.
-      setStructure({ preview: ov.preview || '', content_units: un.units || [] });
-    } catch (e) {
-      setSectionLoading(false);
-      setStructure({ error: errorMessage(e, 'Could not load document overview.') });
-    }
-  }
-
-  async function loadSectionByIndex(nextIndex) {
-    if (!selected || !units?.units?.length) return;
-    const safeIndex = Math.min(Math.max(0, nextIndex), units.units.length - 1);
-    const unit = units.units[safeIndex];
-    setSectionIndex(safeIndex);
-    setSelectedUnit(null);
-    await loadUnit(unit.unit_id);
-  }
-
-
-  async function loadUnit(unitId) {
-    if (!selected || !unitId) return;
-    const idx = (units?.units || []).findIndex((u) => u.unit_id === unitId);
-    if (idx >= 0) setSectionIndex(idx);
-    setSelectedUnit(null);
-    setSectionLoading(true);
-    try {
-      const data = await sourceLibraryApi.getUnitDetail(selected.job_id || selected.document_id, unitId, withScope({}));
-      setSelectedUnit(data.unit || null);
-    } catch (e) {
-      setSelectedUnit({ title: 'Error', text: errorMessage(e, 'Could not load content unit.') });
-    } finally {
-      setSectionLoading(false);
-    }
-  }
-
   async function handleDeleteDocument(doc) {
     const jobId = doc.job_id || doc.document_id;
     if (!jobId) return;
@@ -361,14 +287,6 @@ export default function SourceLibraryPage() {
     setError('');
     try {
       await sourceLibraryApi.deleteDocument(jobId, withScope({}));
-      if (selected && (selected.job_id || selected.document_id) === jobId) {
-        setSelected(null);
-        setStructure(null);
-        setOverview(null);
-        setPages(null);
-        setUnits(null);
-        setSelectedUnit(null);
-      }
       await loadDocuments(filters);
     } catch (e) {
       setError(errorMessage(e, 'Could not delete this document.'));
@@ -376,21 +294,6 @@ export default function SourceLibraryPage() {
       setDeletingId('');
     }
   }
-
-  async function searchInsideDocument(e) {
-    e.preventDefault();
-    if (!selected || !insideSearch.trim()) {
-      setSearchResults(null);
-      return;
-    }
-    try {
-      const data = await sourceLibraryApi.searchSource(selected.job_id || selected.document_id, withScope({ q: insideSearch.trim(), limit: 20 }));
-      setSearchResults(data);
-    } catch (e2) {
-      setSearchResults({ error: errorMessage(e2, 'Search failed.') });
-    }
-  }
-
 
   function setPersistedUploadQueue(updater) {
     setUploadQueue((current) => {
@@ -905,7 +808,13 @@ export default function SourceLibraryPage() {
                       <td><RetrievalStatus doc={doc} /></td>
                       <td>
                         <div className={styles.rowActions}>
-                          <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button>
+                          <button
+                            type="button"
+                            className={`${styles.button} ${styles.buttonSecondary}`}
+                            onClick={() => navigate(`/workspace/${courseId}/sources/${doc.job_id || doc.document_id}/view?tab=ai`)}
+                          >
+                            View
+                          </button>
                           <button
                             type="button"
                             className={`${styles.button} ${styles.buttonSecondary}`}
@@ -935,51 +844,6 @@ export default function SourceLibraryPage() {
                 </tbody>
               </table>
             </div>
-            {selected && (
-              <div className={styles.detail}>
-                <div className={styles.detailHeader}>
-                  <h3>{selected.title || selected.source_file_name}</h3>
-                  <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => { setSelected(null); setStructure(null); setOverview(null); setPages(null); setUnits(null); setSelectedUnit(null); }}>Close</button>
-                </div>
-                {structure?.error ? (
-                  <div className={styles.errorBox}>{structure.error}</div>
-                ) : (
-                  <>
-                    {units?.units?.length > 0 && (
-                      <div className={styles.sectionsBox}>
-                        <div className={styles.sectionNavHeader}>
-                          <h4>Sections</h4>
-                          <select
-                            className={styles.select}
-                            value={String(sectionIndex)}
-                            onChange={(e) => loadSectionByIndex(Number(e.target.value || 0))}
-                          >
-                            {units.units.map((u, idx) => (
-                              <option key={u.unit_id || idx} value={String(idx)}>{`Section ${idx + 1}`}</option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    )}
-
-                    {sectionLoading ? (
-                      <div className={styles.unitDetail}>
-                        <h4>Loading section…</h4>
-                        <textarea className={styles.previewText} readOnly value="" />
-                      </div>
-                    ) : selectedUnit ? (
-                      <div className={styles.unitDetail}>
-                        <h4>{`Section ${sectionIndex + 1}`}</h4>
-                        <textarea className={styles.previewText} readOnly value={selectedUnit.text || ''} />
-                      </div>
-                    ) : (
-                      <textarea className={styles.previewText} readOnly value={(overview?.preview || structure?.preview || '').slice(0, 30000)} />
-                    )}
-
-                  </>
-                )}
-              </div>
-            )}
           </div>
         </section>
       </div>

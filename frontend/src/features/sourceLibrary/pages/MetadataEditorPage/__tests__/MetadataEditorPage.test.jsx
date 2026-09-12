@@ -9,6 +9,10 @@ const getMetadata = vi.fn();
 const patchMetadata = vi.fn();
 const revertMetadata = vi.fn();
 const listDocuments = vi.fn();
+const getOverview = vi.fn();
+const getUnits = vi.fn();
+const getUnitDetail = vi.fn();
+const retagContent = vi.fn();
 
 vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
   default: {
@@ -16,6 +20,10 @@ vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
     patchMetadata: (...a) => patchMetadata(...a),
     revertMetadata: (...a) => revertMetadata(...a),
     listDocuments: (...a) => listDocuments(...a),
+    getOverview: (...a) => getOverview(...a),
+    getUnits: (...a) => getUnits(...a),
+    getUnitDetail: (...a) => getUnitDetail(...a),
+    retagContent: (...a) => retagContent(...a),
   },
 }));
 
@@ -68,7 +76,7 @@ const SAMPLE = {
   limits: { keywords_max: 12 },
 };
 
-function renderPage(tab = 'ai') {
+function renderPage(tab = 'ai', { view = false } = {}) {
   const store = configureStore({
     reducer: { auth: authReducer, dashboard: dashboardReducer },
     preloadedState: {
@@ -76,10 +84,14 @@ function renderPage(tab = 'ai') {
       dashboard: { selectedProject: { id: 1 }, selectedCourse: { id: 10, name: 'Course' } },
     },
   });
+  const path = view
+    ? `/workspace/10/sources/job-1/view?tab=${tab}`
+    : `/workspace/10/sources/job-1/metadata?tab=${tab}`;
   return render(
     <Provider store={store}>
-      <MemoryRouter initialEntries={[`/workspace/10/sources/job-1/metadata?tab=${tab}`]}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
+          <Route path="/workspace/:courseId/sources/:jobId/view" element={<MetadataEditorPage />} />
           <Route path="/workspace/:courseId/sources/:jobId/metadata" element={<MetadataEditorPage />} />
         </Routes>
       </MemoryRouter>
@@ -93,6 +105,14 @@ describe('MetadataEditorPage', () => {
     patchMetadata.mockImplementation(async (_id, body) => ({ ...SAMPLE, ...body }));
     revertMetadata.mockResolvedValue(SAMPLE);
     listDocuments.mockResolvedValue({ documents: [] });
+    getOverview.mockResolvedValue({ preview: 'doc preview', tagging_failed_count: 0 });
+    getUnits.mockResolvedValue({
+      units: [{ unit_id: 'u1', page_number: '1-1', tagging_status: 'ok' }],
+    });
+    getUnitDetail.mockResolvedValue({
+      unit: { unit_id: 'u1', text: 'Page one raw content', metadata: { page_number: '1-1' } },
+    });
+    retagContent.mockResolvedValue({ retagged: 0, tagging_failed_count: 0 });
   });
 
   afterEach(() => {
@@ -105,6 +125,7 @@ describe('MetadataEditorPage', () => {
     expect(await screen.findByRole('button', { name: 'AI Metadata' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Taxonomy & Standards' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Relationships' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Content' })).toBeNull();
   });
 
   it('renders AI Metadata fields', async () => {
@@ -146,5 +167,24 @@ describe('MetadataEditorPage', () => {
     renderPage('ai');
     fireEvent.click(await screen.findByRole('button', { name: 'Revert to AI values' }));
     await waitFor(() => expect(revertMetadata).toHaveBeenCalledWith('job-1', expect.any(Object)));
+  });
+
+  it('view mode shows Content tab and read-only fields without save footer', async () => {
+    renderPage('ai', { view: true });
+    expect(await screen.findByRole('heading', { name: 'View document' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Content' })).toBeTruthy();
+    const title = screen.getByDisplayValue('Marketing Handbook 2024');
+    expect(title.readOnly).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Save metadata' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Revert to AI values' })).toBeNull();
+    expect(screen.queryByText(/Unsaved changes/)).toBeNull();
+  });
+
+  it('view Content tab loads sections and raw text', async () => {
+    renderPage('content', { view: true });
+    expect(await screen.findByText('Sections')).toBeTruthy();
+    await waitFor(() => expect(getOverview).toHaveBeenCalled());
+    expect(getUnits).toHaveBeenCalled();
+    expect(await screen.findByDisplayValue('Page one raw content')).toBeTruthy();
   });
 });
