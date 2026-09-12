@@ -100,7 +100,8 @@ def _page_excerpt(text: str, limit: int = _MAX_PAGE_CHARS) -> str:
 def _build_batch_prompt(batch: Sequence[Dict[str, Any]]) -> str:
     parts = [
         "Tag each handbook page for aviation maintenance training retrieval.",
-        "Return JSON only: an array of objects, one per page, with keys:",
+        "Return JSON only: a top-level ARRAY of objects (not an object wrapper),",
+        "one object per page, with keys:",
         '  pdf_page (int), topics (3-8 short phrases), acs_codes (list of AM.* codes),',
         "  summary (at most two sentences).",
         "Rules:",
@@ -108,6 +109,7 @@ def _build_batch_prompt(batch: Sequence[Dict[str, Any]]) -> str:
         "- ACS codes MUST match AM.<roman>.<letter>.<K|R|S><digits> (e.g. AM.I.D.K1).",
         "- If unsure about an ACS code, omit it.",
         "- topics must be short noun phrases, not full sentences.",
+        "- Do NOT wrap the array in {\"pages\": ...} or any other object.",
         "",
         "Pages:",
     ]
@@ -136,6 +138,57 @@ def _apply_tag(unit: Dict[str, Any], tag: Dict[str, Any]) -> None:
         meta["topics"] = topics[:8]
     unit["metadata"] = meta
     _stamp_status(unit, TAGGING_OK)
+
+
+#: Wrapper keys models often put around the page-tag array. First hit wins.
+_TAG_LIST_KEYS = (
+    "pages", "results", "items", "data", "tags", "response",
+    "page_tags", "annotations",
+)
+
+
+def _normalize_tag_response(parsed: Any) -> List[Dict[str, Any]]:
+    """Coerce LLM JSON into a list of per-page tag dicts.
+
+    Models frequently return an object instead of a bare array, e.g.
+    ``{"pages": [...]}``, ``{"results": [...]}``, or ``{"1": {...}, "2": {...}}``.
+    Only ``pages`` was accepted before, which produced noisy
+    ``expected JSON array, got dict`` failures on otherwise usable payloads.
+    """
+    if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)]
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"expected JSON array, got {type(parsed).__name__}")
+
+    for key in _TAG_LIST_KEYS:
+        inner = parsed.get(key)
+        if isinstance(inner, list):
+            return [x for x in inner if isinstance(x, dict)]
+
+    # Single page object: {"pdf_page": 3, "topics": [...], ...}
+    if "pdf_page" in parsed or "topics" in parsed or "acs_codes" in parsed:
+        return [parsed]
+
+    # Map keyed by pdf_page / page number: {"1": {...}, "2": {...}} or
+    # {"page_1": {...}}. Promote the key into pdf_page when missing.
+    out: List[Dict[str, Any]] = []
+    for key, val in parsed.items():
+        if not isinstance(val, dict):
+            continue
+        item = dict(val)
+        if item.get("pdf_page") is None:
+            raw = str(key).strip()
+            digits = re.sub(r"\D+", "", raw) or raw
+            try:
+                item["pdf_page"] = int(digits)
+            except (TypeError, ValueError):
+                continue
+        out.append(item)
+    if out:
+        return out
+
+    raise ValueError(f"expected JSON array, got dict keys={sorted(parsed)[:8]}")
 
 
 def tag_ebook_page_units(
@@ -175,16 +228,10 @@ def tag_ebook_page_units(
                     tokens_in + tokens_out, "ebook_page_tagging",
                     tokens_in=tokens_in, tokens_out=tokens_out, model=model_id,
                 )
-            parsed = safe_json(resp)
-            if isinstance(parsed, dict) and "pages" in parsed:
-                parsed = parsed["pages"]
-            if not isinstance(parsed, list):
-                raise ValueError(f"expected JSON array, got {type(parsed).__name__}")
+            parsed = _normalize_tag_response(safe_json(resp))
 
             by_page: Dict[int, Dict[str, Any]] = {}
             for item in parsed:
-                if not isinstance(item, dict):
-                    continue
                 try:
                     p = int(item.get("pdf_page"))
                 except (TypeError, ValueError):

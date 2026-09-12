@@ -7,9 +7,11 @@ chapter tags. Assigned reading and retrieval need those tags. The raw PDFs are
 already in S3 — this script downloads them and replaces units without a full
 re-upload / re-classification.
 
-SKIP RULE. A job is skipped when a majority of its existing units already carry
-``metadata_json.chunking_strategy = 'page'`` OR a ``page_number`` (unless
-``--force``).
+SKIP RULE. A job is skipped when it already looks like a finished page-chunked
+ebook: at least ``_MIN_PAGE_UNITS_FOR_SKIP`` content units AND a majority of
+those units carry ``chunking_strategy = 'page'`` or a ``page_number`` (unless
+``--force``). A single unit with a ``page_number`` like ``1-24`` is NOT skipped
+— that is the broken handbook shape this script exists to repair.
 
     python scripts/rechunk_ebook_references.py                    # plan only
     python scripts/rechunk_ebook_references.py --limit 1          # prove one
@@ -44,15 +46,20 @@ def _meta(v: Any) -> Dict[str, Any]:
     return dict(v or {})
 
 
+#: Incomplete / preview rows (e.g. one unit with page_number ``1-24``) must not
+#: count as finished page-chunked ebooks — otherwise rechunk skips the repair.
+_MIN_PAGE_UNITS_FOR_SKIP = 10
+
+
 def _already_page_tagged(cur, job_id: str) -> bool:
-    """True when a majority of units already carry page tags / page strategy."""
+    """True when enough units already look page-chunked (majority + min count)."""
     cur.execute("""
         SELECT metadata_json
           FROM dis.dis_content_units
          WHERE job_id = %s
     """, (job_id,))
     rows = cur.fetchall()
-    if not rows:
+    if len(rows) < _MIN_PAGE_UNITS_FOR_SKIP:
         return False
     tagged = 0
     for r in rows:
