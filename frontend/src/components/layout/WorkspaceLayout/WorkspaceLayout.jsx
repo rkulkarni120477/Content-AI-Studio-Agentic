@@ -8,6 +8,7 @@ import {
 } from '@features/dashboard/dashboardSlice';
 import { fetchWorkspaceConfigThunk } from '@features/dashboard/dashboardThunks';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
+import { resetWorkspaceContent } from '@app/resetWorkspaceContent';
 import WorkspaceSidebar from '../WorkspaceSidebar/WorkspaceSidebar';
 import styles from './WorkspaceLayout.module.scss';
 
@@ -16,6 +17,16 @@ export default function WorkspaceLayout() {
   const dispatch = useAppDispatch();
   const selCourse = useAppSelector(selectSelectedCourse);
   const cid = Number(courseId);
+
+  // Isolate content per title: whenever the active course changes, drop any
+  // transient content held in Redux from the previously open title. Runs only on
+  // course change (not same-course tab switches), and clears synchronously while
+  // each page's own mount fetches resolve later — so it never clobbers the new
+  // title's incoming data.
+  useEffect(() => {
+    if (!cid || Number.isNaN(cid)) return;
+    dispatch(resetWorkspaceContent());
+  }, [cid, dispatch]);
 
   useEffect(() => {
     if (!cid) return;
