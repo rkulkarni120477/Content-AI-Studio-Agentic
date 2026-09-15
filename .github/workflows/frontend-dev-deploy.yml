@@ -81,7 +81,7 @@ jobs:
       - name: Build Frontend
         env:
           VITE_API_BASE_URL: ${{ secrets.DEV_VITE_API_BASE_URL }}
-          VITE_API_TIMEOUT_MS: 600000
+          VITE_API_TIMEOUT_MS: 6000000
         run: npm run build
 
       - name: Configure AWS Credentials (OIDC)
