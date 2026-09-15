@@ -12,6 +12,7 @@ const listDocuments = vi.fn();
 const getOverview = vi.fn();
 const getUnits = vi.fn();
 const getUnitDetail = vi.fn();
+const patchUnitMetadata = vi.fn();
 const retagContent = vi.fn();
 
 vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
@@ -23,6 +24,7 @@ vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
     getOverview: (...a) => getOverview(...a),
     getUnits: (...a) => getUnits(...a),
     getUnitDetail: (...a) => getUnitDetail(...a),
+    patchUnitMetadata: (...a) => patchUnitMetadata(...a),
     retagContent: (...a) => retagContent(...a),
   },
 }));
@@ -76,7 +78,7 @@ const SAMPLE = {
   limits: { keywords_max: 12 },
 };
 
-function renderPage(tab = 'ai', { view = false } = {}) {
+function renderPage(tab = 'ai', { view = false, section = 'document' } = {}) {
   const store = configureStore({
     reducer: { auth: authReducer, dashboard: dashboardReducer },
     preloadedState: {
@@ -85,8 +87,8 @@ function renderPage(tab = 'ai', { view = false } = {}) {
     },
   });
   const path = view
-    ? `/workspace/10/sources/job-1/view?tab=${tab}`
-    : `/workspace/10/sources/job-1/metadata?tab=${tab}`;
+    ? `/workspace/10/sources/job-1/view?tab=${tab}&section=${section}`
+    : `/workspace/10/sources/job-1/metadata?tab=${tab}&section=${section}`;
   return render(
     <Provider store={store}>
       <MemoryRouter initialEntries={[path]}>
@@ -107,10 +109,43 @@ describe('MetadataEditorPage', () => {
     listDocuments.mockResolvedValue({ documents: [] });
     getOverview.mockResolvedValue({ preview: 'doc preview', tagging_failed_count: 0 });
     getUnits.mockResolvedValue({
-      units: [{ unit_id: 'u1', page_number: '1-1', tagging_status: 'ok' }],
+      units: [{
+        unit_id: 'u1',
+        page_number: '1-1',
+        tagging_status: 'ok',
+        title: 'Landing gear',
+        topics: ['oleo strut'],
+        acs_codes: ['AM.I.D.K1'],
+        summary: 'Oleo strut basics.',
+      }],
     });
     getUnitDetail.mockResolvedValue({
-      unit: { unit_id: 'u1', text: 'Page one raw content', metadata: { page_number: '1-1' } },
+      unit: {
+        unit_id: 'u1',
+        title: 'Landing gear',
+        text: 'Page one raw content',
+        topics: ['oleo strut'],
+        metadata: {
+          page_number: '1-1',
+          summary: 'Oleo strut basics.',
+          acs_codes: ['AM.I.D.K1'],
+          topics: ['oleo strut'],
+        },
+      },
+    });
+    patchUnitMetadata.mockResolvedValue({
+      unit: {
+        unit_id: 'u1',
+        title: 'Landing gear updated',
+        text: 'Page one raw content',
+        topics: ['oleo strut', 'brakes'],
+        metadata: {
+          page_number: '1-1',
+          summary: 'Updated summary',
+          acs_codes: ['AM.I.D.K1'],
+          topics: ['oleo strut', 'brakes'],
+        },
+      },
     });
     retagContent.mockResolvedValue({ retagged: 0, tagging_failed_count: 0 });
   });
@@ -180,21 +215,72 @@ describe('MetadataEditorPage', () => {
     expect(screen.queryByText(/Unsaved changes/)).toBeNull();
   });
 
+  it('shows left Sections dropdown on view and edit', async () => {
+    renderPage('ai', { view: true });
+    expect(await screen.findByLabelText('Sections')).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Whole document' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /p\. 1-1/ })).toBeTruthy();
+
+    cleanup();
+    renderPage('ai', { view: false });
+    expect(await screen.findByLabelText('Sections')).toBeTruthy();
+  });
+
+  it('selecting a section shows section tags instead of document fields', async () => {
+    renderPage('ai', { view: true, section: 'u1' });
+    expect(await screen.findByDisplayValue('Landing gear')).toBeTruthy();
+    expect(screen.getByDisplayValue('Oleo strut basics.')).toBeTruthy();
+    expect(screen.getByText('oleo strut')).toBeTruthy();
+    expect(screen.queryByDisplayValue('Cengage Marketing Team')).toBeNull();
+    expect(screen.getByText(/Section tags from page content tagging/)).toBeTruthy();
+  });
+
+  it('section taxonomy tab shows ACS codes only', async () => {
+    renderPage('taxonomy', { view: true, section: 'u1' });
+    expect(await screen.findByText('AM.I.D.K1')).toBeTruthy();
+    expect(screen.queryByDisplayValue('Business & Management')).toBeNull();
+    expect(screen.getByText(/ACS codes tagged for this section/)).toBeTruthy();
+  });
+
+  it('section relationships tab shows document-level empty state', async () => {
+    renderPage('relationships', { view: true, section: 'u1' });
+    expect(await screen.findByText(/Relationships are document-level/)).toBeTruthy();
+  });
+
+  it('view Content tab has no Sections select and shows unit text for a section', async () => {
+    renderPage('content', { view: true, section: 'u1' });
+    expect(await screen.findByDisplayValue('Page one raw content')).toBeTruthy();
+    // One Sections control lives on the left; Content tab itself has none.
+    expect(screen.getAllByLabelText('Sections')).toHaveLength(1);
+    expect(screen.queryByText('Background processing is still running')).toBeNull();
+  });
+
   it('view Content tab shows a processing banner while ingest is still running', async () => {
     getOverview.mockResolvedValue({
       preview: 'doc preview',
       status: 'processing',
       tagging_failed_count: 0,
     });
-    renderPage('content', { view: true });
+    renderPage('content', { view: true, section: 'u1' });
     expect(await screen.findByText(/Background processing is still running/)).toBeTruthy();
   });
 
-  it('view Content tab loads sections and raw text', async () => {
-    renderPage('content', { view: true });
-    expect(await screen.findByText('Sections')).toBeTruthy();
-    await waitFor(() => expect(getOverview).toHaveBeenCalled());
-    expect(getUnits).toHaveBeenCalled();
-    expect(await screen.findByDisplayValue('Page one raw content')).toBeTruthy();
+  it('edit mode saves section metadata via patchUnitMetadata', async () => {
+    renderPage('ai', { view: false, section: 'u1' });
+    const title = await screen.findByDisplayValue('Landing gear');
+    fireEvent.change(title, { target: { value: 'Landing gear updated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save metadata' }));
+    await waitFor(() => expect(patchUnitMetadata).toHaveBeenCalledWith(
+      'job-1',
+      'u1',
+      expect.objectContaining({
+        title: 'Landing gear updated',
+        summary: 'Oleo strut basics.',
+        topics: ['oleo strut'],
+        acs_codes: ['AM.I.D.K1'],
+      }),
+      expect.any(Object),
+    ));
+    expect(patchMetadata).not.toHaveBeenCalled();
   });
 });

@@ -737,6 +737,42 @@ async def source_content_unit_detail(job_id: str, unit_id: str, request: Request
         raise HTTPException(404, f"Source unit not found: {exc}")
 
 
+class UnitMetadataPatchBody(BaseModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    topics: Optional[List[str]] = None
+    acs_codes: Optional[List[str]] = None
+
+
+@router.patch("/sources/{job_id}/content/units/{unit_id}")
+async def source_content_unit_patch(job_id: str, unit_id: str, body: UnitMetadataPatchBody, request: Request):
+    """Manually edit per-section tags (title, summary, topics, ACS codes)."""
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    from services.ebook_page_retag import UnitMetadataPatchError, patch_unit_metadata
+    try:
+        return await anyio.to_thread.run_sync(
+            functools.partial(
+                patch_unit_metadata,
+                tenant,
+                client_id,
+                job_id,
+                unit_id,
+                title=body.title,
+                summary=body.summary,
+                topics=body.topics,
+                acs_codes=body.acs_codes,
+            )
+        )
+    except UnitMetadataPatchError as exc:
+        raise HTTPException(exc.status_code, exc.message) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        log.exception("unit metadata patch failed job_id=%s unit_id=%s", job_id, unit_id)
+        raise HTTPException(500, f"Unit metadata patch failed: {exc}") from exc
+
+
 class RetagBody(BaseModel):
     unit_ids: List[str] = Field(default_factory=list)
     all_failed: bool = False

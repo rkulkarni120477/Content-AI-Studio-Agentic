@@ -549,6 +549,28 @@ async def get_source_unit_detail(
     return await dis_client.source_unit_detail(job_id=job_id, unit_id=unit_id, current_user=current_user, client_id=resolved_client)
 
 
+@router.patch("/documents/{job_id}/content/units/{unit_id}")
+async def patch_source_unit_metadata(
+    job_id: str,
+    unit_id: str,
+    body: Dict[str, Any] = Body(default_factory=dict),
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Manually edit per-section tags (title, summary, topics, ACS codes)."""
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.patch_source_unit_metadata(
+        job_id=job_id,
+        unit_id=unit_id,
+        payload=body or {},
+        current_user=current_user,
+        client_id=resolved_client,
+    )
+
+
 @router.post("/documents/{job_id}/content/retag")
 async def retag_source_content(
     job_id: str,

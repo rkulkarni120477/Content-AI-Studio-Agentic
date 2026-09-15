@@ -657,6 +657,13 @@ def _view_units_for_content(content_doc: Dict[str, Any]) -> List[Dict[str, Any]]
     for i, u in enumerate(units, start=1):
         text = str(u.get("text") or "")
         meta = u.get("metadata") or {}
+        topics = u.get("topics") or meta.get("topics") or []
+        if not isinstance(topics, list):
+            topics = []
+        acs = meta.get("acs_codes") or []
+        if not isinstance(acs, list):
+            acs = []
+        summary = str(meta.get("summary") or "").strip()
         item = {
             "unit_id": str(u.get("content_unit_id") or f"unit_{i}"),
             "unit_number": int(u.get("unit_number") or i),
@@ -664,6 +671,9 @@ def _view_units_for_content(content_doc: Dict[str, Any]) -> List[Dict[str, Any]]
             "title": u.get("title") or f"Section {i}",
             "preview": text[:800],
             "char_count": len(text),
+            "topics": [str(t).strip() for t in topics if str(t).strip()][:8],
+            "acs_codes": [str(c).strip() for c in acs if str(c).strip()],
+            "summary": summary[:600],
         }
         # Surface ebook page tagging flags so Source Library can badge / retry.
         if meta.get("tagging_status"):

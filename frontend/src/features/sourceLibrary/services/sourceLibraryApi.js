@@ -10,6 +10,7 @@ export const sourceLibraryApi = {
   getPages: (jobId, params = {}) => api.get(SOURCE_LIBRARY.PAGES(jobId), { params }),
   getUnits: (jobId, params = {}) => api.get(SOURCE_LIBRARY.UNITS(jobId), { params }),
   getUnitDetail: (jobId, unitId, params = {}) => api.get(SOURCE_LIBRARY.UNIT_DETAIL(jobId, unitId), { params }),
+  patchUnitMetadata: (jobId, unitId, payload, params = {}) => api.patch(SOURCE_LIBRARY.UNIT_DETAIL(jobId, unitId), payload, { params }),
   retagContent: (jobId, payload = {}, params = {}) => api.post(SOURCE_LIBRARY.RETAG(jobId), payload, { params }),
   searchSource: (jobId, params = {}) => api.get(SOURCE_LIBRARY.SEARCH(jobId), { params }),
   deleteDocument: (jobId, params = {}) => api.delete(SOURCE_LIBRARY.DELETE_DOCUMENT(jobId), { params }),
