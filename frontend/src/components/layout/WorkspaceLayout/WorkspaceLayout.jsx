@@ -10,6 +10,7 @@ import { fetchWorkspaceConfigThunk } from '@features/dashboard/dashboardThunks';
 import { dashboardService } from '@features/dashboard/services/dashboardService';
 import { resetWorkspaceContent } from '@app/resetWorkspaceContent';
 import WorkspaceSidebar from '../WorkspaceSidebar/WorkspaceSidebar';
+import JobTracker from '@features/jobs/JobTracker';
 import styles from './WorkspaceLayout.module.scss';
 
 export default function WorkspaceLayout() {
@@ -62,6 +63,7 @@ export default function WorkspaceLayout() {
 
   return (
     <div className={styles.layout}>
+      <JobTracker courseId={cid} />
       <WorkspaceSidebar />
       <div className={styles.main}>
         <Outlet />

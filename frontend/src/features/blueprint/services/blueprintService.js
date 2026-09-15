@@ -76,20 +76,8 @@ export const blueprintService = {
       user_prompt_override: data.user_prompt_override || undefined,
       prompt_id: data.prompt_id ?? undefined,
     };
-    // The backend runs this pipeline (DIS retrieval + LLM call + parsing + save)
-    // synchronously inside the request/response cycle -- no job_id, no polling.
-    // A large-output model or the backend's own retry/fallback cascade (each
-    // attempt bounded by PROMPTOPS_API_TIMEOUT_SECONDS=120) can run past the
-    // app-wide 120s axios default, which aborts client-side with no response.
-    // The backend keeps running and saves the Blueprint anyway -- the user just
-    // sees a false "Something went wrong" until they refresh. Bounded generous
-    // timeout instead of the default, matching the backend's own Bedrock
-    // read_timeout (llm_client.py: Config(read_timeout=600)).
-    const created = await api.post(BLUEPRINT.GENERATE, body, { timeout: 600_000 });
-    if (created?.blueprint_id) {
-      return api.get(BLUEPRINT.GET(created.blueprint_id));
-    }
-    return created;
+    // Async (202 JobAccepted). Returns immediately with { job_id, status, status_url }.
+    return api.post(BLUEPRINT.GENERATE, body);
   },
 
   /**

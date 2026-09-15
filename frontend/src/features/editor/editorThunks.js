@@ -2,6 +2,8 @@ import { createAsyncThunk } from '@reduxjs/toolkit';
 import { editorService } from './services/editorService';
 import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { downloadBlob } from '@utils/helpers';
+import { trackAndPollJob, waitForJobTerminal } from '@features/jobs/jobsThunks';
+import { selectJobsById } from '@features/jobs/jobsSlice';
 import toast from 'react-hot-toast';
 
 export const fetchGenerationsThunk = createAsyncThunk(
@@ -103,16 +105,51 @@ export const autosaveBlockThunk = createAsyncThunk(
 
 export const regenerateBlockThunk = createAsyncThunk(
   'editor/regenerateBlock',
-  async ({ blockId, instruction, modelChoice }, { rejectWithValue }) => {
+  async ({ blockId, instruction, modelChoice }, { dispatch, getState, rejectWithValue }) => {
     try {
-      const result = await editorService.regenerateBlock(blockId, {
+      const accepted = await editorService.regenerateBlock(blockId, {
         feedback_instruction: instruction,
         model_choice: modelChoice,
       });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      const message = usageMsg ? `Block regenerated. ${usageMsg}` : 'Block regenerated.';
-      if (hasOverBudget(result.usage_summary)) toast.error(message); else toast.success(message);
-      return result;
+
+      // Backwards-safe: sync response still has content and no job_id.
+      if (accepted?.content != null && !accepted?.job_id) {
+        const usageMsg = formatUsageSummaryMessage(accepted.usage_summary);
+        const message = usageMsg ? `Block regenerated. ${usageMsg}` : 'Block regenerated.';
+        if (hasOverBudget(accepted.usage_summary)) toast.error(message); else toast.success(message);
+        return accepted;
+      }
+
+      const jobId = accepted?.job_id;
+      if (!jobId) {
+        return rejectWithValue('Regeneration did not return a job id.');
+      }
+
+      const courseId = getState()?.dashboard?.selectedCourse?.id ?? null;
+      trackAndPollJob(dispatch, {
+        job_id: jobId,
+        jobId,
+        job_type: 'regenerate_block',
+        jobType: 'regenerate_block',
+        course_id: courseId,
+        courseId,
+        status: accepted.status || 'queued',
+      });
+
+      const status = await waitForJobTerminal(
+        (id) => editorService.getJobStatus(id),
+        jobId,
+      );
+      if (status.status === 'failed' || status.status === 'cancelled') {
+        return rejectWithValue(status.error_message || 'Block regeneration failed.');
+      }
+      const result = status.result || {};
+      // JobTracker owns the success toast.
+      return {
+        block_id: result.block_id ?? blockId,
+        content: result.content,
+        usage_summary: status.usage_summary ?? result.usage_summary,
+      };
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
     }
@@ -254,7 +291,7 @@ const REGEN_ITEM_MAX_POLLS = 150; // ~5 min at 2s — generous ceiling for a sin
 
 export const regenerateBlockItemThunk = createAsyncThunk(
   'editor/regenerateBlockItem',
-  async ({ blockId, itemIndex, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
+  async ({ blockId, itemIndex, sectionKey, feedback, modelChoice }, { dispatch, getState, rejectWithValue }) => {
     try {
       // Item regeneration is now a background job (P4.5/F18): submit, poll the
       // shared /jobs/{id} endpoint to a terminal state, then refetch the block.
@@ -278,15 +315,34 @@ export const regenerateBlockItemThunk = createAsyncThunk(
         return rejectWithValue('Regeneration did not return a job id.');
       }
 
+      const courseId = getState()?.dashboard?.selectedCourse?.id ?? null;
+      trackAndPollJob(dispatch, {
+        job_id: jobId,
+        jobId,
+        job_type: 'regenerate_item',
+        jobType: 'regenerate_item',
+        course_id: courseId,
+        courseId,
+        status: accepted.status || 'queued',
+      });
+
       for (let i = 0; i < REGEN_ITEM_MAX_POLLS; i += 1) {
         const status = await editorService.getJobStatus(jobId);
         if (status.status === 'completed') {
           const block = await editorService.getBlock(blockId);
-          const usageMsg = formatUsageSummaryMessage(status.usage_summary);
-          const message = usageMsg ? `Item regenerated. ${usageMsg}` : 'Item regenerated.';
-          if (hasOverBudget(status.usage_summary)) toast.error(message); else toast.success(message);
+          // JobTracker owns the success toast when the job is tracked.
+          const tracked = Boolean(selectJobsById(getState())[String(jobId)]);
+          if (!tracked) {
+            const usageMsg = formatUsageSummaryMessage(status.usage_summary);
+            const message = usageMsg ? `Item regenerated. ${usageMsg}` : 'Item regenerated.';
+            if (hasOverBudget(status.usage_summary)) toast.error(message); else toast.success(message);
+          }
           // Return the shape the slice/component already consume.
-          return { block_id: blockId, updated_content: block.content, patched_item: '' };
+          return {
+            block_id: blockId,
+            updated_content: status.result?.updated_content ?? block.content,
+            patched_item: status.result?.patched_item ?? '',
+          };
         }
         if (status.status === 'failed' || status.status === 'cancelled') {
           return rejectWithValue(status.error_message || 'Item regeneration failed.');

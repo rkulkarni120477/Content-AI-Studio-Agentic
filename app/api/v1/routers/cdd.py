@@ -79,7 +79,7 @@ from app.schemas.cdd import (
     CDDVersionListItem,
     CDDVersionRead,
 )
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.schemas.block_wide import BlockWideGenerateRequest, BlockWideJobResponse
 from app.api.v1.cdd_response import build_cdd_read
 from app.core.dis_client import dis_client
@@ -370,18 +370,15 @@ def list_cdds(
 
 @router.post(
     "/generate",
-    response_model=CDDGenerateResponse,
-    status_code=201,
-    summary="Generate a new CDD with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Generate a new CDD with AI (async)",
     description=(
-        "Runs the full CDD generation pipeline: builds the prompt from the "
-        "active style and course metadata, calls the LLM, parses the output "
-        "into sections, saves the CDD and version to the database, and "
-        "automatically pins the new CDD to the specified course."
+        "Enqueues the CDD generation pipeline as a background job. Poll "
+        "GET /api/v1/jobs/{job_id}; on completion ``generation_id`` is the new CDD id."
     ),
     responses={
-        201: {"description": "CDD created and pinned successfully."},
-        502: {"description": "All LLM attempts failed (primary + retry + fallback)."},
+        202: {"description": "Job queued."},
         403: {"description": "User does not have the cdd.generate permission."},
     },
 )
@@ -389,20 +386,47 @@ def generate_cdd(
     request_body: CDDGenerateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.generate")),
+) -> JobAcceptedResponse:
+    """Queue CDD generation; work runs in design_jobs.run_cdd_generate_job."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    params = request_body.model_dump()
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=request_body.project_id,
+        course_id=request_body.course_id,
+        job_type="cdd",
+    )
+    dispatch.submit(design_jobs.run_cdd_generate_job, job_id)
+    _log.info(
+        "cdd_generate_queued  user=%s  course=%d  job=%s",
+        current_user.username, request_body.course_id, job_id,
+    )
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_cdd_generate(
+    db: Session,
+    request_body: CDDGenerateRequest,
+    current_user,
 ) -> CDDGenerateResponse:
     """
-    Generate a Course Design Document using AI.
+    Run the CDD generation pipeline (called from the background worker).
 
-    This endpoint mirrors the "🤖 Generate CDD with AI" button in the Streamlit app.
     The full pipeline is:
       1. Build the prompt (active style + course metadata + extra instructions)
       2. Call the LLM via llm_service.generate_text() (primary → retry → fallback)
       3. Parse the output into sections using cdd_parser.parse_sections_from_text()
       4. Persist the CDD and version v1 to the database
       5. Auto-pin the new CDD to the course via course_repository.set_active_cdd()
-
-    All steps are identical to the Streamlit implementation — only the delivery
-    mechanism (HTTP response vs st.rerun) has changed.
     """
     from promptops_app.database import (
         CDDVersion, CourseDesignDocument, build_style_context,
@@ -1468,8 +1492,9 @@ def create_cdd_version(
 
 @router.post(
     "/{cdd_id}/regenerate-item",
-    response_model=CDDRegenerateItemResponse,
-    summary="Regenerate a single item within a CDD section",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate a single item within a CDD section (async)",
     responses={
         404: {"description": "CDD or item not found."},
         403: {"description": "Requires cdd.version permission."},
@@ -1480,6 +1505,36 @@ def regenerate_cdd_item(
     request_body: CDDRegenerateItemRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
+) -> JobAcceptedResponse:
+    """Queue CDD item regeneration; result lands in job.result_json."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
+    params = request_body.model_dump()
+    params["cdd_id"] = cdd_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=getattr(cdd, "project_id", None),
+        course_id=getattr(cdd, "course_id", None),
+        job_type="cdd_regen_item",
+    )
+    dispatch.submit(design_jobs.run_cdd_regen_item_job, job_id)
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_cdd_regen_item(
+    db: Session,
+    cdd_id: int,
+    request_body: CDDRegenerateItemRequest,
+    current_user,
 ) -> CDDRegenerateItemResponse:
     """
     Regenerate one bullet/line/paragraph inside a CDD section, preserving all
@@ -1955,8 +2010,9 @@ def repair_cdd_digests(
 
 @router.post(
     "/{cdd_id}/regenerate-section",
-    response_model=CDDRegenerateSectionResponse,
-    summary="Regenerate an entire CDD section with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate an entire CDD section with AI (async)",
     responses={
         404: {"description": "CDD not found."},
         403: {"description": "Requires cdd.version permission."},
@@ -1967,6 +2023,36 @@ def regenerate_cdd_section(
     request_body: CDDRegenerateSectionRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
+) -> JobAcceptedResponse:
+    """Queue CDD section regeneration; result lands in job.result_json."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
+    params = request_body.model_dump()
+    params["cdd_id"] = cdd_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=getattr(cdd, "project_id", None),
+        course_id=getattr(cdd, "course_id", None),
+        job_type="cdd_regen_section",
+    )
+    dispatch.submit(design_jobs.run_cdd_regen_section_job, job_id)
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_cdd_regen_section(
+    db: Session,
+    cdd_id: int,
+    request_body: CDDRegenerateSectionRequest,
+    current_user,
 ) -> CDDRegenerateSectionResponse:
     """
     Regenerate a whole CDD section using the section-regeneration prompt.

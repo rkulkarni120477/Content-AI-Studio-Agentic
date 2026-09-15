@@ -2,6 +2,7 @@ import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES } from '@utils/constants';
 import { cn } from '@utils/helpers';
 import HeaderUser from './HeaderUser';
+import JobBell from '@features/jobs/JobBell';
 import styles from './IdentityBar.module.scss';
 
 const ROLE_COLORS = {
@@ -28,7 +29,10 @@ export default function IdentityBar({ username, roleLabel, roleColor, className 
 
   return (
     <div className={cn(styles.identityBar, className)}>
-      <HeaderUser username={name} roleLabel={label} roleColor={color} />
+      <div className={styles.identityBar__actions}>
+        <JobBell />
+        <HeaderUser username={name} roleLabel={label} roleColor={color} />
+      </div>
     </div>
   );
 }
