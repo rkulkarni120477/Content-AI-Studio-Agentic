@@ -1,6 +1,11 @@
 import PropTypes from 'prop-types';
 import styles from '../../pages/MetadataEditorPage/MetadataEditorPage.module.scss';
 
+function isRetagLive(progress) {
+  const state = String(progress?.state || '').toLowerCase();
+  return state === 'starting' || state === 'running';
+}
+
 export default function DocumentContentPanel({
   overview = null,
   units = null,
@@ -9,6 +14,7 @@ export default function DocumentContentPanel({
   sectionLoading = false,
   structureError = '',
   retagging = false,
+  retagProgress = null,
   retagMessage = '',
   onRetag,
   isDocumentScope = false,
@@ -39,6 +45,15 @@ export default function DocumentContentPanel({
   const needsRetry = failedCount + pendingCount;
   const ingestStatus = String(overview?.status || '').toLowerCase();
   const isProcessing = ingestStatus === 'processing' || ingestStatus === 'pending';
+  const live = isRetagLive(retagProgress) || retagging;
+  const total = Number(retagProgress?.total || 0);
+  const done = Number(retagProgress?.done || 0);
+  const remaining = Number(
+    retagProgress?.remaining != null
+      ? retagProgress.remaining
+      : Math.max(0, total - done),
+  );
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   const unitStatus = String(
     selectedUnit?.metadata?.tagging_status
     || units?.units?.[sectionIndex]?.tagging_status
@@ -56,7 +71,29 @@ export default function DocumentContentPanel({
           </span>
         </div>
       )}
-      {needsRetry > 0 && !isProcessing && (
+      {live && !isProcessing && (
+        <div className={styles.retagProgressBanner}>
+          <div className={styles.retagProgressHeader}>
+            <span className={styles.taggingWarn}>
+              {total > 0
+                ? `Tagging ${done} of ${total} pages · ${remaining} remaining`
+                : 'Starting content tagging…'}
+            </span>
+            <button type="button" className={styles.contentButton} disabled>
+              Tagging…
+            </button>
+          </div>
+          <div className={styles.retagProgressTrack} aria-hidden="true">
+            <div className={styles.retagProgressFill} style={{ width: `${pct}%` }} />
+          </div>
+          {retagProgress?.last_page != null && (
+            <div className={styles.mutedNote}>
+              Last page tagged: {String(retagProgress.last_page)}
+            </div>
+          )}
+        </div>
+      )}
+      {needsRetry > 0 && !isProcessing && !live && (
         <div className={styles.taggingBanner}>
           <span className={styles.taggingWarn}>
             {needsRetry} page{needsRetry === 1 ? '' : 's'} need content tagging
@@ -97,7 +134,7 @@ export default function DocumentContentPanel({
               <button
                 type="button"
                 className={styles.contentButtonSecondary}
-                disabled={retagging}
+                disabled={live || retagging}
                 onClick={() => onRetag?.({
                   unitIds: [
                     selectedUnit.unit_id
@@ -106,7 +143,7 @@ export default function DocumentContentPanel({
                   ].filter(Boolean),
                 })}
               >
-                {retagging ? 'Retrying…' : 'Retry this page'}
+                {retagging && !live ? 'Retrying…' : 'Retry this page'}
               </button>
             )}
           </div>
@@ -138,6 +175,7 @@ DocumentContentPanel.propTypes = {
   sectionLoading: PropTypes.bool,
   structureError: PropTypes.string,
   retagging: PropTypes.bool,
+  retagProgress: PropTypes.object,
   retagMessage: PropTypes.string,
   onRetag: PropTypes.func,
   isDocumentScope: PropTypes.bool,

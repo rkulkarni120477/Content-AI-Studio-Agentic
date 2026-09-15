@@ -778,15 +778,50 @@ class RetagBody(BaseModel):
     all_failed: bool = False
 
 
+def _run_retag_in_background(runner: Any, client_id: str, job_id: str) -> None:
+    try:
+        runner()
+    except BaseException:
+        log.exception("background retag failed: client=%s job_id=%s", client_id, job_id)
+
+
 @router.post("/sources/{job_id}/content/retag")
 async def source_content_retag(job_id: str, body: RetagBody, request: Request):
     """Re-run per-page LLM content tagging for selected (or all failed) ebook pages.
 
     Uses text already stored in Postgres — does not re-download the PDF.
+
+    ``all_failed=true`` starts a background job (returns immediately) and reports
+    progress via GET .../content/retag/progress. Specific ``unit_ids`` still run
+    synchronously so Retry-this-page stays a short request.
     """
     tenant = get_current_tenant(request)
     client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
-    from services.ebook_page_retag import retag_ebook_pages
+    from services.ebook_page_retag import retag_ebook_pages, run_tracked_retag
+    from services import ebook_page_retag_progress as retag_progress
+
+    if body.all_failed and not (body.unit_ids or []):
+        if not retag_progress.reserve(client_id, job_id):
+            return {
+                "started": False,
+                "already_running": True,
+                "job_id": job_id,
+                "progress": retag_progress.snapshot(client_id, job_id),
+            }
+        runner = functools.partial(
+            run_tracked_retag, tenant, client_id, job_id, all_failed=True,
+        )
+        threading.Thread(
+            target=_run_retag_in_background, args=(runner, client_id, job_id),
+            name=f"ebook-retag:{client_id}:{job_id}", daemon=True,
+        ).start()
+        return {
+            "started": True,
+            "already_running": False,
+            "job_id": job_id,
+            "progress": retag_progress.snapshot(client_id, job_id),
+        }
+
     try:
         result = await anyio.to_thread.run_sync(
             lambda: retag_ebook_pages(
@@ -803,6 +838,21 @@ async def source_content_retag(job_id: str, body: RetagBody, request: Request):
     if result.get("status") == "failed":
         raise HTTPException(400, result.get("error") or "Re-tag failed")
     return result
+
+
+@router.get("/sources/{job_id}/content/retag/progress")
+async def source_content_retag_progress(job_id: str, request: Request):
+    """Live done/remaining for a background Retry-all tagging job.
+
+    Returns ``{"progress": null}`` when nothing has been tracked for this document
+    (ordinary — nothing running). A poller that already saw an entry must treat
+    ``null`` as "DIS restarted", not "finished"; already-tagged pages persist and
+    Retry-all again resumes leftover non-ok pages.
+    """
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    from services import ebook_page_retag_progress as retag_progress
+    return {"progress": retag_progress.snapshot(client_id, job_id)}
 
 
 @router.get("/sources/{job_id}/search")

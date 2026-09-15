@@ -253,7 +253,9 @@ export default function SourceLibraryPage() {
 
   const hasProcessingDocs = documents.some((doc) => {
     const st = String(doc?.status || '').toLowerCase();
-    return st === 'processing' || st === 'pending';
+    const retag = String(doc?.retag_status || '').toLowerCase();
+    return st === 'processing' || st === 'pending'
+      || retag === 'running' || retag === 'starting';
   });
 
   useEffect(() => {
@@ -812,6 +814,16 @@ export default function SourceLibraryPage() {
                         <div className={styles.docTitleRow}>
                           <strong>{doc.title || doc.source_file_name}</strong>
                           {String(doc.course_id) === '-1' && <span className={styles.globalBadge} title="Visible in every course of this tenant">Global</span>}
+                          {['running', 'starting'].includes(String(doc.retag_status || '').toLowerCase()) && (
+                            <span
+                              className={styles.retagBadge}
+                              title="Content tagging is running in the background"
+                            >
+                              {Number(doc.retag_total) > 0
+                                ? `Tagging ${Number(doc.retag_done) || 0}/${Number(doc.retag_total)}`
+                                : 'Tagging…'}
+                            </span>
+                          )}
                         </div>
                         <div className={styles.muted}>{doc.source_file_name}</div>
                       </td>

@@ -581,10 +581,30 @@ async def retag_source_content(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """Re-run per-page LLM content tagging for failed/selected ebook pages."""
+    """Re-run per-page LLM content tagging for failed/selected ebook pages.
+
+    ``all_failed`` starts a background DIS job and returns immediately; poll
+    GET .../content/retag/progress for live done/remaining.
+    """
     resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
     return await dis_client.source_content_retag(
         job_id=job_id, payload=body or {}, current_user=current_user, client_id=resolved_client,
+    )
+
+
+@router.get("/documents/{job_id}/content/retag/progress")
+async def retag_source_content_progress(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Live progress for a background Retry-all content tagging job."""
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.source_content_retag_progress(
+        job_id=job_id, current_user=current_user, client_id=resolved_client,
     )
 
 

@@ -562,6 +562,9 @@ async def _patch_source_unit_metadata(self, job_id: str, unit_id: str, payload: 
 async def _source_content_retag(self, job_id: str, payload: Dict[str, Any] | None = None, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
     return await self.request("POST", f"/context/sources/{job_id}/content/retag", json=payload or {}, current_user=current_user, client_id=client_id)
 
+async def _source_content_retag_progress(self, job_id: str, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
+    return await self.request("GET", f"/context/sources/{job_id}/content/retag/progress", current_user=current_user, client_id=client_id)
+
 async def _source_search(self, job_id: str, params: Dict[str, Any] | None = None, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
     return await self.request("GET", f"/context/sources/{job_id}/search", params=params or {}, current_user=current_user, client_id=client_id)
 
@@ -580,6 +583,7 @@ DISClient.source_units = _source_units
 DISClient.source_unit_detail = _source_unit_detail
 DISClient.patch_source_unit_metadata = _patch_source_unit_metadata
 DISClient.source_content_retag = _source_content_retag
+DISClient.source_content_retag_progress = _source_content_retag_progress
 DISClient.source_search = _source_search
 DISClient.source_metadata = _source_metadata
 DISClient.patch_source_metadata = _patch_source_metadata

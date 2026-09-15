@@ -14,6 +14,7 @@ const getUnits = vi.fn();
 const getUnitDetail = vi.fn();
 const patchUnitMetadata = vi.fn();
 const retagContent = vi.fn();
+const getRetagProgress = vi.fn();
 
 vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
   default: {
@@ -26,6 +27,7 @@ vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
     getUnitDetail: (...a) => getUnitDetail(...a),
     patchUnitMetadata: (...a) => patchUnitMetadata(...a),
     retagContent: (...a) => retagContent(...a),
+    getRetagProgress: (...a) => getRetagProgress(...a),
   },
 }));
 
@@ -148,6 +150,7 @@ describe('MetadataEditorPage', () => {
       },
     });
     retagContent.mockResolvedValue({ retagged: 0, tagging_failed_count: 0 });
+    getRetagProgress.mockResolvedValue({ progress: null });
   });
 
   afterEach(() => {
@@ -263,6 +266,84 @@ describe('MetadataEditorPage', () => {
     });
     renderPage('content', { view: true, section: 'u1' });
     expect(await screen.findByText(/Background processing is still running/)).toBeTruthy();
+  });
+
+  it('Retry all failed starts a background job and shows live progress', async () => {
+    getOverview.mockResolvedValue({
+      preview: 'doc preview',
+      tagging_failed_count: 2,
+      tagging_pending_count: 5,
+    });
+    getUnits.mockResolvedValue({
+      units: [{
+        unit_id: 'u1',
+        page_number: '1-1',
+        tagging_status: 'pending',
+        title: 'Landing gear',
+        topics: [],
+        acs_codes: [],
+        summary: '',
+      }],
+      tagging_failed_count: 2,
+      tagging_pending_count: 5,
+    });
+    let live = false;
+    getRetagProgress.mockImplementation(async () => (
+      live
+        ? {
+          progress: {
+            state: 'running',
+            total: 677,
+            done: 40,
+            remaining: 637,
+            last_page: 41,
+            tagging_failed_count: 0,
+            tagging_pending_count: 637,
+          },
+        }
+        : { progress: null }
+    ));
+    retagContent.mockImplementation(async () => {
+      live = true;
+      return {
+        started: true,
+        already_running: false,
+        progress: { state: 'starting', total: 677, done: 0, remaining: 677 },
+      };
+    });
+
+    renderPage('content', { view: true, section: 'u1' });
+    const retryBtn = await screen.findByRole('button', { name: 'Retry all failed' });
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => expect(retagContent).toHaveBeenCalledWith(
+      'job-1',
+      { all_failed: true },
+      expect.any(Object),
+    ));
+    // POST returns immediately with a starting snapshot — live counts poll after.
+    expect(await screen.findByText(/Tagging 0 of 677 pages · 677 remaining/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Tagging…' }).disabled).toBe(true);
+    expect(screen.getByText(/Tagging started in the background/)).toBeTruthy();
+  });
+
+  it('resumes progress banner when a retag job is already running', async () => {
+    getOverview.mockResolvedValue({
+      preview: 'doc preview',
+      tagging_failed_count: 10,
+      tagging_pending_count: 0,
+    });
+    getRetagProgress.mockResolvedValue({
+      progress: {
+        state: 'running',
+        total: 100,
+        done: 25,
+        remaining: 75,
+        last_page: 26,
+      },
+    });
+    renderPage('content', { view: true, section: 'u1' });
+    expect(await screen.findByText(/Tagging 25 of 100 pages · 75 remaining/)).toBeTruthy();
   });
 
   it('edit mode saves section metadata via patchUnitMetadata', async () => {

@@ -146,6 +146,7 @@ export default function MetadataEditorPage() {
   const [structureError, setStructureError] = useState('');
   const [retagging, setRetagging] = useState(false);
   const [retagMessage, setRetagMessage] = useState('');
+  const [retagProgress, setRetagProgress] = useState(null);
 
   const scopeParams = useMemo(() => ({
     course_id: courseId,
@@ -259,6 +260,10 @@ export default function MetadataEditorPage() {
 
   const ingestStatus = String(overview?.status || '').toLowerCase();
   const isProcessing = ingestStatus === 'processing' || ingestStatus === 'pending';
+  const retagLive = Boolean(
+    retagProgress
+    && ['starting', 'running'].includes(String(retagProgress.state || '').toLowerCase()),
+  );
 
   useEffect(() => {
     if (!jobId || !isProcessing) return undefined;
@@ -271,6 +276,63 @@ export default function MetadataEditorPage() {
     }, 8000);
     return () => window.clearInterval(timer);
   }, [jobId, isProcessing, loadUnits]);
+
+  // Resume / poll background Retry-all progress (survives refresh + navigation back).
+  useEffect(() => {
+    if (!jobId || !isView) return undefined;
+    let cancelled = false;
+    let unitsTick = 0;
+    let announcedTerminal = false;
+
+    async function pollRetag() {
+      try {
+        const res = await sourceLibraryApi.getRetagProgress(jobId, scopeParams);
+        if (cancelled) return;
+        const progress = res?.progress ?? null;
+        setRetagProgress(progress);
+        const state = String(progress?.state || '').toLowerCase();
+        if (state === 'starting' || state === 'running') {
+          announcedTerminal = false;
+          setRetagging(true);
+          unitsTick += 1;
+          // Refresh section pills every ~8s (4 × 2s polls) while tagging runs.
+          if (unitsTick % 4 === 0) {
+            try { await loadUnits(); } catch { /* keep last */ }
+          }
+          return;
+        }
+        if ((state === 'done' || state === 'failed') && !announcedTerminal) {
+          announcedTerminal = true;
+          setRetagging(false);
+          const failedLeft = Number(progress?.tagging_failed_count || 0);
+          const done = Number(progress?.done || 0);
+          if (state === 'failed') {
+            setRetagMessage(progress?.error || 'Re-tag failed.');
+          } else {
+            setRetagMessage(
+              failedLeft > 0
+                ? `Re-tagged ${done} page(s); ${failedLeft} still need tagging.`
+                : `Re-tagged ${done} page(s) successfully.`,
+            );
+          }
+          try { await loadUnits(); } catch { /* keep last */ }
+          return;
+        }
+        if (!progress) {
+          setRetagging(false);
+        }
+      } catch {
+        // Keep last known progress; next poll may succeed.
+      }
+    }
+
+    pollRetag();
+    const timer = window.setInterval(pollRetag, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [jobId, isView, scopeParams, loadUnits]);
 
   function setTab(tabId) {
     setSearchParams((prev) => {
@@ -432,6 +494,22 @@ export default function MetadataEditorPage() {
     try {
       const payload = allFailed ? { all_failed: true } : { unit_ids: unitIds || [] };
       const result = await sourceLibraryApi.retagContent(jobId, payload, scopeParams);
+
+      // Retry-all is a background job — progress comes from polling.
+      if (allFailed || result?.started || result?.already_running) {
+        if (result?.progress) setRetagProgress(result.progress);
+        else {
+          try {
+            const res = await sourceLibraryApi.getRetagProgress(jobId, scopeParams);
+            setRetagProgress(res?.progress ?? null);
+          } catch { /* poller will retry */ }
+        }
+        setRetagMessage(result?.already_running
+          ? 'Tagging already in progress…'
+          : 'Tagging started in the background…');
+        return;
+      }
+
       const failedLeft = Number(result?.tagging_failed_count || 0);
       const n = Number(result?.retagged || 0);
       setRetagMessage(
@@ -447,9 +525,9 @@ export default function MetadataEditorPage() {
         const entry = (un?.units || []).find((u) => String(u.unit_id) === String(selectedSectionId));
         applySectionForm(unit, entry);
       }
+      setRetagging(false);
     } catch (e) {
       setRetagMessage(errorMessage(e, 'Re-tag failed.'));
-    } finally {
       setRetagging(false);
     }
   }
@@ -721,7 +799,8 @@ export default function MetadataEditorPage() {
                 sectionIndex={sectionIndex >= 0 ? sectionIndex : 0}
                 sectionLoading={sectionLoading}
                 structureError={structureError}
-                retagging={retagging}
+                retagging={retagging || retagLive}
+                retagProgress={retagProgress}
                 retagMessage={retagMessage}
                 onRetag={handleRetag}
                 isDocumentScope={isDocumentScope}
