@@ -2270,7 +2270,10 @@ def _build_unified_style_docs(db, style: "Style") -> str:
             parts.append(f"[CUSTOM INSTRUCTIONS]\n{visible_instructions}")
     for sd in style.style_documents:
         doc = sd.document
-        if doc and doc.content:
+        # A document once linked to a Style keeps its style_documents row after
+        # being archived from the Source Library -- must stop contributing once
+        # it's no longer active there.
+        if doc and doc.status == "active" and doc.content:
             parts.append(f"[DOCUMENT: {doc.filename}]\n{doc.content}")
     return "\n\n---\n\n".join(parts)
 
@@ -2346,7 +2349,7 @@ def build_style_context(db, style: "Style", cluster_id: int | None = None) -> st
         parts.append(f"### Custom Instructions\n{style.custom_instructions}")
     for sd in style.style_documents:
         doc = sd.document
-        if doc and doc.content:
+        if doc and doc.status == "active" and doc.content:
             parts.append(f"### Style Reference: {doc.filename}\n{doc.content}")
     return "\n\n".join(parts)
 
