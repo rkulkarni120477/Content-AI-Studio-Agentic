@@ -95,3 +95,14 @@ def test_merge_retag_appends_missing_unit_without_dropping_others():
     assert [u["content_unit_id"] for u in units] == ["j:page_1", "j:page_99"]
     assert units[0]["metadata"]["tagging_status"] == TAGGING_PENDING
     assert units[1]["metadata"]["tagging_status"] == TAGGING_OK
+
+
+def test_batch_helpers():
+    from services.ebook_page_retag import _batch_failed_count, _last_page_label
+    batch = [
+        {"metadata": {"tagging_status": TAGGING_OK, "page_number": "1"}},
+        {"metadata": {"tagging_status": TAGGING_FAILED, "page_number": "2"}},
+        {"metadata": {"tagging_status": TAGGING_PENDING, "pdf_page": 3}},
+    ]
+    assert _batch_failed_count(batch) == 1
+    assert _last_page_label(batch) == 3

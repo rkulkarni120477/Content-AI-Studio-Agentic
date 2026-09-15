@@ -210,13 +210,31 @@ def _update_source_index_tagging_counts(
     tenant_cfg: TenantConfig,
     client_id: str,
     job_id: str,
-    counts: Dict[str, int],
+    counts: Optional[Dict[str, int]] = None,
+    *,
+    retag_status: Optional[str] = None,
+    retag_done: Optional[int] = None,
+    retag_total: Optional[int] = None,
 ) -> None:
-    """Persist recount on the compact source-index row (0 is a valid value)."""
-    extra = {
-        "tagging_failed_count": int(counts.get("tagging_failed_count") or 0),
-        "tagging_pending_count": int(counts.get("tagging_pending_count") or 0),
-    }
+    """Persist recount (and optional live retag fields) on the compact source-index row.
+
+    ``counts`` may be omitted when only updating ``retag_*`` (e.g. job start).
+    ``retag_*`` are written only when provided so a finished single-page retag does
+    not wipe an in-flight Retry-all chip on the Source Library list. Pass empty
+    string / 0 explicitly to clear them when a background job ends.
+    """
+    extra: Dict[str, Any] = {}
+    if counts is not None:
+        extra["tagging_failed_count"] = int(counts.get("tagging_failed_count") or 0)
+        extra["tagging_pending_count"] = int(counts.get("tagging_pending_count") or 0)
+    if retag_status is not None:
+        extra["retag_status"] = retag_status
+    if retag_done is not None:
+        extra["retag_done"] = int(retag_done)
+    if retag_total is not None:
+        extra["retag_total"] = int(retag_total)
+    if not extra:
+        return
     if source_index_pg.use_pg_source_index(tenant_cfg):
         # update_status skips falsy extra values (``if v``); write counts via upsert merge.
         index = read_source_index(tenant_cfg, client_id)
@@ -242,12 +260,66 @@ def _update_source_index_tagging_counts(
                 return
 
 
+def _persist_retag_batch(
+    tenant_cfg: TenantConfig,
+    client_id: str,
+    job_id: str,
+    doc: Dict[str, Any],
+    batch: List[Dict[str, Any]],
+    *,
+    retag_status: Optional[str] = None,
+    retag_done: Optional[int] = None,
+    retag_total: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Write one tagged batch to Postgres, vectors, and S3 content artifacts."""
+    tenant_id = doc.get("tenant_id") or batch[0].get("_tenant_id") or client_id
+    units = []
+    for u in batch:
+        cu = dict(u)
+        cu.pop("_tenant_id", None)
+        cu.pop("_client_id", None)
+        units.append(cu)
+
+    state = {
+        "job_id": job_id,
+        "tenant_id": tenant_id,
+        "client_id": client_id,
+        "filename": doc.get("source_file_name") or "ebook.pdf",
+        "file_type": doc.get("source_file_type") or "pdf",
+        "doc_type": doc.get("document_type") or "ebook_reference",
+        "doc_metadata": _parse_meta(doc.get("metadata_json")),
+        "content_units": units,
+    }
+    rds = rds_upsert(tenant_cfg, state)
+    if rds.get("status") not in {"completed", "skipped"}:
+        raise RuntimeError(f"rds_upsert: {rds}")
+
+    emb = generate_embeddings(tenant_cfg, state)
+    if emb.get("status") == "completed":
+        up = opensearch_upsert(tenant_cfg, state)
+        if up.get("status") not in {"completed", "skipped"}:
+            log.warning("retag opensearch upsert failed: %s", up)
+    else:
+        log.warning("retag embeddings failed: %s", emb)
+
+    return _patch_s3_artifacts(
+        tenant_cfg, client_id, job_id, units, doc,
+        retag_status=retag_status,
+        retag_done=retag_done,
+        retag_total=retag_total,
+    )
+
+
 def _patch_s3_artifacts(
     tenant_cfg: TenantConfig,
     client_id: str,
     job_id: str,
     updated_units: List[Dict[str, Any]],
     doc: Dict[str, Any],
+    *,
+    retag_status: Optional[str] = None,
+    retag_done: Optional[int] = None,
+    retag_total: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Merge updated unit metadata into S3 content.json / payload / extracted units.
 
@@ -339,7 +411,12 @@ def _patch_s3_artifacts(
     writer.write_json(payload_key, payload)
 
     try:
-        _update_source_index_tagging_counts(tenant_cfg, client_id, job_id, counts)
+        _update_source_index_tagging_counts(
+            tenant_cfg, client_id, job_id, counts,
+            retag_status=retag_status,
+            retag_done=retag_done,
+            retag_total=retag_total,
+        )
     except Exception:
         log.exception("failed to update source_index tagging counts job_id=%s", job_id)
 
@@ -356,6 +433,22 @@ def _patch_s3_artifacts(
     return counts
 
 
+def _batch_failed_count(batch: List[Dict[str, Any]]) -> int:
+    n = 0
+    for u in batch:
+        status = str((u.get("metadata") or {}).get("tagging_status") or "").lower()
+        if status == "failed":
+            n += 1
+    return n
+
+
+def _last_page_label(batch: List[Dict[str, Any]]) -> Any:
+    if not batch:
+        return None
+    meta = batch[-1].get("metadata") or {}
+    return meta.get("page_number") or meta.get("pdf_page") or batch[-1].get("unit_number")
+
+
 def retag_ebook_pages(
     tenant_cfg: TenantConfig,
     client_id: str,
@@ -364,8 +457,20 @@ def retag_ebook_pages(
     unit_ids: Optional[Sequence[str]] = None,
     all_failed: bool = False,
     all_units: bool = False,
+    track_progress: bool = False,
 ) -> Dict[str, Any]:
-    """Re-run LLM content tagging for selected (or all failed/pending) page units."""
+    """Re-run LLM content tagging for selected (or all failed/pending) page units.
+
+    Processes pages in batches of ``ebook_page_tagging_batch_size`` (default 10),
+    persisting Postgres / embeddings / OpenSearch / S3 after each batch so a long
+    Retry-all can publish live progress and survive partial completion.
+
+    When ``track_progress`` is True the caller must already have reserved a slot
+    via ``ebook_page_retag_progress.reserve``; this function reports into that
+    registry and clears ``retag_*`` source-index fields when finished.
+    """
+    from services import ebook_page_retag_progress as retag_progress
+
     if not all_failed and not all_units and not unit_ids:
         return {
             "status": "failed",
@@ -379,6 +484,18 @@ def retag_ebook_pages(
         unit_ids=unit_ids, all_failed=all_failed, all_units=all_units,
     )
     if not units:
+        if track_progress:
+            retag_progress.start(client_id, job_id, total=0)
+            retag_progress.complete(client_id, job_id)
+            try:
+                _update_source_index_tagging_counts(
+                    tenant_cfg, client_id, job_id,
+                    retag_status="",
+                    retag_done=0,
+                    retag_total=0,
+                )
+            except Exception:
+                log.exception("failed to clear retag fields job_id=%s", job_id)
         return {
             "status": "completed",
             "retagged": 0,
@@ -393,57 +510,101 @@ def retag_ebook_pages(
         tenant_cfg.pipeline.llm_provider != "mock"
         and (tenant_cfg.pipeline.bedrock_enabled or tenant_cfg.pipeline.anthropic_enabled)
     )
-    errors: List[str] = []
-    if use_llm and tcfg["enabled"]:
-        tag_ebook_page_units(
-            units,
-            call_llm_fn=call_llm,
-            model_id=tcfg["model_id"],
-            batch_size=tcfg["batch_size"],
-            enabled=True,
-            token_guard=None,
-            errors=errors,
-        )
-    else:
+    if not (use_llm and tcfg["enabled"]):
+        if track_progress:
+            retag_progress.fail(
+                client_id, job_id,
+                "LLM tagging is disabled (pipeline.llm_provider=mock or ebook_page_tagging_enabled=false)",
+            )
         return {
             "status": "failed",
             "error": "LLM tagging is disabled (pipeline.llm_provider=mock or ebook_page_tagging_enabled=false)",
             "retagged": 0,
         }
 
-    tenant_id = doc.get("tenant_id") or units[0].get("_tenant_id") or client_id
-    # Strip helper keys before persistence.
-    for u in units:
-        u.pop("_tenant_id", None)
-        u.pop("_client_id", None)
+    batch_size = max(1, int(tcfg["batch_size"] or 10))
+    total = len(units)
+    if track_progress:
+        retag_progress.start(client_id, job_id, total=total)
+        try:
+            _update_source_index_tagging_counts(
+                tenant_cfg, client_id, job_id,
+                retag_status="running",
+                retag_done=0,
+                retag_total=total,
+            )
+        except Exception:
+            log.exception("failed to set retag running on source_index job_id=%s", job_id)
 
-    state = {
-        "job_id": job_id,
-        "tenant_id": tenant_id,
-        "client_id": client_id,
-        "filename": doc.get("source_file_name") or "ebook.pdf",
-        "file_type": doc.get("source_file_type") or "pdf",
-        "doc_type": doc.get("document_type") or "ebook_reference",
-        "doc_metadata": _parse_meta(doc.get("metadata_json")),
-        "content_units": units,
-    }
-    rds = rds_upsert(tenant_cfg, state)
-    if rds.get("status") not in {"completed", "skipped"}:
-        return {"status": "failed", "error": f"rds_upsert: {rds}", "retagged": 0, "errors": errors}
+    errors: List[str] = []
+    failed_in_run = 0
+    all_retagged: List[Dict[str, Any]] = []
+    counts: Dict[str, Any] = {"tagging_failed_count": 0, "tagging_pending_count": 0}
 
-    emb = generate_embeddings(tenant_cfg, state)
-    if emb.get("status") == "completed":
-        up = opensearch_upsert(tenant_cfg, state)
-        if up.get("status") not in {"completed", "skipped"}:
-            log.warning("retag opensearch upsert failed: %s", up)
-    else:
-        log.warning("retag embeddings failed: %s", emb)
+    try:
+        for start in range(0, total, batch_size):
+            batch = units[start:start + batch_size]
+            tag_ebook_page_units(
+                batch,
+                call_llm_fn=call_llm,
+                model_id=tcfg["model_id"],
+                batch_size=len(batch),
+                enabled=True,
+                token_guard=None,
+                errors=errors,
+            )
+            done = start + len(batch)
+            failed_in_run += _batch_failed_count(batch)
+            counts = _persist_retag_batch(
+                tenant_cfg, client_id, job_id, doc, batch,
+                retag_status="running" if track_progress and done < total else None,
+                retag_done=done if track_progress else None,
+                retag_total=total if track_progress else None,
+            )
+            all_retagged.extend(batch)
+            if track_progress:
+                retag_progress.update(
+                    client_id, job_id,
+                    done=done,
+                    failed=failed_in_run,
+                    last_page=_last_page_label(batch),
+                    tagging_failed_count=counts.get("tagging_failed_count", 0),
+                    tagging_pending_count=counts.get("tagging_pending_count", 0),
+                )
+    except Exception as exc:
+        if track_progress:
+            retag_progress.fail(client_id, job_id, str(exc))
+            try:
+                _update_source_index_tagging_counts(
+                    tenant_cfg, client_id, job_id, counts,
+                    retag_status="failed",
+                    retag_done=len(all_retagged),
+                    retag_total=total,
+                )
+            except Exception:
+                log.exception("failed to mark retag failed on source_index job_id=%s", job_id)
+        raise
 
-    counts = _patch_s3_artifacts(tenant_cfg, client_id, job_id, units, doc)
+    if track_progress:
+        retag_progress.complete(
+            client_id, job_id,
+            tagging_failed_count=counts.get("tagging_failed_count", 0),
+            tagging_pending_count=counts.get("tagging_pending_count", 0),
+        )
+        try:
+            _update_source_index_tagging_counts(
+                tenant_cfg, client_id, job_id, counts,
+                retag_status="",
+                retag_done=0,
+                retag_total=0,
+            )
+        except Exception:
+            log.exception("failed to clear retag fields job_id=%s", job_id)
+
     return {
         "status": "completed",
-        "retagged": len(units),
-        "unit_ids": [u["content_unit_id"] for u in units],
+        "retagged": len(all_retagged),
+        "unit_ids": [u["content_unit_id"] for u in all_retagged],
         "tagging_failed_count": counts.get("tagging_failed_count", 0),
         "tagging_pending_count": counts.get("tagging_pending_count", 0),
         "errors": errors,
@@ -453,9 +614,31 @@ def retag_ebook_pages(
                 "tagging_status": (u.get("metadata") or {}).get("tagging_status"),
                 "tagging_error": (u.get("metadata") or {}).get("tagging_error"),
             }
-            for u in units
+            for u in all_retagged
         ],
     }
+
+
+def run_tracked_retag(
+    tenant_cfg: TenantConfig,
+    client_id: str,
+    job_id: str,
+    *,
+    all_failed: bool = True,
+) -> Dict[str, Any]:
+    """Background entry: retag with progress tracking. Slot must already be reserved."""
+    try:
+        return retag_ebook_pages(
+            tenant_cfg, client_id, job_id,
+            all_failed=all_failed,
+            track_progress=True,
+        )
+    except Exception as exc:
+        from services import ebook_page_retag_progress as retag_progress
+        retag_progress.fail(client_id, job_id, str(exc))
+        log.exception("tracked retag failed job_id=%s", job_id)
+        return {"status": "failed", "error": str(exc), "retagged": 0}
+
 
 class UnitMetadataPatchError(Exception):
     """Raised when a unit metadata patch cannot be applied."""

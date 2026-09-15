@@ -120,6 +120,7 @@
     <a href="#final_exam_answer_key">Final exam answer key</a>
     <a href="#project_instructor_guide">Project instructor guide</a>
     <a href="#ebook_reference">Ebook / handbook</a>
+    <a href="#ebook_ops">Ebook rechunk &amp; retag</a>
     <a href="#student_handout">Student handout</a>
     <a href="#other">Other</a>
     <div class="group">Reference</div>
@@ -144,8 +145,8 @@
         AIM is tenant <code>aim</code> in namespace <code>aim_ns</code>. Config lives in
         <code>dis_backend/config/clients/aim.yaml</code>. Ingestion is one shared pipeline
         (<code>services/pipeline/graph.py</code>); AIM-specific behavior is a profile overlay
-        (<code>services/client_profiles/aim.py</code>) plus two specialized parsers
-        (teacher calendars and AKTR rollups).
+        (<code>services/client_profiles/aim.py</code>) plus specialized parsers
+        (teacher calendars, AKTR rollups, and handbook page chunking).
       </p>
       <div class="card">
         <h4>Write path (every successful ingest)</h4>
@@ -154,7 +155,7 @@
           <li>Extractors turn the file into text / tables / slides.</li>
           <li>Classifier + AIM profile set <code>document_type</code> / <code>content_type</code>.</li>
           <li>Specialized structure extractors run for calendar, syllabus, quiz, project, AKTR.</li>
-          <li><code>content_unit_creation</code> splits the file into units (the real chunks).</li>
+          <li><code>content_unit_creation</code> splits the file into units (the real chunks). Handbooks are re-extracted page-by-page in this step (no 250k-char cap) and LLM-tagged.</li>
           <li>Processed JSON artifacts go to <strong>S3</strong>.</li>
           <li>Rows go to <strong>Postgres</strong> (<code>dis.*</code> + <code>source_index</code>).</li>
           <li>Each unit is embedded (Titan v2, 1024-d) and indexed in <strong>OpenSearch</strong>.</li>
@@ -163,7 +164,7 @@
           Live generation retrieval still reads the S3 Source Library JSON
           (<code>source_content/content.json</code>). Postgres and OpenSearch are populated at
           ingest as the relational system-of-record and the semantic index. Digests (CDD / Blueprint MAP)
-          do read Postgres content units.
+          do read Postgres content units — including page-tagged handbook units for assigned reading.
         </p>
       </div>
     </section>
@@ -200,8 +201,9 @@
       <h2>Chunking layers</h2>
       <p>
         AIM YAML says <code>chunking_strategy: semantic</code>, <code>chunk_size: 512</code>,
-        <code>chunk_overlap: 64</code>. That is only the <em>fallback word-chunk</em>. Two later
-        policies override it.
+        <code>chunk_overlap: 64</code>. That is only the <em>fallback word-chunk</em>. Later
+        policies override it for structured types — especially handbooks, which are
+        <strong>one unit per physical PDF page</strong>, not 512-word windows.
       </p>
       <div class="grid-2">
         <div class="card">
@@ -209,6 +211,7 @@
           <ul>
             <li><strong>Per-day</strong> if a calendar structure has <code>days[]</code>.</li>
             <li><strong>Per-block sheet</strong> if an AKTR structure has <code>blocks[]</code>.</li>
+            <li><strong>Per-page</strong> if the stored type is <code>ebook_reference</code> (physical PDF page + chapter / printed-page tags + LLM topics/ACS/summary).</li>
             <li><strong>Per-slide</strong> if the extractor produced <code>slide_texts</code> (PPTX).</li>
             <li><strong>Whole document</strong> (one unit, no overlap) for style / CDD / blueprint types, including syllabus and any file flagged <code>use_for_blueprint</code>.</li>
             <li><strong>Semantic word chunks</strong> otherwise: 512 words, 64-word overlap.</li>
@@ -218,6 +221,7 @@
           <h4>2. Source Library view — <code>source_library.py</code></h4>
           <ul>
             <li><code>per_unit</code> — keep pipeline units (AKTR only).</li>
+            <li><code>page</code> — keep one unit per PDF page, including chapter / page_number / ACS / topics (ebooks only). Collapsing to <code>full_document</code> would erase those tags.</li>
             <li><code>full_document</code> — concatenate all unit text into one CAS unit (calendars, syllabi, other CDD/blueprint).</li>
             <li><code>semantic_chunk</code> — keep pipeline chunks (lessons, quizzes, projects, slides).</li>
           </ul>
@@ -281,7 +285,7 @@ s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/source_content/conten
           <tr><td><code>dis_course_calendars</code></td><td>One per calendar workbook + full <code>structure_json</code></td></tr>
           <tr><td><code>dis_calendar_days</code></td><td>One per teaching day (topic, ACS-adjacent lists, source_text)</td></tr>
           <tr><td><code>dis_syllabus</code></td><td>One per syllabus (outcomes, policies, structure JSON)</td></tr>
-          <tr><td><code>source_index</code></td><td>Compact Source Library catalog (title, type, purpose, S3 keys, block/day)</td></tr>
+          <tr><td><code>source_index</code></td><td>Compact Source Library catalog (title, type, purpose, S3 keys, block/day; ebooks also carry <code>tagging_failed_count</code> / <code>tagging_pending_count</code>)</td></tr>
         </tbody>
       </table>
     </section>
@@ -309,7 +313,7 @@ s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/source_content/conten
           <tr><td>project / hangar_activity</td><td>512-word chunks</td><td>semantic_chunk</td><td>project_task / activity</td><td>student</td><td>Course gen</td></tr>
           <tr><td>study_questions</td><td>512-word chunks</td><td>semantic_chunk</td><td>study_question</td><td>student</td><td>Course gen</td></tr>
           <tr><td>quiz / exam / project keys</td><td>512-word chunks</td><td>semantic_chunk</td><td>answer_key_item / guide_section</td><td>instructor (restricted)</td><td>Not student retrieval</td></tr>
-          <tr><td>ebook_reference</td><td>512-word chunks</td><td>semantic_chunk</td><td>page</td><td>student (typical)</td><td>Reading / digest worksheets</td></tr>
+          <tr><td>ebook_reference</td><td>1 unit / PDF page</td><td>page</td><td>page</td><td>student (typical)</td><td>Assigned reading, digest worksheets</td></tr>
           <tr><td>student_handout / other</td><td>512-word chunks</td><td>semantic_chunk</td><td>chunk</td><td>varies</td><td>Fallback</td></tr>
         </tbody>
       </table>
@@ -800,23 +804,125 @@ s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/source_content/conten
     <article id="ebook_reference" class="card type-card">
       <h2>ebook_reference</h2>
       <div class="badges">
-        <span class="badge b-chunk">Semantic 512 / 64</span>
-        <span class="badge b-purpose">reference / assigned reading</span>
+        <span class="badge b-chunk">1 unit / PDF page</span>
+        <span class="badge b-chunk">Source Library: page</span>
+        <span class="badge b-student">student (typical)</span>
+        <span class="badge b-purpose">assigned reading / digest worksheets</span>
         <span class="badge b-s3">S3</span>
         <span class="badge b-pg">Postgres</span>
         <span class="badge b-os">OpenSearch</span>
       </div>
-      <p>FAA handbooks and similar long PDFs (<code>FAR-AMT</code>, <code>FAA-H-8083-30B</code>).</p>
+      <p>
+        FAA handbooks and similar long PDFs (<code>FAR-AMT</code>, <code>FAA-H-8083-30B</code>).
+        These are <strong>not</strong> 512-word windows. Each physical PDF page becomes one
+        <code>page</code> unit with location tags (chapter / printed page) and LLM content tags
+        (topics / ACS / summary), so a calendar citation like “Ch. 13 pgs. 13-1 to 13-14”
+        can attach only those pages.
+      </p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Names containing <code>ebook</code>, <code>handbook</code>, <code>FAR-AMT</code>, <code>FAA</code></li>
+        <li>Classifier type stays <code>ebook_reference</code> (AIM profile does not remap it)</li>
+      </ul>
       <h4>Which files process it</h4>
       <ul>
-        <li><code>extract_pdf</code> — files over 40&nbsp;MB skip pdfplumber and use PDFium (tables sacrificed)</li>
-        <li>Digest worksheets join <code>dis_content_units</code> where <code>document_type = 'ebook_reference'</code></li>
+        <li><code>content_extraction_agent.py</code> — first-pass PDF extract (may stop at <code>max_extracted_chars</code> ≈ 250k)</li>
+        <li><code>content_unit_creation_agent.py</code> → <code>_ebook_page_units</code> — always re-extracts from raw bytes with <strong>no char cap</strong> so a 600–1,200 page handbook is not truncated</li>
+        <li><code>services/ebook_page_chunker.py</code> — one unit per non-blank physical page; stamps <code>pdf_page</code>, <code>chapter</code>, <code>printed_page</code>, <code>page_number</code> (<code>13-1</code>)</li>
+        <li><code>services/ebook_page_tagger.py</code> — batched LLM tags (~10 pages per Sonnet call): topics, ACS codes, summary</li>
+        <li>Digest assigned-reading resolver (<code>services/digests/references.py</code>) slices by printed page when those tags exist</li>
       </ul>
       <h4>Chunking strategy</h4>
       <p>
-        Long-document semantic chunks (512 / 64), <code>unit_type = page</code>.
-        Embedding input is clipped at 24,000 characters per unit so Titan’s 8,192-token limit is not exceeded.
-        CAS View may split the concatenated text into synthetic pages for the UI only; retrieval still uses the stored chunks.
+        Location detection order: PDF outline/bookmarks → header/footer tokens on the
+        first/last few lines → carry the last seen chapter forward. Body text is ignored
+        for location so TOC / index cross-refs do not win. Blank pages are skipped.
+        Source Library stores <code>chunking_strategy: "page"</code> and keeps a short
+        metadata allow-list on each clean unit (chapter, page numbers, ACS, topics, tagging flags).
+      </p>
+      <p>
+        LLM tagging is fail-soft: ingest still succeeds if a batch fails. Heuristic
+        keyword topics stay; ACS/summary stay empty; the page is flagged
+        <code>tagging_status: failed</code> or <code>pending</code> for retry.
+        AIM YAML: <code>ebook_page_tagging_enabled: true</code>,
+        <code>ebook_page_tagging_batch_size: 10</code>,
+        model <code>pipeline.models.ebook_page_tagging</code> (Sonnet 4.5).
+      </p>
+      <h4>Where data is stored</h4>
+      <ul>
+        <li><strong>S3</strong> — raw PDF; <code>content_units.json</code>; <code>content.json</code> (one clean unit per page, not concatenated)</li>
+        <li><strong>Postgres</strong> — one <code>dis_content_units</code> row per page (no dedicated ebook table); catalog row in <code>source_index</code> with <code>tagging_failed_count</code> / <code>tagging_pending_count</code></li>
+        <li><strong>OpenSearch</strong> — one vector per page, bulk-indexed in batches of 100 (a 600–1,200 page handbook overflows a single bulk request)</li>
+      </ul>
+      <p class="note">
+        Source Library View lists the real page units (title like <code>FAA-H-8083-30B — p. 13-1</code>),
+        with topics / ACS / summary / <code>tagging_status</code> on each section.
+        The old 12,000-character synthetic “Part N” split is only a fallback when a file
+        still has a single giant unit (incomplete ingest). Embedding input is still clipped
+        at 24,000 characters per unit for Titan’s token limit.
+      </p>
+      <h4>Example unit</h4>
+      <pre>{
+  "content_unit_id": "job_abc:page_214",
+  "unit_type": "page",
+  "unit_number": 198,
+  "title": "FAA-H-8083-30B — p. 13-1",
+  "text": "[physical page text…]",
+  "topics": ["weight and balance", "empty-weight CG", "datum"],
+  "metadata": {
+    "document_type": "ebook_reference",
+    "chunking_strategy": "page",
+    "pdf_page": 214,
+    "chapter": 13,
+    "printed_page": 1,
+    "page_number": "13-1",
+    "acs_codes": ["AM.I.F.K1"],
+    "topics": ["weight and balance", "empty-weight CG", "datum"],
+    "summary": "Introduces empty-weight CG and the aircraft datum used for weight-and-balance computations.",
+    "tagging_status": "ok",
+    "visibility": "student"
+  }
+}</pre>
+    </article>
+
+    <article id="ebook_ops" class="card type-card">
+      <h2>Ebook rechunk &amp; retag</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Existing jobs only</span>
+        <span class="badge b-purpose">repair / retry tags</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>
+        New uploads already page-chunk in the pipeline. Handbooks ingested earlier as
+        512-word windows (or as a single preview unit) need a backfill. Tagging can also
+        be retried without touching the PDF.
+      </p>
+      <h4>Rechunk (rebuild page units from the raw PDF)</h4>
+      <ul>
+        <li><code>scripts/rechunk_ebook_references.py</code> — downloads the S3 raw PDF, rebuilds page units, optionally LLM-tags, writes Postgres + OpenSearch + <code>content.json</code></li>
+        <li>Skip rule: already looks finished when there are ≥10 units and a majority carry <code>chunking_strategy = page</code> or a <code>page_number</code> (unless <code>--force</code>)</li>
+        <li>A single unit with a <code>page_number</code> like <code>1-24</code> is <em>not</em> skipped — that is the broken one-blob shape this script repairs</li>
+        <li><code>--skip-llm-tagging</code> does location-only pages first; <code>--retag-failed</code> / <code>--retag-all</code> skip the PDF entirely</li>
+      </ul>
+      <h4>Retag (LLM tags only — no PDF download)</h4>
+      <p>
+        <code>services/ebook_page_retag.py</code> loads unit text from Postgres, runs the
+        same batched tagger, then writes the selected units back to Postgres, OpenSearch,
+        and S3. Sibling pages that were already <code>ok</code> are not dropped from
+        <code>content.json</code> (a sparse payload is seeded from the existing content file).
+      </p>
+      <ul>
+        <li><code>POST /sources/{job_id}/content/retag</code> — <code>{ "unit_ids": [...] }</code> or <code>{ "all_failed": true }</code></li>
+        <li>Source Library UI: retry one page, or retry all failed/pending</li>
+        <li>CLI: <code>rechunk_ebook_references.py --retag-failed --apply</code> or <code>--retag-all</code></li>
+      </ul>
+      <h4>Manual section edit</h4>
+      <p>
+        <code>PATCH /sources/{job_id}/content/units/{unit_id}</code> updates title, summary,
+        topics, and ACS codes on a real content unit and re-embeds that unit.
+        Synthetic View slices (<code>view_page_*</code>) cannot be patched.
       </p>
     </article>
 
@@ -861,6 +967,11 @@ s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/source_content/conten
           <tr><td>AKTR missed-codes XLSX</td><td><code>services/knowledge_test_report.py</code></td></tr>
           <tr><td>PDF / DOCX / PPTX / XLSX / image extractors</td><td><code>services/pipeline/extractors.py</code></td></tr>
           <tr><td>Create units (the chunking decision tree)</td><td><code>services/agents/content_unit_creation_agent.py</code></td></tr>
+          <tr><td>Handbook: one unit per PDF page + location tags</td><td><code>services/ebook_page_chunker.py</code></td></tr>
+          <tr><td>Handbook: batched LLM topics / ACS / summary</td><td><code>services/ebook_page_tagger.py</code></td></tr>
+          <tr><td>Handbook: retag failed pages + manual section edit</td><td><code>services/ebook_page_retag.py</code></td></tr>
+          <tr><td>Backfill already-ingested handbooks</td><td><code>scripts/rechunk_ebook_references.py</code></td></tr>
+          <tr><td>Assigned-reading page-range slice</td><td><code>services/digests/references.py</code></td></tr>
           <tr><td>Dispatch specialized parsers</td><td><code>services/agents/specialized_structure_extraction_agent.py</code></td></tr>
           <tr><td>Write processed S3 JSON</td><td><code>services/agents/processed_storage_agent.py</code></td></tr>
           <tr><td>Source Library clean file + catalog</td><td><code>services/source_library.py</code></td></tr>
@@ -925,6 +1036,28 @@ S3 content.json: chunking_strategy = "per_unit"  (units kept, not concatenated)
 Postgres: 16 content units; no dis_calendar_days / dis_syllabus rows
 A Block 6 CDD/Blueprint query matches only the Block 6 unit</pre>
 
+      <h3>4. FAA handbook (ebook_reference)</h3>
+      <pre>Source: FAA-H-8083-30B.pdf   (~686 physical pages)
+
+Pipeline: extract_pdf (may truncate at 250k chars)
+          → classify ebook_reference
+          → re-extract every page with no char cap
+          → one page unit each (skip blank)
+          → stamp chapter / printed_page / page_number from outline + headers/footers
+          → LLM tag in batches of 10 (topics, ACS, summary)
+          → OpenSearch bulk index in batches of 100
+
+S3 content.json: chunking_strategy = "page"  (units kept, not concatenated)
+Postgres: hundreds of dis_content_units (unit_type = page)
+OpenSearch: one vector per page, filterable by chapter / page_number / acs_codes
+
+A calendar citation "FAA-H-8083-30B Ch. 13 pgs. 13-1 to 13-14"
+attaches only those printed pages — not the whole chapter, and not 512-word slices.
+
+Retag without rechunk:
+  POST /sources/{job_id}/content/retag  { "all_failed": true }
+  or scripts/rechunk_ebook_references.py --retag-failed --apply</pre>
+
       <h3>What is <em>not</em> stored as its own table</h3>
       <p>
         Quizzes, projects, hangar activities, study questions, slides, lessons, ebooks, and keys
@@ -937,6 +1070,7 @@ A Block 6 CDD/Blueprint query matches only the Block 6 unit</pre>
 
     <footer>
       Generated from AIM DIS code and <code>config/clients/aim.yaml</code>.
+      Updated 2026-09-15 for page-aligned handbook chunking, LLM page tags, retag, and assigned-reading slices.
       Pipeline chunk sizes, folder priority, and visibility are config — change YAML, not this page.
     </footer>
   </main>

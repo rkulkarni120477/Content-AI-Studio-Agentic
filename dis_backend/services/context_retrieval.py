@@ -363,6 +363,10 @@ class ContextRetrievalService:
                     "extracted_chars": src.get("extracted_chars"),
                     "created_at": src.get("created_at"),
                     "updated_at": src.get("updated_at"),
+                    # Live Retry-all tagging chip (empty/absent when idle).
+                    "retag_status": src.get("retag_status") or "",
+                    "retag_done": src.get("retag_done"),
+                    "retag_total": src.get("retag_total"),
                     # Taxonomy columns: Field Registry cas_list promote
                     # (tenant metadata_framework when present; else DEFAULT_REGISTRY).
                     **project_cas_list_taxonomy(src, registry_for_tenant(self.tenant_cfg)),
