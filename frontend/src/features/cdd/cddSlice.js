@@ -38,6 +38,13 @@ const cddSlice = createSlice({
     // Clear stale block-job status so a completed/failed banner from one course
     // doesn't leak into another course's view on navigation.
     resetBlockJob(s) { s.blockJob = null; },
+    // Drop the per-title CDD context on a title switch. `activeCdd` already resets
+    // on fetchCddsThunk.fulfilled, but this closes the async gap between switching
+    // titles and that fetch resolving.
+    resetCddContext(s) {
+      s.activeCdd = null;
+      s.versions = [];
+    },
   },
   extraReducers: (b) => {
     b
@@ -101,6 +108,7 @@ const cddSlice = createSlice({
 
 export const {
   clearError, clearArchiveRefusal, clearGenerating, setActiveCddLocal, resetBlockJob,
+  resetCddContext,
 } = cddSlice.actions;
 export default cddSlice.reducer;
 

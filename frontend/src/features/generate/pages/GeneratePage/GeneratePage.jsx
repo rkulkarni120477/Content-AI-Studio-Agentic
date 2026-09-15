@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
 import { launchGenerationThunk, pollJobThunk, cancelJobThunk } from '@features/generate/generateThunks';
 import {
-  selectIsGenerating, selectActiveJobId, selectJobStatus,
+  selectIsGenerating, selectActiveJobId, selectJobCourseId, selectJobStatus,
   selectJobProgress, selectJobProgressPct, selectJobErrorDetail,
   selectLatestBlocks, selectGenerateError,
   clearJob, clearError,
@@ -53,11 +53,13 @@ const SUPP_UPLOADS = [
 
 export default function GeneratePage() {
   const { courseId } = useParams();
+  const numericCourseId = Number(courseId);
   const dispatch = useAppDispatch();
   const L = useLabels();
 
   const isGenerating = useAppSelector(selectIsGenerating);
   const activeJobId = useAppSelector(selectActiveJobId);
+  const jobCourseId = useAppSelector(selectJobCourseId);
   const jobStatus = useAppSelector(selectJobStatus);
   const jobProgress = useAppSelector(selectJobProgress);
   const jobProgressPct = useAppSelector(selectJobProgressPct);
@@ -224,11 +226,15 @@ export default function GeneratePage() {
     checkGates();
   }, [selectedComponent, effBpId, effCddId, courseId]);
 
+  // Only the title the job was launched on resumes polling — a different title
+  // must not poll (and thereby pull) another title's job into view.
+  const jobBelongsToThisCourse = jobCourseId != null && jobCourseId === numericCourseId;
+
   useEffect(() => {
-    if (activeJobId && jobStatus && !isTerminalJobStatus(jobStatus)) {
+    if (jobBelongsToThisCourse && activeJobId && jobStatus && !isTerminalJobStatus(jobStatus)) {
       dispatch(pollJobThunk({ jobId: activeJobId }));
     }
-  }, [activeJobId, jobStatus, dispatch]);
+  }, [jobBelongsToThisCourse, activeJobId, jobStatus, dispatch]);
 
   async function handleSuppFile(key, files, sourceType) {
     const file = files?.[0];
@@ -319,9 +325,15 @@ export default function GeneratePage() {
     : 'None linked';
   const styleDisp = activeStyle?.name || 'None';
 
-  const jobActive = activeJobId && jobStatus && !isTerminalJobStatus(jobStatus);
-  const jobTerminal = activeJobId && jobStatus && isTerminalJobStatus(jobStatus);
-  const showJobOnly = jobTerminal && latestBlocks.length === 0 && !generateError;
+  // Job + results only belong on the title that launched them. On any other
+  // title (existing or brand-new) these read empty, so the page shows the normal
+  // interface; returning to the owning title surfaces them again — including a
+  // result that completed in the background while the user was away.
+  const activeJobIdForCourse = jobBelongsToThisCourse ? activeJobId : null;
+  const latestBlocksForCourse = jobBelongsToThisCourse ? latestBlocks : [];
+  const jobActive = activeJobIdForCourse && jobStatus && !isTerminalJobStatus(jobStatus);
+  const jobTerminal = activeJobIdForCourse && jobStatus && isTerminalJobStatus(jobStatus);
+  const showJobOnly = jobTerminal && latestBlocksForCourse.length === 0 && !generateError;
 
   function handleStartAnother() {
     dispatch(clearJob());
@@ -345,12 +357,12 @@ export default function GeneratePage() {
                 Generating content for{' '}
                 <strong>{selectedComponent?.label || 'selected lesson'}</strong>…
               </span>
-              {activeJobId && (
+              {activeJobIdForCourse && (
                 <Button
                   variant="ghost"
                   size="sm"
                   disabled={jobStatus === JOB_STATUSES.CANCELLED}
-                  onClick={() => dispatch(cancelJobThunk(activeJobId))}
+                  onClick={() => dispatch(cancelJobThunk(activeJobIdForCourse))}
                 >
                   Cancel
                 </Button>
@@ -595,7 +607,7 @@ export default function GeneratePage() {
             )}
         </section>
 
-        {!activeJobId && latestBlocks.length === 0 && (
+        {!activeJobIdForCourse && latestBlocksForCourse.length === 0 && (
           components.length > 0 ? (
             <div className={styles.readyState}>
               ✅ <strong>{L.blueprint} loaded</strong> — {components.length} component(s) ready.
@@ -616,7 +628,7 @@ export default function GeneratePage() {
         </>
         )}
 
-        {(activeJobId || latestBlocks.length > 0) && (
+        {(activeJobIdForCourse || latestBlocksForCourse.length > 0) && (
           <section className={styles.resultsPanel}>
             <h2 className={styles.resultsPanel__title}>
               {jobActive ? 'Generation Progress' : 'Latest Results'}
@@ -645,12 +657,12 @@ export default function GeneratePage() {
                 </div>
               </div>
             )}
-            {latestBlocks.length > 0 && (
+            {latestBlocksForCourse.length > 0 && (
               <div className={styles.results}>
                 <p className={styles.results__count}>
-                  ✅ {latestBlocks.length} block(s) generated
+                  ✅ {latestBlocksForCourse.length} block(s) generated
                 </p>
-                {latestBlocks.map((block, i) => (
+                {latestBlocksForCourse.map((block, i) => (
                   <details key={block.id || i} className={styles.blockCard}>
                     <summary className={styles.blockCard__header}>
                       <span className={styles.blockCard__label}>{block.block_label || `Block ${i + 1}`}</span>

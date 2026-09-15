@@ -4,6 +4,7 @@ import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 
 const initialState = {
   activeJobId:         null,
+  jobCourseId:         null,  // course (title) the active job was launched on
   jobStatus:           null,  // pending | running | completed | failed
   jobProgress:         [],    // list of stage messages
   jobProgressPct:      0,
@@ -20,6 +21,7 @@ const generateSlice = createSlice({
   reducers: {
     clearJob(s) {
       s.activeJobId  = null;
+      s.jobCourseId  = null;
       s.jobStatus    = null;
       s.jobProgress  = [];
       s.jobProgressPct = 0;
@@ -32,9 +34,13 @@ const generateSlice = createSlice({
   },
   extraReducers: (b) => {
     b
-      .addCase(launchGenerationThunk.pending, (s) => {
+      .addCase(launchGenerationThunk.pending, (s, action) => {
         invalidatePollSession();
         s.isGenerating = true;
+        // Tag the job with the title it belongs to, so the banner/results and the
+        // background poll only surface on this title — never on another one the
+        // user navigates to while it runs.
+        s.jobCourseId = action.meta.arg?.course_id ?? null;
         s.error = null;
         s.jobErrorDetail = null;
         s.latestBlocks = [];
@@ -106,6 +112,7 @@ export const { clearJob, clearError, addJobStage } = generateSlice.actions;
 export default generateSlice.reducer;
 
 export const selectActiveJobId        = (s) => s.generate.activeJobId;
+export const selectJobCourseId        = (s) => s.generate.jobCourseId;
 export const selectJobStatus          = (s) => s.generate.jobStatus;
 export const selectJobProgress        = (s) => s.generate.jobProgress;
 export const selectJobProgressPct     = (s) => s.generate.jobProgressPct;

@@ -20,11 +20,18 @@ async function loadDocumentRegistry() {
 
 export const fetchStylesThunk = createAsyncThunk(
   'style/fetchStyles',
-  async (_, { getState, rejectWithValue }) => {
+  // Accept an optional explicit scope so callers on a course route (e.g. the
+  // editor sidebar) can pass the URL courseId directly instead of relying on
+  // the dashboard slice, which may not be hydrated yet right after an import.
+  // With no arg, fall back to the dashboard slice — preserves every existing caller.
+  async (arg, { getState, rejectWithValue }) => {
     try {
       const state = getState();
-      const courseId = state?.dashboard?.selectedCourse?.id ?? null;
-      const projectId = state?.dashboard?.selectedProject?.id ?? null;
+      const argCourseId =
+        arg && typeof arg === 'object' ? arg.courseId : (typeof arg === 'number' ? arg : undefined);
+      const argProjectId = arg && typeof arg === 'object' ? arg.projectId : undefined;
+      const courseId = argCourseId ?? state?.dashboard?.selectedCourse?.id ?? null;
+      const projectId = argProjectId ?? state?.dashboard?.selectedProject?.id ?? null;
       return await styleService.listStyles({ projectId, courseId });
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
