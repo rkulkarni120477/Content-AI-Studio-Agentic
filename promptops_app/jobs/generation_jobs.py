@@ -467,6 +467,12 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         # logs it at the choke point itself now (see llm_client.py's _log_and_trace).
         # A separate manual log_llm_usage() call here would double-count this call's
         # cost, since every attempt is now logged automatically regardless of caller.
+        from promptops_app.core.models import resolve_model
+        # Model-aware output cap: an unresolvable name here just falls back to
+        # the default model's cap (matching the historical flat 16384), same
+        # as before this fix — the actual LLM call below still does its own
+        # strict validate_model() and surfaces a real error for a bad name.
+        _model_def = resolve_model(model_choice)
         _llm_result = _llm_call(model_choice, system_p, user_p, UsageLogContext(
             user_name=user_name,
             project_id=project_id,
@@ -475,7 +481,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             entity_id=job_id,
             prompt_template=_tpl_name,
             prompt_version=_tpl_ver,
-        ))
+        ), max_tokens=_model_def.max_output_tokens)
 
         if _llm_result.is_error:
             _log.error(

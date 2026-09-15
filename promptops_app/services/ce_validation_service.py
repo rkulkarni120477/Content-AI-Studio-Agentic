@@ -177,7 +177,11 @@ def run_ce_validation(
     )
 
     try:
-        _fix_result = llm_call_fn(model_choice, _fix_system, _fix_user)
+        from promptops_app.core.models import resolve_model
+        _fix_result = llm_call_fn(
+            model_choice, _fix_system, _fix_user,
+            max_tokens=resolve_model(model_choice).max_output_tokens,
+        )
         if _fix_result.is_error:
             _log.warning("CE fix LLM call failed: %s", _fix_result.text)
             return content
