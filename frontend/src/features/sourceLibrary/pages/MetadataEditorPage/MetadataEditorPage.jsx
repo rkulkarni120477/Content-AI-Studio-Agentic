@@ -27,6 +27,8 @@ const VIEW_TABS = [
   { id: 'content', label: 'Content' },
 ];
 
+const DOCUMENT_SECTION = 'document';
+
 const EMPTY_FORM = {
   ai_metadata: {
     title: '', author: '', subject: '', language: '', description: '', keywords: [],
@@ -72,6 +74,38 @@ function formFromResponse(data) {
   };
 }
 
+function formFromUnit(unit, listUnit = null) {
+  const meta = unit?.metadata || {};
+  const topics = unit?.topics || meta.topics || listUnit?.topics || [];
+  const acs = meta.acs_codes || listUnit?.acs_codes || [];
+  const summary = meta.summary || listUnit?.summary || '';
+  return {
+    ai_metadata: {
+      title: unit?.title || listUnit?.title || '',
+      author: '',
+      subject: '',
+      language: '',
+      description: String(summary || ''),
+      keywords: [...(Array.isArray(topics) ? topics : [])],
+    },
+    taxonomy_standards: {
+      subject_area: '',
+      domain: '',
+      subdomain: '',
+      blooms_level: '',
+      skill_level: '',
+      learning_standards: [...(Array.isArray(acs) ? acs : [])],
+      skills_mapped: [],
+    },
+    relationships: {
+      series_collection: '',
+      related_documents: [],
+      prerequisites: [],
+      cross_references: [],
+    },
+  };
+}
+
 function errorMessage(err, fallback) {
   return err?.response?.data?.detail || err?.message || fallback;
 }
@@ -90,28 +124,51 @@ export default function MetadataEditorPage() {
     ? searchParams.get('tab')
     : 'ai';
 
+  const selectedSectionId = searchParams.get('section') || DOCUMENT_SECTION;
+  const isDocumentScope = selectedSectionId === DOCUMENT_SECTION;
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [serverData, setServerData] = useState(null);
-  const [form, setForm] = useState(cloneForm());
-  const [savedForm, setSavedForm] = useState(cloneForm());
+  const [documentForm, setDocumentForm] = useState(cloneForm());
+  const [savedDocumentForm, setSavedDocumentForm] = useState(cloneForm());
+  const [sectionForm, setSectionForm] = useState(cloneForm());
+  const [savedSectionForm, setSavedSectionForm] = useState(cloneForm());
   const [picker, setPicker] = useState(null);
   const [pickerDocs, setPickerDocs] = useState([]);
   const [pickerSearch, setPickerSearch] = useState('');
+
+  const [overview, setOverview] = useState(null);
+  const [unitsPayload, setUnitsPayload] = useState(null);
+  const [selectedUnit, setSelectedUnit] = useState(null);
+  const [sectionLoading, setSectionLoading] = useState(false);
+  const [structureError, setStructureError] = useState('');
+  const [retagging, setRetagging] = useState(false);
+  const [retagMessage, setRetagMessage] = useState('');
 
   const scopeParams = useMemo(() => ({
     course_id: courseId,
     project_id: project?.id,
   }), [courseId, project?.id]);
 
+  const units = unitsPayload?.units || [];
+  const sectionIndex = Math.max(0, units.findIndex((u) => String(u.unit_id) === String(selectedSectionId)));
+  const listUnit = !isDocumentScope && sectionIndex >= 0 ? units[sectionIndex] : null;
+
+  const form = isDocumentScope ? documentForm : sectionForm;
+  const savedForm = isDocumentScope ? savedDocumentForm : savedSectionForm;
+
   const isDirty = useMemo(
     () => !isView && JSON.stringify(form) !== JSON.stringify(savedForm),
     [form, savedForm, isView],
   );
 
-  const keywordsMax = serverData?.limits?.keywords_max || 12;
+  const keywordsMax = isDocumentScope
+    ? (serverData?.limits?.keywords_max || 12)
+    : 8;
   const pageTitle = isView ? 'View document' : 'Edit metadata';
+  const isSyntheticSection = String(selectedSectionId || '').startsWith('view_page_');
 
   const loadMetadata = useCallback(async () => {
     setLoading(true);
@@ -120,8 +177,8 @@ export default function MetadataEditorPage() {
       const data = await sourceLibraryApi.getMetadata(jobId, scopeParams);
       const nextForm = formFromResponse(data);
       setServerData(data);
-      setForm(nextForm);
-      setSavedForm(cloneForm(nextForm));
+      setDocumentForm(nextForm);
+      setSavedDocumentForm(cloneForm(nextForm));
     } catch (err) {
       setError(errorMessage(err, 'Could not load metadata.'));
     } finally {
@@ -129,45 +186,157 @@ export default function MetadataEditorPage() {
     }
   }, [jobId, scopeParams]);
 
+  const loadUnits = useCallback(async () => {
+    setStructureError('');
+    try {
+      const ov = await sourceLibraryApi.getOverview(jobId, scopeParams);
+      setOverview(ov);
+      const un = await sourceLibraryApi.getUnits(jobId, scopeParams);
+      setUnitsPayload(un);
+      return un;
+    } catch (err) {
+      setStructureError(errorMessage(err, 'Could not load document sections.'));
+      setOverview(null);
+      setUnitsPayload(null);
+      return null;
+    }
+  }, [jobId, scopeParams]);
+
   useEffect(() => { loadMetadata(); }, [loadMetadata]);
+  useEffect(() => { loadUnits(); }, [loadUnits]);
+
+  const applySectionForm = useCallback((unit, listEntry) => {
+    const next = formFromUnit(unit, listEntry);
+    setSectionForm(next);
+    setSavedSectionForm(cloneForm(next));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSelectedSection() {
+      if (isDocumentScope) {
+        setSelectedUnit(null);
+        setSectionLoading(false);
+        return;
+      }
+      if (!units.length) return;
+      const entry = units.find((u) => String(u.unit_id) === String(selectedSectionId));
+      if (!entry?.unit_id) {
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.set('section', DOCUMENT_SECTION);
+          return next;
+        }, { replace: true });
+        return;
+      }
+      setSectionLoading(true);
+      try {
+        const data = await sourceLibraryApi.getUnitDetail(jobId, entry.unit_id, scopeParams);
+        if (cancelled) return;
+        const unit = data.unit || null;
+        setSelectedUnit(unit);
+        applySectionForm(unit, entry);
+      } catch (err) {
+        if (cancelled) return;
+        setSelectedUnit({
+          title: 'Error',
+          text: errorMessage(err, 'Could not load content unit.'),
+          metadata: {},
+        });
+        applySectionForm({ title: entry.title || '', topics: entry.topics || [], metadata: {
+          summary: entry.summary || '',
+          acs_codes: entry.acs_codes || [],
+          topics: entry.topics || [],
+        } }, entry);
+      } finally {
+        if (!cancelled) setSectionLoading(false);
+      }
+    }
+    loadSelectedSection();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, selectedSectionId, isDocumentScope, JSON.stringify(units.map((u) => u.unit_id)), scopeParams]);
+
+  const ingestStatus = String(overview?.status || '').toLowerCase();
+  const isProcessing = ingestStatus === 'processing' || ingestStatus === 'pending';
+
+  useEffect(() => {
+    if (!jobId || !isProcessing) return undefined;
+    const timer = window.setInterval(async () => {
+      try {
+        await loadUnits();
+      } catch {
+        // Keep last known state; next poll may succeed.
+      }
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [jobId, isProcessing, loadUnits]);
 
   function setTab(tabId) {
-    setSearchParams({ tab: tabId }, { replace: true });
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', tabId);
+      if (!next.get('section')) next.set('section', selectedSectionId);
+      return next;
+    }, { replace: true });
+  }
+
+  function handleSectionChange(nextId) {
+    if (!isView && isDirty && !window.confirm('Discard unsaved changes?')) return;
+    if (!isView && isDirty) {
+      if (isDocumentScope) setDocumentForm(cloneForm(savedDocumentForm));
+      else setSectionForm(cloneForm(savedSectionForm));
+    }
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('section', nextId || DOCUMENT_SECTION);
+      if (!next.get('tab')) next.set('tab', activeTab);
+      return next;
+    }, { replace: true });
+  }
+
+  function setFormUpdater(updater) {
+    if (isDocumentScope) setDocumentForm(updater);
+    else setSectionForm(updater);
   }
 
   function updateAi(field, value) {
     if (isView) return;
-    setForm((f) => ({ ...f, ai_metadata: { ...f.ai_metadata, [field]: value } }));
+    if (!isDocumentScope && isSyntheticSection) return;
+    setFormUpdater((f) => ({ ...f, ai_metadata: { ...f.ai_metadata, [field]: value } }));
   }
 
   function updateTaxonomy(field, value) {
     if (isView) return;
-    setForm((f) => ({ ...f, taxonomy_standards: { ...f.taxonomy_standards, [field]: value } }));
+    if (!isDocumentScope && field !== 'learning_standards') return;
+    if (!isDocumentScope && isSyntheticSection) return;
+    setFormUpdater((f) => ({ ...f, taxonomy_standards: { ...f.taxonomy_standards, [field]: value } }));
   }
 
   function updateRelationships(field, value) {
-    if (isView) return;
-    setForm((f) => ({ ...f, relationships: { ...f.relationships, [field]: value } }));
+    if (isView || !isDocumentScope) return;
+    setDocumentForm((f) => ({ ...f, relationships: { ...f.relationships, [field]: value } }));
   }
 
   function addKeyword() {
-    const value = window.prompt('Add keyword');
+    const value = window.prompt(isDocumentScope ? 'Add keyword' : 'Add topic');
     if (!value?.trim()) return;
     const next = [...form.ai_metadata.keywords, value.trim()];
     if (next.length > keywordsMax) {
-      toast.error(`Maximum ${keywordsMax} keywords`);
+      toast.error(`Maximum ${keywordsMax} ${isDocumentScope ? 'keywords' : 'topics'}`);
       return;
     }
     updateAi('keywords', next);
   }
 
   function addTaxonomyItem(field) {
-    const value = window.prompt('Add value');
+    const value = window.prompt(field === 'learning_standards' && !isDocumentScope ? 'Add ACS code' : 'Add value');
     if (!value?.trim()) return;
     updateTaxonomy(field, [...form.taxonomy_standards[field], value.trim()]);
   }
 
   function openRelationshipPicker(relType, { green = false, allowTextOnly = false } = {}) {
+    if (!isDocumentScope) return;
     setPicker({ relType, green, allowTextOnly });
     setPickerSearch('');
     sourceLibraryApi.listDocuments({ ...scopeParams, limit: 200 })
@@ -190,12 +359,36 @@ export default function MetadataEditorPage() {
   async function handleSave() {
     setSaving(true);
     try {
-      const data = await sourceLibraryApi.patchMetadata(jobId, form, scopeParams);
-      const nextForm = formFromResponse(data);
-      setServerData(data);
-      setForm(nextForm);
-      setSavedForm(cloneForm(nextForm));
-      toast.success('Metadata saved');
+      if (isDocumentScope) {
+        const data = await sourceLibraryApi.patchMetadata(jobId, form, scopeParams);
+        const nextForm = formFromResponse(data);
+        setServerData(data);
+        setDocumentForm(nextForm);
+        setSavedDocumentForm(cloneForm(nextForm));
+        toast.success('Metadata saved');
+      } else {
+        if (isSyntheticSection) {
+          toast.error('Synthetic view sections cannot be edited');
+          return;
+        }
+        const payload = {
+          title: form.ai_metadata.title,
+          summary: form.ai_metadata.description,
+          topics: form.ai_metadata.keywords,
+          acs_codes: form.taxonomy_standards.learning_standards,
+        };
+        const data = await sourceLibraryApi.patchUnitMetadata(
+          jobId,
+          selectedSectionId,
+          payload,
+          scopeParams,
+        );
+        const unit = data.unit || null;
+        setSelectedUnit(unit);
+        applySectionForm(unit, listUnit);
+        await loadUnits();
+        toast.success('Section metadata saved');
+      }
     } catch (err) {
       toast.error(errorMessage(err, 'Could not save metadata.'));
     } finally {
@@ -204,6 +397,10 @@ export default function MetadataEditorPage() {
   }
 
   async function handleRevert() {
+    if (!isDocumentScope) {
+      toast.error('Revert is only available for whole-document metadata');
+      return;
+    }
     if (!serverData?.ai_baseline_available) {
       toast.error('AI baseline not available for this document');
       return;
@@ -212,8 +409,8 @@ export default function MetadataEditorPage() {
       const data = await sourceLibraryApi.revertMetadata(jobId, scopeParams);
       const nextForm = formFromResponse(data);
       setServerData(data);
-      setForm(nextForm);
-      setSavedForm(cloneForm(nextForm));
+      setDocumentForm(nextForm);
+      setSavedDocumentForm(cloneForm(nextForm));
       toast.success('Restored AI values');
     } catch (err) {
       toast.error(errorMessage(err, 'Could not revert to AI values.'));
@@ -222,8 +419,39 @@ export default function MetadataEditorPage() {
 
   function handleCancel() {
     if (!isView && isDirty && !window.confirm('Discard unsaved changes?')) return;
-    if (!isView) setForm(cloneForm(savedForm));
+    if (!isView) {
+      if (isDocumentScope) setDocumentForm(cloneForm(savedDocumentForm));
+      else setSectionForm(cloneForm(savedSectionForm));
+    }
     navigate(`/workspace/${courseId}/sources`);
+  }
+
+  async function handleRetag({ unitIds = null, allFailed = false } = {}) {
+    setRetagging(true);
+    setRetagMessage('');
+    try {
+      const payload = allFailed ? { all_failed: true } : { unit_ids: unitIds || [] };
+      const result = await sourceLibraryApi.retagContent(jobId, payload, scopeParams);
+      const failedLeft = Number(result?.tagging_failed_count || 0);
+      const n = Number(result?.retagged || 0);
+      setRetagMessage(
+        failedLeft > 0
+          ? `Re-tagged ${n} page(s); ${failedLeft} still need tagging.`
+          : `Re-tagged ${n} page(s) successfully.`,
+      );
+      const un = await loadUnits();
+      if (!isDocumentScope && selectedSectionId) {
+        const detail = await sourceLibraryApi.getUnitDetail(jobId, selectedSectionId, scopeParams);
+        const unit = detail.unit || null;
+        setSelectedUnit(unit);
+        const entry = (un?.units || []).find((u) => String(u.unit_id) === String(selectedSectionId));
+        applySectionForm(unit, entry);
+      }
+    } catch (e) {
+      setRetagMessage(errorMessage(e, 'Re-tag failed.'));
+    } finally {
+      setRetagging(false);
+    }
   }
 
   const filteredPickerDocs = pickerDocs.filter((doc) => {
@@ -268,7 +496,12 @@ export default function MetadataEditorPage() {
         {error ? <div className={styles.error}>{error}</div> : null}
 
         <div className={styles.layout}>
-          <DocumentSummaryPanel summary={serverData?.document_summary} />
+          <DocumentSummaryPanel
+            summary={serverData?.document_summary}
+            units={units}
+            selectedSectionId={selectedSectionId}
+            onSectionChange={handleSectionChange}
+          />
 
           <div className={styles.editorCard}>
             <div className={styles.tabs}>
@@ -287,76 +520,131 @@ export default function MetadataEditorPage() {
             {activeTab === 'ai' && (
               <>
                 <ProvenanceBanner>
-                  {isView
-                    ? `Extracted by AI on ${aiDate}`
-                    : `Extracted by AI on ${aiDate} · edits override the extracted values`}
+                  {isDocumentScope
+                    ? (isView
+                      ? `Extracted by AI on ${aiDate}`
+                      : `Extracted by AI on ${aiDate} · edits override the extracted values`)
+                    : (isView
+                      ? 'Section tags from page content tagging'
+                      : 'Section tags from page content tagging · edits update this section only')}
                 </ProvenanceBanner>
-                <div className={styles.grid2}>
-                  <MetadataField readOnly={isView} label="Title" value={form.ai_metadata.title} onChange={(v) => updateAi('title', v)} />
-                  <MetadataField readOnly={isView} label="Author" value={form.ai_metadata.author} onChange={(v) => updateAi('author', v)} />
-                  <MetadataField readOnly={isView} label="Subject" value={form.ai_metadata.subject} onChange={(v) => updateAi('subject', v)} />
-                  <MetadataField readOnly={isView} label="Language" value={form.ai_metadata.language} onChange={(v) => updateAi('language', v)} />
-                </div>
-                <div className={styles.fieldBlock}>
-                  <label className={styles.fieldLabel}>Description</label>
-                  <textarea
-                    className={styles.textarea}
-                    rows={3}
-                    readOnly={isView}
-                    value={form.ai_metadata.description}
-                    onChange={isView ? undefined : (e) => updateAi('description', e.target.value)}
-                  />
-                </div>
-                <MetadataTagInput
-                  readOnly={isView}
-                  label="Keywords"
-                  items={form.ai_metadata.keywords}
-                  countLabel={`${form.ai_metadata.keywords.length} of ${keywordsMax} max`}
-                  addLabel="+ Add keyword..."
-                  onAdd={addKeyword}
-                  onRemove={(idx) => updateAi('keywords', form.ai_metadata.keywords.filter((_, i) => i !== idx))}
-                  maxItems={keywordsMax}
-                />
+                {isDocumentScope ? (
+                  <>
+                    <div className={styles.grid2}>
+                      <MetadataField readOnly={isView} label="Title" value={form.ai_metadata.title} onChange={(v) => updateAi('title', v)} />
+                      <MetadataField readOnly={isView} label="Author" value={form.ai_metadata.author} onChange={(v) => updateAi('author', v)} />
+                      <MetadataField readOnly={isView} label="Subject" value={form.ai_metadata.subject} onChange={(v) => updateAi('subject', v)} />
+                      <MetadataField readOnly={isView} label="Language" value={form.ai_metadata.language} onChange={(v) => updateAi('language', v)} />
+                    </div>
+                    <div className={styles.fieldBlock}>
+                      <label className={styles.fieldLabel}>Description</label>
+                      <textarea
+                        className={styles.textarea}
+                        rows={3}
+                        readOnly={isView}
+                        value={form.ai_metadata.description}
+                        onChange={isView ? undefined : (e) => updateAi('description', e.target.value)}
+                      />
+                    </div>
+                    <MetadataTagInput
+                      readOnly={isView}
+                      label="Keywords"
+                      items={form.ai_metadata.keywords}
+                      countLabel={`${form.ai_metadata.keywords.length} of ${keywordsMax} max`}
+                      addLabel="+ Add keyword..."
+                      onAdd={addKeyword}
+                      onRemove={(idx) => updateAi('keywords', form.ai_metadata.keywords.filter((_, i) => i !== idx))}
+                      maxItems={keywordsMax}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <div className={styles.fieldBlock}>
+                      <MetadataField
+                        readOnly={isView || isSyntheticSection}
+                        label="Title"
+                        value={form.ai_metadata.title}
+                        onChange={(v) => updateAi('title', v)}
+                      />
+                    </div>
+                    <div className={styles.fieldBlock}>
+                      <label className={styles.fieldLabel}>Description</label>
+                      <textarea
+                        className={styles.textarea}
+                        rows={3}
+                        readOnly={isView || isSyntheticSection}
+                        value={form.ai_metadata.description}
+                        onChange={(isView || isSyntheticSection) ? undefined : (e) => updateAi('description', e.target.value)}
+                      />
+                    </div>
+                    <MetadataTagInput
+                      readOnly={isView || isSyntheticSection}
+                      label="Keywords"
+                      items={form.ai_metadata.keywords}
+                      countLabel={`${form.ai_metadata.keywords.length} of ${keywordsMax} max`}
+                      addLabel="+ Add topic..."
+                      onAdd={addKeyword}
+                      onRemove={(idx) => updateAi('keywords', form.ai_metadata.keywords.filter((_, i) => i !== idx))}
+                      maxItems={keywordsMax}
+                    />
+                  </>
+                )}
               </>
             )}
 
             {activeTab === 'taxonomy' && (
               <>
                 <ProvenanceBanner>
-                  Derived from Cengage taxonomy v4 · aligned to AACSB and AMA frameworks
+                  {isDocumentScope
+                    ? 'Derived from Cengage taxonomy v4 · aligned to AACSB and AMA frameworks'
+                    : 'ACS codes tagged for this section'}
                 </ProvenanceBanner>
-                <div className={styles.grid2}>
-                  <MetadataField readOnly={isView} label="Subject area" value={form.taxonomy_standards.subject_area} onChange={(v) => updateTaxonomy('subject_area', v)} />
-                  <MetadataField readOnly={isView} label="Domain" value={form.taxonomy_standards.domain} onChange={(v) => updateTaxonomy('domain', v)} />
-                  <MetadataField readOnly={isView} label="Subdomain" value={form.taxonomy_standards.subdomain} onChange={(v) => updateTaxonomy('subdomain', v)} />
-                  <MetadataField readOnly={isView} label="Bloom's level" value={form.taxonomy_standards.blooms_level} onChange={(v) => updateTaxonomy('blooms_level', v)} />
-                </div>
-                <div className={styles.fieldBlock}>
-                  <label className={styles.fieldLabel}>Skill level</label>
-                  <input
-                    className={styles.inputNarrow}
-                    readOnly={isView}
-                    value={form.taxonomy_standards.skill_level}
-                    onChange={isView ? undefined : (e) => updateTaxonomy('skill_level', e.target.value)}
+                {isDocumentScope ? (
+                  <>
+                    <div className={styles.grid2}>
+                      <MetadataField readOnly={isView} label="Subject area" value={form.taxonomy_standards.subject_area} onChange={(v) => updateTaxonomy('subject_area', v)} />
+                      <MetadataField readOnly={isView} label="Domain" value={form.taxonomy_standards.domain} onChange={(v) => updateTaxonomy('domain', v)} />
+                      <MetadataField readOnly={isView} label="Subdomain" value={form.taxonomy_standards.subdomain} onChange={(v) => updateTaxonomy('subdomain', v)} />
+                      <MetadataField readOnly={isView} label="Bloom's level" value={form.taxonomy_standards.blooms_level} onChange={(v) => updateTaxonomy('blooms_level', v)} />
+                    </div>
+                    <div className={styles.fieldBlock}>
+                      <label className={styles.fieldLabel}>Skill level</label>
+                      <input
+                        className={styles.inputNarrow}
+                        readOnly={isView}
+                        value={form.taxonomy_standards.skill_level}
+                        onChange={isView ? undefined : (e) => updateTaxonomy('skill_level', e.target.value)}
+                      />
+                    </div>
+                    <MetadataTagInput
+                      readOnly={isView}
+                      label="Learning standards"
+                      items={form.taxonomy_standards.learning_standards}
+                      countLabel={`${form.taxonomy_standards.learning_standards.length} mapped`}
+                      tone="green"
+                      onAdd={() => addTaxonomyItem('learning_standards')}
+                      onRemove={(idx) => updateTaxonomy('learning_standards', form.taxonomy_standards.learning_standards.filter((_, i) => i !== idx))}
+                    />
+                    <MetadataTagInput
+                      readOnly={isView}
+                      label="Skills mapped"
+                      items={form.taxonomy_standards.skills_mapped}
+                      countLabel={`${form.taxonomy_standards.skills_mapped.length} mapped`}
+                      onAdd={() => addTaxonomyItem('skills_mapped')}
+                      onRemove={(idx) => updateTaxonomy('skills_mapped', form.taxonomy_standards.skills_mapped.filter((_, i) => i !== idx))}
+                    />
+                  </>
+                ) : (
+                  <MetadataTagInput
+                    readOnly={isView || isSyntheticSection}
+                    label="Learning standards"
+                    items={form.taxonomy_standards.learning_standards}
+                    countLabel={`${form.taxonomy_standards.learning_standards.length} mapped`}
+                    tone="green"
+                    onAdd={() => addTaxonomyItem('learning_standards')}
+                    onRemove={(idx) => updateTaxonomy('learning_standards', form.taxonomy_standards.learning_standards.filter((_, i) => i !== idx))}
                   />
-                </div>
-                <MetadataTagInput
-                  readOnly={isView}
-                  label="Learning standards"
-                  items={form.taxonomy_standards.learning_standards}
-                  countLabel={`${form.taxonomy_standards.learning_standards.length} mapped`}
-                  tone="green"
-                  onAdd={() => addTaxonomyItem('learning_standards')}
-                  onRemove={(idx) => updateTaxonomy('learning_standards', form.taxonomy_standards.learning_standards.filter((_, i) => i !== idx))}
-                />
-                <MetadataTagInput
-                  readOnly={isView}
-                  label="Skills mapped"
-                  items={form.taxonomy_standards.skills_mapped}
-                  countLabel={`${form.taxonomy_standards.skills_mapped.length} mapped`}
-                  onAdd={() => addTaxonomyItem('skills_mapped')}
-                  onRemove={(idx) => updateTaxonomy('skills_mapped', form.taxonomy_standards.skills_mapped.filter((_, i) => i !== idx))}
-                />
+                )}
               </>
             )}
 
@@ -365,60 +653,79 @@ export default function MetadataEditorPage() {
                 <ProvenanceBanner>
                   Links detected across the Source Library · edits affect retrieval, not file storage
                 </ProvenanceBanner>
-                <MetadataField
-                  readOnly={isView}
-                  label="Series / collection"
-                  value={form.relationships.series_collection}
-                  onChange={(v) => updateRelationships('series_collection', v)}
-                />
-                <MetadataTagInput
-                  readOnly={isView}
-                  label="Related documents"
-                  items={form.relationships.related_documents}
-                  countLabel={`${form.relationships.related_documents.length} linked`}
-                  tone="green"
-                  onAdd={() => openRelationshipPicker('related_documents', { green: true })}
-                  onRemove={(idx) => updateRelationships('related_documents', form.relationships.related_documents.filter((_, i) => i !== idx))}
-                />
-                <div className={styles.fieldBlock}>
-                  <div className={styles.fieldHeader}>
-                    <label className={styles.fieldLabel}>Prerequisites</label>
-                    <span className={styles.fieldCount}>
-                      {form.relationships.prerequisites.length ? `${form.relationships.prerequisites.length} linked` : 'none set'}
-                    </span>
-                  </div>
-                  {form.relationships.prerequisites.length === 0 ? (
-                    <div className={styles.emptyRel}>
-                      No prerequisites — this document stands alone
-                      {!isView && (
-                        <button type="button" className={styles.chipAdd} style={{ marginLeft: 12 }} onClick={() => addTextRelationship('prerequisites')}>
-                          + Add...
-                        </button>
-                      )}
-                    </div>
-                  ) : (
+                {isDocumentScope ? (
+                  <>
+                    <MetadataField
+                      readOnly={isView}
+                      label="Series / collection"
+                      value={form.relationships.series_collection}
+                      onChange={(v) => updateRelationships('series_collection', v)}
+                    />
                     <MetadataTagInput
                       readOnly={isView}
-                      label=""
-                      items={form.relationships.prerequisites}
-                      onAdd={() => openRelationshipPicker('prerequisites', { allowTextOnly: true })}
-                      onRemove={(idx) => updateRelationships('prerequisites', form.relationships.prerequisites.filter((_, i) => i !== idx))}
+                      label="Related documents"
+                      items={form.relationships.related_documents}
+                      countLabel={`${form.relationships.related_documents.length} linked`}
+                      tone="green"
+                      onAdd={() => openRelationshipPicker('related_documents', { green: true })}
+                      onRemove={(idx) => updateRelationships('related_documents', form.relationships.related_documents.filter((_, i) => i !== idx))}
                     />
-                  )}
-                </div>
-                <MetadataTagInput
-                  readOnly={isView}
-                  label="Cross-references"
-                  items={form.relationships.cross_references}
-                  countLabel={`${form.relationships.cross_references.length} linked`}
-                  onAdd={() => addTextRelationship('cross_references')}
-                  onRemove={(idx) => updateRelationships('cross_references', form.relationships.cross_references.filter((_, i) => i !== idx))}
-                />
+                    <div className={styles.fieldBlock}>
+                      <div className={styles.fieldHeader}>
+                        <label className={styles.fieldLabel}>Prerequisites</label>
+                        <span className={styles.fieldCount}>
+                          {form.relationships.prerequisites.length ? `${form.relationships.prerequisites.length} linked` : 'none set'}
+                        </span>
+                      </div>
+                      {form.relationships.prerequisites.length === 0 ? (
+                        <div className={styles.emptyRel}>
+                          No prerequisites — this document stands alone
+                          {!isView && (
+                            <button type="button" className={styles.chipAdd} style={{ marginLeft: 12 }} onClick={() => addTextRelationship('prerequisites')}>
+                              + Add...
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <MetadataTagInput
+                          readOnly={isView}
+                          label=""
+                          items={form.relationships.prerequisites}
+                          onAdd={() => openRelationshipPicker('prerequisites', { allowTextOnly: true })}
+                          onRemove={(idx) => updateRelationships('prerequisites', form.relationships.prerequisites.filter((_, i) => i !== idx))}
+                        />
+                      )}
+                    </div>
+                    <MetadataTagInput
+                      readOnly={isView}
+                      label="Cross-references"
+                      items={form.relationships.cross_references}
+                      countLabel={`${form.relationships.cross_references.length} linked`}
+                      onAdd={() => addTextRelationship('cross_references')}
+                      onRemove={(idx) => updateRelationships('cross_references', form.relationships.cross_references.filter((_, i) => i !== idx))}
+                    />
+                  </>
+                ) : (
+                  <div className={styles.emptyRel}>
+                    Relationships are document-level. Select Whole document to view or edit them.
+                  </div>
+                )}
               </>
             )}
 
             {isView && activeTab === 'content' && (
-              <DocumentContentPanel jobId={jobId} scopeParams={scopeParams} />
+              <DocumentContentPanel
+                overview={overview}
+                units={unitsPayload}
+                selectedUnit={selectedUnit}
+                sectionIndex={sectionIndex >= 0 ? sectionIndex : 0}
+                sectionLoading={sectionLoading}
+                structureError={structureError}
+                retagging={retagging}
+                retagMessage={retagMessage}
+                onRetag={handleRetag}
+                isDocumentScope={isDocumentScope}
+              />
             )}
 
             {!isView && (
@@ -427,7 +734,7 @@ export default function MetadataEditorPage() {
                 onCancel={handleCancel}
                 onSave={handleSave}
                 saving={saving}
-                revertDisabled={!serverData?.ai_baseline_available}
+                revertDisabled={!isDocumentScope || !serverData?.ai_baseline_available}
               />
             )}
           </div>

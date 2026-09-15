@@ -170,7 +170,9 @@ def _patch_s3_artifacts(
             uid = u.get("content_unit_id")
             if uid in by_id:
                 src = by_id[uid]
-                u["topics"] = src.get("topics") or u.get("topics")
+                if src.get("title") is not None:
+                    u["title"] = src.get("title")
+                u["topics"] = src.get("topics") if src.get("topics") is not None else u.get("topics")
                 u["metadata"] = {
                     **(u.get("metadata") or {}),
                     **{k: v for k, v in (src.get("metadata") or {}).items()
@@ -208,6 +210,8 @@ def _patch_s3_artifacts(
         existing = {u.get("content_unit_id"): u for u in (payload.get("content_units") or [])}
         for uid, src in by_id.items():
             if uid in existing:
+                if src.get("title") is not None:
+                    existing[uid]["title"] = src.get("title")
                 existing[uid]["topics"] = src.get("topics")
                 existing[uid]["keywords"] = src.get("keywords")
                 existing[uid]["metadata"] = src.get("metadata")
@@ -335,4 +339,127 @@ def retag_ebook_pages(
             }
             for u in units
         ],
+    }
+
+class UnitMetadataPatchError(Exception):
+    """Raised when a unit metadata patch cannot be applied."""
+
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+def _as_string_list(value: Any, *, limit: Optional[int] = None) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value.strip()] if value.strip() else []
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        items = [str(v).strip() for v in value if str(v).strip()]
+    else:
+        items = [str(value).strip()] if str(value).strip() else []
+    if limit is not None:
+        return items[:limit]
+    return items
+
+
+def patch_unit_metadata(
+    tenant_cfg: TenantConfig,
+    client_id: str,
+    job_id: str,
+    unit_id: str,
+    *,
+    title: Optional[str] = None,
+    summary: Optional[str] = None,
+    topics: Optional[Sequence[Any]] = None,
+    acs_codes: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """Manually edit per-section tags (title / summary / topics / ACS codes).
+
+    Synthetic `view_page_*` slices are not persisted units and cannot be patched.
+    """
+    wanted = str(unit_id or "").strip()
+    if not wanted:
+        raise UnitMetadataPatchError("unit_id is required", status_code=400)
+    if wanted.startswith("view_page_"):
+        raise UnitMetadataPatchError(
+            "Synthetic view sections cannot be edited; select a real content unit",
+            status_code=400,
+        )
+    if all(v is None for v in (title, summary, topics, acs_codes)):
+        raise UnitMetadataPatchError("No unit metadata fields provided", status_code=400)
+
+    doc = _load_doc_context(tenant_cfg, job_id)
+    units = _load_units_from_pg(tenant_cfg, job_id, unit_ids=[wanted])
+    if not units:
+        raise UnitMetadataPatchError(f"Content unit '{wanted}' not found", status_code=404)
+
+    unit = units[0]
+    meta = dict(unit.get("metadata") or {})
+
+    if title is not None:
+        unit["title"] = str(title or "").strip()
+    if summary is not None:
+        cleaned = str(summary or "").strip()[:600]
+        if cleaned:
+            meta["summary"] = cleaned
+        else:
+            meta.pop("summary", None)
+    if topics is not None:
+        cleaned_topics = _as_string_list(topics, limit=8)
+        unit["topics"] = cleaned_topics
+        if cleaned_topics:
+            meta["topics"] = cleaned_topics
+        else:
+            meta.pop("topics", None)
+    if acs_codes is not None:
+        from services.ebook_page_tagger import validate_acs_codes
+        cleaned_acs = validate_acs_codes(acs_codes)
+        if cleaned_acs:
+            meta["acs_codes"] = cleaned_acs
+        else:
+            meta.pop("acs_codes", None)
+
+    unit["metadata"] = meta
+    unit.pop("_tenant_id", None)
+    unit.pop("_client_id", None)
+
+    tenant_id = doc.get("tenant_id") or client_id
+    state = {
+        "job_id": job_id,
+        "tenant_id": tenant_id,
+        "client_id": client_id,
+        "filename": doc.get("source_file_name") or "ebook.pdf",
+        "file_type": doc.get("source_file_type") or "pdf",
+        "doc_type": doc.get("document_type") or "ebook_reference",
+        "doc_metadata": _parse_meta(doc.get("metadata_json")),
+        "content_units": [unit],
+    }
+    rds = rds_upsert(tenant_cfg, state)
+    if rds.get("status") not in {"completed", "skipped"}:
+        raise UnitMetadataPatchError(f"rds_upsert failed: {rds}", status_code=500)
+
+    emb = generate_embeddings(tenant_cfg, state)
+    if emb.get("status") == "completed":
+        up = opensearch_upsert(tenant_cfg, state)
+        if up.get("status") not in {"completed", "skipped"}:
+            log.warning("unit metadata opensearch upsert failed: %s", up)
+    else:
+        log.warning("unit metadata embeddings failed: %s", emb)
+
+    _patch_s3_artifacts(tenant_cfg, client_id, job_id, [unit], doc)
+
+    return {
+        "job_id": job_id,
+        "unit": {
+            "unit_id": unit["content_unit_id"],
+            "content_unit_id": unit["content_unit_id"],
+            "unit_number": unit.get("unit_number"),
+            "unit_type": unit.get("unit_type"),
+            "title": unit.get("title") or "",
+            "text": unit.get("text") or "",
+            "topics": unit.get("topics") or [],
+            "metadata": unit.get("metadata") or {},
+        },
     }
