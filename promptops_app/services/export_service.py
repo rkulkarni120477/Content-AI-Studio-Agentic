@@ -226,6 +226,40 @@ def _build_imscc(request: ExportRequest) -> bytes:
     ).read()
 
 
+def _user_facing_error(exc: Exception, fmt: str) -> str:
+    """Turn a builder exception into something an Author can act on.
+
+    The exception itself is already logged with a full traceback by the caller.
+    It must not travel any further: it carries library names, install commands,
+    file paths and occasionally the content that broke the renderer, and this
+    string is returned to the browser (acceptance criteria: a meaningful
+    message, no technical/backend detail exposed to the Author).
+
+    Every branch names an alternative, because "it failed" with no next step is
+    what the generic "Export failed." toast already did.
+    """
+    from promptops_app.exporters.pdf_exporter import ExportUnsupportedError
+
+    label = fmt.upper()
+    if isinstance(exc, ExportUnsupportedError):
+        # A packaging/deployment problem, not anything the Author did.
+        return (
+            f"{label} export is not available on this server right now. "
+            "Please export as DOCX or HTML instead, or ask your administrator "
+            "to check the server configuration."
+        )
+    if isinstance(exc, (MemoryError, RecursionError)):
+        return (
+            f"This content is too large to build as a single {label} file. "
+            "Try exporting fewer lessons at a time."
+        )
+    return (
+        f"Could not build the {label} file. The content may include something "
+        f"the {label} exporter cannot render. Try a different format or export "
+        "template; if it keeps happening, contact support."
+    )
+
+
 _BUILDERS = {
     "md":   _build_md,
     "json": _build_json,
@@ -333,7 +367,7 @@ def export_content(db, request: ExportRequest) -> ExportResult:
         return ExportResult(
             data=b"", file_name="", mime_type="", fmt=request.fmt,
             template=request.template, success=False,
-            error_message=f"Export failed: {exc}",
+            error_message=_user_facing_error(exc, request.fmt),
         )
 
     # 3. File naming + MIME

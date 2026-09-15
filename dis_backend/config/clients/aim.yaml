@@ -96,6 +96,10 @@ pipeline:
     # changes the digest cache key and rebuilds every day of every block, so it
     # wants to be a deliberate change with a rebuild window, not a drive-by edit.
     digest_extraction: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+    # Per-page ebook_reference content tags (topics / ACS / summary). Shared
+    # Sonnet pin so quality matches the rest of ingest; switch to Haiku in YAML
+    # when cost matters more than tag richness.
+    ebook_page_tagging: global.anthropic.claude-sonnet-4-5-20250929-v1:0
   # Digest MAP fan-out (plan D4). Sequential MAP is O(days) and Block 2 has 20, which
   # does not fit the product: a cold build measured ~6.5 min locally and EXCEEDED the
   # 1200s ceiling on build_digests_sync in prod on 2026-08-13 (~22 min), failing the
@@ -121,6 +125,9 @@ pipeline:
   llm_provider: bedrock
   bedrock_enabled: true
   anthropic_enabled: false
+  # Batched per-page LLM tags for ebook_reference units.
+  ebook_page_tagging_enabled: true
+  ebook_page_tagging_batch_size: 10
 metadata_schemas:
   aim:
     required_fields:
@@ -249,6 +256,23 @@ retrieval:
       - key: topic
         label: Topic
         type: text
+    upload:
+      fields:
+        - key: document_type
+          label: Document Type
+          control: select
+        - key: chapter
+          label: Chapter
+          control: text
+          order: 1
+        - key: module_name
+          label: Module
+          control: text
+          order: 2
+        - key: learning_objective
+          label: Learning Objective
+          control: text
+          order: 3
   source_type_mapping:
     style:
       - style_guide
@@ -634,3 +658,15 @@ aim_content_rules:
     final_exam_answer_key: instructor_only
     project_instructor_guide: instructor_only
     archive_or_working_version: internal_only
+
+# Phase 7: AIM-only Topic Source Library filter. Do NOT copy into DEFAULT_REGISTRY
+# or other tenants. cas_list intentionally omitted (DECISION-002).
+metadata_framework:
+  fields:
+    topic:
+      type: string
+      tier: structural
+      promote:
+        - index
+        - filter_options
+        - retrieval

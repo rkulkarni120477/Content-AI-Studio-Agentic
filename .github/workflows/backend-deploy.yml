@@ -30,6 +30,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Notify Deployment Started
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "message",
+              "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "type": "AdaptiveCard",
+                  "version": "1.2",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "🚀 CAS PROD Backend Deployment Started",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Branch: prod\nRepository: ${{ github.repository }}\nCommit: ${{ github.sha }}",
+                      "wrap": true
+                    }
+                  ]
+                }
+              }]
+            }' \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"
+          
+
       - name: Deploy Backend to EC2
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -87,3 +118,66 @@ jobs:
             echo "===================================="
             echo "Backend Deployment Successful"
             echo "===================================="
+
+      - name: Notify Deployment Success
+        if: success()
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "message",
+              "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "type": "AdaptiveCard",
+                  "version": "1.2",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "✅ CAS PROD Backend Deployment Successful",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Branch: prod\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "wrap": true
+                    }
+                  ]
+                }
+              }]
+            }' \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"
+
+
+      - name: Notify Deployment Failure
+        if: failure()
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "message",
+              "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "type": "AdaptiveCard",
+                  "version": "1.2",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "❌ CAS PROD Backend Deployment Failed",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Branch: prod\nCommit: ${{ github.sha }}\nTriggered by: ${{ github.actor }}",
+                      "wrap": true
+                    }
+                  ]
+                }
+              }]
+            }' \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"

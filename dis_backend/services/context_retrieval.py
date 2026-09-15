@@ -17,6 +17,41 @@ from services.artifacts import ArtifactWriter
 from services.source_library import read_source_index, source_filter_options as compact_filter_options
 from services.generated_documents import GeneratedDocumentService
 from services.blocks import same_block
+from services.metadata_framework.adapters import (
+    project_cas_list_taxonomy,
+    project_retrieval_metadata,
+)
+from services.metadata_framework.registry import (
+    PROMOTE_FILTER_OPTIONS,
+    PROMOTE_RETRIEVAL,
+    registry_for_tenant,
+)
+from services.upload_ui_config import build_upload_metadata_ui
+
+# Listing historically matched these via a hardcoded field loop even though they
+# are not filter_options-promoted (so they do not appear in filter dropdown maps).
+# Keep as compatibility — not Field Registry definitions.
+_LISTING_COMPAT_FILTER_FIELDS = ("lesson_name", "visibility")
+
+# purpose is filter_options-promoted but matched with multi-value business logic,
+# not the simple eq() path used for taxonomy/operational metadata fields.
+_FILTER_OPTIONS_SKIP_EQ = frozenset({"purpose"})
+
+# Retrieval fields promoted to _metadata_from_record but gated elsewhere in
+# _passes_filters — excluded from the registry exact-match loop (Phase 6A).
+_RETRIEVAL_EXACT_SKIP = frozenset({
+    "course_id",       # course_scope_matches sentinel
+    "purpose",         # purpose gate
+    "course_name",     # substring gate below
+    # day/calendar normalization (dedicated block in _passes_filters)
+    "day", "day_id", "mapped_day", "day_number", "filename_day_id",
+    "block",           # same_block in listing; block_id/block_number stay exact
+    # boolean operational flags (bool_fields loop)
+    "restricted", "calendar_mapping_required", "is_generation_candidate",
+    "is_archive_or_working_version",
+    # content_types filter handles document_type / content_type / doc_type
+    "document_type", "doc_type", "content_type", "title",
+})
 
 _SKIP_KEYS = {"id", "created_at", "updated_at", "request_id", "prompt_id", "prompt_version"}
 
@@ -166,10 +201,13 @@ class ContextRetrievalService:
         return mapping
 
     def ui_config(self, client_id: str) -> Dict[str, Any]:
+        source_ui = self._source_ui_config()
+        schema = self.tenant_cfg.get_metadata_schema(client_id)
         return {
             "tenant_id": self.tenant_cfg.tenant_id,
             "client_id": client_id,
-            "source_library": self._source_ui_config(),
+            "source_library": source_ui,
+            "upload_metadata": build_upload_metadata_ui(source_ui, schema),
             "purpose_labels": getattr(self.tenant_cfg.retrieval, "purpose_labels", {}) or (self.tenant_cfg.client_rules or {}).get("purpose_labels", {}) or {
                 "style": "Style Reference Documents",
                 "cdd": "Course Design Sources",
@@ -325,12 +363,9 @@ class ContextRetrievalService:
                     "extracted_chars": src.get("extracted_chars"),
                     "created_at": src.get("created_at"),
                     "updated_at": src.get("updated_at"),
-                    "course_name": src.get("course_name", ""),
-                    "block": src.get("block", ""),
-                    "day": src.get("day", ""),
-                    "chapter": src.get("chapter", ""),
-                    "module_name": src.get("module_name", ""),
-                    "learning_objective": src.get("learning_objective", ""),
+                    # Taxonomy columns: Field Registry cas_list promote
+                    # (tenant metadata_framework when present; else DEFAULT_REGISTRY).
+                    **project_cas_list_taxonomy(src, registry_for_tenant(self.tenant_cfg)),
                 })
         sources.sort(key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""), reverse=True)
         total = len(sources)
@@ -345,7 +380,7 @@ class ContextRetrievalService:
             "limit": limit,
             "offset": offset,
             "sources": page,
-            "filter_options": compact_filter_options(records),
+            "filter_options": compact_filter_options(records, tenant_cfg=self.tenant_cfg),
         }
 
     def _attach_indexed_units(self, page: List[Dict[str, Any]]) -> None:
@@ -414,9 +449,21 @@ class ContextRetrievalService:
                 # and read as "that is all there is".
                 return same_block(src.get(field), value)
             return str(src.get(field) or "").lower() == str(value).lower()
-        for field in ("document_type", "source_file_type", "block", "course_name", "day", "chapter", "module_name", "lesson_name", "visibility", "status"):
+
+        # Filterable metadata: Field Registry filter_options promote
+        # (tenant metadata_framework when present; else DEFAULT_REGISTRY).
+        registry = registry_for_tenant(getattr(self, "tenant_cfg", None))
+        for spec in registry.for_promote(PROMOTE_FILTER_OPTIONS):
+            if spec.key in _FILTER_OPTIONS_SKIP_EQ:
+                continue
+            if not eq(spec.key, filters.get(spec.key)):
+                return False
+        # Compatibility: listing fields matched before Phase 2 that are not
+        # filter_options-promoted (dropdown maps stay unchanged).
+        for field in _LISTING_COMPAT_FILTER_FIELDS:
             if not eq(field, filters.get(field)):
                 return False
+
         # course_id isolates documents per CAS course; see course_scope_matches
         # for the sentinel rule, which retrieval now shares with this listing.
         if not course_scope_matches(src.get("course_id"), filters.get("course_id")):
@@ -436,6 +483,7 @@ class ContextRetrievalService:
                 return False
         q = str(filters.get("search") or "").strip().lower()
         if q:
+            # Search haystack is free-text UX, not a Field Registry definition.
             hay = " ".join(str(src.get(k) or "") for k in ("source_file_name", "title", "document_type", "course_name", "block", "day", "chapter", "module_name", "lesson_name", "learning_objective", "purpose")).lower()
             if q not in hay:
                 return False
@@ -443,7 +491,10 @@ class ContextRetrievalService:
 
     def source_filter_options(self, client_id: str) -> Dict[str, List[str]]:
         index = read_source_index(self.tenant_cfg, client_id)
-        return compact_filter_options(list(index.get("sources") or []))
+        return compact_filter_options(
+            list(index.get("sources") or []),
+            tenant_cfg=self.tenant_cfg,
+        )
 
     def get_structure(self, client_id: str, job_id: str) -> Dict[str, Any]:
         """Return clean readable content for one source document.
@@ -581,41 +632,12 @@ class ContextRetrievalService:
         compact_source_record, so _passes_filters can gate block/day/quiz/
         project entirely from the index (no content-file read). Keys absent on
         older, pre-enrichment records come back None and behave as "unset".
+        Field set comes from the Field Registry (tenant metadata_framework when
+        present; else DEFAULT_REGISTRY).
         """
-        return {
-            "title": rec.get("title"),
-            "document_type": rec.get("document_type"),
-            "doc_type": rec.get("document_type"),
-            "purpose": rec.get("purpose"),
-            "visibility": rec.get("visibility"),
-            # Security-critical: propagate restriction flags so the retrieval
-            # gate can hide restricted sources from students.
-            "restricted": rec.get("restricted"),
-            "access_level": rec.get("access_level"),
-            "status": rec.get("status"),
-            "course_name": rec.get("course_name"),
-            "block": rec.get("block"),
-            "day": rec.get("day"),
-            "chapter": rec.get("chapter"),
-            "module_name": rec.get("module_name"),
-            "learning_objective": rec.get("learning_objective"),
-            "content_type": rec.get("content_type"),
-            "block_id": rec.get("block_id"),
-            "block_number": rec.get("block_number"),
-            "day_number": rec.get("day_number"),
-            "day_id": rec.get("day_id"),
-            "mapped_day": rec.get("mapped_day"),
-            "filename_day_id": rec.get("filename_day_id"),
-            "quiz_number": rec.get("quiz_number"),
-            "project_number": rec.get("project_number"),
-            "lesson_name": rec.get("lesson_name"),
-            "subject_unit": rec.get("subject_unit"),
-            "course_id": rec.get("course_id"),
-            "program_id": rec.get("program_id"),
-            "calendar_mapping_required": rec.get("calendar_mapping_required"),
-            "is_generation_candidate": rec.get("is_generation_candidate"),
-            "is_archive_or_working_version": rec.get("is_archive_or_working_version"),
-        }
+        return project_retrieval_metadata(
+            rec, registry_for_tenant(getattr(self, "tenant_cfg", None))
+        )
 
     def _enrich_payload_meta(self, payload: Dict[str, Any]) -> None:
         """Derive use_for_* purpose flags and back-stop restricted marking.
@@ -813,17 +835,35 @@ class ContextRetrievalService:
             if not any(norm(v) in [norm(x) for x in content_types] for v in possible):
                 return False
 
-        # Generic exact filters used by blueprint/course generation APIs.
-        # course_id is deliberately NOT here: an exact match rejects the global
-        # sentinel, which is the whole point of the sentinel. See below.
-        exact_fields = [
-            "client_id", "program_id", "block_id",
-            "block_number", "visibility", "status", "version",
-            "topic", "quiz_number", "quiz_id", "project_number", "project_id",
-            "administered_on_day", "covers_day",
-        ]
-        for field in exact_fields:
-            if field in filters and not value_matches(meta_all.get(field) or payload.get(field), filters.get(field)):
+        # Registry-authorized exact-match metadata fields (Phase 6A).
+        # course_id, purpose, day/calendar, booleans, and block normalization
+        # remain explicit business rules above/below this loop.
+        registry = registry_for_tenant(self.tenant_cfg)
+        for spec in registry.for_promote(PROMOTE_RETRIEVAL):
+            if spec.key in _RETRIEVAL_EXACT_SKIP:
+                continue
+            filter_key = None
+            candidate_keys = [spec.key]
+            if spec.filter_options_key:
+                candidate_keys.append(spec.filter_options_key)
+            candidate_keys.extend(spec.aliases)
+            seen = set()
+            for fk in candidate_keys:
+                if fk in seen:
+                    continue
+                seen.add(fk)
+                if fk in filters:
+                    filter_key = fk
+                    break
+            if filter_key is None:
+                continue
+            actual = meta_all.get(spec.key) or payload.get(spec.key)
+            if actual in (None, "", [], {}):
+                for alias in spec.aliases:
+                    actual = meta_all.get(alias) or payload.get(alias)
+                    if actual not in (None, "", [], {}):
+                        break
+            if not value_matches(actual, filters.get(filter_key)):
                 return False
 
         if "course_id" in filters and not course_scope_matches(

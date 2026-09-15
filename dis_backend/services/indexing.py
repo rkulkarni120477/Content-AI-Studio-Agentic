@@ -6,6 +6,7 @@ with status=skipped so local/S3-first testing remains simple.
 from __future__ import annotations
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from services.blocks import block_label, block_variants
@@ -16,6 +17,12 @@ log = logging.getLogger(__name__)
 # Dynamic client fields are stored in metadata_json (RDS) and metadata.* (OpenSearch).
 # This avoids creating different physical tables/indexes per client.
 # For query performance, RDS gets a JSONB GIN index and OpenSearch gets dynamic_templates.
+
+# Large ebooks (hundreds of page units × embedding dims) overflow a single
+# helpers.bulk request on constrained OpenSearch domains (429 Too Many Requests).
+# Same default as scripts/reindex_orphaned_units.py.
+_OPENSEARCH_BULK_BATCH_SIZE = 100
+_OPENSEARCH_BULK_MAX_ATTEMPTS = 4
 
 
 def _ensure_database_exists(psycopg_module, dsn: str) -> None:
@@ -155,6 +162,53 @@ def ensure_schema(cur, schema: str):
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_units_metadata_gin ON {schema}.dis_content_units USING GIN(metadata_json)")
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_dis_calendar_days ON {schema}.dis_calendar_days(tenant_id, client_id, block, day_number)")
 
+    # Source Library compact catalog (replaces S3 source_list.json when
+    # structure_store is enabled). job_id remains the document identity.
+    cur.execute(f"""
+    CREATE TABLE IF NOT EXISTS {schema}.source_index (
+        id                BIGSERIAL PRIMARY KEY,
+        job_id            TEXT NOT NULL,
+        client_id         TEXT NOT NULL,
+        tenant_id         TEXT NOT NULL,
+        environment       TEXT NOT NULL,
+        title             TEXT,
+        source_file_name  TEXT,
+        document_type     TEXT,
+        purpose           TEXT,
+        status            TEXT,
+        visibility        TEXT,
+        restricted        BOOLEAN DEFAULT FALSE,
+        block             TEXT,
+        day               TEXT,
+        course_name       TEXT,
+        module_name       TEXT,
+        payload_key       TEXT,
+        content_key       TEXT,
+        raw_key           TEXT,
+        extracted_chars   INTEGER,
+        total_units       INTEGER,
+        created_at        TIMESTAMPTZ,
+        updated_at        TIMESTAMPTZ,
+        record_json       JSONB NOT NULL,
+        CONSTRAINT uq_source_index_client_env_job UNIQUE (client_id, environment, job_id)
+    )""")
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_purpose_status "
+        f"ON {schema}.source_index (client_id, environment, purpose, status)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_block_day "
+        f"ON {schema}.source_index (client_id, environment, block, day)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_updated "
+        f"ON {schema}.source_index (client_id, environment, updated_at DESC)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_source_index_record_gin "
+        f"ON {schema}.source_index USING GIN (record_json)"
+    )
+
     # Dev/prod bifurcation: which server ingested this row (see rds_upsert's
     # `environment`). There is no Alembic for this schema — CREATE TABLE IF NOT
     # EXISTS above is a no-op on a table that already exists, so an existing
@@ -197,10 +251,45 @@ def upsert_content_units(cur, schema: str, document_id: str, state: Dict[str, An
         cur.execute(f"""
             INSERT INTO {schema}.dis_content_units(content_unit_id, document_id, job_id, tenant_id, client_id, unit_type, unit_number, title, text_content, visual_summary, keywords_json, topics_json, metadata_json, asset_urls_json, content_hash, environment)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
-            ON CONFLICT(content_unit_id) DO UPDATE SET title=EXCLUDED.title, text_content=EXCLUDED.text_content, metadata_json=EXCLUDED.metadata_json
+            ON CONFLICT(content_unit_id) DO UPDATE SET
+                title=EXCLUDED.title,
+                text_content=EXCLUDED.text_content,
+                metadata_json=EXCLUDED.metadata_json,
+                keywords_json=EXCLUDED.keywords_json,
+                topics_json=EXCLUDED.topics_json
         """, (unit.get("content_unit_id"), document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), unit.get("unit_type"), unit.get("unit_number"), unit.get("title"), unit.get("text"), unit.get("visual_summary"), json.dumps(unit.get("keywords", [])), json.dumps(unit.get("topics", [])), json.dumps(unit.get("metadata", {})), json.dumps(unit.get("assets", [])), unit.get("content_hash", ""), environment))
         count += 1
     return count
+
+
+def delete_content_units_by_job(tenant_cfg: TenantConfig, job_id: str) -> Dict[str, Any]:
+    """Delete every content unit for one job_id from the structure store.
+
+    Required before rechunking: upsert is keyed by content_unit_id, so switching
+    from ``{job}:unit_N`` to ``{job}:page_N`` would otherwise leave the old
+    word-window units orphaned in Postgres.
+    """
+    cfg = tenant_cfg.structure_store
+    if not cfg.enabled:
+        return {"status": "skipped", "reason": "structure_store.enabled=false", "deleted": 0}
+    try:
+        import psycopg
+    except Exception as exc:
+        return {"status": "failed", "error": f"psycopg not installed: {exc}", "deleted": 0}
+    try:
+        dsn = cfg.url or get_settings().db_url.replace("postgresql+asyncpg://", "postgresql://")
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM {cfg.schema_name}.dis_content_units WHERE job_id = %s",
+                    (job_id,),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        return {"status": "completed", "deleted": deleted}
+    except Exception as exc:
+        log.exception("delete_content_units_by_job failed job_id=%s", job_id)
+        return {"status": "failed", "error": str(exc), "deleted": 0}
 
 
 def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:
@@ -314,6 +403,9 @@ def _build_bulk_actions(
             "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
             "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
             "day_number": meta.get("day_number"),
+            "chapter": meta.get("chapter"),
+            "pdf_page": meta.get("pdf_page"),
+            "page_number": meta.get("page_number"),
             "unit_type": unit.get("unit_type"),
             "unit_number": unit.get("unit_number"),
             "title": unit.get("title"),
@@ -330,6 +422,65 @@ def _build_bulk_actions(
             "_source": doc,
         })
     return actions
+
+
+def _is_opensearch_rate_limit(exc: BaseException) -> bool:
+    """True for HTTP 429 / Too Many Requests from the OpenSearch client."""
+    status = getattr(exc, "status_code", None)
+    if status is None and getattr(exc, "args", None):
+        try:
+            status = int(exc.args[0])
+        except (TypeError, ValueError, IndexError):
+            status = None
+    if status == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "too many requests" in msg
+
+
+def _bulk_index_actions(
+    client: Any,
+    actions: List[Dict[str, Any]],
+    *,
+    batch_size: int = _OPENSEARCH_BULK_BATCH_SIZE,
+    max_attempts: int = _OPENSEARCH_BULK_MAX_ATTEMPTS,
+) -> int:
+    """Write bulk actions in chunks; retry transient 429s with backoff.
+
+    A single helpers.bulk for a 600–1200 page ebook (each unit carrying a
+    dense embedding) routinely trips DEV OpenSearch rate limits. Chunking
+    matches scripts/reindex_orphaned_units.py. Non-429 errors fail immediately.
+    Never reports success with zero indexed units after a rate-limit exhaustion.
+    """
+    from opensearchpy import helpers
+
+    if not actions:
+        return 0
+    size = max(1, int(batch_size or _OPENSEARCH_BULK_BATCH_SIZE))
+    attempts = max(1, int(max_attempts or _OPENSEARCH_BULK_MAX_ATTEMPTS))
+    indexed = 0
+    for start in range(0, len(actions), size):
+        chunk = actions[start:start + size]
+        last_exc: Optional[BaseException] = None
+        for attempt in range(attempts):
+            try:
+                n, _errors = helpers.bulk(client, chunk, refresh=False)
+                indexed += int(n or 0)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if not _is_opensearch_rate_limit(exc) or attempt >= attempts - 1:
+                    raise
+                sleep_s = 2 ** attempt  # 1s, 2s, 4s
+                log.warning(
+                    "OpenSearch bulk 429 on units %s-%s (attempt %s/%s); sleeping %ss",
+                    start, start + len(chunk) - 1, attempt + 1, attempts, sleep_s,
+                )
+                time.sleep(sleep_s)
+        if last_exc is not None:
+            raise last_exc
+    return indexed
 
 
 def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -367,18 +518,11 @@ def opensearch_upsert(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict[s
         ensure_index(client, cfg.index_name, tenant_cfg.embedding.dimension)
         units = ready or raw
 
-        # Issue a single batched request (helpers.bulk) instead of one
-        # client.index() call per content unit (P6.2/F12). Default op_type
-        # "index" preserves the previous create-or-replace-by-id semantics, and
-        # refresh=False is passed through unchanged. helpers.bulk raises on any
-        # item error (raise_on_error default True), so a failure still surfaces
-        # as status="failed" via the outer except — same contract as before.
+        # helpers.bulk in chunks of 100 (not one giant request). Default op_type
+        # "index" preserves create-or-replace-by-id; refresh=False unchanged.
+        # Chunk failures still surface as status="failed" via the outer except.
         actions = _build_bulk_actions(cfg.index_name, state, units)
-        if actions:
-            from opensearchpy import helpers
-            indexed, _errors = helpers.bulk(client, actions, refresh=False)
-        else:
-            indexed = 0
+        indexed = _bulk_index_actions(client, actions) if actions else 0
         return {"status": "completed", "provider": "opensearch", "auth_mode": cfg.auth_mode, "index_name": cfg.index_name, "documents_indexed": indexed}
     except Exception as exc:
         log.exception("OpenSearch upsert failed")
@@ -462,6 +606,9 @@ def ensure_index(client, index_name: str, dimension: int):
                 "course_name": {"type": "keyword"},
                 "block": {"type": "keyword"},
                 "day_number": {"type": "integer"},
+                "chapter": {"type": "integer"},
+                "pdf_page": {"type": "integer"},
+                "page_number": {"type": "keyword"},
                 "unit_type": {"type": "keyword"},
                 "unit_number": {"type": "integer"},
                 "title": {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 256}}},

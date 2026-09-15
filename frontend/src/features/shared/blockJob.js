@@ -107,7 +107,7 @@ export function createBlockJobThunks(cfg) {
         if (status.status === JOB_STATUSES.COMPLETED) {
           const done = resolveMsg(completedMessage, getState);
           if (done) toast.success(done);
-          if (onComplete) onComplete(dispatch, courseId);
+          if (onComplete) onComplete(dispatch, courseId, getState);
         } else if (status.status === JOB_STATUSES.CANCELLED) {
           toast(`${deliverableLabel(getState)} generation cancelled.`);
         } else {

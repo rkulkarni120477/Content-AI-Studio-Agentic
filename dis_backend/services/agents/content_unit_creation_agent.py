@@ -23,6 +23,13 @@ from services.indexing import (
     opensearch_upsert as do_opensearch_upsert,
 )
 from services.token_guard import TokenLimitError
+from services.ebook_page_chunker import (
+    build_ebook_page_units,
+    extract_pdf_pages,
+    outline_chapter_map,
+    parse_page_texts_from_raw,
+)
+from services.ebook_page_tagger import tag_ebook_page_units, tagger_config_from_pipeline
 
 
 class ContentUnitCreationAgent(BasePipelineAgent):
@@ -100,6 +107,8 @@ class ContentUnitCreationAgent(BasePipelineAgent):
                 # came out empty for every day, and each day row reached the Blueprint
                 # with no ACS codes at all.
                 units.append({'content_unit_id': f"{state['job_id']}:calendar_day_{day_no}", 'unit_type': ctx.cfg.document_processing.unit_type_map.get('course_calendar', 'calendar_day'), 'unit_number': int(day_no), 'title': day.get('lesson_title') or f'Day {day_no}', 'text': text, 'visual_summary': '', 'keywords': unit_keywords, 'topics': keywords((day.get('topic') or '') + ' ' + text, limit=12), 'metadata': {**state.get('doc_metadata', {}), 'block': calendar.get('block') or (state.get('doc_metadata') or {}).get('block'), **cal_meta, 'day_number': day_no}, 'assets': []})
+        elif str(effective_type or doc_type or '').lower() == 'ebook_reference':
+            units = self._ebook_page_units(state, effective_type or doc_type)
         else:
             slide_texts = state.get('slide_texts', []) or []
             visual_map = {v.get('unit_number'): v.get('visual_summary') for v in state.get('visual_units', []) or []}
@@ -141,8 +150,65 @@ class ContentUnitCreationAgent(BasePipelineAgent):
         state['chunks'] = [{'chunk_id': u['content_unit_id'], 'text': u['text'], 'chunk_index': u['unit_number'] - 1} for u in units]
         return ctx.step_done(state, 'content_unit_creation')
 
+    def _ebook_page_units(self, state: PipelineState, effective_type: str) -> List[Dict[str, Any]]:
+        """One content unit per physical PDF page, with location + LLM tags."""
+        ctx = self.ctx
+        raw_bytes = state.get('raw_bytes') or b''
+        page_texts: List[Dict[str, Any]] = []
+
+        # Classification runs AFTER extraction, so the first pass may have been
+        # truncated by max_extracted_chars (~250k). For ebook_reference always
+        # re-extract with no cap when raw bytes are available — page_count on a
+        # truncated ExtractionResult equals pages_read, so comparing lengths
+        # cannot detect the truncate.
+        if raw_bytes:
+            page_texts = extract_pdf_pages(raw_bytes, max_chars=0)
+            if page_texts:
+                state['page_texts'] = page_texts
+                state['page_count'] = len(page_texts)
+                state['raw_text'] = "\n\n".join(
+                    f"[Page {p['pdf_page']}]\n{p.get('text') or ''}" for p in page_texts
+                )
+        if not page_texts:
+            page_texts = list(state.get('page_texts') or [])
+        if not page_texts:
+            page_texts = parse_page_texts_from_raw(state.get('raw_text') or '')
+
+        title = (state.get('doc_metadata') or {}).get('title') or state.get('filename') or 'Source'
+        unit_type = ctx.cfg.document_processing.unit_type_map.get(effective_type, 'page')
+        outline = outline_chapter_map(raw_bytes) if raw_bytes else {}
+        units = build_ebook_page_units(
+            job_id=state['job_id'],
+            pages=page_texts,
+            doc_metadata=state.get('doc_metadata') or {},
+            unit_type=unit_type,
+            title=title,
+            outline_map=outline,
+        )
+
+        # Batched per-page LLM content tags. Fail-soft: heuristic topics stay.
+        use_llm = (
+            ctx.cfg.pipeline.llm_provider != 'mock'
+            and (ctx.cfg.pipeline.bedrock_enabled or ctx.cfg.pipeline.anthropic_enabled)
+        )
+        tcfg = tagger_config_from_pipeline(ctx.cfg.pipeline)
+        if use_llm and tcfg['enabled'] and units:
+            errors = state.setdefault('errors', [])
+            try:
+                tag_ebook_page_units(
+                    units,
+                    call_llm_fn=call_llm,
+                    model_id=tcfg['model_id'],
+                    batch_size=tcfg['batch_size'],
+                    enabled=True,
+                    token_guard=ctx.guard,
+                    errors=errors,
+                )
+            except TokenLimitError as exc:
+                errors.append(str(exc))
+        return units
+
         # =============================================================================
         # STEP: quality_check
         # Purpose: Quality Check pipeline step.
         # =============================================================================
-

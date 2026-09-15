@@ -63,7 +63,7 @@ export const generateBlueprintThunk = createAsyncThunk(
         toast.error(
           `Generated without Source Library grounding: the library could not be `
           + `reached, so this ${L.blueprint} used only the ${L.cdd} and the active `
-          + `style. Regenerate once it is available if you need source-grounded `
+          + `${L.styleLower}. Regenerate once it is available if you need source-grounded `
           + `content.`,
           { duration: 9000 },
         );
@@ -237,7 +237,7 @@ export const setActiveBlueprintThunk = createAsyncThunk(
   async ({ blueprintId, courseId }, { getState, rejectWithValue }) => {
     try {
       const result = await blueprintService.pinBlueprint(blueprintId, courseId);
-      toast.success(`Active ${labelsFromState(getState).blueprintLower} updated.`);
+      toast.success(`Active ${labelsFromState(getState).blueprint} updated.`);
       return result;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));

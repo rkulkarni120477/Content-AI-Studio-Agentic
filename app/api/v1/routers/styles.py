@@ -32,6 +32,7 @@ from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import LLMGenerationError, NotFoundError
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.core.dis_client import dis_client
+from app.core.dis_access import resolve_course_dis_client
 from app.schemas.style import (
     StyleActivateRequest,
     StyleCreateRequest,
@@ -91,7 +92,8 @@ def _visible_custom_instructions(text: str | None) -> str:
     return _DIS_IDS_RE.sub("", text or "").strip()
 
 
-def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None, extra_instructions: str = "") -> str:
+def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None,
+                                extra_instructions: str = "", client_id: str = "") -> str:
     ids = _extract_dis_ids(style, document_ids)
     if not ids:
         return ""
@@ -114,7 +116,14 @@ def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | N
         "query": query,
     }
     try:
-        result = dis_client.retrieve_context_sync("style", payload, current_user=current_user)
+        # Scope retrieval to the STYLE's own project client, not the caller's —
+        # every other retrieval in the codebase does this (resolve_course_dis_client's
+        # own docstring: reads "the COURSE'S OWN Source Library regardless of who
+        # runs it"). Without it, a platform admin whose personal default client
+        # differs from this style's tenant fetches the wrong client's documents,
+        # or a filtered-to-nothing result — either way, not this style's own files.
+        result = dis_client.retrieve_context_sync("style", payload, current_user=current_user,
+                                                  client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
         if ctx:
             return "Use the following processed DIS Source Library documents as the authoritative style reference context. Do not expose internal metadata.\n\n" + ctx
@@ -529,9 +538,14 @@ def generate_style_intelligence(
 
     style = _get_style_or_404(db, style_id, current_user)
 
+    # Same reasoning as every other generation route: retrieval must read the
+    # STYLE's own project's Source Library, independent of who is running this.
+    style_client_id = resolve_course_dis_client(db, project_id=style.project_id)
+
     dis_context = _retrieve_dis_style_context(
         style, current_user, request_body.document_ids,
         extra_instructions=request_body.extra_instructions,
+        client_id=style_client_id,
     )
     extra_parts = []
     if dis_context:
@@ -614,6 +628,14 @@ def generate_style_intelligence(
     # Persist the result.
     understanding_text = result if isinstance(result, str) else str(result)
     style.generated_summary = understanding_text
+    # understanding_status is set to "stale" only when a document is linked
+    # (add_files_to_style, database.py) and to "fresh" only inside
+    # create_style_version (restore / IMSCC import) -- this route, the one a
+    # user actually clicks Generate/Refine on, never touched it. So a style
+    # correctly marked stale after a file was added stayed stale forever, even
+    # once regenerated from that exact file -- telling the author their current
+    # understanding was outdated when it no longer was.
+    style.understanding_status = "fresh"
     db.commit()
     _upsert_generated_style_to_dis(style, current_user)
 

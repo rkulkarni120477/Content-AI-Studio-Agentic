@@ -104,6 +104,10 @@ class ModelConfig(BaseModel):
     structure_extraction: str = _TEXT_MODEL
     quality_check: str = _TEXT_MODEL
     vision: str = _TEXT_MODEL
+    # Per-page ebook_reference content tagging (topics / ACS / summary). Shared
+    # Sonnet pin so quality matches the rest of ingest; switch to Haiku in YAML
+    # when cost matters more than tag richness.
+    ebook_page_tagging: str = _TEXT_MODEL
     # Per-day digest extraction (MAP) for block-wide CDD/Blueprint. The design pins
     # this to a cheap model (Haiku) so the digest cache is shared across quality
     # tiers (D2) — only the REDUCE model varies by tier, on the app/promptops side.
@@ -123,6 +127,9 @@ class PipelineConfig(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 64
     vision_enabled: bool = True
+    # Batched per-page LLM tags for ebook_reference (topics, ACS, summary).
+    ebook_page_tagging_enabled: bool = True
+    ebook_page_tagging_batch_size: int = 10
     # Digest MAP fan-out (plan D4/D7). When true, block digest builds run as a
     # LangGraph Send fan-out (per-day checkpoint/resume, bounded concurrency)
     # instead of the sequential loop; falls back to sequential if langgraph is
@@ -145,6 +152,17 @@ class MetadataField(BaseModel):
 class MetadataSchema(BaseModel):
     required_fields: List[MetadataField] = []
     optional_fields: List[MetadataField] = []
+
+
+class MetadataFrameworkConfig(BaseModel):
+    """Client YAML ``metadata_framework`` (Phase 0+).
+
+    Phase 0: permissive passthrough so nested content survives TenantConfig load.
+    Phase 1: ``services.metadata_framework.registry.registry_from_config`` reads
+    optional ``fields``; empty/missing falls back to the hardcoded DEFAULT_REGISTRY.
+    """
+    model_config = ConfigDict(extra="allow")
+
 
 class DocumentTypeRule(BaseModel):
     doc_type: str
@@ -443,6 +461,8 @@ class TenantConfig(BaseModel):
     pipeline: PipelineConfig = PipelineConfig()
     document_processing: DocumentProcessingConfig = DocumentProcessingConfig()
     metadata_schemas: Dict[str, MetadataSchema] = {}
+    # Phase 0: client YAML `metadata_framework` survives load for later phases.
+    metadata_framework: MetadataFrameworkConfig = Field(default_factory=MetadataFrameworkConfig)
     storage: StorageConfig = StorageConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
     security: SecurityConfig = SecurityConfig()
@@ -683,7 +703,7 @@ class TenantRegistry:
             "users": users,
             "clients": [client_obj],
         }
-        for key in ["ingestion", "processing", "pipeline", "document_processing", "metadata_schemas", "storage", "retrieval", "security", "embedding", "structure_store", "vector_store", "deduplication", "monitoring", "client_rules"]:
+        for key in ["ingestion", "processing", "pipeline", "document_processing", "metadata_schemas", "metadata_framework", "storage", "retrieval", "security", "embedding", "structure_store", "vector_store", "deduplication", "monitoring", "client_rules"]:
             if key in raw:
                 converted[key] = raw[key]
 

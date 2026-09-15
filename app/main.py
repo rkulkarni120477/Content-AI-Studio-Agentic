@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI):
     from promptops_app.database import ensure_phoenix_database, init_db
     init_db()
     _log.info("startup_db_migrations_complete")
+    #from promptops_app.database import ensure_phoenix_database, init_db
+    #from app.core.database import wait_for_database
+
+    # Wait for AWS RDS to become reachable before running migrations.
+    # This handles EC2 + RDS being started at approximately the same time.
+      #wait_for_database()
+
+      #init_db()
+      #_log.info("startup_db_migrations_complete")
 
     # Phoenix's own container can't create its own database — do it here,
     # once, idempotently, on every environment (local/dev/prod) without a

@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useSelector } from 'react-redux';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import RetrievalStatus from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
 import { acceptAttribute, rejectionReason as policyRejectionReason } from '@features/sourceLibrary/utils/uploadPolicy';
+import {
+  optionsKeyForTaxonomyKey,
+  taxonomyFiltersFromUiConfig,
+  toSourceLibraryApiFilters,
+} from '@features/sourceLibrary/utils/taxonomyFilters';
+import {
+  documentTypeFromUiConfig,
+  uploadControlType,
+  uploadMetadataFieldsFromUiConfig,
+} from '@features/sourceLibrary/utils/uploadFields';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import { useLabels } from '@hooks/useLabels';
 import styles from './SourceLibraryPage.module.scss';
@@ -109,6 +119,7 @@ export default function SourceLibraryPage() {
   // (not state) avoids a re-render race between the click and the submit.
   const uploadAsGlobalRef = useRef(false);
   const { courseId } = useParams();
+  const navigate = useNavigate();
   const selectedProject = useSelector(selectSelectedProject);
   const selectedCourse = useSelector(selectSelectedCourse);
   const scopedCourseId = selectedCourse?.id || courseId || "";
@@ -124,17 +135,6 @@ export default function SourceLibraryPage() {
   const [uploadPolicy, setUploadPolicy] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [selected, setSelected] = useState(null);
-  const [structure, setStructure] = useState(null);
-  const [overview, setOverview] = useState(null);
-  const [pages, setPages] = useState(null);
-  const [sectionIndex, setSectionIndex] = useState(0);
-  const [showSectionList, setShowSectionList] = useState(false);
-  const [units, setUnits] = useState(null);
-  const [selectedUnit, setSelectedUnit] = useState(null);
-  const [sectionLoading, setSectionLoading] = useState(false);
-  const [insideSearch, setInsideSearch] = useState('');
-  const [searchResults, setSearchResults] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -199,15 +199,17 @@ export default function SourceLibraryPage() {
     }
   }
 
-  async function loadDocuments(nextFilters = filters) {
+  async function loadDocuments(nextFilters = filters, { silent = false } = {}) {
     const cached = readCachedDocuments(docsCacheKey);
     if (cached.length && documents.length === 0) {
       setDocuments(cached);
       setIsShowingCached(true);
     }
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
-      const data = await sourceLibraryApi.listDocuments(withScope(nextFilters));
+      // Server-side filtering owns pagination; map UI keys (e.g. module → module_name)
+      // and never re-filter only the current page client-side.
+      const data = await sourceLibraryApi.listDocuments(withScope(toSourceLibraryApiFilters(nextFilters)));
       const list = data.documents || data.sources || [];
       setDocuments(list);
       writeCachedDocuments(docsCacheKey, list);
@@ -249,6 +251,19 @@ export default function SourceLibraryPage() {
     if (silentRetryTick > 0) loadDocuments(filters);
   }, [silentRetryTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const hasProcessingDocs = documents.some((doc) => {
+    const st = String(doc?.status || '').toLowerCase();
+    return st === 'processing' || st === 'pending';
+  });
+
+  useEffect(() => {
+    if (!hasProcessingDocs) return undefined;
+    const timer = window.setInterval(() => {
+      loadDocuments(filters, { silent: true });
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [hasProcessingDocs, filters]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     async function boot() {
       try {
@@ -274,69 +289,6 @@ export default function SourceLibraryPage() {
     loadDocuments(next);
   }
 
-  async function openStructure(doc) {
-    const jobId = doc.job_id || doc.document_id;
-    setSelected(doc);
-    setStructure(null);
-    setOverview(null);
-    setPages(null);
-    setUnits(null);
-    setSelectedUnit(null);
-    setSectionLoading(false);
-    setInsideSearch('');
-    setSearchResults(null);
-    setSectionIndex(0);
-    setShowSectionList(false);
-    try {
-      const ov = await sourceLibraryApi.getOverview(jobId, withScope({}));
-      setOverview(ov);
-      const [pg, un] = await Promise.all([
-        sourceLibraryApi.getPages(jobId, withScope({ page: 1, page_size: 1 })),
-        sourceLibraryApi.getUnits(jobId, withScope({})),
-      ]);
-      setPages(pg);
-      setUnits(un);
-      const firstUnit = (un.units || [])[0];
-      if (firstUnit?.unit_id) {
-        setSectionLoading(true);
-        const detail = await sourceLibraryApi.getUnitDetail(jobId, firstUnit.unit_id, withScope({}));
-        setSelectedUnit(detail.unit || null);
-        setSectionLoading(false);
-      }
-      // Keep legacy shape for old small-file UI fallbacks.
-      setStructure({ preview: ov.preview || '', content_units: un.units || [] });
-    } catch (e) {
-      setSectionLoading(false);
-      setStructure({ error: errorMessage(e, 'Could not load document overview.') });
-    }
-  }
-
-  async function loadSectionByIndex(nextIndex) {
-    if (!selected || !units?.units?.length) return;
-    const safeIndex = Math.min(Math.max(0, nextIndex), units.units.length - 1);
-    const unit = units.units[safeIndex];
-    setSectionIndex(safeIndex);
-    setSelectedUnit(null);
-    await loadUnit(unit.unit_id);
-  }
-
-
-  async function loadUnit(unitId) {
-    if (!selected || !unitId) return;
-    const idx = (units?.units || []).findIndex((u) => u.unit_id === unitId);
-    if (idx >= 0) setSectionIndex(idx);
-    setSelectedUnit(null);
-    setSectionLoading(true);
-    try {
-      const data = await sourceLibraryApi.getUnitDetail(selected.job_id || selected.document_id, unitId, withScope({}));
-      setSelectedUnit(data.unit || null);
-    } catch (e) {
-      setSelectedUnit({ title: 'Error', text: errorMessage(e, 'Could not load content unit.') });
-    } finally {
-      setSectionLoading(false);
-    }
-  }
-
   async function handleDeleteDocument(doc) {
     const jobId = doc.job_id || doc.document_id;
     if (!jobId) return;
@@ -348,14 +300,6 @@ export default function SourceLibraryPage() {
     setError('');
     try {
       await sourceLibraryApi.deleteDocument(jobId, withScope({}));
-      if (selected && (selected.job_id || selected.document_id) === jobId) {
-        setSelected(null);
-        setStructure(null);
-        setOverview(null);
-        setPages(null);
-        setUnits(null);
-        setSelectedUnit(null);
-      }
       await loadDocuments(filters);
     } catch (e) {
       setError(errorMessage(e, 'Could not delete this document.'));
@@ -363,21 +307,6 @@ export default function SourceLibraryPage() {
       setDeletingId('');
     }
   }
-
-  async function searchInsideDocument(e) {
-    e.preventDefault();
-    if (!selected || !insideSearch.trim()) {
-      setSearchResults(null);
-      return;
-    }
-    try {
-      const data = await sourceLibraryApi.searchSource(selected.job_id || selected.document_id, withScope({ q: insideSearch.trim(), limit: 20 }));
-      setSearchResults(data);
-    } catch (e2) {
-      setSearchResults({ error: errorMessage(e2, 'Search failed.') });
-    }
-  }
-
 
   function setPersistedUploadQueue(updater) {
     setUploadQueue((current) => {
@@ -575,6 +504,9 @@ export default function SourceLibraryPage() {
   }
 
   const documentTypeOptions = useMemo(() => unique(filterOptions.document_types), [filterOptions]);
+  const taxonomyFilters = useMemo(() => taxonomyFiltersFromUiConfig(uiConfig), [uiConfig]);
+  const uploadMetadataFields = useMemo(() => uploadMetadataFieldsFromUiConfig(uiConfig), [uiConfig]);
+  const documentTypeUpload = useMemo(() => documentTypeFromUiConfig(uiConfig), [uiConfig]);
   useEffect(() => {
     let cancelled = false;
     sourceLibraryApi.getUploadPolicy()
@@ -605,20 +537,10 @@ export default function SourceLibraryPage() {
   }, [uploadQueue, uploadStatusFilters, documents]);
   const uploadPurposeOptions = useMemo(() => unique((uploadQueue || []).map((i) => i.purpose)), [uploadQueue]);
   const uploadDocTypeOptions = useMemo(() => unique((uploadQueue || []).map((i) => i.document_type)), [uploadQueue]);
-  const displayedDocuments = useMemo(() => {
-    const q = String(filters.search || '').trim().toLowerCase();
-    return (documents || []).filter((doc) => {
-      if (filters.purpose && doc.purpose !== filters.purpose) return false;
-      if (filters.document_type && doc.document_type !== filters.document_type) return false;
-      if (filters.status && String(doc.status || 'processed') !== filters.status) return false;
-      if (!q) return true;
-      return [doc.title, doc.source_file_name, doc.document_type, doc.purpose, doc.document_id, doc.job_id]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-        .includes(q);
-    });
-  }, [documents, filters]);
+  // Documents are already filtered server-side (including search/purpose/type/status
+  // and configured taxonomy filters). Re-filtering the current page would hide
+  // matches that fall outside this page of results.
+  const displayedDocuments = documents || [];
 
   return (
     <PageContainer title="" breadcrumbs={[{ label: 'Source Library' }]} noPadding>
@@ -678,9 +600,45 @@ export default function SourceLibraryPage() {
                 </select>
               </div>
               <div>
-                <label className={styles.label}>Document Type</label>
-                <input className={styles.input} name="document_type" placeholder="Optional, auto-detect if blank" />
+                <label className={styles.label}>{documentTypeUpload.label}</label>
+                {documentTypeUpload.control === 'select' ? (
+                  <select className={styles.select} name="document_type" defaultValue="">
+                    <option value="">Auto-detect if blank</option>
+                    {documentTypeUpload.options.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : (
+                  <input className={styles.input} name="document_type" placeholder={documentTypeUpload.placeholder} />
+                )}
               </div>
+              {uploadMetadataFields.map((field) => {
+                const control = uploadControlType(field);
+                const label = field.label || field.key;
+                if (control === 'select') {
+                  return (
+                    <div key={field.key}>
+                      <label className={styles.label}>{label}</label>
+                      <select className={styles.select} name={field.key} defaultValue="">
+                        <option value="">—</option>
+                        {(field.options || []).map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </div>
+                  );
+                }
+                if (control === 'textarea') {
+                  return (
+                    <div key={field.key}>
+                      <label className={styles.label}>{label}</label>
+                      <textarea className={styles.input} name={field.key} placeholder={field.placeholder || label} rows={3} />
+                    </div>
+                  );
+                }
+                return (
+                  <div key={field.key}>
+                    <label className={styles.label}>{label}</label>
+                    <input className={styles.input} name={field.key} placeholder={field.placeholder || label} />
+                  </div>
+                );
+              })}
             </div>
             <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <button type="submit" className={styles.button} disabled={uploading} onClick={() => { uploadAsGlobalRef.current = false; }}>{uploading ? `Uploading ${uploadProgress}%` : 'Upload and Ingest'}</button>
@@ -794,6 +752,39 @@ export default function SourceLibraryPage() {
               <option value="">All statuses</option>
               {statusOptions.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
+            {taxonomyFilters.map((tf) => {
+              const key = tf.key;
+              const label = tf.label || key;
+              const type = String(tf.type || 'select').toLowerCase();
+              const optionsKey = optionsKeyForTaxonomyKey(key);
+              const options = unique(filterOptions[optionsKey] || []);
+              if (type === 'text') {
+                return (
+                  <div key={key}>
+                    <label className={styles.label}>{label}</label>
+                    <input
+                      className={styles.input}
+                      value={filters[key] || ''}
+                      onChange={(e) => updateFilter(key, e.target.value)}
+                      placeholder={label}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div key={key}>
+                  <label className={styles.label}>{label}</label>
+                  <select
+                    className={styles.select}
+                    value={filters[key] || ''}
+                    onChange={(e) => updateFilter(key, e.target.value)}
+                  >
+                    <option value="">{`All ${label}`}</option>
+                    {options.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              );
+            })}
           </div>
         </aside>
 
@@ -830,7 +821,20 @@ export default function SourceLibraryPage() {
                       <td><RetrievalStatus doc={doc} /></td>
                       <td>
                         <div className={styles.rowActions}>
-                          <button type="button" className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => openStructure(doc)}>View</button>
+                          <button
+                            type="button"
+                            className={`${styles.button} ${styles.buttonSecondary}`}
+                            onClick={() => navigate(`/workspace/${courseId}/sources/${doc.job_id || doc.document_id}/view?tab=ai`)}
+                          >
+                            View
+                          </button>
+                          <button
+                            type="button"
+                            className={`${styles.button} ${styles.buttonSecondary}`}
+                            onClick={() => navigate(`/workspace/${courseId}/sources/${doc.job_id || doc.document_id}/metadata?tab=ai`)}
+                          >
+                            Edit metadata
+                          </button>
                           {isAdmin && (
                             <button
                               type="button"
@@ -853,51 +857,6 @@ export default function SourceLibraryPage() {
                 </tbody>
               </table>
             </div>
-            {selected && (
-              <div className={styles.detail}>
-                <div className={styles.detailHeader}>
-                  <h3>{selected.title || selected.source_file_name}</h3>
-                  <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => { setSelected(null); setStructure(null); setOverview(null); setPages(null); setUnits(null); setSelectedUnit(null); }}>Close</button>
-                </div>
-                {structure?.error ? (
-                  <div className={styles.errorBox}>{structure.error}</div>
-                ) : (
-                  <>
-                    {units?.units?.length > 0 && (
-                      <div className={styles.sectionsBox}>
-                        <div className={styles.sectionNavHeader}>
-                          <h4>Sections</h4>
-                          <select
-                            className={styles.select}
-                            value={String(sectionIndex)}
-                            onChange={(e) => loadSectionByIndex(Number(e.target.value || 0))}
-                          >
-                            {units.units.map((u, idx) => (
-                              <option key={u.unit_id || idx} value={String(idx)}>{`Section ${idx + 1}`}</option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    )}
-
-                    {sectionLoading ? (
-                      <div className={styles.unitDetail}>
-                        <h4>Loading section…</h4>
-                        <textarea className={styles.previewText} readOnly value="" />
-                      </div>
-                    ) : selectedUnit ? (
-                      <div className={styles.unitDetail}>
-                        <h4>{`Section ${sectionIndex + 1}`}</h4>
-                        <textarea className={styles.previewText} readOnly value={selectedUnit.text || ''} />
-                      </div>
-                    ) : (
-                      <textarea className={styles.previewText} readOnly value={(overview?.preview || structure?.preview || '').slice(0, 30000)} />
-                    )}
-
-                  </>
-                )}
-              </div>
-            )}
           </div>
         </section>
       </div>

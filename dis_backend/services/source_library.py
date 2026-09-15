@@ -3,7 +3,8 @@
 Product rule:
 - CAS Source Library should list a compact document catalogue, not full DIS metadata.
 - View should return readable extracted content only.
-- The catalogue is persisted as one JSON file per client/workspace so it survives API restarts.
+- The catalogue is persisted in DIS Postgres (``structure_store``) when enabled,
+  otherwise as one JSON file per client/workspace on S3.
 """
 from __future__ import annotations
 
@@ -15,6 +16,12 @@ from typing import Any, Dict, List, Optional
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.locks import source_index_lock
+from services.metadata_framework.adapters import (
+    project_filter_options_map,
+    project_index_metadata,
+)
+from services.metadata_framework.registry import registry_for_tenant
+from services import source_index_pg
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,26 @@ BLUEPRINT_DOC_TYPES = {"course_calendar", "syllabus", "chapter_outline", "module
 #: Retrieval reads THIS file (context_retrieval._iter_payloads), so collapsing here is
 #: what a Block 6 request would have received.
 PER_UNIT_DOC_TYPES = {"knowledge_test_report"}
+
+#: ebook_reference is page-chunked: one unit per physical PDF page, each carrying
+#: chapter / page_number / ACS / topics. Collapsing to full_document would erase
+#: those tags and make assigned-reading page slices impossible.
+PAGE_CHUNK_DOC_TYPES = {"ebook_reference"}
+
+#: Unit-level metadata a ``per_unit`` / ``page`` document carries into the content
+#: file. A short allow-list, not the whole unit metadata dict: this file is what
+#: CAS prompts read, and the product rule for it is "no internal DIS metadata".
+_PER_UNIT_METADATA_KEYS = frozenset({
+    "block", "block_id", "block_number", "day_number", "acs_codes", "missed_codes",
+    "document_type", "content_type", "visibility", "sheet_name",
+})
+
+_PAGE_CHUNK_METADATA_KEYS = frozenset({
+    "chapter", "page_number", "printed_page", "pdf_page", "acs_codes",
+    "topics", "summary", "chunking_strategy", "chunk_index",
+    "document_type", "content_type", "visibility",
+    "tagging_status", "tagging_error", "tagging_attempted_at",
+})
 
 
 def normalize_visibility(value: str) -> str:
@@ -119,20 +146,13 @@ def chunking_strategy(purpose: str, document_type: str) -> str:
     d = (document_type or "").strip().lower()
     if d in PER_UNIT_DOC_TYPES:
         return "per_unit"
+    if d in PAGE_CHUNK_DOC_TYPES:
+        return "page"
     if p in {"style", "cdd", "blueprint"}:
         return "full_document"
     if d in STYLE_DOC_TYPES | CDD_DOC_TYPES | BLUEPRINT_DOC_TYPES:
         return "full_document"
     return "semantic_chunk"
-
-
-#: Unit-level metadata a ``per_unit`` document carries into the content file. A short
-#: allow-list, not the whole unit metadata dict: this file is what CAS prompts read, and
-#: the product rule for it is "no internal DIS metadata".
-_PER_UNIT_METADATA_KEYS = frozenset({
-    "block", "block_id", "block_number", "day_number", "acs_codes", "missed_codes",
-    "document_type", "content_type", "visibility", "sheet_name",
-})
 
 
 def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -181,6 +201,11 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
                     # filtering behaviour changes.
                     clean_unit["metadata"] = {k: v for k, v in (u.get("metadata") or {}).items()
                                               if k in _PER_UNIT_METADATA_KEYS}
+                elif strategy == "page":
+                    # ebook_reference page units: keep chapter / page_number / ACS /
+                    # topics so assigned reading and retrieval can filter by them.
+                    clean_unit["metadata"] = {k: v for k, v in (u.get("metadata") or {}).items()
+                                              if k in _PAGE_CHUNK_METADATA_KEYS}
                 clean_units.append(clean_unit)
         if not clean_units:
             clean_units = [{
@@ -190,6 +215,10 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "title": title,
                 "text": reading_content,
             }]
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(clean_units) if strategy == "page" else {
+        "tagging_failed_count": 0, "tagging_pending_count": 0,
+    }
     return {
         "schema_version": "source_content_v1",
         "job_id": job_id,
@@ -217,15 +246,23 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
         "reading_content": reading_content,
         "preview": reading_content[:12000],
         "content_units": clean_units,
+        "tagging_failed_count": counts["tagging_failed_count"],
+        "tagging_pending_count": counts["tagging_pending_count"],
     }
 
 
-def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key: str) -> Dict[str, Any]:
+def compact_source_record(
+    payload: Dict[str, Any],
+    payload_key: str,
+    content_key: str,
+    tenant_cfg: Optional[TenantConfig] = None,
+) -> Dict[str, Any]:
     meta = payload.get("metadata", {}) or {}
     source = payload.get("source_file", {}) or {}
     document_type = str(meta.get("document_type") or meta.get("doc_type") or source.get("type") or "document")
     purpose = normalize_purpose(str(meta.get("purpose") or ""), document_type)
     now = datetime.utcnow().isoformat()
+    registry = registry_for_tenant(tenant_cfg)
 
     def _first_unit_value(key: str):
         """Fallback: first non-empty value of `key` across content-unit metadata.
@@ -246,7 +283,7 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
             v = _first_unit_value(key)
         return v if v not in (None, "", []) else default
 
-    return {
+    record = {
         "document_id": payload.get("job_id"),
         "job_id": payload.get("job_id"),
         "tenant_id": payload.get("tenant_id"),
@@ -277,80 +314,29 @@ def compact_source_record(payload: Dict[str, Any], payload_key: str, content_key
         "source_relative_path": source.get("relative_path") or "",
         "created_at": payload.get("created_at") or now,
         "updated_at": now,
-        # Optional simple filter values only. No internal metadata dump.
-        "course_name": meta.get("course_name") or "",
-        "block": meta.get("block") or "",
-        "day": meta.get("day") or "",
-        "chapter": meta.get("chapter") or "",
-        "module_name": meta.get("module_name") or "",
-        "learning_objective": meta.get("learning_objective") or "",
-        # Filter / calendar-join keys promoted from the processed payload, so the
-        # retrieval allow-set and the block/day/quiz/project filters can be
-        # evaluated from the source index alone — no per-query content-file
-        # reads. Additive only; absent values stay empty/None.
-        "content_type": meta.get("content_type") or "",
-        "block_id": meta.get("block_id") or meta.get("block") or "",
-        "block_number": meta.get("block_number") or "",
-        "day_number": _promote("day_number", None),
-        "day_id": _promote("day_id"),
-        "mapped_day": meta.get("mapped_day") or "",
-        "filename_day_id": meta.get("filename_day_id") or "",
-        "quiz_number": _promote("quiz_number", None),
-        "project_number": _promote("project_number"),
-        "lesson_name": meta.get("lesson_name") or "",
-        "subject_unit": _promote("subject_unit"),
-        "course_id": meta.get("course_id") or "",
-        "program_id": meta.get("program_id") or "",
-        "calendar_mapping_required": bool(meta.get("calendar_mapping_required")),
-        "is_generation_candidate": meta.get("is_generation_candidate"),
-        "is_archive_or_working_version": bool(meta.get("is_archive_or_working_version")),
     }
+    # Optional simple filter / calendar-join keys. Driven by the Field Registry
+    # (tenant metadata_framework when present; else DEFAULT_REGISTRY). Additive
+    # only; absent values stay empty/None. AIM profile transforms still write
+    # into payload.metadata first.
+    record.update(project_index_metadata(meta, _promote, registry))
+    # Ebook page-tagging retry badges (0 for non-page docs).
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(payload.get("content_units") or [])
+    record["tagging_failed_count"] = int(
+        payload.get("tagging_failed_count")
+        if payload.get("tagging_failed_count") is not None
+        else counts["tagging_failed_count"]
+    )
+    record["tagging_pending_count"] = int(
+        payload.get("tagging_pending_count")
+        if payload.get("tagging_pending_count") is not None
+        else counts["tagging_pending_count"]
+    )
+    return record
 
 
-def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
-    """The allow-set every retrieval and the Source Library are built from.
-
-    An empty index is returned on failure so a fresh client — one that has never
-    had an upload, and so has no index object yet — starts from an empty library
-    rather than an error page. That is the ONLY case it is meant to cover.
-
-    It used to cover every case, silently. `except Exception: pass` with no log
-    meant a missing bucket, a denied read, an expired AWS session token and a
-    wrong ENVIRONMENT all produced the same answer the empty-library case does:
-    zero documents, nothing in the logs, nothing in the response to say the
-    difference. Debugging that means guessing, because the one system that knew
-    what went wrong threw it away.
-
-    So NoSuchKey/404 stays quiet — that is the legitimate empty case — and
-    everything else is logged loudly with the bucket and key it was reading, at
-    error level, because it means configured storage the service cannot read.
-    """
-    writer = ArtifactWriter(tenant_cfg)
-    key = source_index_key(tenant_cfg, client_id)
-    try:
-        data = writer.read_json(key)
-        if isinstance(data, dict):
-            data.setdefault("sources", [])
-            return data
-        logger.error(
-            "source index for client_id=%s at %s is %s, not an object — returning an "
-            "empty library; the file is corrupt or is not a source index",
-            client_id, key, type(data).__name__)
-    except Exception as exc:  # noqa: BLE001 — the library must still render
-        code = getattr(getattr(exc, "response", None), "get", lambda *_: None)("Error") or {}
-        code = (code or {}).get("Code", "") if isinstance(code, dict) else ""
-        if code in {"NoSuchKey", "404", "NoSuchBucket"} or exc.__class__.__name__ == "FileNotFoundError":
-            logger.info(
-                "no source index yet for client_id=%s at bucket=%s key=%s — empty library",
-                client_id, getattr(writer, "processed_bucket", "?"), key)
-        else:
-            logger.error(
-                "CANNOT READ the source index for client_id=%s (bucket=%s key=%s): %s: %s. "
-                "Returning an empty library — every document will look missing and every "
-                "generation will run with no sources. Check the bucket, the credentials "
-                "and that ENVIRONMENT matches the deployment whose data you expect.",
-                client_id, getattr(writer, "processed_bucket", "?"), key,
-                type(exc).__name__, exc)
+def _empty_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
     return {
         "schema_version": "source_index_v1",
         "tenant_id": tenant_cfg.tenant_id,
@@ -360,11 +346,106 @@ def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any
     }
 
 
+def _read_source_index_s3(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
+    """S3 source_list.json path — used when structure_store is disabled."""
+    writer = ArtifactWriter(tenant_cfg)
+    key = source_index_key(tenant_cfg, client_id)
+    # Logical key omits storage.base_prefix (e.g. DIS/); the object on S3 is
+    # base_prefix + key. Log both so a wrong-prefix failure is obvious.
+    bp = (getattr(writer, "base_prefix", "") or "").strip().strip("/")
+    storage_key = f"{bp}/{key}" if bp else key
+    try:
+        data = writer.read_json(key)
+        if isinstance(data, dict):
+            data.setdefault("sources", [])
+            return data
+        logger.error(
+            "source index for client_id=%s at %s is %s, not an object — returning an "
+            "empty library; the file is corrupt or is not a source index",
+            client_id, storage_key, type(data).__name__)
+    except Exception as exc:  # noqa: BLE001 — the library must still render
+        code = getattr(getattr(exc, "response", None), "get", lambda *_: None)("Error") or {}
+        code = (code or {}).get("Code", "") if isinstance(code, dict) else ""
+        if code in {"NoSuchKey", "404", "NoSuchBucket"} or exc.__class__.__name__ == "FileNotFoundError":
+            logger.info(
+                "no source index yet for client_id=%s at bucket=%s key=%s — empty library",
+                client_id, getattr(writer, "processed_bucket", "?"), storage_key)
+        else:
+            logger.error(
+                "CANNOT READ the source index for client_id=%s (bucket=%s key=%s): %s: %s. "
+                "Returning an empty library — every document will look missing and every "
+                "generation will run with no sources. Check the bucket, the credentials "
+                "and that ENVIRONMENT matches the deployment whose data you expect.",
+                client_id, getattr(writer, "processed_bucket", "?"), storage_key,
+                type(exc).__name__, exc)
+    return _empty_index(tenant_cfg, client_id)
+
+
+def _warn_if_s3_has_unmigrated_data(tenant_cfg: TenantConfig, client_id: str) -> None:
+    """Loud signal when PG is empty but S3 still has a catalogue (deploy without backfill)."""
+    try:
+        s3_index = _read_source_index_s3(tenant_cfg, client_id)
+        s3_n = len(s3_index.get("sources") or [])
+    except Exception:  # noqa: BLE001
+        return
+    if s3_n > 0:
+        logger.error(
+            "source_index table empty for client_id=%s environment=%s but S3 still has "
+            "%s catalogue row(s). Run scripts/migrate_source_index_to_pg.py --apply "
+            "--client %s before expecting the Source Library to list documents.",
+            client_id, source_index_pg.environment_name(), s3_n, client_id,
+        )
+
+
+def read_source_index(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
+    """The allow-set every retrieval and the Source Library are built from.
+
+    When ``structure_store`` is enabled, rows come from Postgres ``source_index``.
+    Otherwise the legacy S3 ``source_list.json`` is used.
+
+    An empty index is returned on failure so a fresh client — one that has never
+    had an upload — starts from an empty library rather than an error page. That
+    is the ONLY case it is meant to cover for a missing store. Connection /
+    permission failures are logged loudly.
+    """
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        try:
+            sources = source_index_pg.read_sources(tenant_cfg, client_id)
+            if not sources:
+                _warn_if_s3_has_unmigrated_data(tenant_cfg, client_id)
+            return {
+                "schema_version": "source_index_v1",
+                "tenant_id": tenant_cfg.tenant_id,
+                "client_id": client_id,
+                "updated_at": datetime.utcnow().isoformat(),
+                "sources": sources,
+            }
+        except Exception as exc:  # noqa: BLE001 — the library must still render
+            logger.error(
+                "CANNOT READ the Postgres source_index for client_id=%s "
+                "(schema=%s environment=%s): %s: %s. Returning an empty library — "
+                "every document will look missing and every generation will run with "
+                "no sources. Check structure_store.url and that the migrate script "
+                "has been applied.",
+                client_id,
+                getattr(tenant_cfg.structure_store, "schema_name", "dis"),
+                source_index_pg.environment_name(),
+                type(exc).__name__,
+                exc,
+            )
+            return _empty_index(tenant_cfg, client_id)
+    return _read_source_index_s3(tenant_cfg, client_id)
+
+
 def write_source_index(tenant_cfg: TenantConfig, client_id: str, index: Dict[str, Any]) -> str:
+    """Persist a full catalogue. PG path replaces all rows for client+environment."""
     index["schema_version"] = "source_index_v1"
     index["tenant_id"] = tenant_cfg.tenant_id
     index["client_id"] = client_id
     index["updated_at"] = datetime.utcnow().isoformat()
+    sources = list(index.get("sources") or [])
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        return source_index_pg.replace_index(tenant_cfg, client_id, sources)
     return ArtifactWriter(tenant_cfg).write_json(source_index_key(tenant_cfg, client_id), index)
 
 
@@ -383,9 +464,13 @@ def update_source_record_status(
     so already-finalized ("processed") records with real content are never
     disturbed.
     """
-    # Tier 2 Step 3: the whole read→modify→write is held under a per-client lock so
-    # the API and the (future) worker can't both read version N and clobber each
-    # other's update. No-op today (NullLock until DIS_REDIS_URL is set).
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        updated, ref = source_index_pg.update_status(
+            tenant_cfg, client_id, job_id, status, extra=extra, only_if_status=only_if_status,
+        )
+        return ref if updated else ""
+
+    # S3 path: whole read→modify→write under a per-client lock.
     with source_index_lock(tenant_cfg.tenant_id, client_id):
         index = read_source_index(tenant_cfg, client_id)
         for rec in index.get("sources", []):
@@ -401,9 +486,10 @@ def update_source_record_status(
 
 
 def upsert_source_record(tenant_cfg: TenantConfig, client_id: str, record: Dict[str, Any]) -> str:
-    # Tier 2 Step 3: read→modify→write under the per-client index lock (see
-    # update_source_record_status). This is the hot path — both the API's immediate
-    # preview and the worker's ProcessedStorageAgent land here.
+    """Insert or replace one compact catalogue row (ingest / metadata save hot path)."""
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        return source_index_pg.upsert_record(tenant_cfg, client_id, record)
+
     with source_index_lock(tenant_cfg.tenant_id, client_id):
         index = read_source_index(tenant_cfg, client_id)
         sources = [s for s in index.get("sources", []) if s.get("job_id") != record.get("job_id")]
@@ -447,18 +533,16 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
 
     opensearch_result = opensearch_delete_by_job(tenant_cfg, job_id)
 
-    # Tier 2 Step 3: re-read the index UNDER THE LOCK before removing the record —
-    # the `index` read at the top is now stale (slow S3/OpenSearch deletes ran in
-    # between, during which a concurrent writer may have updated the index). Writing
-    # the stale copy would resurrect or drop unrelated records. Run off the event
-    # loop because the lock's acquire is blocking.
-    def _locked_remove() -> None:
+    def _remove_index_row() -> None:
+        if source_index_pg.use_pg_source_index(tenant_cfg):
+            source_index_pg.delete_record(tenant_cfg, client_id, job_id)
+            return
         with source_index_lock(tenant_cfg.tenant_id, client_id):
             fresh = read_source_index(tenant_cfg, client_id)
             fresh["sources"] = [r for r in fresh.get("sources", []) if str(r.get("job_id")) != str(job_id)]
             write_source_index(tenant_cfg, client_id, fresh)
 
-    await asyncio.to_thread(_locked_remove)
+    await asyncio.to_thread(_remove_index_row)
 
     return {
         "job_id": job_id,
@@ -493,29 +577,23 @@ def write_source_content_and_index(tenant_cfg: TenantConfig, client_id: str, pay
     c_key = source_content_key(tenant_cfg, client_id, job_id)
     content_doc = build_clean_content_document(payload)
     content_url = writer.write_json(c_key, content_doc)
-    record = compact_source_record(payload, p_key, c_key)
+    record = compact_source_record(payload, p_key, c_key, tenant_cfg=tenant_cfg)
     record["total_units"] = int(content_doc.get("total_units") or 0)
     # Alongside total_units, and for the same reason it is set here rather than in
     # compact_source_record: both describe the CLEAN content document retrieval
     # reads, not the raw pipeline payload.
     record["extracted_chars"] = extracted_chars(content_doc)
+    record["tagging_failed_count"] = int(content_doc.get("tagging_failed_count") or 0)
+    record["tagging_pending_count"] = int(content_doc.get("tagging_pending_count") or 0)
     index_url = upsert_source_record(tenant_cfg, client_id, record)
     return {"content_key": c_key, "content_url": content_url, "index_url": index_url}
 
 
-def source_filter_options(records: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    fields = {
-        "document_types": "document_type",
-        "source_file_types": "source_file_type",
-        "purposes": "purpose",
-        "status": "status",
-        "course_name": "course_name",
-        "blocks": "block",
-        "days": "day",
-        "chapter": "chapter",
-        "module": "module_name",
-        "learning_objective": "learning_objective",
-    }
+def source_filter_options(
+    records: List[Dict[str, Any]],
+    tenant_cfg: Optional[TenantConfig] = None,
+) -> Dict[str, List[str]]:
+    fields = project_filter_options_map(registry_for_tenant(tenant_cfg))
     out: Dict[str, set] = {k: set() for k in fields}
     for r in records:
         for out_key, field in fields.items():
@@ -578,14 +656,25 @@ def _view_units_for_content(content_doc: Dict[str, Any]) -> List[Dict[str, Any]]
     out: List[Dict[str, Any]] = []
     for i, u in enumerate(units, start=1):
         text = str(u.get("text") or "")
-        out.append({
+        meta = u.get("metadata") or {}
+        item = {
             "unit_id": str(u.get("content_unit_id") or f"unit_{i}"),
             "unit_number": int(u.get("unit_number") or i),
             "unit_type": u.get("unit_type") or "content_unit",
             "title": u.get("title") or f"Section {i}",
             "preview": text[:800],
             "char_count": len(text),
-        })
+        }
+        # Surface ebook page tagging flags so Source Library can badge / retry.
+        if meta.get("tagging_status"):
+            item["tagging_status"] = meta.get("tagging_status")
+        if meta.get("tagging_error"):
+            item["tagging_error"] = meta.get("tagging_error")
+        if meta.get("page_number"):
+            item["page_number"] = meta.get("page_number")
+        if meta.get("pdf_page") is not None:
+            item["pdf_page"] = meta.get("pdf_page")
+        out.append(item)
     return out
 
 
@@ -593,6 +682,8 @@ def build_view_manifest(content_doc: Dict[str, Any]) -> Dict[str, Any]:
     text = str(content_doc.get("reading_content") or "")
     pages = _split_text_for_view(text)
     units = _view_units_for_content(content_doc)
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(content_doc.get("content_units") or [])
     return {
         "schema_version": "source_view_manifest_v1",
         "job_id": content_doc.get("job_id"),
@@ -608,6 +699,16 @@ def build_view_manifest(content_doc: Dict[str, Any]) -> Dict[str, Any]:
         "content_too_large_for_single_view": len(text) > LARGE_VIEW_CHAR_THRESHOLD or len(pages) > 8,
         "preview": str(content_doc.get("preview") or text[:12000]),
         "units": units,
+        "tagging_failed_count": int(
+            content_doc.get("tagging_failed_count")
+            if content_doc.get("tagging_failed_count") is not None
+            else counts["tagging_failed_count"]
+        ),
+        "tagging_pending_count": int(
+            content_doc.get("tagging_pending_count")
+            if content_doc.get("tagging_pending_count") is not None
+            else counts["tagging_pending_count"]
+        ),
     }
 
 
@@ -657,7 +758,23 @@ def content_units_response(content_doc: Dict[str, Any]) -> Dict[str, Any]:
     # in the UI instead of one huge section.
     if len(units) <= 1 and len(text) > PAGE_VIEW_CHARS:
         units = _page_units_for_content(content_doc)
-    return {"job_id": content_doc.get("job_id"), "units": units, "total_units": len(units)}
+    from services.ebook_page_tagger import tagging_counts
+    counts = tagging_counts(content_doc.get("content_units") or [])
+    return {
+        "job_id": content_doc.get("job_id"),
+        "units": units,
+        "total_units": len(units),
+        "tagging_failed_count": int(
+            content_doc.get("tagging_failed_count")
+            if content_doc.get("tagging_failed_count") is not None
+            else counts["tagging_failed_count"]
+        ),
+        "tagging_pending_count": int(
+            content_doc.get("tagging_pending_count")
+            if content_doc.get("tagging_pending_count") is not None
+            else counts["tagging_pending_count"]
+        ),
+    }
 
 
 def content_unit_detail_response(content_doc: Dict[str, Any], unit_id: str) -> Dict[str, Any]:

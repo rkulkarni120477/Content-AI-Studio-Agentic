@@ -10,8 +10,12 @@ export const sourceLibraryApi = {
   getPages: (jobId, params = {}) => api.get(SOURCE_LIBRARY.PAGES(jobId), { params }),
   getUnits: (jobId, params = {}) => api.get(SOURCE_LIBRARY.UNITS(jobId), { params }),
   getUnitDetail: (jobId, unitId, params = {}) => api.get(SOURCE_LIBRARY.UNIT_DETAIL(jobId, unitId), { params }),
+  retagContent: (jobId, payload = {}, params = {}) => api.post(SOURCE_LIBRARY.RETAG(jobId), payload, { params }),
   searchSource: (jobId, params = {}) => api.get(SOURCE_LIBRARY.SEARCH(jobId), { params }),
   deleteDocument: (jobId, params = {}) => api.delete(SOURCE_LIBRARY.DELETE_DOCUMENT(jobId), { params }),
+  getMetadata: (jobId, params = {}) => api.get(SOURCE_LIBRARY.METADATA(jobId), { params }),
+  patchMetadata: (jobId, payload, params = {}) => api.patch(SOURCE_LIBRARY.METADATA(jobId), payload, { params }),
+  revertMetadata: (jobId, params = {}) => api.post(SOURCE_LIBRARY.METADATA_REVERT(jobId), {}, { params }),
   uploadDocument: (formData, onProgress) => api.upload(SOURCE_LIBRARY.UPLOAD, formData, onProgress),
   /** What the server will accept. Fetched, never hardcoded — see get_upload_policy. */
   getUploadPolicy: () => api.get(SOURCE_LIBRARY.UPLOAD_POLICY),

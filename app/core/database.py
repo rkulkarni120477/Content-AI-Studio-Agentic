@@ -98,3 +98,41 @@ def check_database_connection() -> bool:
     except Exception as exc:
         _log.error("database_connection_failed  error=%s", exc)
         return False
+
+
+def wait_for_database(
+    max_retries: int = 60,
+    retry_delay: int = 5,
+) -> None:
+    """
+    Wait until the database becomes reachable.
+
+    This is important when the application starts at the same time as
+    AWS RDS after an EC2/RDS restart. RDS may take several seconds or
+    minutes before accepting connections.
+    """
+    import time
+
+    for attempt in range(1, max_retries + 1):
+        if check_database_connection():
+            _log.info(
+                "database_ready  attempt=%d/%d",
+                attempt,
+                max_retries,
+            )
+            return
+
+        _log.warning(
+            "database_not_ready  attempt=%d/%d  retry_in=%ds",
+            attempt,
+            max_retries,
+            retry_delay,
+        )
+
+        if attempt < max_retries:
+            time.sleep(retry_delay)
+
+    raise RuntimeError(
+        f"Database did not become available after "
+        f"{max_retries * retry_delay} seconds"
+    )

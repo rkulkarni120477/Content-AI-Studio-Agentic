@@ -19,6 +19,10 @@ service could not read what it had been pointed at.
 
 The legitimate empty case stays quiet. Everything else is loud, and names the
 bucket and key it failed on.
+
+After the Postgres cutover, AIM/Cengage use structure_store for the catalogue.
+These S3-path tests force that off so the legacy failure contract stays pinned.
+Separate cases cover Postgres read failures.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ import logging
 import pytest
 
 from config.settings import get_tenant_config
+from services import source_index_pg
 from services import source_library
 
 
@@ -41,6 +46,12 @@ class _Boom(Exception):
 @pytest.fixture
 def cfg():
     return get_tenant_config("aim")
+
+
+@pytest.fixture(autouse=True)
+def force_s3_catalogue(monkeypatch):
+    """Pin S3 catalogue path for the classic failure tests below."""
+    monkeypatch.setattr(source_index_pg, "use_pg_source_index", lambda tenant_cfg: False)
 
 
 def read_with(monkeypatch, exc, cfg):
@@ -107,3 +118,36 @@ def test_an_index_with_no_sources_key_still_lists(monkeypatch, cfg):
     monkeypatch.setattr(source_library.ArtifactWriter, "read_json",
                         lambda self, key: {"schema_version": "source_index_v1"})
     assert source_library.read_source_index(cfg, "aim")["sources"] == []
+
+
+def test_postgres_read_failure_is_reported_loudly(monkeypatch, caplog, cfg):
+    monkeypatch.setattr(source_index_pg, "use_pg_source_index", lambda tenant_cfg: True)
+    monkeypatch.setattr(
+        source_index_pg,
+        "read_sources",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("connection refused")),
+    )
+    with caplog.at_level(logging.INFO, logger=source_library.__name__):
+        index = source_library.read_source_index(cfg, "aim")
+    assert index["sources"] == []
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors
+    message = errors[0].getMessage()
+    assert "Postgres source_index" in message
+    assert "connection refused" in message
+
+
+def test_empty_pg_with_s3_rows_warns_to_run_migrate(monkeypatch, caplog, cfg):
+    monkeypatch.setattr(source_index_pg, "use_pg_source_index", lambda tenant_cfg: True)
+    monkeypatch.setattr(source_index_pg, "read_sources", lambda *a, **k: [])
+    monkeypatch.setattr(
+        source_library,
+        "_read_source_index_s3",
+        lambda *a, **k: {"sources": [{"job_id": "still-on-s3"}]},
+    )
+    with caplog.at_level(logging.INFO, logger=source_library.__name__):
+        index = source_library.read_source_index(cfg, "aim")
+    assert index["sources"] == []
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors
+    assert "migrate_source_index_to_pg.py" in errors[0].getMessage()

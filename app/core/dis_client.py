@@ -556,11 +556,27 @@ async def _source_units(self, job_id: str, current_user: Any = None, client_id: 
 async def _source_unit_detail(self, job_id: str, unit_id: str, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
     return await self.request("GET", f"/context/sources/{job_id}/content/units/{unit_id}", current_user=current_user, client_id=client_id)
 
+async def _source_content_retag(self, job_id: str, payload: Dict[str, Any] | None = None, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
+    return await self.request("POST", f"/context/sources/{job_id}/content/retag", json=payload or {}, current_user=current_user, client_id=client_id)
+
 async def _source_search(self, job_id: str, params: Dict[str, Any] | None = None, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
     return await self.request("GET", f"/context/sources/{job_id}/search", params=params or {}, current_user=current_user, client_id=client_id)
+
+async def _source_metadata(self, job_id: str, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
+    return await self.request("GET", f"/context/sources/{job_id}/metadata", current_user=current_user, client_id=client_id)
+
+async def _patch_source_metadata(self, job_id: str, payload: Dict[str, Any], current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
+    return await self.request("PATCH", f"/context/sources/{job_id}/metadata", json=payload, current_user=current_user, client_id=client_id)
+
+async def _revert_source_metadata(self, job_id: str, current_user: Any = None, client_id: str = "") -> Dict[str, Any]:
+    return await self.request("POST", f"/context/sources/{job_id}/metadata/revert-ai", current_user=current_user, client_id=client_id)
 
 DISClient.source_overview = _source_overview
 DISClient.source_pages = _source_pages
 DISClient.source_units = _source_units
 DISClient.source_unit_detail = _source_unit_detail
+DISClient.source_content_retag = _source_content_retag
 DISClient.source_search = _source_search
+DISClient.source_metadata = _source_metadata
+DISClient.patch_source_metadata = _patch_source_metadata
+DISClient.revert_source_metadata = _revert_source_metadata

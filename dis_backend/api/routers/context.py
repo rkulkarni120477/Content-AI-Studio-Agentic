@@ -8,7 +8,7 @@ from __future__ import annotations
 import functools
 import logging
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -16,10 +16,20 @@ from pydantic import BaseModel, Field
 
 from api.middleware.auth import get_current_tenant
 from services.context_retrieval import ContextRetrievalService
+from services.metadata_editor import (
+    DocumentNotFoundError,
+    InvalidRelationshipTargetError,
+    MetadataEditorError,
+    UnauthorizedDocumentError,
+    get_document_metadata,
+    patch_document_metadata,
+    revert_document_metadata_to_ai,
+)
 from services.digests import progress as digest_progress
 from services.digests.enumerate import enumerate_block
 from services.digests.build import digest_status, context_bundle, run_tracked_build
 from services.digests.day_scoped import day_context, DEFAULT_SUPPLEMENT_K
+from services.metadata_framework.filter_query import build_documents_library_filters
 from services.source_library import delete_source_document
 from config.settings import get_tenant_config
 from storage.provider import get_storage_provider
@@ -59,24 +69,27 @@ async def documents_library(
 
     It is purpose-aware and client-config aware. The same endpoint supports AIM
     Block/Day filters and Cengage Chapter/Module/LO filters through metadata.
+
+    Extra query keys are accepted only when the tenant Field Registry promotes
+    them to filter_options (Phase 3). Unknown keys are ignored.
     """
     tenant = get_current_tenant(request)
     client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
-    filters = {
-        "document_type": document_type,
-        "visibility": visibility,
-        "status": status,
-        "search": search,
-        "block": block,
-        "day": day,
-        "chapter": chapter,
-        "module_name": module_name,
-        "course_name": course_name,
-        "course_id": course_id,
-        "metadata_filters": {},
-    }
-    if learning_objective:
-        filters["metadata_filters"]["learning_objective"] = learning_objective
+    filters = build_documents_library_filters(
+        document_type=document_type,
+        visibility=visibility,
+        status=status,
+        search=search,
+        block=block,
+        day=day,
+        chapter=chapter,
+        module_name=module_name,
+        learning_objective=learning_objective,
+        course_name=course_name,
+        course_id=course_id,
+        query_params=request.query_params,
+        tenant_cfg=tenant,
+    )
     return ContextRetrievalService(tenant, role=getattr(request.state, "role", "user")).documents_library(
         client_id, purpose=purpose, filters=filters, limit=limit, offset=offset
     )
@@ -580,6 +593,101 @@ async def retrieve_day_context(request: Request, body: DayContextRequest):
         raise HTTPException(400, str(exc))
 
 
+class AIMetadataPatch(BaseModel):
+    title: Optional[str] = None
+    author: Optional[str] = None
+    subject: Optional[str] = None
+    language: Optional[str] = None
+    description: Optional[str] = None
+    keywords: Optional[List[str]] = None
+
+
+class TaxonomyStandardsPatch(BaseModel):
+    subject_area: Optional[str] = None
+    domain: Optional[str] = None
+    subdomain: Optional[str] = None
+    blooms_level: Optional[str] = None
+    skill_level: Optional[str] = None
+    learning_standards: Optional[List[str]] = None
+    skills_mapped: Optional[List[str]] = None
+
+
+class RelationshipItemPatch(BaseModel):
+    job_id: str = ""
+    label: str = ""
+
+
+class RelationshipsPatch(BaseModel):
+    series_collection: Optional[str] = None
+    related_documents: Optional[List[RelationshipItemPatch]] = None
+    prerequisites: Optional[List[RelationshipItemPatch]] = None
+    cross_references: Optional[List[RelationshipItemPatch]] = None
+
+
+class MetadataPatchRequest(BaseModel):
+    ai_metadata: Optional[AIMetadataPatch] = None
+    taxonomy_standards: Optional[TaxonomyStandardsPatch] = None
+    relationships: Optional[RelationshipsPatch] = None
+
+
+def _metadata_editor_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, MetadataEditorError):
+        return HTTPException(getattr(exc, "status_code", 400), exc.message)
+    return HTTPException(500, "Metadata operation failed")
+
+
+@router.get("/sources/{job_id}/metadata")
+async def get_source_metadata(job_id: str, request: Request):
+    """Return editable document metadata for the Metadata Editor UI."""
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    try:
+        return await anyio.to_thread.run_sync(get_document_metadata, tenant, client_id, job_id)
+    except (DocumentNotFoundError, UnauthorizedDocumentError, MetadataEditorError) as exc:
+        raise _metadata_editor_http_error(exc) from exc
+
+
+@router.patch("/sources/{job_id}/metadata")
+async def patch_source_metadata(job_id: str, body: MetadataPatchRequest, request: Request):
+    """Persist user-edited metadata to studio payload and re-project source index."""
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    ai = body.ai_metadata.model_dump(exclude_unset=True) if body.ai_metadata else None
+    tax = body.taxonomy_standards.model_dump(exclude_unset=True) if body.taxonomy_standards else None
+    rel = None
+    if body.relationships:
+        rel = body.relationships.model_dump(exclude_unset=True)
+        for key in ("related_documents", "prerequisites", "cross_references"):
+            if key in rel and rel[key] is not None:
+                rel[key] = [i if isinstance(i, dict) else i for i in rel[key]]
+    try:
+        # run_sync does not forward kwargs; bind keyword-only args with partial.
+        return await anyio.to_thread.run_sync(
+            functools.partial(
+                patch_document_metadata,
+                tenant,
+                client_id,
+                job_id,
+                ai_metadata=ai,
+                taxonomy_standards=tax,
+                relationships=rel,
+            )
+        )
+    except (DocumentNotFoundError, UnauthorizedDocumentError, InvalidRelationshipTargetError, MetadataEditorError) as exc:
+        raise _metadata_editor_http_error(exc) from exc
+
+
+@router.post("/sources/{job_id}/metadata/revert-ai")
+async def revert_source_metadata(job_id: str, request: Request):
+    """Restore AI-eligible metadata fields from extracted/metadata.json baseline."""
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    try:
+        return await anyio.to_thread.run_sync(revert_document_metadata_to_ai, tenant, client_id, job_id)
+    except (DocumentNotFoundError, UnauthorizedDocumentError, MetadataEditorError) as exc:
+        raise _metadata_editor_http_error(exc) from exc
+
+
 @router.get("/sources/{job_id}/overview")
 async def source_overview(job_id: str, request: Request):
     """Fast document overview for CAS View. Does not return full large-file text."""
@@ -627,6 +735,38 @@ async def source_content_unit_detail(job_id: str, unit_id: str, request: Request
         return ContextRetrievalService(tenant, role=getattr(request.state, "role", "user")).get_source_unit_detail(client_id, job_id, unit_id=unit_id)
     except Exception as exc:
         raise HTTPException(404, f"Source unit not found: {exc}")
+
+
+class RetagBody(BaseModel):
+    unit_ids: List[str] = Field(default_factory=list)
+    all_failed: bool = False
+
+
+@router.post("/sources/{job_id}/content/retag")
+async def source_content_retag(job_id: str, body: RetagBody, request: Request):
+    """Re-run per-page LLM content tagging for selected (or all failed) ebook pages.
+
+    Uses text already stored in Postgres — does not re-download the PDF.
+    """
+    tenant = get_current_tenant(request)
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    from services.ebook_page_retag import retag_ebook_pages
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: retag_ebook_pages(
+                tenant, client_id, job_id,
+                unit_ids=body.unit_ids or None,
+                all_failed=bool(body.all_failed),
+            )
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        log.exception("retag failed job_id=%s", job_id)
+        raise HTTPException(500, f"Re-tag failed: {exc}")
+    if result.get("status") == "failed":
+        raise HTTPException(400, result.get("error") or "Re-tag failed")
+    return result
 
 
 @router.get("/sources/{job_id}/search")
