@@ -35,7 +35,8 @@ def _fetch_ce_checklist(db, active_style=None) -> Optional[str]:
     if active_style:
         for sd in getattr(active_style, "style_documents", []) or []:
             doc = getattr(sd, "document", None)
-            if doc and doc.filename and CE_CHECKLIST_FILENAME.lower() in doc.filename.lower():
+            if doc and getattr(doc, "status", "active") == "active" and doc.filename \
+                    and CE_CHECKLIST_FILENAME.lower() in doc.filename.lower():
                 if doc.content and doc.content.strip():
                     _log.debug("CE_Checklist found in style documents: %s", doc.filename)
                     return doc.content.strip()

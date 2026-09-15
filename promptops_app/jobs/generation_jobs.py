@@ -270,7 +270,11 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                     _src_prefix = ""
                     for _src_doc_id in _src_doc_ids:
                         _src_doc = document_repository.get_document_by_id(db, _src_doc_id)
-                        if _src_doc and _src_doc.content:
+                        # This id comes from a CDD version's generation_params
+                        # snapshot, taken at CDD-creation time -- it is replayed
+                        # on every later regeneration with no re-validation, so
+                        # a document archived since then must stop contributing.
+                        if _src_doc and _src_doc.status == "active" and _src_doc.content:
                             _src_prefix += make_source_context(_src_doc.filename, _src_doc.content)
                     if _src_prefix:
                         context = _src_prefix + context
