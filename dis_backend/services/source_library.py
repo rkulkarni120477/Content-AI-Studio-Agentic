@@ -709,16 +709,10 @@ def build_view_manifest(content_doc: Dict[str, Any]) -> Dict[str, Any]:
         "content_too_large_for_single_view": len(text) > LARGE_VIEW_CHAR_THRESHOLD or len(pages) > 8,
         "preview": str(content_doc.get("preview") or text[:12000]),
         "units": units,
-        "tagging_failed_count": int(
-            content_doc.get("tagging_failed_count")
-            if content_doc.get("tagging_failed_count") is not None
-            else counts["tagging_failed_count"]
-        ),
-        "tagging_pending_count": int(
-            content_doc.get("tagging_pending_count")
-            if content_doc.get("tagging_pending_count") is not None
-            else counts["tagging_pending_count"]
-        ),
+        # Always recount from units — stored document fields go stale after
+        # single-page retag when only some units' tagging_status changed.
+        "tagging_failed_count": counts["tagging_failed_count"],
+        "tagging_pending_count": counts["tagging_pending_count"],
     }
 
 
@@ -774,16 +768,9 @@ def content_units_response(content_doc: Dict[str, Any]) -> Dict[str, Any]:
         "job_id": content_doc.get("job_id"),
         "units": units,
         "total_units": len(units),
-        "tagging_failed_count": int(
-            content_doc.get("tagging_failed_count")
-            if content_doc.get("tagging_failed_count") is not None
-            else counts["tagging_failed_count"]
-        ),
-        "tagging_pending_count": int(
-            content_doc.get("tagging_pending_count")
-            if content_doc.get("tagging_pending_count") is not None
-            else counts["tagging_pending_count"]
-        ),
+        # Live recount — do not trust possibly-stale document-level counters.
+        "tagging_failed_count": counts["tagging_failed_count"],
+        "tagging_pending_count": counts["tagging_pending_count"],
     }
 
 

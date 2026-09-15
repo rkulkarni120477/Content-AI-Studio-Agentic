@@ -24,10 +24,19 @@ from services.source_library import (
     read_source_index,
     source_content_key,
     studio_payload_key,
-    write_source_content_and_index,
+    write_source_index,
 )
+from services import source_index_pg
 
 log = logging.getLogger(__name__)
+
+#: Metadata keys merged from a retagged unit into content.json / payload units.
+_RETAG_META_KEYS = frozenset({
+    "acs_codes", "topics", "summary",
+    "tagging_status", "tagging_error", "tagging_attempted_at",
+    "chapter", "page_number", "printed_page", "pdf_page",
+    "chunking_strategy", "chunk_index",
+})
 
 
 def _parse_meta(v: Any) -> Dict[str, Any]:
@@ -144,6 +153,95 @@ def _load_doc_context(tenant_cfg: TenantConfig, job_id: str) -> Dict[str, Any]:
     return doc
 
 
+def _merge_retag_into_unit(unit: Dict[str, Any], src: Dict[str, Any], *, replace_metadata: bool = False) -> None:
+    """Apply retag/edit fields onto one unit dict in place."""
+    if src.get("title") is not None:
+        unit["title"] = src.get("title")
+    if src.get("topics") is not None:
+        unit["topics"] = src.get("topics")
+    if src.get("keywords") is not None:
+        unit["keywords"] = src.get("keywords")
+    src_meta = src.get("metadata") or {}
+    if replace_metadata:
+        unit["metadata"] = dict(src_meta)
+    else:
+        unit["metadata"] = {
+            **(unit.get("metadata") or {}),
+            **{k: v for k, v in src_meta.items() if k in _RETAG_META_KEYS},
+        }
+
+
+def merge_retag_units_into_list(
+    units: List[Dict[str, Any]],
+    updated_by_id: Dict[str, Dict[str, Any]],
+    *,
+    replace_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    """Merge retagged units into an existing list without dropping other units.
+
+    Units already in ``units`` are updated in place (order preserved). Updated
+    ids missing from the list are appended. Returns the same list object.
+    """
+    if not isinstance(units, list):
+        units = []
+    seen = set()
+    for u in units:
+        uid = u.get("content_unit_id")
+        if uid in updated_by_id:
+            _merge_retag_into_unit(u, updated_by_id[uid], replace_metadata=replace_metadata)
+            seen.add(uid)
+    for uid, src in updated_by_id.items():
+        if uid in seen:
+            continue
+        units.append({
+            "content_unit_id": uid,
+            "unit_type": src.get("unit_type"),
+            "unit_number": src.get("unit_number"),
+            "title": src.get("title"),
+            "text": src.get("text"),
+            "topics": src.get("topics"),
+            "keywords": src.get("keywords"),
+            "metadata": dict(src.get("metadata") or {}),
+        })
+    return units
+
+
+def _update_source_index_tagging_counts(
+    tenant_cfg: TenantConfig,
+    client_id: str,
+    job_id: str,
+    counts: Dict[str, int],
+) -> None:
+    """Persist recount on the compact source-index row (0 is a valid value)."""
+    extra = {
+        "tagging_failed_count": int(counts.get("tagging_failed_count") or 0),
+        "tagging_pending_count": int(counts.get("tagging_pending_count") or 0),
+    }
+    if source_index_pg.use_pg_source_index(tenant_cfg):
+        # update_status skips falsy extra values (``if v``); write counts via upsert merge.
+        index = read_source_index(tenant_cfg, client_id)
+        rec = next((r for r in index.get("sources", []) if str(r.get("job_id")) == str(job_id)), None)
+        if not rec:
+            return
+        rec = dict(rec)
+        rec.update(extra)
+        from datetime import datetime
+        rec["updated_at"] = datetime.utcnow().isoformat()
+        source_index_pg.upsert_record(tenant_cfg, client_id, rec)
+        return
+
+    from datetime import datetime
+    from services.locks import source_index_lock
+    with source_index_lock(tenant_cfg.tenant_id, client_id):
+        index = read_source_index(tenant_cfg, client_id)
+        for rec in index.get("sources", []):
+            if str(rec.get("job_id")) == str(job_id):
+                rec.update(extra)
+                rec["updated_at"] = datetime.utcnow().isoformat()
+                write_source_index(tenant_cfg, client_id, index)
+                return
+
+
 def _patch_s3_artifacts(
     tenant_cfg: TenantConfig,
     client_id: str,
@@ -151,47 +249,45 @@ def _patch_s3_artifacts(
     updated_units: List[Dict[str, Any]],
     doc: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Merge updated unit metadata into S3 content.json / payload / extracted units."""
+    """Merge updated unit metadata into S3 content.json / payload / extracted units.
+
+    content.json is the View UI source of truth. We patch it in place and must
+    NOT rebuild it from a sparse studio payload (that wiped sibling page tags
+    when Retry-this-page only passed one unit).
+    """
     writer = ArtifactWriter(tenant_cfg)
     index = read_source_index(tenant_cfg, client_id)
     record = next((r for r in index.get("sources", []) if str(r.get("job_id")) == str(job_id)), None) or {}
     content_key = record.get("content_key") or source_content_key(tenant_cfg, client_id, job_id)
     payload_key = record.get("payload_key") or studio_payload_key(tenant_cfg, client_id, job_id)
 
-    by_id = {u["content_unit_id"]: u for u in updated_units}
+    by_id = {u["content_unit_id"]: u for u in updated_units if u.get("content_unit_id")}
 
-    # Patch content.json units in place when present.
+    # --- content.json (authoritative for View / Sections) ---
     try:
         content_doc = writer.read_json(content_key)
     except Exception:
         content_doc = None
+
+    counts: Dict[str, int]
     if isinstance(content_doc, dict):
-        for u in content_doc.get("content_units") or []:
-            uid = u.get("content_unit_id")
-            if uid in by_id:
-                src = by_id[uid]
-                if src.get("title") is not None:
-                    u["title"] = src.get("title")
-                u["topics"] = src.get("topics") if src.get("topics") is not None else u.get("topics")
-                u["metadata"] = {
-                    **(u.get("metadata") or {}),
-                    **{k: v for k, v in (src.get("metadata") or {}).items()
-                       if k in (
-                           "acs_codes", "topics", "summary",
-                           "tagging_status", "tagging_error", "tagging_attempted_at",
-                           "chapter", "page_number", "printed_page", "pdf_page",
-                           "chunking_strategy", "chunk_index",
-                       )},
-                }
-        counts = tagging_counts(content_doc.get("content_units") or [])
+        units_list = list(content_doc.get("content_units") or [])
+        merge_retag_units_into_list(units_list, by_id, replace_metadata=False)
+        content_doc["content_units"] = units_list
+        counts = tagging_counts(units_list)
         content_doc["tagging_failed_count"] = counts["tagging_failed_count"]
         content_doc["tagging_pending_count"] = counts["tagging_pending_count"]
         writer.write_json(content_key, content_doc)
+    else:
+        counts = tagging_counts(updated_units)
+        content_doc = None
 
-    # Patch studio payload + extracted units, then refresh source index via writer helper.
+    # --- studio payload: merge tags; seed from content.json when sparse ---
     try:
         payload = writer.read_json(payload_key)
     except Exception:
+        payload = None
+    if not isinstance(payload, dict):
         payload = {
             "payload_version": "dis-studio-context-v1",
             "tenant_id": doc.get("tenant_id"),
@@ -206,38 +302,58 @@ def _patch_s3_artifacts(
             "metadata": _parse_meta(doc.get("metadata_json")),
             "content_units": [],
         }
-    if isinstance(payload, dict):
-        existing = {u.get("content_unit_id"): u for u in (payload.get("content_units") or [])}
-        for uid, src in by_id.items():
-            if uid in existing:
-                if src.get("title") is not None:
-                    existing[uid]["title"] = src.get("title")
-                existing[uid]["topics"] = src.get("topics")
-                existing[uid]["keywords"] = src.get("keywords")
-                existing[uid]["metadata"] = src.get("metadata")
-            else:
-                (payload.setdefault("content_units", [])).append({
-                    "content_unit_id": uid,
-                    "unit_type": src.get("unit_type"),
-                    "unit_number": src.get("unit_number"),
-                    "title": src.get("title"),
-                    "text": src.get("text"),
-                    "topics": src.get("topics"),
-                    "keywords": src.get("keywords"),
-                    "metadata": src.get("metadata"),
-                })
-        # Rebuild list preserving order when possible.
-        if existing:
-            payload["content_units"] = list(existing.values())
-        counts = tagging_counts(payload.get("content_units") or [])
+
+    payload_units = list(payload.get("content_units") or [])
+    content_units = list((content_doc or {}).get("content_units") or [])
+    # If payload is missing most page units, seed from content.json so a later
+    # rebuild cannot collapse the handbook to the single retagged page.
+    if content_units and len(payload_units) < max(1, len(content_units) // 2):
+        log.warning(
+            "retag payload sparse (%s units) vs content.json (%s); seeding payload from content",
+            len(payload_units), len(content_units),
+        )
+        payload_units = []
+        for u in content_units:
+            payload_units.append({
+                "content_unit_id": u.get("content_unit_id"),
+                "unit_type": u.get("unit_type"),
+                "unit_number": u.get("unit_number"),
+                "title": u.get("title"),
+                "text": u.get("text"),
+                "topics": u.get("topics"),
+                "keywords": u.get("keywords"),
+                "metadata": dict(u.get("metadata") or {}),
+            })
+
+    merge_retag_units_into_list(payload_units, by_id, replace_metadata=True)
+    payload["content_units"] = payload_units
+    # Prefer content.json recount when available (full handbook); else payload.
+    if content_doc is not None:
         payload["tagging_failed_count"] = counts["tagging_failed_count"]
         payload["tagging_pending_count"] = counts["tagging_pending_count"]
-        write_source_content_and_index(tenant_cfg, client_id, payload, payload_key=payload_key)
+    else:
+        counts = tagging_counts(payload_units)
+        payload["tagging_failed_count"] = counts["tagging_failed_count"]
+        payload["tagging_pending_count"] = counts["tagging_pending_count"]
+
+    writer.write_json(payload_key, payload)
+
+    try:
+        _update_source_index_tagging_counts(tenant_cfg, client_id, job_id, counts)
+    except Exception:
+        log.exception("failed to update source_index tagging counts job_id=%s", job_id)
+
+    try:
         ns = payload.get("namespace") or tenant_cfg.get_namespace(client_id)
         prefix = writer.job_prefix(ns, job_id)
-        writer.write_json(f"{prefix}/extracted/content_units.json", payload.get("content_units") or [])
-        return counts
-    return tagging_counts(updated_units)
+        writer.write_json(
+            f"{prefix}/extracted/content_units.json",
+            content_units or payload_units,
+        )
+    except Exception:
+        log.exception("failed to write extracted content_units.json job_id=%s", job_id)
+
+    return counts
 
 
 def retag_ebook_pages(
