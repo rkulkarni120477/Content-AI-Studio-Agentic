@@ -137,6 +137,68 @@ def run_regenerate_item_job(job_id: str) -> None:
         db.close()
 
 
+def run_regenerate_block_job(job_id: str) -> None:
+    """Full-block IMPROVISE regeneration as a background job."""
+    db = SessionLocal()
+    job = None
+    try:
+        job = db.query(GenerationJob).filter(GenerationJob.id == job_id).first()
+        if not job:
+            _log.error("Regenerate-block job %s not found", job_id)
+            return
+        if job.status == JobStatus.CANCELLED:
+            _log.info("Regenerate-block job %s cancelled before start", job_id)
+            return
+        if job.status == JobStatus.COMPLETED:
+            _log.info("Regenerate-block job %s already completed — skipping", job_id)
+            return
+
+        from app.api.v1.routers.blocks import execute_regenerate_block
+        from app.schemas.block import BlockRegenerateRequest
+        import types
+
+        params = json.loads(job.request_json or "{}")
+        block_id = int(params["block_id"])
+        request = BlockRegenerateRequest(
+            model_choice=params.get("model_choice", "GPT-5.4"),
+            feedback_instruction=params.get("feedback_instruction") or "",
+        )
+        user = types.SimpleNamespace(
+            username=params.get("user_name") or job.created_by or "cas-user",
+            id=params.get("user_id"),
+            role=params.get("role", "user"),
+        )
+        set_running(db, job, 25, "Regenerating block...")
+        result = execute_regenerate_block(db, block_id, request, user)
+        job.result_json = json.dumps(
+            result.model_dump() if hasattr(result, "model_dump") else {
+                "block_id": block_id,
+                "content": getattr(result, "content", None),
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        db.commit()
+        set_completed(db, job, block_id)
+        _log.info("block_regenerated_job  block_id=%s job=%s", block_id, job_id)
+
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("Regenerate-block job %s failed: %s", job_id, exc)
+        if job is not None:
+            try:
+                message = str(exc) if isinstance(exc, BudgetExceededError) else (
+                    "Block regeneration failed. Please try again."
+                )
+                detail = getattr(exc, "detail", None)
+                if isinstance(detail, str) and detail.strip() and not isinstance(exc, BudgetExceededError):
+                    message = detail.strip()[:2000]
+                set_failed(db, job, message)
+            except Exception:  # pragma: no cover
+                pass
+    finally:
+        db.close()
+
+
 def run_apply_feedback_job(job_id: str) -> None:
     """Apply selected feedback and regenerate a module's blocks — as a job.
 

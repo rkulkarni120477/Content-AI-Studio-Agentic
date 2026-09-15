@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import LLMGenerationError, NotFoundError
-from app.schemas.common import MessageResponse, PaginatedResponse
+from app.schemas.common import JobAcceptedResponse, MessageResponse, PaginatedResponse
 from app.core.dis_client import dis_client
 from app.core.dis_access import resolve_course_dis_client
 from app.schemas.style import (
@@ -512,11 +512,12 @@ async def append_style_documents(
 
 @router.post(
     "/{style_id}/understand",
-    response_model=StyleUnderstandResponse,
-    summary="Generate AI style intelligence from uploaded documents",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Generate AI style intelligence from uploaded documents (async)",
     description=(
-        "Calls the LLM to analyse the style's reference documents and produce "
-        "a structured style guide. Equivalent to the '✨ Generate Style Intelligence' button."
+        "Enqueues style understanding as a background job. Poll "
+        "GET /api/v1/jobs/{job_id}; on completion ``generation_id`` is the style id."
     ),
 )
 def generate_style_intelligence(
@@ -524,9 +525,46 @@ def generate_style_intelligence(
     request_body: StyleUnderstandRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.understand")),
+) -> JobAcceptedResponse:
+    """Queue style understanding; work runs in design_jobs.run_style_understand_job."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    style = _get_style_or_404(db, style_id, current_user)
+    params = request_body.model_dump()
+    params["style_id"] = style_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    # Prefer request scope; fall back to the style's own project.
+    project_id = request_body.project_id or getattr(style, "project_id", None)
+    course_id = request_body.course_id
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=project_id,
+        course_id=course_id,
+        job_type="style_understand",
+    )
+    dispatch.submit(design_jobs.run_style_understand_job, job_id)
+    _log.info(
+        "style_understand_queued  user=%s  style_id=%d  job=%s",
+        current_user.username, style_id, job_id,
+    )
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_style_understand(
+    db: Session,
+    style_id: int,
+    request_body: StyleUnderstandRequest,
+    current_user,
 ) -> StyleUnderstandResponse:
     """
-    Generate or regenerate style intelligence using AI.
+    Generate or regenerate style intelligence using AI (background worker entry).
 
     Calls style_service.generate_style_understanding() which is already
     framework-agnostic and moves unchanged from the Streamlit app.

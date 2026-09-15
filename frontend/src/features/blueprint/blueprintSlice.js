@@ -71,6 +71,8 @@ const blueprintSlice = createSlice({
       .addCase(generateBlueprintThunk.pending,   (s) => { s.isGenerating = true; s.error = null; })
       .addCase(generateBlueprintThunk.fulfilled, (s, { payload }) => {
         s.isGenerating = false;
+        // Async enqueue — list/active refresh when JobTracker completes the job.
+        if (payload?.job_id) return;
         if (payload?.id) {
           const idx = s.blueprints.findIndex((b) => b.id === payload.id);
           if (idx >= 0) s.blueprints[idx] = { ...s.blueprints[idx], ...payload };

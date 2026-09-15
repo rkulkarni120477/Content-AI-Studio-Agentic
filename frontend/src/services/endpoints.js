@@ -239,6 +239,15 @@ export const GENERATE = {
   JOB_ACTIVE:       (courseId, jobType) =>
     `/api/v1/jobs/active?course_id=${encodeURIComponent(courseId)}`
     + (jobType ? `&job_type=${encodeURIComponent(jobType)}` : ''),
+  // Header bell: all in-flight + recent finished jobs for a course.
+  JOB_LIST:         (courseId, { sinceMinutes = 30, statuses } = {}) => {
+    const params = new URLSearchParams();
+    if (courseId != null && courseId !== '') params.set('course_id', String(courseId));
+    params.set('since_minutes', String(sinceMinutes));
+    if (statuses) params.set('statuses', statuses);
+    const q = params.toString();
+    return q ? `/api/v1/jobs?${q}` : '/api/v1/jobs';
+  },
   TRACE:            (id)       => `/api/v1/generations/${id}/trace`,
 };
 

@@ -59,8 +59,12 @@ const cddSlice = createSlice({
       .addCase(generateCddThunk.pending,   (s) => { s.isGenerating = true; s.error = null; })
       .addCase(generateCddThunk.fulfilled, (s, { payload }) => {
         s.isGenerating = false;
-        s.cdds.unshift(payload);
-        s.activeCdd = payload;
+        // Async enqueue — list/active refresh when JobTracker completes the job.
+        if (payload?.job_id) return;
+        if (payload?.id) {
+          s.cdds.unshift(payload);
+          s.activeCdd = payload;
+        }
       })
       .addCase(generateCddThunk.rejected,  (s, { payload }) => { s.isGenerating = false; s.error = payload; })
 

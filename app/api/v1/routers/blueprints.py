@@ -68,7 +68,7 @@ from app.schemas.blueprint import (
     BlueprintVersionRead,
     OutlineImportJobResponse,
 )
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.schemas.block_wide import BlockWideGenerateRequest, BlockWideJobResponse
 from app.core.dis_client import dis_client
 from app.core.dis_access import resolve_course_dis_client
@@ -230,24 +230,53 @@ def list_blueprints(
 
 @router.post(
     "/generate",
-    response_model=BlueprintGenerateResponse,
-    status_code=201,
-    summary="Generate a module blueprint with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Generate a module blueprint with AI (async)",
     description=(
-        "Builds a module blueprint from the active CDD content. "
-        "Auto-parses the output into components (lessons, assessments) "
-        "and auto-pins the new blueprint to the course."
+        "Enqueues blueprint generation as a background job. Poll "
+        "GET /api/v1/jobs/{job_id}; on completion ``generation_id`` is the new blueprint id."
     ),
 )
 def generate_blueprint(
     request_body: BlueprintGenerateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.generate")),
+) -> JobAcceptedResponse:
+    """Queue blueprint generation; work runs in design_jobs.run_blueprint_generate_job."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    params = request_body.model_dump()
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=request_body.project_id,
+        course_id=request_body.course_id,
+        job_type="blueprint",
+    )
+    dispatch.submit(design_jobs.run_blueprint_generate_job, job_id)
+    _log.info(
+        "blueprint_generate_queued  user=%s  course=%d  job=%s",
+        current_user.username, request_body.course_id, job_id,
+    )
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_blueprint_generate(
+    db: Session,
+    request_body: BlueprintGenerateRequest,
+    current_user,
 ) -> BlueprintGenerateResponse:
     """
-    Generate a Module Blueprint using AI.
+    Generate a Module Blueprint using AI (called from the background worker).
 
-    Mirrors the Streamlit "🤖 Generate Blueprint" button.
     Pipeline: build prompt → call LLM → parse sections → save → auto-pin.
     """
     from promptops_app.database import (
@@ -1460,8 +1489,9 @@ def _blueprint_regen_context(db: Session, bp, *, instruction: str,
 
 @router.post(
     "/{blueprint_id}/regenerate-item",
-    response_model=BlueprintRegenerateItemResponse,
-    summary="Regenerate a single item within a blueprint section",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate a single item within a blueprint section (async)",
     responses={404: {"description": "Blueprint or item not found."}},
 )
 def regenerate_blueprint_item(
@@ -1469,6 +1499,36 @@ def regenerate_blueprint_item(
     request_body: BlueprintRegenerateItemRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.version")),
+) -> JobAcceptedResponse:
+    """Queue blueprint item regeneration; result lands in job.result_json."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
+    params = request_body.model_dump()
+    params["blueprint_id"] = blueprint_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=getattr(bp, "project_id", None),
+        course_id=getattr(bp, "course_id", None),
+        job_type="blueprint_regen_item",
+    )
+    dispatch.submit(design_jobs.run_blueprint_regen_item_job, job_id)
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_blueprint_regen_item(
+    db: Session,
+    blueprint_id: int,
+    request_body: BlueprintRegenerateItemRequest,
+    current_user,
 ) -> BlueprintRegenerateItemResponse:
     """
     Regenerate one item inside a blueprint section, preserving all siblings.
@@ -1558,8 +1618,9 @@ def regenerate_blueprint_item(
 
 @router.post(
     "/{blueprint_id}/regenerate-section",
-    response_model=BlueprintRegenerateSectionResponse,
-    summary="Regenerate an entire blueprint section with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate an entire blueprint section with AI (async)",
     responses={404: {"description": "Blueprint not found."}},
 )
 def regenerate_blueprint_section(
@@ -1567,7 +1628,38 @@ def regenerate_blueprint_section(
     request_body: BlueprintRegenerateSectionRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("blueprint.version")),
+) -> JobAcceptedResponse:
+    """Queue blueprint section regeneration; result lands in job.result_json."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    bp = _get_blueprint_or_404(db, blueprint_id, current_user)
+    params = request_body.model_dump()
+    params["blueprint_id"] = blueprint_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=getattr(bp, "project_id", None),
+        course_id=getattr(bp, "course_id", None),
+        job_type="blueprint_regen_section",
+    )
+    dispatch.submit(design_jobs.run_blueprint_regen_section_job, job_id)
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_blueprint_regen_section(
+    db: Session,
+    blueprint_id: int,
+    request_body: BlueprintRegenerateSectionRequest,
+    current_user,
 ) -> BlueprintRegenerateSectionResponse:
+    """Regenerate an entire blueprint section (background worker entry)."""
     """
     Regenerate a whole blueprint section using the section-regeneration prompt
     (student or teacher variant). Replicates "🔄 Regenerate Section" in Streamlit.

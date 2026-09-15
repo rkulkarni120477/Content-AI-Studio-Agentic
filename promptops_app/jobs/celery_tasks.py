@@ -24,6 +24,7 @@ from __future__ import annotations
 from promptops_app.celery_app import celery_app
 from promptops_app.jobs import (
     block_wide_jobs,
+    design_jobs,
     generation_jobs,
     import_jobs,
     outline_import_jobs,
@@ -53,6 +54,12 @@ def run_reverse_gen_task(job_id: str) -> None:
 def run_regenerate_item_task(job_id: str) -> None:
     """Celery entry point for single-item block regeneration (P4.5)."""
     regen_jobs.run_regenerate_item_job(job_id)
+
+
+@celery_app.task(name="block.regenerate")
+def run_regenerate_block_task(job_id: str) -> None:
+    """Celery entry point for full-block regeneration."""
+    regen_jobs.run_regenerate_block_job(job_id)
 
 
 @celery_app.task(name="feedback.apply")
@@ -88,6 +95,41 @@ def run_block_wide_task(job_id: str) -> None:
     block_wide_jobs.run_block_wide_job(job_id)
 
 
+@celery_app.task(name="design.cdd_generate")
+def run_cdd_generate_task(job_id: str) -> None:
+    design_jobs.run_cdd_generate_job(job_id)
+
+
+@celery_app.task(name="design.blueprint_generate")
+def run_blueprint_generate_task(job_id: str) -> None:
+    design_jobs.run_blueprint_generate_job(job_id)
+
+
+@celery_app.task(name="design.style_understand")
+def run_style_understand_task(job_id: str) -> None:
+    design_jobs.run_style_understand_job(job_id)
+
+
+@celery_app.task(name="design.cdd_regen_item")
+def run_cdd_regen_item_task(job_id: str) -> None:
+    design_jobs.run_cdd_regen_item_job(job_id)
+
+
+@celery_app.task(name="design.cdd_regen_section")
+def run_cdd_regen_section_task(job_id: str) -> None:
+    design_jobs.run_cdd_regen_section_job(job_id)
+
+
+@celery_app.task(name="design.blueprint_regen_item")
+def run_blueprint_regen_item_task(job_id: str) -> None:
+    design_jobs.run_blueprint_regen_item_job(job_id)
+
+
+@celery_app.task(name="design.blueprint_regen_section")
+def run_blueprint_regen_section_task(job_id: str) -> None:
+    design_jobs.run_blueprint_regen_section_job(job_id)
+
+
 # Maps a plain job function → its Celery task, so the dispatch layer can accept
 # the same ``run_*`` reference the ThreadPoolExecutor path uses and route it to
 # the matching task without the call sites needing to know about Celery.
@@ -96,7 +138,15 @@ TASK_FOR_FUNC = {
     import_jobs.run_import_job: run_import_task,
     import_jobs.run_reverse_gen_job: run_reverse_gen_task,
     regen_jobs.run_regenerate_item_job: run_regenerate_item_task,
+    regen_jobs.run_regenerate_block_job: run_regenerate_block_task,
     regen_jobs.run_apply_feedback_job: run_apply_feedback_task,
     outline_import_jobs.run_outline_import_job: run_outline_import_task,
     block_wide_jobs.run_block_wide_job: run_block_wide_task,
+    design_jobs.run_cdd_generate_job: run_cdd_generate_task,
+    design_jobs.run_blueprint_generate_job: run_blueprint_generate_task,
+    design_jobs.run_style_understand_job: run_style_understand_task,
+    design_jobs.run_cdd_regen_item_job: run_cdd_regen_item_task,
+    design_jobs.run_cdd_regen_section_job: run_cdd_regen_section_task,
+    design_jobs.run_blueprint_regen_item_job: run_blueprint_regen_item_task,
+    design_jobs.run_blueprint_regen_section_job: run_blueprint_regen_section_task,
 }

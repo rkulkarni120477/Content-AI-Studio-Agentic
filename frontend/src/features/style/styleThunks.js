@@ -4,6 +4,7 @@ import { analyticsService } from '@features/analytics/services/analyticsService'
 import { computeDocumentRegistryStats } from '@utils/documentRegistry';
 import { extractErrorMessage } from '@utils/helpers';
 import { labelsFromState } from '@config/tenantLabels';
+import { trackAndPollJob } from '@features/jobs/jobsThunks';
 import toast from 'react-hot-toast';
 
 async function loadDocumentRegistry() {
@@ -139,22 +140,36 @@ export const uploadDocumentsThunk = createAsyncThunk(
 
 export const regenerateStyleThunk = createAsyncThunk(
   'style/regenerate',
-  async (arg, { getState, rejectWithValue }) => {
+  async (arg, { dispatch, getState, rejectWithValue }) => {
     // Accept either a bare styleId (legacy) or { styleId, promptId }.
     const styleId = (arg && typeof arg === 'object') ? arg.styleId : arg;
     const promptId = (arg && typeof arg === 'object') ? arg.promptId : undefined;
     try {
       const state = getState();
       const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
-      const result = await styleService.regenerateStyle(styleId, {
+      const courseId = state?.dashboard?.selectedCourse?.id ?? null;
+      const accepted = await styleService.regenerateStyle(styleId, {
         model_choice: modelChoice,
         extra_instructions: '',
-        course_id: state?.dashboard?.selectedCourse?.id ?? null,
+        course_id: courseId,
         project_id: state?.dashboard?.selectedProject?.id ?? null,
         prompt_id: promptId ?? undefined,
       });
+      if (accepted?.job_id) {
+        trackAndPollJob(dispatch, {
+          job_id: accepted.job_id,
+          jobId: accepted.job_id,
+          job_type: 'style_understand',
+          jobType: 'style_understand',
+          course_id: courseId,
+          courseId,
+          status: accepted.status || 'queued',
+        });
+        return { job_id: accepted.job_id, style_id: styleId, status: accepted.status || 'queued' };
+      }
+      // Legacy sync response.
       toast.success(`${labelsFromState(getState).style} understanding generated.`);
-      return result;
+      return accepted;
     } catch (e) {
       toast.error(extractErrorMessage(e));
       return rejectWithValue(extractErrorMessage(e));
@@ -164,18 +179,31 @@ export const regenerateStyleThunk = createAsyncThunk(
 
 export const refineStyleThunk = createAsyncThunk(
   'style/refine',
-  async ({ styleId, corrections }, { getState, rejectWithValue }) => {
+  async ({ styleId, corrections }, { dispatch, getState, rejectWithValue }) => {
     try {
       const state = getState();
       const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
-      const result = await styleService.regenerateStyle(styleId, {
+      const courseId = state?.dashboard?.selectedCourse?.id ?? null;
+      const accepted = await styleService.regenerateStyle(styleId, {
         model_choice: modelChoice,
         extra_instructions: corrections,
-        course_id: state?.dashboard?.selectedCourse?.id ?? null,
+        course_id: courseId,
         project_id: state?.dashboard?.selectedProject?.id ?? null,
       });
+      if (accepted?.job_id) {
+        trackAndPollJob(dispatch, {
+          job_id: accepted.job_id,
+          jobId: accepted.job_id,
+          job_type: 'style_understand',
+          jobType: 'style_understand',
+          course_id: courseId,
+          courseId,
+          status: accepted.status || 'queued',
+        });
+        return { job_id: accepted.job_id, style_id: styleId, status: accepted.status || 'queued' };
+      }
       toast.success(`Refined ${labelsFromState(getState).style} Intelligence Layer saved.`);
-      return result;
+      return accepted;
     } catch (e) {
       toast.error(extractErrorMessage(e));
       return rejectWithValue(extractErrorMessage(e));

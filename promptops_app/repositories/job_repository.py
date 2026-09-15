@@ -88,19 +88,48 @@ def list_jobs(
     *,
     user_name: str = None,
     project_id: int = None,
+    course_id: int = None,
     is_admin: bool = False,
     status_filter: str = None,
+    statuses: list[str] = None,
+    since_minutes: int = None,
     limit: int = 20,
     offset: int = 0,
 ) -> list:
-    """Return recent jobs with optional scope + status filtering."""
+    """Return recent jobs with optional scope + status filtering.
+
+    ``statuses`` takes precedence over a single ``status_filter``. ``since_minutes``
+    bounds how far back *finished* rows may be so the header bell can show recent
+    completions. Active (queued/running) jobs are always included when requested —
+    a timezone skew between ``updated_at`` and ``utcnow()`` must never hide a live
+    build from the bell.
+    """
+    from sqlalchemy import or_, and_
+
     q = db.query(GenerationJob)
     if not is_admin and user_name:
         q = q.filter(GenerationJob.created_by == user_name)
     if project_id:
         q = q.filter(GenerationJob.project_id == project_id)
-    if status_filter:
+    if course_id is not None:
+        q = q.filter(GenerationJob.course_id == course_id)
+    if statuses:
+        q = q.filter(GenerationJob.status.in_(list(statuses)))
+    elif status_filter:
         q = q.filter(GenerationJob.status == status_filter)
+    if since_minutes is not None and since_minutes > 0:
+        cutoff = datetime.utcnow() - timedelta(minutes=int(since_minutes))
+        # Active rows bypass the age window; only terminal/history rows are aged out.
+        q = q.filter(
+            or_(
+                GenerationJob.status.in_(list(JobStatus.ACTIVE)),
+                (GenerationJob.updated_at >= cutoff),
+                and_(
+                    GenerationJob.updated_at.is_(None),
+                    GenerationJob.created_at >= cutoff,
+                ),
+            )
+        )
     return (
         q.order_by(GenerationJob.created_at.desc())
         .offset(offset)

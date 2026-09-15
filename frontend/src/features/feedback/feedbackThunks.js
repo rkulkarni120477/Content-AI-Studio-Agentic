@@ -74,7 +74,7 @@ const APPLY_MAX_POLL_ERRORS = 5;    // ride out transient network blips before g
 
 export const applyFeedbackThunk = createAsyncThunk(
   'feedback/apply',
-  async ({ itemIds, blueprintId }, { rejectWithValue }) => {
+  async ({ itemIds, blueprintId }, { dispatch, getState, rejectWithValue }) => {
     try {
       const accepted = await feedbackService.apply({ itemIds, blueprintId });
 
@@ -84,6 +84,17 @@ export const applyFeedbackThunk = createAsyncThunk(
 
       if (accepted?.job_id) {
         const jobId = accepted.job_id;
+        const courseId = getState()?.dashboard?.selectedCourse?.id ?? null;
+        const { trackAndPollJob } = await import('@features/jobs/jobsThunks');
+        trackAndPollJob(dispatch, {
+          job_id: jobId,
+          jobId,
+          job_type: 'apply_feedback',
+          jobType: 'apply_feedback',
+          course_id: courseId,
+          courseId,
+          status: accepted.status || 'queued',
+        });
         let pollErrors = 0;
         for (let i = 0; i < APPLY_MAX_POLLS; i += 1) {
           let status;
@@ -111,6 +122,9 @@ export const applyFeedbackThunk = createAsyncThunk(
             + 'refresh the module to check.',
           );
         }
+        // Richer local toast owns notification — suppress JobTracker duplicate.
+        const { markJobNotified } = await import('@features/jobs/jobsSlice');
+        dispatch(markJobNotified(jobId));
       }
 
       const n = result?.regenerated?.length ?? 0;

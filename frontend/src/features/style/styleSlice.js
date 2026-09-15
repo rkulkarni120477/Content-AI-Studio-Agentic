@@ -35,6 +35,9 @@ const styleSlice = createSlice({
         s.isLoading  = false;
         s.styles     = payload.items;
         s.activeStyle = payload.items.find((st) => st.is_active) || null;
+        // Async understand/refine jobs leave generatingStyleId set until the
+        // JobTracker refreshes this list on completion.
+        s.generatingStyleId = null;
       })
       .addCase(fetchStylesThunk.rejected,   (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
@@ -79,6 +82,8 @@ const styleSlice = createSlice({
         s.generatingStyleId = (meta.arg && typeof meta.arg === 'object') ? meta.arg.styleId : meta.arg;
       })
       .addCase(regenerateStyleThunk.fulfilled,(s, { payload }) => {
+        // Async enqueue — keep spinner until JobTracker refreshes styles.
+        if (payload?.job_id) return;
         s.generatingStyleId = null;
         const styleId = payload?.style_id ?? payload?.id;
         const text = payload?.understanding ?? payload?.generated_summary ?? '';
@@ -98,6 +103,7 @@ const styleSlice = createSlice({
         s.generatingStyleId = meta.arg?.styleId ?? null;
       })
       .addCase(refineStyleThunk.fulfilled, (s, { payload }) => {
+        if (payload?.job_id) return;
         s.generatingStyleId = null;
         const styleId = payload?.style_id ?? payload?.id;
         const text = payload?.understanding ?? '';

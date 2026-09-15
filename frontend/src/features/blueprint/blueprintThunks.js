@@ -6,6 +6,8 @@ import { resolveProjectId } from '@utils/workspaceContext';
 import { createBlockJobThunks } from '@features/shared/blockJob';
 import { createArchiveThunks } from '@features/shared/documentArchive';
 import { labelsFromState } from '@config/tenantLabels';
+import { trackAndPollJob, waitForJobTerminal } from '@features/jobs/jobsThunks';
+import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 import toast from 'react-hot-toast';
 
 export const fetchBlueprintsThunk = createAsyncThunk(
@@ -44,15 +46,28 @@ export const fetchBlueprintsThunk = createAsyncThunk(
 
 export const generateBlueprintThunk = createAsyncThunk(
   'blueprint/generate',
-  async (payload, { getState, rejectWithValue }) => {
+  async (payload, { dispatch, getState, rejectWithValue }) => {
     try {
       const L = labelsFromState(getState);
       if (!payload?.project_id) {
         return rejectWithValue(`Select a project before generating a ${L.blueprint}.`);
       }
-      const result = await blueprintService.generateBlueprint(payload);
+      const accepted = await blueprintService.generateBlueprint(payload);
+      // Async (202): JobTracker owns toast + list refresh.
+      if (accepted?.job_id) {
+        trackAndPollJob(dispatch, {
+          job_id: accepted.job_id,
+          jobId: accepted.job_id,
+          job_type: 'blueprint',
+          jobType: 'blueprint',
+          course_id: payload.course_id,
+          courseId: payload.course_id,
+          status: accepted.status || 'queued',
+        });
+        return accepted;
+      }
       toast.success(`${L.blueprint} generated and set as active.`);
-      if (result?.source_context_unavailable) {
+      if (accepted?.source_context_unavailable) {
         // Generation degrades rather than failing when the Source Library is
         // unreachable, so the document does exist and is active — the user just
         // has to be told it was written without its sources. Without this the
@@ -68,7 +83,7 @@ export const generateBlueprintThunk = createAsyncThunk(
           { duration: 9000 },
         );
       }
-      return result;
+      return accepted;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
     }
@@ -88,6 +103,7 @@ export const {
   createBlockJobThunks({
     prefix: 'blueprint',
     deliverable: 'blueprint',
+    jobType: 'blueprint_block',
     enqueue: (payload) => blueprintService.generateBlueprintBlock(payload),
     getJobStatus: (jobId) => blueprintService.getJobStatus(jobId),
     getActiveJob: (courseId) => blueprintService.getActiveBlockJob(courseId),
@@ -140,23 +156,24 @@ export const importBlueprintThunk = createAsyncThunk(
 // poll for the result. This is the path the UI uses.
 const IMPORT_POLL_INTERVAL_MS = 2000;
 const IMPORT_MAX_POLL_ERRORS = 20;
-const isTerminalImportStatus = (s) => ['completed', 'failed', 'cancelled'].includes(String(s || '').toLowerCase());
 
 /** Poll one import job to completion, re-scheduling itself until terminal. */
 export const pollOutlineImportJobThunk = createAsyncThunk(
   'blueprint/pollImport',
-  async ({ jobId, courseId, errorCount = 0 }, { dispatch, rejectWithValue }) => {
+  async ({ jobId, courseId, errorCount = 0 }, { dispatch, getState, rejectWithValue }) => {
     try {
       const status = await blueprintService.getJobStatus(jobId);
-      if (!isTerminalImportStatus(status.status)) {
+      if (!isTerminalJobStatus(status.status)) {
         setTimeout(
           () => dispatch(pollOutlineImportJobThunk({ jobId, courseId, errorCount: 0 })),
           IMPORT_POLL_INTERVAL_MS,
         );
         return status;
       }
-      if (status.status === 'completed') {
-        toast.success('Outline imported and set as active.');
+      // JobTracker owns success/failure toasts when the job was registered there.
+      const tracked = Boolean(getState()?.jobs?.jobsById?.[String(jobId)]);
+      if (status.status === JOB_STATUSES.COMPLETED || status.status === 'completed') {
+        if (!tracked) toast.success('Outline imported and set as active.');
         // Degraded (single-section) import — the worker records it as the job warning.
         if (status.warning) toast(status.warning, { icon: '⚠️' });
         if (courseId) dispatch(fetchBlueprintsThunk(courseId));
@@ -166,13 +183,15 @@ export const pollOutlineImportJobThunk = createAsyncThunk(
             return { ...status, blueprint };
           } catch { /* the list refetch above still surfaces the new Outline */ }
         }
-      } else if (status.status === 'failed') {
+      } else if (status.status === JOB_STATUSES.FAILED || status.status === 'failed') {
         // AC #5 non-technical messages — the worker's own message (unsupported
         // type, undetermined day, timeout fallback) is surfaced when present.
-        toast.error(
-          status.error_message
-          || 'Unable to process the file. The file could not be processed at this time. Please try again.',
-        );
+        if (!tracked) {
+          toast.error(
+            status.error_message
+            || 'Unable to process the file. The file could not be processed at this time. Please try again.',
+          );
+        }
       }
       return status;
     } catch (e) {
@@ -202,7 +221,17 @@ export const importBlueprintAsyncThunk = createAsyncThunk(
       if (!res?.job_id) {
         return rejectWithValue('Import did not start. Please try again.');
       }
-      dispatch(pollOutlineImportJobThunk({ jobId: res.job_id, courseId: Number(payload.courseId) }));
+      const courseId = Number(payload.courseId);
+      trackAndPollJob(dispatch, {
+        job_id: res.job_id,
+        jobId: res.job_id,
+        job_type: 'outline_import',
+        jobType: 'outline_import',
+        course_id: courseId,
+        courseId,
+        status: res.status || 'queued',
+      });
+      dispatch(pollOutlineImportJobThunk({ jobId: res.job_id, courseId }));
       return res;   // { job_id, status, poll_url }
     } catch (e) {
       return rejectWithValue(
@@ -222,7 +251,17 @@ export const resumeOutlineImportJobThunk = createAsyncThunk(
       const res = await blueprintService.getActiveOutlineImportJob(Number(courseId));
       const job = res?.job ?? null;
       if (job?.job_id) {
-        dispatch(pollOutlineImportJobThunk({ jobId: job.job_id, courseId: Number(courseId) }));
+        const cid = Number(courseId);
+        trackAndPollJob(dispatch, {
+          job_id: job.job_id,
+          jobId: job.job_id,
+          job_type: 'outline_import',
+          jobType: 'outline_import',
+          course_id: cid,
+          courseId: cid,
+          status: job.status || 'running',
+        });
+        dispatch(pollOutlineImportJobThunk({ jobId: job.job_id, courseId: cid }));
         return job;
       }
       return null;
@@ -282,19 +321,57 @@ export const commitBlueprintVersionThunk = createAsyncThunk(
   },
 );
 
+async function pollBlueprintRegenJob({
+  dispatch, getState, accepted, jobType, label, getJobStatus,
+}) {
+  if (accepted?.updated_content != null && !accepted?.job_id) {
+    const usageMsg = formatUsageSummaryMessage(accepted.usage_summary);
+    if (usageMsg) {
+      if (hasOverBudget(accepted.usage_summary)) toast.error(`${label} regenerated. ${usageMsg}`);
+      else toast.success(`${label} regenerated. ${usageMsg}`);
+    }
+    return accepted;
+  }
+  const jobId = accepted?.job_id;
+  if (!jobId) throw new Error('Regeneration did not return a job id.');
+  const courseId = getState()?.dashboard?.selectedCourse?.id ?? null;
+  trackAndPollJob(dispatch, {
+    job_id: jobId,
+    jobId,
+    job_type: jobType,
+    jobType,
+    course_id: courseId,
+    courseId,
+    status: accepted.status || JOB_STATUSES.QUEUED,
+  });
+  const status = await waitForJobTerminal(getJobStatus, jobId);
+  if (status.status === JOB_STATUSES.FAILED || status.status === JOB_STATUSES.CANCELLED) {
+    throw new Error(status.error_message || `${label} regeneration failed.`);
+  }
+  return {
+    ...(status.result || {}),
+    usage_summary: status.usage_summary ?? status.result?.usage_summary,
+  };
+}
+
 export const regenerateBlueprintItemThunk = createAsyncThunk(
   'blueprint/regenerateItem',
-  async ({ blueprintId, sectionKey, sectionContent, itemIndex, feedback, modelChoice }, { rejectWithValue }) => {
+  async (
+    { blueprintId, sectionKey, sectionContent, itemIndex, feedback, modelChoice },
+    { dispatch, getState, rejectWithValue },
+  ) => {
     try {
-      const result = await blueprintService.regenerateItem(blueprintId, {
+      const accepted = await blueprintService.regenerateItem(blueprintId, {
         sectionKey, sectionContent, itemIndex, feedback, modelChoice,
       });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      if (usageMsg) {
-        if (hasOverBudget(result.usage_summary)) toast.error(`Item regenerated. ${usageMsg}`);
-        else toast.success(`Item regenerated. ${usageMsg}`);
-      }
-      return result;
+      return await pollBlueprintRegenJob({
+        dispatch,
+        getState,
+        accepted,
+        jobType: 'blueprint_regen_item',
+        label: 'Item',
+        getJobStatus: (id) => blueprintService.getJobStatus(id),
+      });
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -303,17 +380,19 @@ export const regenerateBlueprintSectionThunk = createAsyncThunk(
   'blueprint/regenerateSection',
   async ({
     blueprintId, sectionKey, sectionContent, feedback, modelChoice, teacherMode,
-  }, { rejectWithValue }) => {
+  }, { dispatch, getState, rejectWithValue }) => {
     try {
-      const result = await blueprintService.regenerateSection(blueprintId, {
+      const accepted = await blueprintService.regenerateSection(blueprintId, {
         sectionKey, sectionContent, feedback, modelChoice, teacherMode,
       });
-      const usageMsg = formatUsageSummaryMessage(result.usage_summary);
-      if (usageMsg) {
-        if (hasOverBudget(result.usage_summary)) toast.error(`Section regenerated. ${usageMsg}`);
-        else toast.success(`Section regenerated. ${usageMsg}`);
-      }
-      return result;
+      return await pollBlueprintRegenJob({
+        dispatch,
+        getState,
+        accepted,
+        jobType: 'blueprint_regen_section',
+        label: 'Section',
+        getJobStatus: (id) => blueprintService.getJobStatus(id),
+      });
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

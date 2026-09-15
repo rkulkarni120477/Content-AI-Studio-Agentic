@@ -134,13 +134,7 @@ export const cddService = {
   getCdd:        (cddId)          => api.get(CDD.GET(cddId)),
   /** Load pinned CDD for a course — pass course id from /workspace/{courseId}/... */
   getActiveCddForCourse: (courseId) => api.get(COURSES.ACTIVE_CDD(courseId)),
-  generateCdd:   async (data)     => {
-    const created = await api.post(CDD.GENERATE, mapGeneratePayload(data));
-    if (created?.cdd_id) {
-      return api.get(CDD.GET(created.cdd_id));
-    }
-    return created;
-  },
+  generateCdd:   async (data)     => api.post(CDD.GENERATE, mapGeneratePayload(data)),
   /**
    * Import an existing Blueprint/CDD file. Multipart upload → the server extracts,
    * normalizes into the worksheet shape, persists as a normal CDD and pins it.
