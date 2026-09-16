@@ -42,6 +42,14 @@ const blueprintSlice = createSlice({
     setGenerationMode(s, { payload }) { s.generationMode = payload; },
     setActiveBlueprintLocal(s, { payload }) { s.activeBlueprint = payload; },
     resetBlockJob(s) { s.blockJob = null; },
+    // Drop the per-title blueprint context (active blueprint + its parsed
+    // components + versions) on a title switch, so one title's blueprint can't
+    // render under another before the new title's fetch resolves.
+    resetBlueprintContext(s) {
+      s.activeBlueprint = null;
+      s.components = [];
+      s.versions = [];
+    },
   },
   extraReducers: (b) => {
     b
@@ -49,13 +57,22 @@ const blueprintSlice = createSlice({
       .addCase(fetchBlueprintsThunk.fulfilled, (s, { payload }) => {
         s.isLoading = false;
         s.blueprints = payload?.items ?? payload ?? [];
-        if (payload?.activeBlueprint) s.activeBlueprint = payload.activeBlueprint;
+        // Reset the active blueprint to whatever THIS course actually has — mirror
+        // cddSlice's `?? null`. Previously this only assigned when truthy, so a
+        // title with no blueprint kept the PREVIOUS title's active blueprint and
+        // its parsed components, leaking another title's lessons into the Generate
+        // tab's Content-Type dropdown. When there's no active blueprint the parsed
+        // components are stale too, so drop them.
+        s.activeBlueprint = payload?.activeBlueprint ?? null;
+        if (!s.activeBlueprint) s.components = [];
       })
       .addCase(fetchBlueprintsThunk.rejected,  (s, { payload }) => { s.isLoading = false; s.error = payload; })
 
       .addCase(generateBlueprintThunk.pending,   (s) => { s.isGenerating = true; s.error = null; })
       .addCase(generateBlueprintThunk.fulfilled, (s, { payload }) => {
         s.isGenerating = false;
+        // Async enqueue — list/active refresh when JobTracker completes the job.
+        if (payload?.job_id) return;
         if (payload?.id) {
           const idx = s.blueprints.findIndex((b) => b.id === payload.id);
           if (idx >= 0) s.blueprints[idx] = { ...s.blueprints[idx], ...payload };
@@ -159,6 +176,7 @@ const blueprintSlice = createSlice({
 
 export const {
   clearError, clearArchiveRefusal, setGenerationMode, setActiveBlueprintLocal, resetBlockJob,
+  resetBlueprintContext,
 } = blueprintSlice.actions;
 export default blueprintSlice.reducer;
 

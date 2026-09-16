@@ -107,6 +107,18 @@ class JobStatusResponse(BaseModel):
     status: str = Field(description="queued | running | completed | failed | cancelled")
     progress: int = Field(default=0, ge=0, le=100, description="Completion percentage.")
     current_step: Optional[str] = Field(default=None, description="Human-readable current stage.")
+    job_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Job kind — generation, cdd, blueprint, style_understand, cdd_block, "
+            "regenerate_item, etc. Lets the header bell label rows without guessing "
+            "from the status URL."
+        ),
+    )
+    course_id: Optional[int] = Field(
+        default=None,
+        description="Course this job belongs to, when scoped. Used for View links.",
+    )
     generation_id: Optional[int] = Field(
         default=None,
         description="ID of the created Generation record. Populated on completion.",
@@ -148,6 +160,13 @@ class JobStatusResponse(BaseModel):
         default=None,
         description="Cost/tokens for this job's LLM call + remaining budget headroom. Populated on completion.",
     )
+    result: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Parsed result_json when the job completed and stored a payload "
+            "(e.g. CDD/Blueprint section regen updated_content). None when empty."
+        ),
+    )
 
 
 class ActiveJobResponse(BaseModel):
@@ -167,6 +186,17 @@ class ActiveJobResponse(BaseModel):
             "can resume polling directly. None when nothing is in flight."
         ),
     )
+
+
+class JobListResponse(BaseModel):
+    """Caller's jobs for a course — in-flight plus recently finished.
+
+    Powers the workspace header bell: active rows for live progress, and a short
+    window of completed/failed rows so a refresh still shows
+    "Blueprint generation complete".
+    """
+
+    jobs: list[JobStatusResponse] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

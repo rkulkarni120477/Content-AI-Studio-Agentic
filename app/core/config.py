@@ -326,13 +326,18 @@ class AppSettings(BaseSettings):
     def digest_pipeline_on_for(self, client_id: str) -> bool:
         """Whether the digest pipeline is active for *client_id*.
 
-        Master switch AND (empty allowlist ⇒ all clients, else membership). A
-        blank/unknown client is only enabled when the allowlist is empty.
+        Master switch AND explicit membership in the allowlist. Fails CLOSED:
+        an empty or unset DIGEST_PIPELINE_CLIENTS means no clients, not every
+        client. The previous behaviour (empty ⇒ all) was fail-open — the exact
+        opposite of what clearing an allowlist reads as to an operator, and
+        dormant only because the shipped default ("aim") is non-empty. Naming
+        clients explicitly is the only way to enable this for anyone; there is
+        no wildcard.
         """
         if not self.digest_pipeline_enabled:
             return False
         allow = {c.strip().lower() for c in (self.digest_pipeline_clients or "").split(",") if c.strip()}
-        return not allow or (client_id or "").strip().lower() in allow
+        return bool(allow) and (client_id or "").strip().lower() in allow
 
     # ── Safe plain-text accessors ─────────────────────────────────────────────
     # Use these when an external library needs the raw string.

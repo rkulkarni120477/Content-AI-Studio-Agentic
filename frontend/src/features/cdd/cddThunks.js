@@ -6,6 +6,10 @@ import { resolveProjectId } from '@utils/workspaceContext';
 import { queueDeferredToast } from '@utils/deferredToast';
 import { createBlockJobThunks } from '@features/shared/blockJob';
 import { createArchiveThunks } from '@features/shared/documentArchive';
+import { labelsFromState } from '@config/tenantLabels';
+import { trackAndPollJob, waitForJobTerminal } from '@features/jobs/jobsThunks';
+import { markJobNotified } from '@features/jobs/jobsSlice';
+import { JOB_STATUSES } from '@utils/constants';
 import toast from 'react-hot-toast';
 
 export const fetchCddsThunk = createAsyncThunk(
@@ -49,15 +53,30 @@ export const fetchCddsThunk = createAsyncThunk(
 
 export const generateCddThunk = createAsyncThunk(
   'cdd/generate',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { dispatch, getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.project_id) {
-        return rejectWithValue('Select a project before generating a CDD.');
+        return rejectWithValue(`Select a project before generating a ${L.cdd}.`);
       }
-      const result = await cddService.generateCdd(payload);
-      toast.success('CDD generated and set as active.');
-      queueDeferredToast('CDD created and pinned as active.');
-      return result;
+      const accepted = await cddService.generateCdd(payload);
+      // Async (202): register with JobTracker; list refresh + toast happen there.
+      if (accepted?.job_id) {
+        trackAndPollJob(dispatch, {
+          job_id: accepted.job_id,
+          jobId: accepted.job_id,
+          job_type: 'cdd',
+          jobType: 'cdd',
+          course_id: payload.course_id,
+          courseId: payload.course_id,
+          status: accepted.status || 'queued',
+        });
+        return accepted;
+      }
+      // Legacy sync response (full CDD object).
+      toast.success(`${L.cdd} generated and set as active.`);
+      queueDeferredToast(`${L.cdd} created and pinned as active.`);
+      return accepted;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
@@ -77,6 +96,7 @@ export const {
   createBlockJobThunks({
     prefix: 'cdd',
     deliverable: 'cdd',
+    jobType: 'cdd_block',
     enqueue: (payload) => cddService.generateCddBlock(payload),
     getJobStatus: (jobId) => cddService.getJobStatus(jobId),
     getActiveJob: (courseId) => cddService.getActiveBlockJob(courseId),
@@ -86,8 +106,9 @@ export const {
     selectBlockJob: (state) => state.cdd?.blockJob,
     completedMessage: (L) => `${L.cdd} generated and set as active.`,
     failedMessage: (L) => `${L.cdd} generation failed.`,
-    onComplete: (dispatch, courseId) => {
-      queueDeferredToast('CDD created and pinned as active.');
+    onComplete: (dispatch, courseId, getState) => {
+      const L = labelsFromState(getState);
+      queueDeferredToast(`${L.cdd} created and pinned as active.`);
       if (courseId) dispatch(fetchCddsThunk(courseId));
     },
   });
@@ -100,14 +121,15 @@ export const {
  */
 export const importCddThunk = createAsyncThunk(
   'cdd/import',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.projectId) {
-        return rejectWithValue('Select a project before importing a blueprint.');
+        return rejectWithValue(`Select a project before importing a ${L.blueprintLower}.`);
       }
       const result = await cddService.importCdd(payload, payload.onProgress);
-      toast.success('Blueprint imported and set as active.');
-      queueDeferredToast('Blueprint imported and pinned as active.');
+      toast.success(`${L.blueprint} imported and set as active.`);
+      queueDeferredToast(`${L.blueprint} imported and pinned as active.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -115,10 +137,10 @@ export const importCddThunk = createAsyncThunk(
 
 export const setActiveCddThunk = createAsyncThunk(
   'cdd/setActive',
-  async ({ cddId, courseId }, { rejectWithValue }) => {
+  async ({ cddId, courseId }, { getState, rejectWithValue }) => {
     try {
       const result = await cddService.setActiveCdd(cddId, courseId);
-      toast.success('Active CDD updated.');
+      toast.success(`Active ${labelsFromState(getState).cdd} updated.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
@@ -168,8 +190,11 @@ export const commitCddVersionThunk = createAsyncThunk(
  *
  * A no-op is not a success: nothing was saved and the instruction was not
  * carried out. The cost is still reported, because it was still incurred.
+ *
+ * Success toasts for async jobs are left to JobTracker; this still handles the
+ * no-op (changed === false) case and sync fallbacks.
  */
-function notifyRegenOutcome(result, label) {
+function notifyRegenOutcome(result, label, { skipSuccessToast = false } = {}) {
   const usageMsg = formatUsageSummaryMessage(result?.usage_summary);
   if (result?.changed === false) {
     const why = result.note
@@ -177,32 +202,88 @@ function notifyRegenOutcome(result, label) {
     toast.error([why, usageMsg].filter(Boolean).join(' '));
     return;
   }
-  if (!usageMsg) return;
+  if (skipSuccessToast || !usageMsg) return;
   if (hasOverBudget(result.usage_summary)) toast.error(`${label} regenerated. ${usageMsg}`);
   else toast.success(`${label} regenerated. ${usageMsg}`);
+}
+
+function courseIdFromState(getState) {
+  return getState()?.dashboard?.selectedCourse?.id ?? null;
+}
+
+async function pollRegenJob({
+  dispatch, getState, accepted, jobType, label, getJobStatus,
+}) {
+  // Sync fallback (legacy response with updated_content, no job_id).
+  if (accepted?.updated_content != null && !accepted?.job_id) {
+    notifyRegenOutcome(accepted, label);
+    return accepted;
+  }
+  const jobId = accepted?.job_id;
+  if (!jobId) {
+    throw new Error('Regeneration did not return a job id.');
+  }
+  const courseId = courseIdFromState(getState);
+  trackAndPollJob(dispatch, {
+    job_id: jobId,
+    jobId,
+    job_type: jobType,
+    jobType,
+    course_id: courseId,
+    courseId,
+    status: accepted.status || JOB_STATUSES.QUEUED,
+  });
+
+  const status = await waitForJobTerminal(getJobStatus, jobId);
+  if (status.status === JOB_STATUSES.FAILED || status.status === JOB_STATUSES.CANCELLED) {
+    throw new Error(status.error_message || `${label} regeneration failed.`);
+  }
+  const result = {
+    ...(status.result || {}),
+    usage_summary: status.usage_summary ?? status.result?.usage_summary,
+  };
+  // No-op: suppress the generic JobTracker success toast and report honestly.
+  if (result.changed === false) {
+    dispatch(markJobNotified(jobId));
+    notifyRegenOutcome(result, label);
+  }
+  // Success: JobTracker toasts (with usage when present).
+  return result;
 }
 
 export const regenerateCddItemThunk = createAsyncThunk(
   'cdd/regenerateItem',
   async ({ cddId, sectionKey, sectionContent, itemIndex, feedback, useSources, modelChoice },
-          { rejectWithValue }) => {
+          { dispatch, getState, rejectWithValue }) => {
     try {
-      const result = await cddService.regenerateItem(cddId, {
+      const accepted = await cddService.regenerateItem(cddId, {
         sectionKey, sectionContent, itemIndex, feedback, useSources, modelChoice,
       });
-      notifyRegenOutcome(result, 'Item');
-      return result;
+      return await pollRegenJob({
+        dispatch,
+        getState,
+        accepted,
+        jobType: 'cdd_regen_item',
+        label: 'Item',
+        getJobStatus: (id) => cddService.getJobStatus(id),
+      });
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
 
 export const regenerateCddSectionThunk = createAsyncThunk(
   'cdd/regenerateSection',
-  async ({ cddId, sectionKey, feedback, modelChoice }, { rejectWithValue }) => {
+  async ({ cddId, sectionKey, feedback, modelChoice }, { dispatch, getState, rejectWithValue }) => {
     try {
-      const result = await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
-      notifyRegenOutcome(result, 'Section');
-      return result;
+      const accepted = await cddService.regenerateSection(cddId, { sectionKey, feedback, modelChoice });
+      return await pollRegenJob({
+        dispatch,
+        getState,
+        accepted,
+        jobType: 'cdd_regen_section',
+        label: 'Section',
+        getJobStatus: (id) => cddService.getJobStatus(id),
+      });
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

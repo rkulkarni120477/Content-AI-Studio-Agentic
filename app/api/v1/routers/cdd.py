@@ -79,7 +79,7 @@ from app.schemas.cdd import (
     CDDVersionListItem,
     CDDVersionRead,
 )
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import JobAcceptedResponse, PaginatedResponse
 from app.schemas.block_wide import BlockWideGenerateRequest, BlockWideJobResponse
 from app.api.v1.cdd_response import build_cdd_read
 from app.core.dis_client import dis_client
@@ -91,7 +91,18 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _dis_context_block(purpose: str, payload: dict, current_user, label: str, client_id: str = "") -> tuple[str, list]:
+def _dis_context_block(purpose: str, payload: dict, current_user, label: str,
+                       client_id: str = "") -> tuple[str, list, str]:
+    """Retrieved Source Library context, its units, and why there is none.
+
+    Third element mirrors blueprints.py's own _dis_context_block: "" when DIS
+    answered (including with nothing — the ordinary shape for a library with no
+    matching material), a short reason when the lookup itself failed. Before
+    this, a CDD generated with an unreachable Source Library was
+    byte-indistinguishable from one whose library genuinely had nothing to add
+    — the only trace was a log line nobody reads while looking at a document
+    that looks fine.
+    """
     try:
         result = dis_client.retrieve_context_sync(purpose, payload, current_user=current_user, client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
@@ -103,10 +114,14 @@ def _dis_context_block(purpose: str, payload: dict, current_user, label: str, cl
                 "Do not expose internal DIS metadata.\n\n"
                 f"{ctx}\n---\n",
                 units,
+                "",
             )
     except Exception as exc:
         _log.warning("dis_%s_context_unavailable error=%s", purpose, exc)
-    return "", []
+        # The class name, not str(exc): stored on the version and shown to the
+        # requester, and an upstream message can carry a host, URL or token.
+        return "", [], type(exc).__name__
+    return "", [], ""
 
 
 def _merge_source_units(primary: list, extra: list) -> list:
@@ -355,18 +370,15 @@ def list_cdds(
 
 @router.post(
     "/generate",
-    response_model=CDDGenerateResponse,
-    status_code=201,
-    summary="Generate a new CDD with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Generate a new CDD with AI (async)",
     description=(
-        "Runs the full CDD generation pipeline: builds the prompt from the "
-        "active style and course metadata, calls the LLM, parses the output "
-        "into sections, saves the CDD and version to the database, and "
-        "automatically pins the new CDD to the specified course."
+        "Enqueues the CDD generation pipeline as a background job. Poll "
+        "GET /api/v1/jobs/{job_id}; on completion ``generation_id`` is the new CDD id."
     ),
     responses={
-        201: {"description": "CDD created and pinned successfully."},
-        502: {"description": "All LLM attempts failed (primary + retry + fallback)."},
+        202: {"description": "Job queued."},
         403: {"description": "User does not have the cdd.generate permission."},
     },
 )
@@ -374,20 +386,47 @@ def generate_cdd(
     request_body: CDDGenerateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.generate")),
+) -> JobAcceptedResponse:
+    """Queue CDD generation; work runs in design_jobs.run_cdd_generate_job."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    params = request_body.model_dump()
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=request_body.project_id,
+        course_id=request_body.course_id,
+        job_type="cdd",
+    )
+    dispatch.submit(design_jobs.run_cdd_generate_job, job_id)
+    _log.info(
+        "cdd_generate_queued  user=%s  course=%d  job=%s",
+        current_user.username, request_body.course_id, job_id,
+    )
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_cdd_generate(
+    db: Session,
+    request_body: CDDGenerateRequest,
+    current_user,
 ) -> CDDGenerateResponse:
     """
-    Generate a Course Design Document using AI.
+    Run the CDD generation pipeline (called from the background worker).
 
-    This endpoint mirrors the "🤖 Generate CDD with AI" button in the Streamlit app.
     The full pipeline is:
       1. Build the prompt (active style + course metadata + extra instructions)
       2. Call the LLM via llm_service.generate_text() (primary → retry → fallback)
       3. Parse the output into sections using cdd_parser.parse_sections_from_text()
       4. Persist the CDD and version v1 to the database
       5. Auto-pin the new CDD to the course via course_repository.set_active_cdd()
-
-    All steps are identical to the Streamlit implementation — only the delivery
-    mechanism (HTTP response vs st.rerun) has changed.
     """
     from promptops_app.database import (
         CDDVersion, CourseDesignDocument, build_style_context,
@@ -467,7 +506,7 @@ def generate_cdd(
         project_id=getattr(request_body, "project_id", None),
     )
 
-    dis_context_block, dis_source_units = _dis_context_block(
+    dis_context_block, dis_source_units, dis_unavailable = _dis_context_block(
         "cdd",
         {
             "purpose": "cdd",
@@ -502,7 +541,10 @@ def generate_cdd(
     # — _dis_context_block swallows any DIS error and returns "", so a failure here
     # degrades to today's cdd-only behaviour rather than breaking generation.
     if is_dlu:
-        gen_block, gen_units = _dis_context_block(
+        # Supplementary pass on top of the primary retrieval above; its own
+        # failure reason is intentionally not recorded — the code comment
+        # above already documents why a failure here degrades silently.
+        gen_block, gen_units, _gen_unavailable = _dis_context_block(
             "course-generation",
             {
                 "purpose": "course-generation",
@@ -535,7 +577,10 @@ def generate_cdd(
         str(x).strip() for x in (request_body.reference_document_ids or []) if str(x).strip()
     ]
     if selected_ref_ids:
-        pinned_block, pinned_units = _dis_context_block(
+        # Same as the DLU pass above: a user-pinned reference lookup failing is
+        # not recorded as the row's source_context_unavailable reason — only
+        # the primary retrieval's reachability is.
+        pinned_block, pinned_units, _pinned_unavailable = _dis_context_block(
             "cdd",
             {
                 "purpose": "cdd",
@@ -562,12 +607,29 @@ def generate_cdd(
             len(selected_ref_ids), bool(pinned_block),
         )
 
+    # Resolved unconditionally (not only on the else/non-override branch below)
+    # so the override branch can also deliver Style and the requester's own
+    # Extra Instructions — it used to build neither, silently dropping both the
+    # moment a prompt was edited inline.
+    course = get_course_by_id(db, request_body.course_id)
+    style_context = ""
+    if request_body.style_id:
+        style = style_repository.get_style_by_id(db, request_body.style_id)
+        if style:
+            style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
+
     # ── Step 1: Build prompts ──────────────────────────────────────────────────
     # Use the custom override if the user edited the prompt in the UI,
     # otherwise build from the prompt library (falls back to inline constants).
     if request_body.system_prompt_override and request_body.user_prompt_override:
         system_prompt = request_body.system_prompt_override
         user_prompt = request_body.user_prompt_override
+        # Same section order as the non-override build below: style, then the
+        # requester's own instructions, then whichever grounding block fired.
+        if style_context:
+            user_prompt = f"{user_prompt}\n\n**ACTIVE STYLE — Apply throughout:**\n{style_context}"
+        if request_body.extra_instructions:
+            user_prompt = f"{user_prompt}\n\n{request_body.extra_instructions}"
         if dis_context_block:
             user_prompt = f"{user_prompt}\n\n{dis_context_block}"
         # Persist the override with the artifact (PL↔CAS sync review, plan
@@ -579,18 +641,12 @@ def generate_cdd(
             "user_prompt_override": request_body.user_prompt_override,
         }
     else:
-        course = get_course_by_id(db, request_body.course_id)
-        style_context = ""
-        if request_body.style_id:
-            style = style_repository.get_style_by_id(db, request_body.style_id)
-            if style:
-                style_context = build_style_context(db, style, cluster_id=course.cluster_id if course else None)
-
         extra_block = request_body.extra_instructions or ""
         if dis_context_block:
             extra_block = f"{extra_block}\n\n{dis_context_block}".strip()
-        if style_context:
-            extra_block = f"**ACTIVE STYLE — Apply throughout:**\n{style_context}\n\n{extra_block}"
+        # style_context is NOT prepended here — it is carried by the named
+        # style_guidelines variable below. A template that renders both this
+        # and extra_instructions used to receive the style twice, verbatim.
 
         # Duration is optional on the form, so it can be absent here. "unspecified"
         # rather than a stand-in number: a template that prints
@@ -677,6 +733,19 @@ def generate_cdd(
             prompt_provenance.get("prompt_source"),
         )
         prompt_provenance["source_context_dropped"] = True
+
+    # Companion to the flag above. That one means the prompt had no slot for the
+    # context we retrieved; this one means there was no context to put anywhere,
+    # because the Source Library could not be reached. Both leave a document
+    # grounded in less than the caller asked for, and neither is visible in the
+    # document itself, so both are recorded on the version — same contract
+    # blueprints.py already keeps for its own generation.
+    if dis_unavailable:
+        prompt_provenance["source_context_unavailable"] = dis_unavailable
+        _log.warning(
+            "cdd_generated_without_source_grounding  user=%s  course=%s  reason=%s",
+            current_user.username, request_body.course_id, dis_unavailable,
+        )
 
     # ── Step 2: Call the LLM ───────────────────────────────────────────────────
     usage_context = UsageLogContext(
@@ -1423,8 +1492,9 @@ def create_cdd_version(
 
 @router.post(
     "/{cdd_id}/regenerate-item",
-    response_model=CDDRegenerateItemResponse,
-    summary="Regenerate a single item within a CDD section",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate a single item within a CDD section (async)",
     responses={
         404: {"description": "CDD or item not found."},
         403: {"description": "Requires cdd.version permission."},
@@ -1435,6 +1505,36 @@ def regenerate_cdd_item(
     request_body: CDDRegenerateItemRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
+) -> JobAcceptedResponse:
+    """Queue CDD item regeneration; result lands in job.result_json."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
+    params = request_body.model_dump()
+    params["cdd_id"] = cdd_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=getattr(cdd, "project_id", None),
+        course_id=getattr(cdd, "course_id", None),
+        job_type="cdd_regen_item",
+    )
+    dispatch.submit(design_jobs.run_cdd_regen_item_job, job_id)
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_cdd_regen_item(
+    db: Session,
+    cdd_id: int,
+    request_body: CDDRegenerateItemRequest,
+    current_user,
 ) -> CDDRegenerateItemResponse:
     """
     Regenerate one bullet/line/paragraph inside a CDD section, preserving all
@@ -1910,8 +2010,9 @@ def repair_cdd_digests(
 
 @router.post(
     "/{cdd_id}/regenerate-section",
-    response_model=CDDRegenerateSectionResponse,
-    summary="Regenerate an entire CDD section with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate an entire CDD section with AI (async)",
     responses={
         404: {"description": "CDD not found."},
         403: {"description": "Requires cdd.version permission."},
@@ -1922,6 +2023,36 @@ def regenerate_cdd_section(
     request_body: CDDRegenerateSectionRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.version")),
+) -> JobAcceptedResponse:
+    """Queue CDD section regeneration; result lands in job.result_json."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    cdd = _get_cdd_or_404(db, cdd_id, current_user)
+    params = request_body.model_dump()
+    params["cdd_id"] = cdd_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=getattr(cdd, "project_id", None),
+        course_id=getattr(cdd, "course_id", None),
+        job_type="cdd_regen_section",
+    )
+    dispatch.submit(design_jobs.run_cdd_regen_section_job, job_id)
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_cdd_regen_section(
+    db: Session,
+    cdd_id: int,
+    request_body: CDDRegenerateSectionRequest,
+    current_user,
 ) -> CDDRegenerateSectionResponse:
     """
     Regenerate a whole CDD section using the section-regeneration prompt.

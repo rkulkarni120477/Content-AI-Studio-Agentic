@@ -15,6 +15,12 @@
   z-index: $z-sticky;
 }
 
+.identityBar__actions {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+}
+
 @include max-lg {
   .identityBar {
     padding: 0 $space-6 !important;

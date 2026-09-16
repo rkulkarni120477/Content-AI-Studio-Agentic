@@ -17,6 +17,12 @@ function mapLaunchPayload(data) {
     expert_domain: data.expert_domain || '',
     audience_category: data.audience_category || 'Professional/Corporate',
     extra_instructions: data.extra_instructions || '',
+    // Day-scoped structured grounding (block+day) -- previously stripped by
+    // this whitelist even when the caller supplied them, so Generate always
+    // fell through to the free-text blob query. `block` is optional: the
+    // server derives it from the course/CDD title when omitted.
+    block: data.block || undefined,
+    day: data.day ?? undefined,
     context_document_names: data.context_document_names || [],
     supplementary_files: data.supplementary_files || [],
     assessment_override: Boolean(data.assessment_override),

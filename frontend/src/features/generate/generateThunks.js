@@ -3,6 +3,8 @@ import { generateService } from './services/generateService';
 import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@utils/helpers';
 import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 import toast from 'react-hot-toast';
+import { trackAndPollJob } from '@features/jobs/jobsThunks';
+import { selectJobsById } from '@features/jobs/jobsSlice';
 
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS) || 2000;
 
@@ -25,12 +27,23 @@ function normalizePollArg(arg) {
 
 export const launchGenerationThunk = createAsyncThunk(
   'generate/launch',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { dispatch, rejectWithValue }) => {
     try {
       if (!payload?.project_id) {
         return rejectWithValue('Select a project before launching generation.');
       }
       const accepted = await generateService.launch(payload);
+      if (accepted?.job_id) {
+        trackAndPollJob(dispatch, {
+          job_id: accepted.job_id,
+          jobId: accepted.job_id,
+          job_type: 'generation',
+          jobType: 'generation',
+          course_id: payload.course_id,
+          courseId: payload.course_id,
+          status: accepted.status || 'queued',
+        });
+      }
       return accepted;
     } catch (e) {
       return rejectWithValue(extractErrorMessage(e));
@@ -66,10 +79,16 @@ export const pollJobThunk = createAsyncThunk(
         return status;
       }
 
+      // Global JobTracker toasts when the job is registered there — skip duplicates.
+      const tracked = selectJobsById(getState())[String(jobId)];
+      const skipToast = Boolean(tracked);
+
       if (status.status === JOB_STATUSES.COMPLETED) {
-        const usageMsg = formatUsageSummaryMessage(status.usage_summary);
-        const message = usageMsg ? `Generation completed! ${usageMsg}` : 'Generation completed!';
-        if (hasOverBudget(status.usage_summary)) toast.error(message); else toast.success(message);
+        if (!skipToast) {
+          const usageMsg = formatUsageSummaryMessage(status.usage_summary);
+          const message = usageMsg ? `Generation completed! ${usageMsg}` : 'Generation completed!';
+          if (hasOverBudget(status.usage_summary)) toast.error(message); else toast.success(message);
+        }
         let blocks = [];
         if (status.generation_id) {
           try {
@@ -96,7 +115,7 @@ export const pollJobThunk = createAsyncThunk(
         }
         return { ...status, blocks };
       }
-      if (status.status === JOB_STATUSES.FAILED) {
+      if (status.status === JOB_STATUSES.FAILED && !skipToast) {
         toast.error(status.error_message || 'Generation failed.');
       }
       return status;

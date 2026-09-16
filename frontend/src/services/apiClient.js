@@ -5,7 +5,7 @@ import { extractErrorMessage } from '@utils/helpers';
 // Empty default → relative URLs, so dev requests go through Vite's /api proxy
 // (see vite.config.js). Prod sets VITE_API_BASE_URL to the real backend origin.
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
-const TIMEOUT_MS   = Number(import.meta.env.VITE_API_TIMEOUT_MS) || 120_000;
+const TIMEOUT_MS   = Number(import.meta.env.VITE_API_TIMEOUT_MS) || 600_000;
 
 // ─── Axios Instance ───────────────────────────────────────────────────────────
 const apiClient = axios.create({
@@ -26,10 +26,32 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error),
 );
 
+// ─── Blob error bodies ────────────────────────────────────────────────────────
+/**
+ * A responseType:'blob' request (api.download) delivers the JSON error envelope
+ * as a Blob, so every message extractor sees undefined and falls through to
+ * axios's "Request failed with status code 400" — a technical string shown to
+ * the user in place of the server's own message. Replace it in place so a
+ * failed download reports exactly what a failed JSON call would.
+ *
+ * Mutates and returns `error`; a non-Blob or non-JSON body is left untouched.
+ */
+export async function unwrapBlobError(error) {
+  const body = error?.response?.data;
+  if (typeof Blob === 'undefined' || !(body instanceof Blob)) return error;
+  if (!(body.type || '').includes('json')) return error;
+  try {
+    error.response.data = JSON.parse(await body.text());
+  } catch { /* not JSON after all — leave the Blob alone */ }
+  return error;
+}
+
 // ─── Response Interceptor — Global Error Normalization ────────────────────────
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    await unwrapBlobError(error);
+
     const status = error?.response?.status;
 
     // Session expired — dispatch logout event so auth slice can react

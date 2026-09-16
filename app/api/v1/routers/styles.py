@@ -30,8 +30,9 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db, require_permission
 from app.core.exceptions import LLMGenerationError, NotFoundError
-from app.schemas.common import MessageResponse, PaginatedResponse
+from app.schemas.common import JobAcceptedResponse, MessageResponse, PaginatedResponse
 from app.core.dis_client import dis_client
+from app.core.dis_access import resolve_course_dis_client
 from app.schemas.style import (
     StyleActivateRequest,
     StyleCreateRequest,
@@ -91,7 +92,8 @@ def _visible_custom_instructions(text: str | None) -> str:
     return _DIS_IDS_RE.sub("", text or "").strip()
 
 
-def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None, extra_instructions: str = "") -> str:
+def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | None = None,
+                                extra_instructions: str = "", client_id: str = "") -> str:
     ids = _extract_dis_ids(style, document_ids)
     if not ids:
         return ""
@@ -114,7 +116,14 @@ def _retrieve_dis_style_context(style, current_user, document_ids: list[str] | N
         "query": query,
     }
     try:
-        result = dis_client.retrieve_context_sync("style", payload, current_user=current_user)
+        # Scope retrieval to the STYLE's own project client, not the caller's —
+        # every other retrieval in the codebase does this (resolve_course_dis_client's
+        # own docstring: reads "the COURSE'S OWN Source Library regardless of who
+        # runs it"). Without it, a platform admin whose personal default client
+        # differs from this style's tenant fetches the wrong client's documents,
+        # or a filtered-to-nothing result — either way, not this style's own files.
+        result = dis_client.retrieve_context_sync("style", payload, current_user=current_user,
+                                                  client_id=client_id)
         ctx = str(result.get("combined_context") or "").strip()
         if ctx:
             return "Use the following processed DIS Source Library documents as the authoritative style reference context. Do not expose internal metadata.\n\n" + ctx
@@ -503,11 +512,12 @@ async def append_style_documents(
 
 @router.post(
     "/{style_id}/understand",
-    response_model=StyleUnderstandResponse,
-    summary="Generate AI style intelligence from uploaded documents",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Generate AI style intelligence from uploaded documents (async)",
     description=(
-        "Calls the LLM to analyse the style's reference documents and produce "
-        "a structured style guide. Equivalent to the '✨ Generate Style Intelligence' button."
+        "Enqueues style understanding as a background job. Poll "
+        "GET /api/v1/jobs/{job_id}; on completion ``generation_id`` is the style id."
     ),
 )
 def generate_style_intelligence(
@@ -515,9 +525,46 @@ def generate_style_intelligence(
     request_body: StyleUnderstandRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.understand")),
+) -> JobAcceptedResponse:
+    """Queue style understanding; work runs in design_jobs.run_style_understand_job."""
+    from promptops_app.jobs import design_jobs, dispatch
+    from promptops_app.repositories import job_repository
+
+    style = _get_style_or_404(db, style_id, current_user)
+    params = request_body.model_dump()
+    params["style_id"] = style_id
+    params["user_name"] = current_user.username
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    # Prefer request scope; fall back to the style's own project.
+    project_id = request_body.project_id or getattr(style, "project_id", None)
+    course_id = request_body.course_id
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params=params,
+        project_id=project_id,
+        course_id=course_id,
+        job_type="style_understand",
+    )
+    dispatch.submit(design_jobs.run_style_understand_job, job_id)
+    _log.info(
+        "style_understand_queued  user=%s  style_id=%d  job=%s",
+        current_user.username, style_id, job_id,
+    )
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_style_understand(
+    db: Session,
+    style_id: int,
+    request_body: StyleUnderstandRequest,
+    current_user,
 ) -> StyleUnderstandResponse:
     """
-    Generate or regenerate style intelligence using AI.
+    Generate or regenerate style intelligence using AI (background worker entry).
 
     Calls style_service.generate_style_understanding() which is already
     framework-agnostic and moves unchanged from the Streamlit app.
@@ -529,9 +576,14 @@ def generate_style_intelligence(
 
     style = _get_style_or_404(db, style_id, current_user)
 
+    # Same reasoning as every other generation route: retrieval must read the
+    # STYLE's own project's Source Library, independent of who is running this.
+    style_client_id = resolve_course_dis_client(db, project_id=style.project_id)
+
     dis_context = _retrieve_dis_style_context(
         style, current_user, request_body.document_ids,
         extra_instructions=request_body.extra_instructions,
+        client_id=style_client_id,
     )
     extra_parts = []
     if dis_context:
@@ -614,6 +666,14 @@ def generate_style_intelligence(
     # Persist the result.
     understanding_text = result if isinstance(result, str) else str(result)
     style.generated_summary = understanding_text
+    # understanding_status is set to "stale" only when a document is linked
+    # (add_files_to_style, database.py) and to "fresh" only inside
+    # create_style_version (restore / IMSCC import) -- this route, the one a
+    # user actually clicks Generate/Refine on, never touched it. So a style
+    # correctly marked stale after a file was added stayed stale forever, even
+    # once regenerated from that exact file -- telling the author their current
+    # understanding was outdated when it no longer was.
+    style.understanding_status = "fresh"
     db.commit()
     _upsert_generated_style_to_dis(style, current_user)
 

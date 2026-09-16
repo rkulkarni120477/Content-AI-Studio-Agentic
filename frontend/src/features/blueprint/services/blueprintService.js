@@ -76,11 +76,8 @@ export const blueprintService = {
       user_prompt_override: data.user_prompt_override || undefined,
       prompt_id: data.prompt_id ?? undefined,
     };
-    const created = await api.post(BLUEPRINT.GENERATE, body);
-    if (created?.blueprint_id) {
-      return api.get(BLUEPRINT.GET(created.blueprint_id));
-    }
-    return created;
+    // Async (202 JobAccepted). Returns immediately with { job_id, status, status_url }.
+    return api.post(BLUEPRINT.GENERATE, body);
   },
 
   /**

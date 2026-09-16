@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 
 from promptops_app.database import (
     Block,
+    Course,
     Generation,
     GenerationJob,
     SessionLocal,
@@ -225,6 +226,11 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         # User-selected pipeline prompt from the "Prompt Template" dropdown.
         # None → normal component/default resolution.
         sel_prompt_id       = params.get("prompt_id")
+        # Set by generations.py's own retrieval call at request time; read back
+        # here purely to put it on the row (see the content.generated audit
+        # event below) — this job does not retry or re-check DIS itself.
+        dis_source_units    = params.get("dis_source_units") or []
+        source_context_unavailable = params.get("source_context_unavailable") or ""
 
         # ── Stage 1 — Context ─────────────────────────────────────────
         set_running(db, job, *STAGE_CONTEXT)
@@ -264,7 +270,11 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                     _src_prefix = ""
                     for _src_doc_id in _src_doc_ids:
                         _src_doc = document_repository.get_document_by_id(db, _src_doc_id)
-                        if _src_doc and _src_doc.content:
+                        # This id comes from a CDD version's generation_params
+                        # snapshot, taken at CDD-creation time -- it is replayed
+                        # on every later regeneration with no re-validation, so
+                        # a document archived since then must stop contributing.
+                        if _src_doc and _src_doc.status == "active" and _src_doc.content:
                             _src_prefix += make_source_context(_src_doc.filename, _src_doc.content)
                     if _src_prefix:
                         context = _src_prefix + context
@@ -311,7 +321,16 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         )
 
         _active_style = get_active_style(db, project_id=project_id, course_id=course_id)
-        _style_inj    = build_style_context(db, _active_style) if _active_style else ""
+        # cluster_id threads in the course's cluster-level auto-injected prompts
+        # (build_style_context step 1) -- blueprints.py and cdd.py both pass this
+        # already; omitting it here meant a cluster prompt applied to the CDD and
+        # the Blueprint and then silently disappeared for the actual content
+        # generation and every regeneration.
+        _course_row   = db.query(Course).filter(Course.id == course_id).first() if course_id else None
+        _style_inj    = (
+            build_style_context(db, _active_style, cluster_id=_course_row.cluster_id if _course_row else None)
+            if _active_style else ""
+        )
 
         # Phase 9 fragment tier (flag-gated): an authored persona_tone
         # fragment overrides the constant; absent/flag-off keeps the legacy
@@ -452,6 +471,12 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         # logs it at the choke point itself now (see llm_client.py's _log_and_trace).
         # A separate manual log_llm_usage() call here would double-count this call's
         # cost, since every attempt is now logged automatically regardless of caller.
+        from promptops_app.core.models import resolve_model
+        # Model-aware output cap: an unresolvable name here just falls back to
+        # the default model's cap (matching the historical flat 16384), same
+        # as before this fix — the actual LLM call below still does its own
+        # strict validate_model() and surfaces a real error for a bad name.
+        _model_def = resolve_model(model_choice)
         _llm_result = _llm_call(model_choice, system_p, user_p, UsageLogContext(
             user_name=user_name,
             project_id=project_id,
@@ -460,7 +485,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             entity_id=job_id,
             prompt_template=_tpl_name,
             prompt_version=_tpl_ver,
-        ))
+        ), max_tokens=_model_def.max_output_tokens)
 
         if _llm_result.is_error:
             _log.error(
@@ -639,6 +664,15 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                                   "blocks": len(blocks), "cdd": used_cdd_label, "blueprint": used_bp_label,
                                   "model_choice": model_choice,
                                   "source_documents_used": len(supp_files) + len(ctx_docs or []),
+                                  "dis_source_units_count": len(dis_source_units),
+                                  # "" when DIS answered (including with nothing); a
+                                  # reason when the lookup itself failed -- same
+                                  # source_context_unavailable contract cdd.py and
+                                  # blueprints.py already keep on their own rows, so
+                                  # a Generation grounded in less than it asked for
+                                  # is distinguishable after the fact, not only in a
+                                  # log line nobody reads while it looks fine.
+                                  "source_context_unavailable": source_context_unavailable or None,
                                   "input_mode": "truncated" if _input_truncated else "full",
                                   "system_prompt": system_p,
                                   "user_prompt": user_p,

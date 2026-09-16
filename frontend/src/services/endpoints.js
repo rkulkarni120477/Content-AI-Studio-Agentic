@@ -139,8 +139,12 @@ export const SOURCE_LIBRARY = {
   PAGES:            (jobId) => `/api/v1/source-library/documents/${jobId}/content/pages`,
   UNITS:            (jobId) => `/api/v1/source-library/documents/${jobId}/content/units`,
   UNIT_DETAIL:      (jobId, unitId) => `/api/v1/source-library/documents/${jobId}/content/units/${unitId}`,
+  RETAG:            (jobId) => `/api/v1/source-library/documents/${jobId}/content/retag`,
+  RETAG_PROGRESS:   (jobId) => `/api/v1/source-library/documents/${jobId}/content/retag/progress`,
   SEARCH:           (jobId) => `/api/v1/source-library/documents/${jobId}/search`,
   DELETE_DOCUMENT:  (jobId) => `/api/v1/source-library/documents/${jobId}`,
+  METADATA:         (jobId) => `/api/v1/source-library/documents/${jobId}/metadata`,
+  METADATA_REVERT:  (jobId) => `/api/v1/source-library/documents/${jobId}/metadata/revert-ai`,
   UPLOAD:           '/api/v1/source-library/documents/upload',
   UPLOAD_POLICY:    '/api/v1/source-library/upload-policy',
   FOLDER_SCAN:      '/api/v1/source-library/folder-scan',
@@ -235,6 +239,15 @@ export const GENERATE = {
   JOB_ACTIVE:       (courseId, jobType) =>
     `/api/v1/jobs/active?course_id=${encodeURIComponent(courseId)}`
     + (jobType ? `&job_type=${encodeURIComponent(jobType)}` : ''),
+  // Header bell: all in-flight + recent finished jobs for a course.
+  JOB_LIST:         (courseId, { sinceMinutes = 30, statuses } = {}) => {
+    const params = new URLSearchParams();
+    if (courseId != null && courseId !== '') params.set('course_id', String(courseId));
+    params.set('since_minutes', String(sinceMinutes));
+    if (statuses) params.set('statuses', statuses);
+    const q = params.toString();
+    return q ? `/api/v1/jobs?${q}` : '/api/v1/jobs';
+  },
   TRACE:            (id)       => `/api/v1/generations/${id}/trace`,
 };
 

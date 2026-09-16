@@ -205,7 +205,10 @@ export default function StylePage() {
     if (!result.error) {
       setRefineStyle(null);
       setRefineCorrections('');
-      await refreshViewStyle(refineStyle.id);
+      // Async job — JobTracker refreshes styles on complete; skip stale fetch.
+      if (!result.payload?.job_id) {
+        await refreshViewStyle(refineStyle.id);
+      }
     }
   }
 
@@ -275,7 +278,7 @@ export default function StylePage() {
       ? stylePromptConfig.selectedPromptId
       : undefined;
     const result = await dispatch(regenerateStyleThunk({ styleId, promptId }));
-    if (!result.error) {
+    if (!result.error && !result.payload?.job_id) {
       await refreshViewStyle(styleId);
     }
   }

@@ -4,6 +4,13 @@ import { extractErrorMessage } from '@utils/helpers';
 import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 import { labelsFromState } from '@config/tenantLabels';
 
+/** Lazy import avoids a circular dep with jobsThunks (which imports JOB_POLL_INTERVAL_MS). */
+function trackEnqueuedJob(dispatch, payload) {
+  import('@features/jobs/jobsThunks').then(({ trackAndPollJob }) => {
+    trackAndPollJob(dispatch, payload);
+  });
+}
+
 /**
  * Shared machinery for block-wide (digest-pipeline) async generation, used
  * identically by the CDD and Blueprint features. It exists to (a) remove the
@@ -63,12 +70,15 @@ export const MAX_POLL_ERRORS = 20;
  * @param {function} cfg.onComplete    (dispatch, courseId) => void   // e.g. refetch list
  * @param {string|function} cfg.completedMessage  toast on success; fn receives labels
  * @param {string|function} cfg.failedMessage     toast on failure; fn receives labels
+ * @param {string}   [cfg.jobType]     when set, registers with the global JobTracker
+ *                                     and suppresses local completion/failure toasts
  */
 export function createBlockJobThunks(cfg) {
   const {
     prefix, deliverable, enqueue, getJobStatus, getActiveJob, getProgress,
     selectBlockJob, onComplete,
     completedMessage, failedMessage,
+    jobType,
   } = cfg;
 
   function resolveMsg(msg, getState) {
@@ -104,13 +114,16 @@ export function createBlockJobThunks(cfg) {
           );
           return status;
         }
+        // When jobType is set the global JobTracker owns completion toasts.
         if (status.status === JOB_STATUSES.COMPLETED) {
-          const done = resolveMsg(completedMessage, getState);
-          if (done) toast.success(done);
-          if (onComplete) onComplete(dispatch, courseId);
+          if (!jobType) {
+            const done = resolveMsg(completedMessage, getState);
+            if (done) toast.success(done);
+          }
+          if (onComplete) onComplete(dispatch, courseId, getState);
         } else if (status.status === JOB_STATUSES.CANCELLED) {
-          toast(`${deliverableLabel(getState)} generation cancelled.`);
-        } else {
+          if (!jobType) toast(`${deliverableLabel(getState)} generation cancelled.`);
+        } else if (!jobType) {
           toast.error(status.error_message || resolveMsg(failedMessage, getState));
         }
         return status;
@@ -154,6 +167,18 @@ export function createBlockJobThunks(cfg) {
           // No handle to poll ⇒ nothing will ever clear the in-progress state.
           return rejectWithValue('Generation did not start — no job handle was returned.');
         }
+        if (jobType) {
+          trackEnqueuedJob(dispatch, {
+            job_id: res.job_id,
+            jobId: res.job_id,
+            job_type: jobType,
+            jobType,
+            course_id: payload.course_id,
+            courseId: payload.course_id,
+            status: res.status || JOB_STATUSES.QUEUED,
+            block: payload.block,
+          });
+        }
         dispatch(pollThunk({ jobId: res.job_id, courseId: payload.course_id }));
         return res;
       } catch (e) {
@@ -192,6 +217,18 @@ export function createBlockJobThunks(cfg) {
         const res = await getActiveJob(courseId);
         const job = res?.job ?? null;
         if (!job?.job_id) return null;
+        if (jobType) {
+          trackEnqueuedJob(dispatch, {
+            job_id: job.job_id,
+            jobId: job.job_id,
+            job_type: jobType,
+            jobType,
+            course_id: courseId,
+            courseId,
+            status: job.status || JOB_STATUSES.RUNNING,
+            block: job.block,
+          });
+        }
         dispatch(pollThunk({ jobId: job.job_id, courseId }));
         return job;
       } catch {

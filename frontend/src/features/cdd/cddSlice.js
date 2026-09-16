@@ -38,6 +38,13 @@ const cddSlice = createSlice({
     // Clear stale block-job status so a completed/failed banner from one course
     // doesn't leak into another course's view on navigation.
     resetBlockJob(s) { s.blockJob = null; },
+    // Drop the per-title CDD context on a title switch. `activeCdd` already resets
+    // on fetchCddsThunk.fulfilled, but this closes the async gap between switching
+    // titles and that fetch resolving.
+    resetCddContext(s) {
+      s.activeCdd = null;
+      s.versions = [];
+    },
   },
   extraReducers: (b) => {
     b
@@ -52,8 +59,12 @@ const cddSlice = createSlice({
       .addCase(generateCddThunk.pending,   (s) => { s.isGenerating = true; s.error = null; })
       .addCase(generateCddThunk.fulfilled, (s, { payload }) => {
         s.isGenerating = false;
-        s.cdds.unshift(payload);
-        s.activeCdd = payload;
+        // Async enqueue — list/active refresh when JobTracker completes the job.
+        if (payload?.job_id) return;
+        if (payload?.id) {
+          s.cdds.unshift(payload);
+          s.activeCdd = payload;
+        }
       })
       .addCase(generateCddThunk.rejected,  (s, { payload }) => { s.isGenerating = false; s.error = payload; })
 
@@ -101,6 +112,7 @@ const cddSlice = createSlice({
 
 export const {
   clearError, clearArchiveRefusal, clearGenerating, setActiveCddLocal, resetBlockJob,
+  resetCddContext,
 } = cddSlice.actions;
 export default cddSlice.reducer;
 

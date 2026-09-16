@@ -17,12 +17,12 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import JobNotFoundError
-from app.schemas.common import ActiveJobResponse, JobStatusResponse
+from app.schemas.common import ActiveJobResponse, JobListResponse, JobStatusResponse
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -88,6 +88,126 @@ def _result_warning(job) -> Optional[str]:
     return warning.strip() if isinstance(warning, str) and warning.strip() else None
 
 
+def _result_payload(job) -> Optional[dict]:
+    """Parse result_json for clients that need the job's stored output (e.g. regen)."""
+    raw = getattr(job, "result_json", None)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _build_status_response(job, db, current_user) -> JobStatusResponse:
+    """Full status for a single-job poll (usage + queue + result)."""
+    from promptops_app.jobs.job_status import JobStatus
+    from promptops_app.repositories import job_repository
+
+    usage_summary = None
+    if job.status == "completed" and job.created_by == current_user.username:
+        from promptops_app.services.budget_service import build_usage_summary
+        from promptops_app.services.usage_service import UsageLogContext
+
+        usage_ctx = UsageLogContext(
+            user_name=job.created_by, project_id=job.project_id, course_id=job.course_id,
+        )
+        if job.job_type == "regenerate_item":
+            usage_summary = build_usage_summary(
+                db, usage_ctx, "block_item_regen", str(job.result_entity_id),
+            )
+        else:
+            usage_summary = build_usage_summary(db, usage_ctx, "generation", str(job.id))
+
+    queue_position = None
+    current_step = job.current_step
+    if job.status == JobStatus.QUEUED:
+        queue_position = job_repository.count_active_jobs_ahead(db, job)
+        current_step = (
+            f"Queued — {queue_position} job(s) ahead"
+            if queue_position
+            else "Queued — starting shortly"
+        )
+
+    return JobStatusResponse(
+        job_id=str(job.id),
+        status=job.status,
+        progress=job.progress or 0,
+        current_step=current_step,
+        job_type=getattr(job, "job_type", None) or None,
+        course_id=getattr(job, "course_id", None),
+        generation_id=job.result_entity_id,
+        error_message=job.error_message,
+        warning=_result_warning(job),
+        queue_position=queue_position,
+        created_at=_utc_iso(job.created_at),
+        updated_at=_utc_iso(job.updated_at),
+        block=_active_block(job),
+        usage_summary=usage_summary,
+        result=_result_payload(job) if job.status == "completed" else None,
+    )
+
+
+@router.get(
+    "",
+    response_model=JobListResponse,
+    summary="List the caller's jobs for a course",
+    description=(
+        "Returns the caller's in-flight jobs for a course plus recently finished "
+        "ones (completed/failed/cancelled within ``since_minutes``). Powers the "
+        "workspace header bell so leaving a generation page does not orphan progress."
+    ),
+)
+def list_jobs(
+    course_id: Optional[int] = Query(default=None),
+    statuses: Optional[str] = Query(
+        default="queued,running,completed,failed",
+        description="Comma-separated status filter.",
+    ),
+    since_minutes: int = Query(
+        default=30,
+        ge=1,
+        le=24 * 60,
+        description="Only include jobs updated within this many minutes.",
+    ),
+    limit: int = Query(default=40, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> JobListResponse:
+    from promptops_app.repositories import job_repository
+
+    status_list = [s.strip() for s in (statuses or "").split(",") if s.strip()] or None
+    rows = job_repository.list_jobs(
+        db,
+        user_name=current_user.username,
+        course_id=course_id,
+        statuses=status_list,
+        since_minutes=since_minutes,
+        limit=limit,
+    )
+    return JobListResponse(
+        jobs=[
+            JobStatusResponse(
+                job_id=str(job.id),
+                status=job.status,
+                progress=job.progress or 0,
+                current_step=job.current_step,
+                job_type=getattr(job, "job_type", None) or None,
+                course_id=getattr(job, "course_id", None),
+                generation_id=job.result_entity_id,
+                error_message=job.error_message,
+                warning=_result_warning(job),
+                created_at=_utc_iso(job.created_at),
+                updated_at=_utc_iso(job.updated_at),
+                block=_active_block(job),
+                result=_result_payload(job) if job.status == "completed" else None,
+            )
+            for job in rows
+        ]
+    )
+
+
 @router.get(
     "/active",
     response_model=ActiveJobResponse,
@@ -137,6 +257,8 @@ def get_active_job(
         status=job.status,
         progress=job.progress or 0,
         current_step=job.current_step,
+        job_type=getattr(job, "job_type", None) or None,
+        course_id=getattr(job, "course_id", None),
         generation_id=job.result_entity_id,
         error_message=job.error_message,
         created_at=_utc_iso(job.created_at),
@@ -227,62 +349,13 @@ def get_job_status(
     Reads the GenerationJob row, which the Celery worker updates via
     job_status.set_running(), set_completed(), and set_failed().
     """
-    from promptops_app.jobs.job_status import JobStatus
     from promptops_app.repositories import job_repository
 
     job = job_repository.get_job(db, job_id)
     if not job:
         raise JobNotFoundError(job_id)
 
-    usage_summary = None
-    # Scoped to the job's own creator, not whoever happens to be polling —
-    # get_job_status has no ownership check (pre-existing), so without this a
-    # shared/guessed job_id would leak a stranger's personal budget headroom
-    # under someone else's cost/token numbers. In the normal flow the poller
-    # already is the creator, so this changes nothing for legitimate use.
-    if job.status == "completed" and job.created_by == current_user.username:
-        from promptops_app.services.budget_service import build_usage_summary
-        from promptops_app.services.usage_service import UsageLogContext
-
-        usage_ctx = UsageLogContext(
-            user_name=job.created_by, project_id=job.project_id, course_id=job.course_id,
-        )
-        # entity_id differs per job type: the full-generation job logs its LLM
-        # call under its own job id, but the regenerate-item job logs under the
-        # block it regenerated (result_entity_id) — matches how each job type
-        # constructs its own UsageLogContext at the actual LLM call site.
-        if job.job_type == "regenerate_item":
-            usage_summary = build_usage_summary(db, usage_ctx, "block_item_regen", str(job.result_entity_id))
-        else:
-            usage_summary = build_usage_summary(db, usage_ctx, "generation", str(job.id))
-
-    # Queue-depth visibility (P4.6/F19): for a still-queued job, tell the user how
-    # many jobs are ahead of it instead of showing a bare, position-less spinner.
-    # Folded into current_step too, so the existing progress UI shows it with no
-    # frontend change; also exposed as a structured field for richer UIs.
-    queue_position = None
-    current_step = job.current_step
-    if job.status == JobStatus.QUEUED:
-        queue_position = job_repository.count_active_jobs_ahead(db, job)
-        current_step = (
-            f"Queued — {queue_position} job(s) ahead"
-            if queue_position
-            else "Queued — starting shortly"
-        )
-
-    return JobStatusResponse(
-        job_id=str(job.id),
-        status=job.status,
-        progress=job.progress or 0,
-        current_step=current_step,
-        generation_id=job.result_entity_id,
-        error_message=job.error_message,
-        warning=_result_warning(job),
-        queue_position=queue_position,
-        created_at=_utc_iso(job.created_at),
-        updated_at=_utc_iso(job.updated_at),
-        usage_summary=usage_summary,
-    )
+    return _build_status_response(job, db, current_user)
 
 
 @router.delete(
@@ -320,4 +393,6 @@ def cancel_job(
         status=job.status,
         progress=job.progress or 0,
         current_step=job.current_step,
+        job_type=getattr(job, "job_type", None) or None,
+        course_id=getattr(job, "course_id", None),
     )

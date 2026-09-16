@@ -16,6 +16,8 @@ import styles from './RetrievalStatus.module.scss';
  * So this reports the two things that actually decide whether a document can
  * reach a generation, and says plainly when it cannot:
  *
+ *   status === processing|pending -> Background ingest still running (preview only)
+ *   status === failed             -> Pipeline died before finalize
  *   extracted_chars === 0         -> Nothing extracted (needs re-ingestion)
  *   indexed_units > 0             -> Searchable
  *   units > 0, indexed 0          -> Extracted but not indexed (recoverable — the
@@ -49,12 +51,23 @@ export default function RetrievalStatus({ doc }) {
   const chars = doc?.extracted_chars;
   const measured = chars !== null && chars !== undefined;
   const blockMissing = !String(doc?.block || '').trim() && String(doc?.course_id) !== '-1';
+  const ingestStatus = String(doc?.status || '').toLowerCase();
 
   let tone = 'ok';
   let label = 'Searchable';
   let detail = '';
 
-  if (measured && Number(chars) === 0) {
+  if (ingestStatus === 'processing' || ingestStatus === 'pending') {
+    tone = 'info';
+    label = 'Processing…';
+    detail = 'Background ingestion is still running (extract, page-tag, index). '
+      + 'This row updates when the job finishes — the current preview is not the final book.';
+  } else if (ingestStatus === 'failed') {
+    tone = 'error';
+    label = 'Processing failed';
+    detail = String(doc?.error_message || '').trim()
+      || 'Background ingestion failed. Re-upload the file or check DIS logs.';
+  } else if (measured && Number(chars) === 0) {
     tone = 'error';
     label = 'Nothing extracted';
     detail = 'No text was recovered from this file, so no generation can use it. '

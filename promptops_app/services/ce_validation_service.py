@@ -35,7 +35,8 @@ def _fetch_ce_checklist(db, active_style=None) -> Optional[str]:
     if active_style:
         for sd in getattr(active_style, "style_documents", []) or []:
             doc = getattr(sd, "document", None)
-            if doc and doc.filename and CE_CHECKLIST_FILENAME.lower() in doc.filename.lower():
+            if doc and getattr(doc, "status", "active") == "active" and doc.filename \
+                    and CE_CHECKLIST_FILENAME.lower() in doc.filename.lower():
                 if doc.content and doc.content.strip():
                     _log.debug("CE_Checklist found in style documents: %s", doc.filename)
                     return doc.content.strip()
@@ -177,7 +178,11 @@ def run_ce_validation(
     )
 
     try:
-        _fix_result = llm_call_fn(model_choice, _fix_system, _fix_user)
+        from promptops_app.core.models import resolve_model
+        _fix_result = llm_call_fn(
+            model_choice, _fix_system, _fix_user,
+            max_tokens=resolve_model(model_choice).max_output_tokens,
+        )
         if _fix_result.is_error:
             _log.warning("CE fix LLM call failed: %s", _fix_result.text)
             return content

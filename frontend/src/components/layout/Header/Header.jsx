@@ -1,6 +1,7 @@
 import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES } from '@utils/constants';
 import HeaderUser from '@components/common/HeaderUser/HeaderUser';
+import JobBell from '@features/jobs/JobBell';
 import styles from './Header.module.scss';
 
 const ROLE_COLORS = {
@@ -37,16 +38,10 @@ export default function Header({ title, breadcrumbs, actions, hideUser = false }
 
       <div className={styles.header__right}>
         {actions}
+        <JobBell />
         {!hideUser && user && (
           <HeaderUser username={user.username} roleLabel={roleLabel} roleColor={roleColor} />
         )}
-        {/* Plain username label replaced by the HeaderUser chip above — kept for easy restore.
-        {user && (
-          <div className={styles.header__user}>
-            <span className={styles.header__username}>{user.username}</span>
-          </div>
-        )}
-        */}
       </div>
     </header>
   );

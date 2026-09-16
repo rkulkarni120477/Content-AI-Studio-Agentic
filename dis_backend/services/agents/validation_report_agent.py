@@ -10,6 +10,10 @@ from __future__ import annotations
 from typing import Any
 
 from services.agents.base import BasePipelineAgent
+from services.metadata_schema_validate import (
+    findings_to_report_section,
+    validate_metadata_against_schema,
+)
 from services.pipeline.common import PipelineState
 
 
@@ -96,6 +100,15 @@ class ValidationReportAgent(BasePipelineAgent):
         if vector_documents_indexed == 0 and vector_status == "completed":
             vector_documents_indexed = embeddings_created
 
+        # Phase 4: report-only metadata schema findings. Does not change ``valid``
+        # (still structural payload completeness) and never fails the pipeline.
+        meta_for_schema = payload.get("metadata")
+        if not isinstance(meta_for_schema, dict):
+            meta_for_schema = state.get("doc_metadata") or {}
+        client_id = state.get("client_id") or payload.get("client_id") or ""
+        schema = ctx.cfg.get_metadata_schema(client_id)
+        metadata_findings = validate_metadata_against_schema(schema, meta_for_schema)
+
         report = {
             "job_id": state.get("job_id"),
             "tenant_id": state.get("tenant_id"),
@@ -103,6 +116,7 @@ class ValidationReportAgent(BasePipelineAgent):
             "valid": len(missing) == 0 and not state.get("fatal_error"),
             "missing_required_fields": missing,
             "warnings": warnings,
+            "metadata_validation": findings_to_report_section(metadata_findings),
             "artifact_checks": {
                 "raw_file_uploaded": bool(state.get("raw_storage_url")),
                 "extracted_text_created": bool(artifact_urls.get("extracted_text")),

@@ -356,6 +356,17 @@ class CDDGenerateResponse(BaseModel):
         default=True,
         description="True if this CDD was automatically set as active for the course.",
     )
+    source_context_unavailable: Optional[str] = Field(
+        default=None,
+        description=(
+            "Set when the Source Library could not be reached during generation "
+            "(the exception class name, e.g. 'RuntimeError') -- None when it "
+            "answered, including when it had nothing to add. Degrading to "
+            "CDD-and-style grounding is deliberate; this is what makes the "
+            "degraded case distinguishable from a fully grounded one after the "
+            "fact, same contract the Blueprint route already keeps."
+        ),
+    )
 
 
 class CDDActivateVersionResponse(BaseModel):

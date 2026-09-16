@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIM DIS Document Types — Storage, Chunking &amp; Data Map</title>
+  <style>
+    :root {
+      --ink: #102033;
+      --ink-soft: #3d5166;
+      --paper: #f6f1e8;
+      --card: #fffdf8;
+      --line: #d8cbb6;
+      --navy: #16324f;
+      --navy-deep: #0d2238;
+      --gold: #c5922a;
+      --gold-soft: #f3e2b8;
+      --s3: #c45c26;
+      --pg: #2f6f4e;
+      --os: #2b5f8a;
+      --restricted: #8b2e2e;
+      --student: #2f6f4e;
+      --instructor: #8a5a12;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.55;
+    }
+    .wrap { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+    nav {
+      position: sticky; top: 0; height: 100vh; overflow: auto;
+      background: var(--navy-deep); color: #f4ead6; padding: 28px 20px;
+    }
+    nav h1 { font-size: 15px; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 6px; color: var(--gold-soft); }
+    nav p { font-size: 12px; color: #c9b89a; margin: 0 0 22px; font-family: ui-sans-serif, system-ui, sans-serif; }
+    nav a {
+      display: block; color: #ead9b6; text-decoration: none; font-size: 13px;
+      padding: 6px 8px; border-radius: 6px; font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+    nav a:hover, nav a:focus { background: #1f3c5c; color: #fff; }
+    nav .group { margin: 16px 0 8px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8ea3b8; font-family: ui-sans-serif, system-ui, sans-serif; }
+    main { padding: 40px 56px 80px; max-width: 1100px; }
+    header.hero { margin-bottom: 36px; }
+    header.hero h1 { font-size: 38px; line-height: 1.15; margin: 0 0 10px; color: var(--navy); }
+    header.hero .lede { font-size: 18px; color: var(--ink-soft); max-width: 46em; }
+    h2 { color: var(--navy); font-size: 26px; margin: 48px 0 12px; border-bottom: 2px solid var(--gold); padding-bottom: 6px; }
+    h3 { color: var(--navy); font-size: 20px; margin: 28px 0 8px; }
+    h4 { margin: 18px 0 6px; font-size: 15px; font-family: ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em; }
+    p, li { font-size: 16px; }
+    .muted { color: var(--ink-soft); }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 20px 22px; margin: 16px 0 28px; box-shadow: 0 1px 0 rgba(16,32,51,.04);
+    }
+    .type-card { border-left: 6px solid var(--navy); }
+    .type-card.restricted { border-left-color: var(--restricted); }
+    .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+    .badge {
+      font-family: ui-sans-serif, system-ui, sans-serif; font-size: 11px; font-weight: 700;
+      letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px;
+    }
+    .b-s3 { background: #f6d4c2; color: #7a2e0d; }
+    .b-pg { background: #cfe8d8; color: #1d4d34; }
+    .b-os { background: #c9dced; color: #163a58; }
+    .b-student { background: #d7efdf; color: #1d4d34; }
+    .b-instructor { background: #f3e2b8; color: #6a4308; }
+    .b-internal { background: #eadada; color: #5a1d1d; }
+    .b-chunk { background: #e7e1d4; color: #3d5166; }
+    .b-purpose { background: #dce6f5; color: #1d3654; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--card); }
+    th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: var(--navy); color: #f4ead6; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px; letter-spacing: .04em; }
+    code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    pre {
+      background: var(--navy-deep); color: #f4ead6; padding: 14px 16px; border-radius: 10px;
+      overflow: auto; font-size: 12.5px; line-height: 1.45;
+    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .note { background: #fff6dd; border: 1px solid #e5cf8a; border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+    .key { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; }
+    footer { margin-top: 48px; color: var(--ink-soft); font-size: 13px; font-family: ui-sans-serif, system-ui, sans-serif; }
+    @media (max-width: 980px) {
+      .wrap { grid-template-columns: 1fr; }
+      nav { position: relative; height: auto; }
+      main { padding: 24px 18px 60px; }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <h1>AIM / DIS</h1>
+    <p>Document types, stores, and chunking</p>
+    <div class="group">Orientation</div>
+    <a href="#overview">How DIS stores AIM files</a>
+    <a href="#names">Two naming systems</a>
+    <a href="#chunking">Chunking layers</a>
+    <a href="#stores">S3 vs Postgres vs OpenSearch</a>
+    <a href="#matrix">Quick matrix</a>
+    <div class="group">Design sources</div>
+    <a href="#course_calendar">Course calendar</a>
+    <a href="#syllabus">Syllabus</a>
+    <a href="#knowledge_test_report">Knowledge test report</a>
+    <div class="group">Course generation</div>
+    <a href="#lesson_pdf">Lesson PDF</a>
+    <a href="#slide_deck">Slide deck</a>
+    <a href="#quiz">Quiz</a>
+    <a href="#final_exam">Final exam</a>
+    <a href="#project">Project</a>
+    <a href="#hangar_activity">Hangar activity</a>
+    <a href="#study_questions">Study questions</a>
+    <div class="group">Restricted / other</div>
+    <a href="#quiz_answer_key">Quiz answer key</a>
+    <a href="#final_exam_answer_key">Final exam answer key</a>
+    <a href="#project_instructor_guide">Project instructor guide</a>
+    <a href="#ebook_reference">Ebook / handbook</a>
+    <a href="#ebook_ops">Ebook rechunk &amp; retag</a>
+    <a href="#student_handout">Student handout</a>
+    <a href="#other">Other</a>
+    <div class="group">Reference</div>
+    <a href="#files">Code files used</a>
+    <a href="#examples">End-to-end examples</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <h1>AIM document types in DIS</h1>
+      <p class="lede">
+        Every Aviation Institute of Maintenance file ingested by the Document Intelligence Service
+        is classified, chunked, and written to more than one store. This document explains
+        <strong>each stored document type</strong>: typical source files, which code path parses it,
+        the chunking strategy, and what lands in S3 versus Postgres (with OpenSearch embeddings).
+      </p>
+    </header>
+
+    <section id="overview">
+      <h2>How DIS stores AIM files</h2>
+      <p>
+        AIM is tenant <code>aim</code> in namespace <code>aim_ns</code>. Config lives in
+        <code>dis_backend/config/clients/aim.yaml</code>. Ingestion is one shared pipeline
+        (<code>services/pipeline/graph.py</code>); AIM-specific behavior is a profile overlay
+        (<code>services/client_profiles/aim.py</code>) plus specialized parsers
+        (teacher calendars, AKTR rollups, and handbook page chunking).
+      </p>
+      <div class="card">
+        <h4>Write path (every successful ingest)</h4>
+        <ol>
+          <li>Raw bytes go to <strong>S3</strong>.</li>
+          <li>Extractors turn the file into text / tables / slides.</li>
+          <li>Classifier + AIM profile set <code>document_type</code> / <code>content_type</code>.</li>
+          <li>Specialized structure extractors run for calendar, syllabus, quiz, project, AKTR.</li>
+          <li><code>content_unit_creation</code> splits the file into units (the real chunks). Handbooks are re-extracted page-by-page in this step (no 250k-char cap) and LLM-tagged.</li>
+          <li>Processed JSON artifacts go to <strong>S3</strong>.</li>
+          <li>Rows go to <strong>Postgres</strong> (<code>dis.*</code> + <code>source_index</code>).</li>
+          <li>Each unit is embedded (Titan v2, 1024-d) and indexed in <strong>OpenSearch</strong>.</li>
+        </ol>
+        <p class="note">
+          Live generation retrieval still reads the S3 Source Library JSON
+          (<code>source_content/content.json</code>). Postgres and OpenSearch are populated at
+          ingest as the relational system-of-record and the semantic index. Digests (CDD / Blueprint MAP)
+          do read Postgres content units — including page-tagged handbook units for assigned reading.
+        </p>
+      </div>
+    </section>
+
+    <section id="names">
+      <h2>Two naming systems</h2>
+      <p>
+        The pipeline classifier uses academic type names from
+        <code>document_processing.enabled_document_types</code>. The AIM profile then
+        <em>remaps</em> many of those to Source Library / generation types. What you see stored
+        on the document is usually the remapped <code>content_type</code>.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Classifier / YAML type</th><th>Stored AIM type</th><th>Typical source</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>course_calendar</code></td><td><code>course_calendar</code></td><td>Teacher Calendar <code>.xlsx</code></td></tr>
+          <tr><td><code>syllabus</code></td><td><code>syllabus</code></td><td>Syllabus PDF/DOCX</td></tr>
+          <tr><td><code>lesson_slide_deck</code> or Finalized PDF folder</td><td><code>lesson_pdf</code> or <code>slide_deck</code></td><td>Day lesson PDF or PPTX</td></tr>
+          <tr><td><code>quiz_exam</code></td><td><code>quiz</code> or <code>final_exam</code></td><td>Quiz / exam PDF or DOCX</td></tr>
+          <tr><td><code>quiz_answer_key</code></td><td><code>quiz_answer_key</code> or <code>final_exam_answer_key</code></td><td><code>*Key*</code> file</td></tr>
+          <tr><td><code>project_activity</code></td><td><code>project</code> or <code>hangar_activity</code></td><td>Project / hangar PDF</td></tr>
+          <tr><td><code>project_key</code> / <code>instructor_guide</code></td><td><code>project_instructor_guide</code></td><td>Instructor Guide / Project Key</td></tr>
+          <tr><td><code>study_questions</code></td><td><code>study_questions</code></td><td>Study Questions folder</td></tr>
+          <tr><td><code>knowledge_test_report</code></td><td><code>knowledge_test_report</code></td><td>AKTR missed-codes XLSX</td></tr>
+          <tr><td><code>ebook_reference</code></td><td><code>ebook_reference</code></td><td>FAA handbook PDF</td></tr>
+          <tr><td><code>student_handout</code> / <code>other</code></td><td>same or remapped by folder</td><td>Anything else</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="chunking">
+      <h2>Chunking layers</h2>
+      <p>
+        AIM YAML says <code>chunking_strategy: semantic</code>, <code>chunk_size: 512</code>,
+        <code>chunk_overlap: 64</code>. That is only the <em>fallback word-chunk</em>. Later
+        policies override it for structured types — especially handbooks, which are
+        <strong>one unit per physical PDF page</strong>, not 512-word windows.
+      </p>
+      <div class="grid-2">
+        <div class="card">
+          <h4>1. Pipeline units — <code>content_unit_creation_agent.py</code></h4>
+          <ul>
+            <li><strong>Per-day</strong> if a calendar structure has <code>days[]</code>.</li>
+            <li><strong>Per-block sheet</strong> if an AKTR structure has <code>blocks[]</code>.</li>
+            <li><strong>Per-page</strong> if the stored type is <code>ebook_reference</code> (physical PDF page + chapter / printed-page tags + LLM topics/ACS/summary).</li>
+            <li><strong>Per-slide</strong> if the extractor produced <code>slide_texts</code> (PPTX).</li>
+            <li><strong>Whole document</strong> (one unit, no overlap) for style / CDD / blueprint types, including syllabus and any file flagged <code>use_for_blueprint</code>.</li>
+            <li><strong>Semantic word chunks</strong> otherwise: 512 words, 64-word overlap.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>2. Source Library view — <code>source_library.py</code></h4>
+          <ul>
+            <li><code>per_unit</code> — keep pipeline units (AKTR only).</li>
+            <li><code>page</code> — keep one unit per PDF page, including chapter / page_number / ACS / topics (ebooks only). Collapsing to <code>full_document</code> would erase those tags.</li>
+            <li><code>full_document</code> — concatenate all unit text into one CAS unit (calendars, syllabi, other CDD/blueprint).</li>
+            <li><code>semantic_chunk</code> — keep pipeline chunks (lessons, quizzes, projects, slides).</li>
+          </ul>
+          <p class="muted">Retrieval reads this clean file, not the raw pipeline payload.</p>
+        </div>
+      </div>
+      <p>
+        Quiz / project structure extractors detect questions and tasks, but they do
+        <strong>not</strong> currently create one unit per question. Units stay word-chunks
+        (or one full document); <code>unit_type</code> is only a label
+        (<code>quiz_question</code>, <code>project_task</code>, …).
+      </p>
+    </section>
+
+    <section id="stores">
+      <h2>Where data lives</h2>
+      <table>
+        <thead>
+          <tr><th>Store</th><th>What</th><th>AIM location</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge b-s3">S3</span></td>
+            <td>Original file + every processed JSON artifact + clean Source Library content</td>
+            <td>Bucket <code>content-ai-studio</code>, prefix <code>DIS/</code>, region <code>us-east-1</code></td>
+          </tr>
+          <tr>
+            <td><span class="badge b-pg">Postgres</span></td>
+            <td>Jobs, documents, content units, calendar days, syllabus rows, Source Library catalog</td>
+            <td>RDS database <code>dis_db</code>, schema <code>dis</code></td>
+          </tr>
+          <tr>
+            <td><span class="badge b-os">OpenSearch</span></td>
+            <td>Embedded units for kNN + tag filters (block, day, ACS, visibility)</td>
+            <td>Index <code>dis-content-dev-aim</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>S3 keys (every job)</h3>
+      <pre>s3://content-ai-studio/DIS/raw/aim_ns/{env}/{job_id}/{filename}
+
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/extracted_text.json
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/metadata.json
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/structure.json
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/content_units.json
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/calendar_structure.json   # calendars
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/syllabus_structure.json    # syllabi
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/quiz_structure.json        # quizzes/keys
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/extracted/project_structure.json     # projects/guides
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/studio_payload/payload.json
+s3://content-ai-studio/DIS/processed/aim_ns/{env}/{job_id}/source_content/content.json</pre>
+
+      <h3>Postgres tables (schema <code>dis</code>)</h3>
+      <table>
+        <thead><tr><th>Table</th><th>Rows stored</th></tr></thead>
+        <tbody>
+          <tr><td><code>dis_jobs</code></td><td>One per ingest job (status, raw URL, payload URL, metadata)</td></tr>
+          <tr><td><code>dis_documents</code></td><td>One per file (title, classifier <code>document_type</code>, path, metadata JSON)</td></tr>
+          <tr><td><code>dis_content_units</code></td><td>One per chunk/day/slide/block (text, keywords, unit metadata)</td></tr>
+          <tr><td><code>dis_course_calendars</code></td><td>One per calendar workbook + full <code>structure_json</code></td></tr>
+          <tr><td><code>dis_calendar_days</code></td><td>One per teaching day (topic, ACS-adjacent lists, source_text)</td></tr>
+          <tr><td><code>dis_syllabus</code></td><td>One per syllabus (outcomes, policies, structure JSON)</td></tr>
+          <tr><td><code>source_index</code></td><td>Compact Source Library catalog (title, type, purpose, S3 keys, block/day; ebooks also carry <code>tagging_failed_count</code> / <code>tagging_pending_count</code>)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="matrix">
+      <h2>Quick matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Stored type</th>
+            <th>Pipeline chunking</th>
+            <th>Source Library</th>
+            <th>Unit type</th>
+            <th>Visibility</th>
+            <th>Used for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>course_calendar</td><td>1 unit / day</td><td>full_document</td><td>calendar_day</td><td>instructor</td><td>Blueprint, CDD</td></tr>
+          <tr><td>syllabus</td><td>1 whole-doc unit</td><td>full_document</td><td>syllabus_section</td><td>student</td><td>CDD, Blueprint</td></tr>
+          <tr><td>knowledge_test_report</td><td>1 unit / block sheet</td><td>per_unit</td><td>knowledge_test_item</td><td>instructor</td><td>CDD, Blueprint</td></tr>
+          <tr><td>lesson_pdf</td><td>512-word chunks</td><td>semantic_chunk</td><td>page</td><td>student</td><td>Course gen</td></tr>
+          <tr><td>slide_deck</td><td>1 unit / slide</td><td>semantic_chunk</td><td>slide</td><td>student</td><td>Course gen</td></tr>
+          <tr><td>quiz / final_exam</td><td>512-word chunks</td><td>semantic_chunk</td><td>quiz_question</td><td>student</td><td>Course gen</td></tr>
+          <tr><td>project / hangar_activity</td><td>512-word chunks</td><td>semantic_chunk</td><td>project_task / activity</td><td>student</td><td>Course gen</td></tr>
+          <tr><td>study_questions</td><td>512-word chunks</td><td>semantic_chunk</td><td>study_question</td><td>student</td><td>Course gen</td></tr>
+          <tr><td>quiz / exam / project keys</td><td>512-word chunks</td><td>semantic_chunk</td><td>answer_key_item / guide_section</td><td>instructor (restricted)</td><td>Not student retrieval</td></tr>
+          <tr><td>ebook_reference</td><td>1 unit / PDF page</td><td>page</td><td>page</td><td>student (typical)</td><td>Assigned reading, digest worksheets</td></tr>
+          <tr><td>student_handout / other</td><td>512-word chunks</td><td>semantic_chunk</td><td>chunk</td><td>varies</td><td>Fallback</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ===================== TYPES ===================== -->
+
+    <article id="course_calendar" class="card type-card">
+      <h2>course_calendar</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Per-day units</span>
+        <span class="badge b-chunk">Source Library: full_document</span>
+        <span class="badge b-instructor">instructor_only</span>
+        <span class="badge b-purpose">blueprint + cdd</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Source of truth for what happens on each block day: topics, ACS codes, handbook pages, quizzes, projects, hangar work.</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Folder: <code>Teaching Outline &amp; Syllabus</code></li>
+        <li>Names like <code>Block 6 Teacher Calendar.xlsx</code>, <code>B1 Student Version.xlsx</code></li>
+        <li>Allowed: <code>.xlsx</code> (AIM parser), or PDF/DOCX via the generic row extractor</li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>services/aim_calendar.py</code> — column-aware AIM teacher-calendar workbook parser</li>
+        <li><code>services/specialized_extractors.py</code> → <code>extract_calendar_structure</code> (generic fallback)</li>
+        <li><code>services/agents/specialized_structure_extraction_agent.py</code></li>
+        <li><code>services/agents/content_unit_creation_agent.py</code> — one unit per <code>days[]</code> row</li>
+        <li><code>services/indexing.py</code> → <code>upsert_calendar</code></li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        Not word-chunked. Each teaching day becomes one <code>calendar_day</code> unit.
+        Embeddings use a composed sentence, not raw spreadsheet cells
+        (“Block 6, Day 3 — Aircraft Drawings (Day 2 of unit). Topics covered: … ACS codes: …”).
+        Source Library then concatenates all days into one <code>full_document</code> so CAS can view the whole calendar.
+      </p>
+      <h4>Where data is stored</h4>
+      <ul>
+        <li><strong>S3</strong> — raw XLSX; <code>calendar_structure.json</code>; all content units; <code>content.json</code></li>
+        <li><strong>Postgres</strong> — <code>dis_course_calendars</code> (full structure JSON) + <code>dis_calendar_days</code> (one row per day) + <code>dis_content_units</code></li>
+        <li><strong>OpenSearch</strong> — one vector per day, tagged with block, day_number, ACS codes</li>
+      </ul>
+      <h4>Example unit metadata / text</h4>
+      <pre>{
+  "content_unit_id": "job_abc:calendar_day_3",
+  "unit_type": "calendar_day",
+  "unit_number": 3,
+  "title": "Aircraft Drawings - Day 2",
+  "text": "Block 6, Day 3 — Aircraft Drawings (Day 2 of unit). Topics covered: Orthographic projection; Sketching. Reference reading: FAA-H-8083-30B Ch. 2 pgs 2-8 to 2-14. Project(s): Project 6-1. Quiz 1 covering day(s) 2, 3. ACS codes: AM.I.B.K1, AM.I.B.K2.",
+  "metadata": {
+    "document_type": "course_calendar",
+    "block": "Block 6",
+    "block_id": "B6",
+    "block_number": 6,
+    "day_number": 3,
+    "subject_unit": "Aircraft Drawings",
+    "subject_day": 2,
+    "day_type": "instruction",
+    "acs_codes": ["AM.I.B.K1", "AM.I.B.K2"],
+    "handbook_refs": [{"handbook": "FAA-H-8083-30B", "chapter": 2, "pages": "2-8 to 2-14"}],
+    "projects": ["Project 6-1"],
+    "quiz": {"number": 1, "covers_unit": "Aircraft Drawings", "covers_days": [2, 3], "raw": "Quiz 1 from Aircraft Drawings - Days 1 -- 2"},
+    "visibility": "instructor_only",
+    "use_for_blueprint": true
+  }
+}</pre>
+    </article>
+
+    <article id="syllabus" class="card type-card">
+      <h2>syllabus</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Whole document (1 unit)</span>
+        <span class="badge b-chunk">Source Library: full_document</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">cdd + blueprint</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Authoritative course description, outcomes, grading, and attendance. Kept whole so rule order is not split across chunks.</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Folder: <code>Teaching Outline &amp; Syllabus</code></li>
+        <li>Names containing <code>syllabus</code>; PDF or DOCX</li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>services/specialized_extractors.py</code> → <code>extract_syllabus_structure</code></li>
+        <li><code>services/agents/specialized_structure_extraction_agent.py</code></li>
+        <li><code>services/indexing.py</code> → <code>upsert_syllabus</code></li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        Pipeline treats syllabus as a CDD/blueprint type: one unit covering the entire extracted text
+        (<code>chunk_overlap = 0</code>). Source Library also stores it as <code>full_document</code>.
+        Structured fields (outcomes, grading, attendance) are parsed into a sidecar object, not extra chunks.
+      </p>
+      <h4>Where data is stored</h4>
+      <ul>
+        <li><strong>S3</strong> — raw file, <code>syllabus_structure.json</code>, one content unit, clean content</li>
+        <li><strong>Postgres</strong> — <code>dis_syllabus</code> (description, outcomes JSON, policies) + <code>dis_content_units</code></li>
+        <li><strong>OpenSearch</strong> — one embedding of the whole syllabus (clipped at 24,000 chars if huge)</li>
+      </ul>
+      <h4>Example structure stored</h4>
+      <pre>{
+  "structure_type": "syllabus",
+  "course_name": "General Science I Syllabus",
+  "block": "Block 1",
+  "course_description": "Course description This course introduces…",
+  "learning_outcomes": ["Identify standard aviation measuring tools", "Apply weight-and-balance computations"],
+  "materials": ["FAA-H-8083-30B", "FAR/AMT"],
+  "grading_policy": "Grading Quizzes 20% Projects 40% Final exam 40%…",
+  "attendance_policy": "Attendance Students must attend…"
+}</pre>
+    </article>
+
+    <article id="knowledge_test_report" class="card type-card">
+      <h2>knowledge_test_report</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Per-block sheet</span>
+        <span class="badge b-chunk">Source Library: per_unit</span>
+        <span class="badge b-instructor">instructor_only</span>
+        <span class="badge b-purpose">cdd + blueprint</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>
+        AKTR (Airman Knowledge Test Report) missed-code rollup. Cohort <em>performance</em>,
+        not exam questions. One workbook covers the whole program (a sheet per block).
+      </p>
+      <h4>Typical files</h4>
+      <ul>
+        <li><code>ALLCAMPUS_AKTR_MissedCodes_Q12026.xlsx</code></li>
+        <li>Filename keywords: <code>aktr</code>, <code>missedcodes</code>, <code>missed codes</code></li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>services/knowledge_test_report.py</code> — sheet-aware workbook parser</li>
+        <li><code>specialized_structure_extraction_agent.py</code> (checked <em>before</em> quiz rules so it is not typed as an answer key)</li>
+        <li><code>content_unit_creation_agent.py</code> — one unit per block sheet</li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        Must not be word-chunked. A 512-word split would cut a block table in half and stamp every
+        sheet with the first sheet’s block. Instead: one <code>knowledge_test_item</code> per block,
+        each carrying its own <code>block</code> / <code>acs_codes</code>. Document-level block is
+        left blank (<code>spans_multiple_blocks: true</code>). Source Library keeps <code>per_unit</code>
+        so Block 6 retrieval sees only the Block 6 sheet.
+      </p>
+      <h4>Where data is stored</h4>
+      <ul>
+        <li><strong>S3</strong> — raw XLSX; units in payload + <code>content.json</code> (one clean unit per block, with a short metadata allow-list)</li>
+        <li><strong>Postgres</strong> — <code>dis_content_units</code> only (no dedicated AKTR table); catalog row in <code>source_index</code></li>
+        <li><strong>OpenSearch</strong> — one vector per block sheet</li>
+      </ul>
+      <h4>Example unit</h4>
+      <pre>{
+  "content_unit_id": "job_abc:knowledge_test_6",
+  "unit_type": "knowledge_test_item",
+  "title": "ALL CAMPUS — Block 6 | Top 10 Most Missed ACS Codes",
+  "text": "ALL CAMPUS — Block 6 | Top 10 Most Missed ACS Codes\n#1 — AM.II.K.K1 — 48.2% missed — Basic electricity principles\n#2 — AM.II.K.K4 — 41.0% missed — Series and parallel circuits",
+  "metadata": {
+    "document_type": "knowledge_test_report",
+    "block": "Block 6",
+    "block_number": 6,
+    "block_id": "B6",
+    "sheet_name": "Block 6",
+    "acs_codes": ["AM.II.K.K1", "AM.II.K.K4"],
+    "missed_codes": [
+      {"acs_code": "AM.II.K.K1", "pct_missed": 0.482, "rank": 1, "description": "Basic electricity principles"}
+    ],
+    "visibility": "instructor_only",
+    "restricted": false
+  }
+}</pre>
+    </article>
+
+    <article id="lesson_pdf" class="card type-card">
+      <h2>lesson_pdf</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Finalized daily lesson deck exported as PDF. Filename day is trusted (<code>mapped_day</code>).</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Folders: <code>Finalized PDFs</code>, <code>Final PDFs</code> (source_priority 1)</li>
+        <li><code>B1D17 - Weight and Balance - Day 4.pdf</code></li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>services/pipeline/extractors.py</code> → <code>extract_pdf</code> (pdfplumber / PDFium; tables when small)</li>
+        <li><code>services/client_profiles/aim.py</code> — remaps folder + <code>B#D#</code> to <code>lesson_pdf</code></li>
+        <li>No specialized structure extractor; generic sections + word chunks</li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        Semantic word chunks: 512 words, 64 overlap. <code>unit_type = page</code>.
+        Day comes from <code>B1D17</code> in the filename. Archive / <code>1-Original</code> /
+        <code>2-Edited</code> copies are stored for traceability but marked
+        <code>exclude_by_default</code> / <code>internal_only</code>.
+      </p>
+      <h4>Example stored metadata</h4>
+      <pre>{
+  "document_type": "lesson_pdf",
+  "content_type": "lesson_pdf",
+  "source_file_name": "B1D17 - Weight and Balance - Day 4.pdf",
+  "block_id": "B1",
+  "day_id": "B1D17",
+  "day_number": 17,
+  "mapped_day": "B1D17",
+  "title": "Weight and Balance Day 4",
+  "topic": "Weight and Balance",
+  "version": "pdf_final",
+  "visibility": "student",
+  "use_for_course_generation": true,
+  "source_priority": 1
+}</pre>
+      <p>Each Postgres / OpenSearch unit looks like:</p>
+      <pre>{
+  "content_unit_id": "job_abc:unit_2",
+  "unit_type": "page",
+  "unit_number": 2,
+  "text": "<512 words of extracted PDF text…>",
+  "metadata": { "chunk_index": 1, "document_type": "lesson_pdf", "day_id": "B1D17", "...": "..." }
+}</pre>
+    </article>
+
+    <article id="slide_deck" class="card type-card">
+      <h2>slide_deck</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Per-slide</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>PowerPoint lecture. Classifier name is often <code>lesson_slide_deck</code>; AIM stores <code>slide_deck</code>.</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Folder: <code>Final Slide Deck</code></li>
+        <li><code>B1D17 Weight and Balance.pptx</code> (or any <code>.ppt</code> / <code>.pptx</code>)</li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>extractors.py</code> → <code>extract_pptx</code> (per-slide text; optional image extract)</li>
+        <li><code>visual_understanding_agent.py</code> — Claude Vision captions when <code>vision_enabled: true</code></li>
+        <li><code>content_unit_creation_agent.py</code> — iterates <code>slide_texts</code></li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        One <code>slide</code> unit per slide (not 512-word chunks). Title is the first non-marker line.
+        <code>visual_summary</code> is attached by slide number. AIM fast path:
+        <code>fast_pptx_enabled</code>, max 200 slides.
+      </p>
+      <h4>Example unit</h4>
+      <pre>{
+  "content_unit_id": "job_abc:slide_4",
+  "unit_type": "slide",
+  "unit_number": 4,
+  "title": "Today’s Focus — CG Shift",
+  "text": "[Slide 4]\nToday’s Focus\n• How CG moves when fuel is burned\n• Worked example",
+  "visual_summary": "Diagram of an aircraft with CG arrow moving aft as fuel tanks empty.",
+  "metadata": { "slide_number": 4, "document_type": "slide_deck", "day_id": "B1D17" }
+}</pre>
+    </article>
+
+    <article id="quiz" class="card type-card">
+      <h2>quiz</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Student quiz. Calendar mapping is required; filename day is only a suggestion.</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Preferred folders: <code>Quizzes/5-PDFs/Updated PDFs</code>, then <code>Quizzes/4-Finalized/Updated Quizzes</code></li>
+        <li><code>B2Q1.docx</code>, <code>Block 2 Quiz 1 - Aircraft Drawings.pdf</code></li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li>PDF/DOCX extractors</li>
+        <li><code>extract_quiz_structure</code> — counts lines that look like <code>1.</code> / <code>Q1</code> / <code>Question</code></li>
+        <li>AIM profile sets <code>quiz_number</code>, <code>quiz_id</code> (<code>B2Q1</code>)</li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        Word chunks of 512 / 64. <code>unit_type</code> is labeled <code>quiz_question</code>
+        even when a chunk holds several questions. Structure JSON stores
+        <code>question_count_detected</code> and a 20-question preview; it is not one-row-per-question storage.
+      </p>
+      <h4>Example metadata</h4>
+      <pre>{
+  "document_type": "quiz",
+  "quiz_number": 1,
+  "quiz_id": "B2Q1",
+  "suggested_day_from_filename": "B2D4",
+  "mapped_day_source": "calendar_required",
+  "calendar_mapping_required": true,
+  "visibility": "student",
+  "restricted": false
+}</pre>
+      <p>Quiz structure artifact:</p>
+      <pre>{
+  "structure_type": "quiz_exam",
+  "quiz_title": "B2Q1",
+  "question_count_detected": 12,
+  "questions_preview": ["1. What does a hidden line represent?", "2. …"],
+  "is_answer_key": false
+}</pre>
+    </article>
+
+    <article id="final_exam" class="card type-card">
+      <h2>final_exam</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Same storage path as quiz. Typed when the name contains <code>final exam</code>, <code>cumulative exam</code>, or a leftover bare <code>test</code> after other heuristics.</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li><code>Quizzes/5-PDFs/Block 2 Final Exam.pdf</code></li>
+      </ul>
+      <h4>Chunking / storage</h4>
+      <p>Identical to <a href="#quiz">quiz</a>: 512-word chunks, <code>unit_type = quiz_question</code>, calendar-first mapping, student visibility. Retake folders are excluded by default.</p>
+    </article>
+
+    <article id="project" class="card type-card">
+      <h2>project</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Student project / lab. Classifier may say <code>project_activity</code>.</p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Preferred: <code>Projects/4-PDF</code>, then <code>Projects/3-Final</code></li>
+        <li><code>Block 6 Project 6-1 Weight and Balance.pdf</code></li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>extract_project_structure</code> — objectives, materials, procedure, assessment sections</li>
+        <li>AIM profile sets <code>project_number</code> / <code>project_id</code> (<code>B6P6-1</code>)</li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        512 / 64 word chunks labeled <code>project_task</code>. Structure fields are sidecar JSON,
+        not one unit per task. Calendar decides the administered day
+        (<code>mapped_day_source: calendar_required</code>).
+      </p>
+      <h4>Example project_structure</h4>
+      <pre>{
+  "structure_type": "project_activity",
+  "project_title": "Block 6 Project 6-1 Weight and Balance",
+  "is_instructor_guide": false,
+  "objectives": ["Compute empty-weight CG", "Complete the aircraft worksheet"],
+  "materials": ["Sample aircraft data sheet", "Calculator"],
+  "procedure": "Procedure 1. Record empty weight…",
+  "assessment": "Grading Complete worksheet; answers within 0.1 in…"
+}</pre>
+    </article>
+
+    <article id="hangar_activity" class="card type-card">
+      <h2>hangar_activity</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Shop / hangar practical. Typed when the path or name contains <code>hangar</code> (folder <code>Hangar Activities</code> wins over a stray word like “test” in the title).</p>
+      <h4>Chunking / storage</h4>
+      <p>
+        Same as project: PDF/DOCX extract + 512-word chunks. <code>unit_type = activity</code>.
+        Calendar-first day mapping. No dedicated hangar table — units + S3 payload only.
+      </p>
+    </article>
+
+    <article id="study_questions" class="card type-card">
+      <h2>study_questions</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student</span>
+        <span class="badge b-purpose">course_generation</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Self-study / review questions. Folder <code>Study Questions</code>.</p>
+      <h4>Chunking / storage</h4>
+      <p>
+        512 / 64 word chunks, <code>unit_type = study_question</code>. Calendar mapping required.
+        No specialized per-question splitter (same as quizzes).
+      </p>
+    </article>
+
+    <article id="quiz_answer_key" class="card type-card restricted">
+      <h2>quiz_answer_key</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-internal">restricted / instructor_only</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Quiz key. Detected from <code>Answer Key</code>, <code>Quiz Key</code>, or compact <code>B2Q1.Key.docx</code>.</p>
+      <h4>Which files process it</h4>
+      <ul>
+        <li>Same quiz structure extractor, with <code>is_answer_key: true</code></li>
+        <li>Listed in <code>restricted_document_types</code> and <code>restricted_filename_contains</code></li>
+      </ul>
+      <h4>Chunking / storage</h4>
+      <p>
+        512-word chunks labeled <code>answer_key_item</code>. Stored in S3, Postgres, and OpenSearch
+        like any other file, but retrieval gates hide it from student / course-generation context
+        unless an admin sets <code>include_restricted: true</code>.
+      </p>
+      <pre>{
+  "document_type": "quiz_answer_key",
+  "visibility": "instructor_only",
+  "restricted": true,
+  "access_level": "admin_only",
+  "use_for_course_generation": false
+}</pre>
+    </article>
+
+    <article id="final_exam_answer_key" class="card type-card restricted">
+      <h2>final_exam_answer_key</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-internal">restricted / instructor_only</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Same as quiz keys when the name also contains <code>final exam</code>. Unit type <code>answer_key_item</code>. Never used for student-facing generation.</p>
+    </article>
+
+    <article id="project_instructor_guide" class="card type-card restricted">
+      <h2>project_instructor_guide</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-internal">restricted / instructor_only</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>
+        Pipeline types <code>project_key</code> and <code>instructor_guide</code> remap here.
+        Also any project file whose name looks like a key (<code>… Key.pdf</code>).
+      </p>
+      <h4>Typical files</h4>
+      <ul>
+        <li><code>Projects/4-PDF/Project 6-1 Instructor Guide.pdf</code></li>
+      </ul>
+      <h4>Chunking / storage</h4>
+      <p>
+        Project structure extractor runs (<code>is_instructor_guide: true</code>).
+        Units are 512-word chunks labeled <code>guide_section</code>. Same three stores;
+        restricted from student retrieval.
+      </p>
+    </article>
+
+    <article id="ebook_reference" class="card type-card">
+      <h2>ebook_reference</h2>
+      <div class="badges">
+        <span class="badge b-chunk">1 unit / PDF page</span>
+        <span class="badge b-chunk">Source Library: page</span>
+        <span class="badge b-student">student (typical)</span>
+        <span class="badge b-purpose">assigned reading / digest worksheets</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>
+        FAA handbooks and similar long PDFs (<code>FAR-AMT</code>, <code>FAA-H-8083-30B</code>).
+        These are <strong>not</strong> 512-word windows. Each physical PDF page becomes one
+        <code>page</code> unit with location tags (chapter / printed page) and LLM content tags
+        (topics / ACS / summary), so a calendar citation like “Ch. 13 pgs. 13-1 to 13-14”
+        can attach only those pages.
+      </p>
+      <h4>Typical files</h4>
+      <ul>
+        <li>Names containing <code>ebook</code>, <code>handbook</code>, <code>FAR-AMT</code>, <code>FAA</code></li>
+        <li>Classifier type stays <code>ebook_reference</code> (AIM profile does not remap it)</li>
+      </ul>
+      <h4>Which files process it</h4>
+      <ul>
+        <li><code>content_extraction_agent.py</code> — first-pass PDF extract (may stop at <code>max_extracted_chars</code> ≈ 250k)</li>
+        <li><code>content_unit_creation_agent.py</code> → <code>_ebook_page_units</code> — always re-extracts from raw bytes with <strong>no char cap</strong> so a 600–1,200 page handbook is not truncated</li>
+        <li><code>services/ebook_page_chunker.py</code> — one unit per non-blank physical page; stamps <code>pdf_page</code>, <code>chapter</code>, <code>printed_page</code>, <code>page_number</code> (<code>13-1</code>)</li>
+        <li><code>services/ebook_page_tagger.py</code> — batched LLM tags (~10 pages per Sonnet call): topics, ACS codes, summary</li>
+        <li>Digest assigned-reading resolver (<code>services/digests/references.py</code>) slices by printed page when those tags exist</li>
+      </ul>
+      <h4>Chunking strategy</h4>
+      <p>
+        Location detection order: PDF outline/bookmarks → header/footer tokens on the
+        first/last few lines → carry the last seen chapter forward. Body text is ignored
+        for location so TOC / index cross-refs do not win. Blank pages are skipped.
+        Source Library stores <code>chunking_strategy: "page"</code> and keeps a short
+        metadata allow-list on each clean unit (chapter, page numbers, ACS, topics, tagging flags).
+      </p>
+      <p>
+        LLM tagging is fail-soft: ingest still succeeds if a batch fails. Heuristic
+        keyword topics stay; ACS/summary stay empty; the page is flagged
+        <code>tagging_status: failed</code> or <code>pending</code> for retry.
+        AIM YAML: <code>ebook_page_tagging_enabled: true</code>,
+        <code>ebook_page_tagging_batch_size: 10</code>,
+        model <code>pipeline.models.ebook_page_tagging</code> (Sonnet 4.5).
+      </p>
+      <h4>Where data is stored</h4>
+      <ul>
+        <li><strong>S3</strong> — raw PDF; <code>content_units.json</code>; <code>content.json</code> (one clean unit per page, not concatenated)</li>
+        <li><strong>Postgres</strong> — one <code>dis_content_units</code> row per page (no dedicated ebook table); catalog row in <code>source_index</code> with <code>tagging_failed_count</code> / <code>tagging_pending_count</code></li>
+        <li><strong>OpenSearch</strong> — one vector per page, bulk-indexed in batches of 100 (a 600–1,200 page handbook overflows a single bulk request)</li>
+      </ul>
+      <p class="note">
+        Source Library View lists the real page units (title like <code>FAA-H-8083-30B — p. 13-1</code>),
+        with topics / ACS / summary / <code>tagging_status</code> on each section.
+        The old 12,000-character synthetic “Part N” split is only a fallback when a file
+        still has a single giant unit (incomplete ingest). Embedding input is still clipped
+        at 24,000 characters per unit for Titan’s token limit.
+      </p>
+      <h4>Example unit</h4>
+      <pre>{
+  "content_unit_id": "job_abc:page_214",
+  "unit_type": "page",
+  "unit_number": 198,
+  "title": "FAA-H-8083-30B — p. 13-1",
+  "text": "[physical page text…]",
+  "topics": ["weight and balance", "empty-weight CG", "datum"],
+  "metadata": {
+    "document_type": "ebook_reference",
+    "chunking_strategy": "page",
+    "pdf_page": 214,
+    "chapter": 13,
+    "printed_page": 1,
+    "page_number": "13-1",
+    "acs_codes": ["AM.I.F.K1"],
+    "topics": ["weight and balance", "empty-weight CG", "datum"],
+    "summary": "Introduces empty-weight CG and the aircraft datum used for weight-and-balance computations.",
+    "tagging_status": "ok",
+    "visibility": "student"
+  }
+}</pre>
+    </article>
+
+    <article id="ebook_ops" class="card type-card">
+      <h2>Ebook rechunk &amp; retag</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Existing jobs only</span>
+        <span class="badge b-purpose">repair / retry tags</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>
+        New uploads already page-chunk in the pipeline. Handbooks ingested earlier as
+        512-word windows (or as a single preview unit) need a backfill. Tagging can also
+        be retried without touching the PDF.
+      </p>
+      <h4>Rechunk (rebuild page units from the raw PDF)</h4>
+      <ul>
+        <li><code>scripts/rechunk_ebook_references.py</code> — downloads the S3 raw PDF, rebuilds page units, optionally LLM-tags, writes Postgres + OpenSearch + <code>content.json</code></li>
+        <li>Skip rule: already looks finished when there are ≥10 units and a majority carry <code>chunking_strategy = page</code> or a <code>page_number</code> (unless <code>--force</code>)</li>
+        <li>A single unit with a <code>page_number</code> like <code>1-24</code> is <em>not</em> skipped — that is the broken one-blob shape this script repairs</li>
+        <li><code>--skip-llm-tagging</code> does location-only pages first; <code>--retag-failed</code> / <code>--retag-all</code> skip the PDF entirely</li>
+      </ul>
+      <h4>Retag (LLM tags only — no PDF download)</h4>
+      <p>
+        <code>services/ebook_page_retag.py</code> loads unit text from Postgres, runs the
+        same batched tagger, then writes the selected units back to Postgres, OpenSearch,
+        and S3. Sibling pages that were already <code>ok</code> are not dropped from
+        <code>content.json</code> (a sparse payload is seeded from the existing content file).
+      </p>
+      <ul>
+        <li><code>POST /sources/{job_id}/content/retag</code> — <code>{ "unit_ids": [...] }</code> or <code>{ "all_failed": true }</code></li>
+        <li>Source Library UI: retry one page, or retry all failed/pending</li>
+        <li>CLI: <code>rechunk_ebook_references.py --retag-failed --apply</code> or <code>--retag-all</code></li>
+      </ul>
+      <h4>Manual section edit</h4>
+      <p>
+        <code>PATCH /sources/{job_id}/content/units/{unit_id}</code> updates title, summary,
+        topics, and ACS codes on a real content unit and re-embeds that unit.
+        Synthetic View slices (<code>view_page_*</code>) cannot be patched.
+      </p>
+    </article>
+
+    <article id="student_handout" class="card type-card">
+      <h2>student_handout</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-student">student (typical)</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>Enabled pipeline type for leftover student worksheets that did not match a stronger rule. <code>unit_type = chunk</code>. Same three-store write path as lessons.</p>
+    </article>
+
+    <article id="other" class="card type-card">
+      <h2>other</h2>
+      <div class="badges">
+        <span class="badge b-chunk">Semantic 512 / 64</span>
+        <span class="badge b-s3">S3</span>
+        <span class="badge b-pg">Postgres</span>
+        <span class="badge b-os">OpenSearch</span>
+      </div>
+      <p>
+        Fallback when filename/text rules and the LLM classifier do not agree on a type
+        (<code>fallback_doc_type: other</code>). AIM folder heuristics often rescue these
+        (Finalized PDFs → <code>lesson_pdf</code>, Hangar → <code>hangar_activity</code>).
+        If it remains <code>other</code>: 512-word chunks, <code>unit_type = chunk</code>,
+        purpose <code>general_reference</code>, usually not used for blueprint or course generation.
+      </p>
+    </article>
+
+    <section id="files">
+      <h2>Code files used</h2>
+      <table>
+        <thead><tr><th>Concern</th><th>File</th></tr></thead>
+        <tbody>
+          <tr><td>Tenant rules, type list, folders, visibility</td><td><code>config/clients/aim.yaml</code></td></tr>
+          <tr><td>Remap classifier type → stored AIM type; block/day; restricted</td><td><code>services/client_profiles/aim.py</code></td></tr>
+          <tr><td>Keyword classifier + generic calendar/syllabus/quiz/project parsers</td><td><code>services/specialized_extractors.py</code></td></tr>
+          <tr><td>AIM teacher-calendar XLSX</td><td><code>services/aim_calendar.py</code></td></tr>
+          <tr><td>AKTR missed-codes XLSX</td><td><code>services/knowledge_test_report.py</code></td></tr>
+          <tr><td>PDF / DOCX / PPTX / XLSX / image extractors</td><td><code>services/pipeline/extractors.py</code></td></tr>
+          <tr><td>Create units (the chunking decision tree)</td><td><code>services/agents/content_unit_creation_agent.py</code></td></tr>
+          <tr><td>Handbook: one unit per PDF page + location tags</td><td><code>services/ebook_page_chunker.py</code></td></tr>
+          <tr><td>Handbook: batched LLM topics / ACS / summary</td><td><code>services/ebook_page_tagger.py</code></td></tr>
+          <tr><td>Handbook: retag failed pages + manual section edit</td><td><code>services/ebook_page_retag.py</code></td></tr>
+          <tr><td>Backfill already-ingested handbooks</td><td><code>scripts/rechunk_ebook_references.py</code></td></tr>
+          <tr><td>Assigned-reading page-range slice</td><td><code>services/digests/references.py</code></td></tr>
+          <tr><td>Dispatch specialized parsers</td><td><code>services/agents/specialized_structure_extraction_agent.py</code></td></tr>
+          <tr><td>Write processed S3 JSON</td><td><code>services/agents/processed_storage_agent.py</code></td></tr>
+          <tr><td>Source Library clean file + catalog</td><td><code>services/source_library.py</code></td></tr>
+          <tr><td>Postgres schema + upserts</td><td><code>services/indexing.py</code>, <code>services/source_index_pg.py</code></td></tr>
+          <tr><td>Embeddings + OpenSearch</td><td><code>services/indexing.py</code>, <code>services/adapters/vector_store.py</code></td></tr>
+          <tr><td>S3 key writer</td><td><code>services/artifacts.py</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="examples">
+      <h2>End-to-end examples</h2>
+
+      <h3>1. Teacher calendar (XLSX)</h3>
+      <p class="key">File → AIM parser → 20 day units → S3 + 3 Postgres tables + 20 OpenSearch vectors</p>
+      <pre>Source: Teaching Outline &amp; Syllabus/Block 6 Teacher Calendar.xlsx
+
+S3 raw:
+  DIS/raw/aim_ns/development/{job}/Block 6 Teacher Calendar.xlsx
+
+S3 processed extras:
+  .../extracted/calendar_structure.json     # days[20] with ACS, quiz, handbook_refs
+  .../extracted/content_units.json          # 20 calendar_day objects
+  .../source_content/content.json           # chunking_strategy: "full_document", 1 CAS unit
+
+Postgres:
+  dis_documents          1 row  document_type = course_calendar
+  dis_course_calendars   1 row  total_days = 20, structure_json = full parse
+  dis_calendar_days     20 rows day_number, topic, source_text
+  dis_content_units     20 rows unit_type = calendar_day
+  source_index           1 row  purpose = blueprint, content_key → content.json
+
+OpenSearch index dis-content-dev-aim:
+  20 docs, each with titan embedding of that day's source_text</pre>
+
+      <h3>2. Lesson PDF</h3>
+      <pre>Source: Finalized PDFs/B1D17 - Weight and Balance - Day 4.pdf
+
+Pipeline: extract_pdf → classify lesson_slide_deck/other → AIM remap lesson_pdf
+          → no specialized structure → words.split() in steps of 448 (512-64)
+
+If the PDF yields ~3,200 words → about 8 page units.
+
+S3: raw PDF + extracted_text.json + content_units.json + content.json
+    (chunking_strategy: "semantic_chunk", total_units: 8)
+
+Postgres: dis_documents + 8 × dis_content_units (unit_type = page)
+          source_index.day = 17, block = "Block 1"
+
+OpenSearch: 8 vectors, filterable by day_id = B1D17</pre>
+
+      <h3>3. AKTR workbook</h3>
+      <pre>Source: ALLCAMPUS_AKTR_MissedCodes_Q12026.xlsx   (16 block sheets)
+
+Pipeline: looks_like_aktr_report → build_knowledge_test_structure
+          → 16 knowledge_test_item units (not 16×10 word chunks)
+
+Document metadata: block = "", spans_multiple_blocks = true
+Each unit metadata: block = "Block N", acs_codes = [...], missed_codes = [...]
+
+S3 content.json: chunking_strategy = "per_unit"  (units kept, not concatenated)
+Postgres: 16 content units; no dis_calendar_days / dis_syllabus rows
+A Block 6 CDD/Blueprint query matches only the Block 6 unit</pre>
+
+      <h3>4. FAA handbook (ebook_reference)</h3>
+      <pre>Source: FAA-H-8083-30B.pdf   (~686 physical pages)
+
+Pipeline: extract_pdf (may truncate at 250k chars)
+          → classify ebook_reference
+          → re-extract every page with no char cap
+          → one page unit each (skip blank)
+          → stamp chapter / printed_page / page_number from outline + headers/footers
+          → LLM tag in batches of 10 (topics, ACS, summary)
+          → OpenSearch bulk index in batches of 100
+
+S3 content.json: chunking_strategy = "page"  (units kept, not concatenated)
+Postgres: hundreds of dis_content_units (unit_type = page)
+OpenSearch: one vector per page, filterable by chapter / page_number / acs_codes
+
+A calendar citation "FAA-H-8083-30B Ch. 13 pgs. 13-1 to 13-14"
+attaches only those printed pages — not the whole chapter, and not 512-word slices.
+
+Retag without rechunk:
+  POST /sources/{job_id}/content/retag  { "all_failed": true }
+  or scripts/rechunk_ebook_references.py --retag-failed --apply</pre>
+
+      <h3>What is <em>not</em> stored as its own table</h3>
+      <p>
+        Quizzes, projects, hangar activities, study questions, slides, lessons, ebooks, and keys
+        do <strong>not</strong> have dedicated Postgres tables. They share
+        <code>dis_documents</code> + <code>dis_content_units</code> + S3 JSON.
+        Only calendars and syllabi get extra relational tables because they are structural
+        join sources for the rest of the curriculum.
+      </p>
+    </section>
+
+    <footer>
+      Generated from AIM DIS code and <code>config/clients/aim.yaml</code>.
+      Updated 2026-09-15 for page-aligned handbook chunking, LLM page tags, retag, and assigned-reading slices.
+      Pipeline chunk sizes, folder priority, and visibility are config — change YAML, not this page.
+    </footer>
+  </main>
+</div>
+</body>
+</html>

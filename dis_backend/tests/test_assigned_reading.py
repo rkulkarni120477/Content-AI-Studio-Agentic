@@ -397,3 +397,86 @@ def test_resolve_day_dedupes_units_and_keeps_unresolved_citations():
 def test_resolve_day_on_a_day_with_no_reading():
     resolved = references.resolve_day({"day_number": 20, "source_text": "Reading: None"}, {})
     assert resolved.citations == [] and resolved.units == [] and resolved.unresolved == []
+
+
+# --------------------------------------------------------------------------- #
+# 5. Explicit page/chapter tags (page-chunked ebook_reference)
+# --------------------------------------------------------------------------- #
+def _page_tagged_handbook():
+    """Units already stamped with chapter + printed_page (post rechunk)."""
+    units = []
+    # Front matter (untagged)
+    for i in range(3):
+        units.append({
+            "content_unit_id": f"p{i}",
+            "text_content": f"front matter page {i}",
+            "metadata_json": {
+                "source_file_name": "8083-31B.pdf",
+                "chunk_index": i,
+                "pdf_page": i + 1,
+                "chunking_strategy": "page",
+            },
+        })
+    # Chapter 12: printed 1-5
+    for i, pp in enumerate(range(1, 6), start=3):
+        units.append({
+            "content_unit_id": f"p{i}",
+            "text_content": f"ch12 body {pp}",
+            "metadata_json": {
+                "source_file_name": "8083-31B.pdf",
+                "chunk_index": i,
+                "pdf_page": i + 1,
+                "chapter": 12,
+                "printed_page": pp,
+                "page_number": f"12-{pp}",
+                "chunking_strategy": "page",
+            },
+        })
+    # Chapter 13: printed 1-14
+    for i, pp in enumerate(range(1, 15), start=8):
+        units.append({
+            "content_unit_id": f"p{i}",
+            "text_content": f"ch13 body {pp}",
+            "metadata_json": {
+                "source_file_name": "8083-31B.pdf",
+                "chunk_index": i,
+                "pdf_page": i + 1,
+                "chapter": 13,
+                "printed_page": pp,
+                "page_number": f"13-{pp}",
+                "chunking_strategy": "page",
+            },
+        })
+    return units
+
+
+def test_page_tagged_citation_slices_by_printed_page_range():
+    """Once units carry page_number tags, Ch. 13 pgs. 13-1 to 13-14 must return
+    only those printed pages — not the whole chapter via figure-token inference."""
+    by_file = references.index_by_file(_page_tagged_handbook())
+    citation = references.Citation(
+        raw="", handbook="8083-31B", chapter=13, page_from=1, page_to=4,
+    )
+    picked, reason = references.units_for_citation(citation, by_file)
+    assert reason == ""
+    assert [u["metadata_json"]["page_number"] for u in picked] == [
+        "13-1", "13-2", "13-3", "13-4",
+    ]
+
+
+def test_page_tagged_chapter_without_page_range_attaches_whole_chapter():
+    by_file = references.index_by_file(_page_tagged_handbook())
+    citation = references.Citation(raw="", handbook="8083-31B", chapter=13)
+    picked, reason = references.units_for_citation(citation, by_file)
+    assert reason == ""
+    assert len(picked) == 14
+    assert all(u["metadata_json"]["chapter"] == 13 for u in picked)
+
+
+def test_untagged_units_still_use_chapter_runs_inference():
+    """Legacy word-window units (no chapter tag) keep the figure-token path."""
+    by_file = references.index_by_file(_synthetic_handbook())
+    citation = references.Citation(raw="", handbook="8083-31B", chapter=13)
+    picked, reason = references.units_for_citation(citation, by_file)
+    assert reason == ""
+    assert len(picked) == 10

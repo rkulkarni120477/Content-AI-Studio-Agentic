@@ -18,6 +18,36 @@ const show = (doc) => render(<RetrievalStatus doc={doc} />);
 afterEach(cleanup);
 
 describe('RetrievalStatus', () => {
+  it('says Processing while the background ingest job is still running', () => {
+    show({
+      status: 'processing',
+      total_units: 1,
+      indexed_units: 0,
+      extracted_chars: 18000,
+      block: 'Block 2',
+    });
+    expect(screen.getByText('Processing…')).toBeTruthy();
+    expect(screen.queryByText('Not indexed')).toBeNull();
+    expect(screen.queryByText(/Searchable/)).toBeNull();
+  });
+
+  it('does not call a processing ebook empty just because preview chars are 0', () => {
+    show({
+      status: 'processing',
+      total_units: 1,
+      indexed_units: 0,
+      extracted_chars: 0,
+      block: 'Block 16',
+    });
+    expect(screen.getByText('Processing…')).toBeTruthy();
+    expect(screen.queryByText('Nothing extracted')).toBeNull();
+  });
+
+  it('says Processing failed when the pipeline died', () => {
+    show({ status: 'failed', total_units: 1, indexed_units: 0, block: 'Block 2' });
+    expect(screen.getByText('Processing failed')).toBeTruthy();
+  });
+
   it('reports a searchable document with its unit count', () => {
     show({ total_units: 36, indexed_units: 36, block: 'Block 2' });
     expect(screen.getByText(/Searchable · 36 units/)).toBeTruthy();

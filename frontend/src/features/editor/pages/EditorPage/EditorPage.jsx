@@ -145,7 +145,10 @@ export default function EditorPage() {
       : (lastId && filtered.some((g) => String(g.id) === lastId)
         ? Number(lastId)
         : filtered[0]?.id);
-    if (pickId) dispatch(setSelectedGenerationAction(pickId));
+    // Set the selection unconditionally — pass null when this title has no
+    // generations, so a stale id from a previously opened title can't linger and
+    // pull another title's blocks into the editor.
+    dispatch(setSelectedGenerationAction(pickId ?? null));
     return filtered;
   }, [
     dispatch,

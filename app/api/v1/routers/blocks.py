@@ -319,19 +319,57 @@ def autosave_block(
 
 @router.post(
     "/{block_id}/regenerate",
-    response_model=BlockRegenerateResponse,
-    summary="Regenerate the full block content with AI",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+    summary="Regenerate the full block content with AI (async)",
 )
 def regenerate_block(
     block_id: int,
     request_body: BlockRegenerateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("editor.edit")),
+) -> JobAcceptedResponse:
+    """Queue full-block regeneration; work runs in regen_jobs.run_regenerate_block_job."""
+    from promptops_app.jobs import dispatch, regen_jobs
+    from promptops_app.repositories import job_repository
+
+    block = _get_block_or_404(db, block_id)
+    gen = getattr(block, "generation", None)
+    project_id = getattr(gen, "project_id", None) if gen is not None else None
+    course_id = getattr(gen, "course_id", None) if gen is not None else None
+
+    job_id = job_repository.create_job(
+        db,
+        user_name=current_user.username,
+        request_params={
+            "block_id": block_id,
+            "model_choice": request_body.model_choice,
+            "feedback_instruction": request_body.feedback_instruction or "",
+            "user_name": current_user.username,
+        },
+        project_id=project_id,
+        course_id=course_id,
+        job_type="regenerate_block",
+    )
+    dispatch.submit(regen_jobs.run_regenerate_block_job, job_id)
+    _log.info(
+        "block_regenerate_queued  user=%s  block_id=%d  job=%s",
+        current_user.username, block_id, job_id,
+    )
+    return JobAcceptedResponse(
+        job_id=job_id, status="queued", status_url=f"/api/v1/jobs/{job_id}",
+    )
+
+
+def execute_regenerate_block(
+    db: Session,
+    block_id: int,
+    request_body: BlockRegenerateRequest,
+    current_user,
 ) -> BlockRegenerateResponse:
     """
-    Regenerate block content using the IMPROVISE prompt.
+    Regenerate block content using the IMPROVISE prompt (background worker entry).
 
-    Replicates the "🔁 Regenerate" button in the Streamlit Editor.
     Saves the current content as a version before overwriting.
     """
     from promptops_app.core.constants import ChangeSource

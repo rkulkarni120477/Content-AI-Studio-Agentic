@@ -92,9 +92,20 @@ def get_document_by_filename(db, filename: str):
 
 
 def get_documents_by_filenames(db, filenames: list):
+    """Resolve library filenames for prompt context injection.
+
+    Filtered to active documents only: this is generation-context resolution,
+    not a lookup-by-id-for-editing -- an archived (soft-deleted) document must
+    stop contributing content once removed from the Source Library, even
+    though its filename is still sitting in an old context_document_names list.
+    """
     if not filenames:
         return []
-    return db.query(Document).filter(Document.filename.in_(filenames)).all()
+    return (
+        db.query(Document)
+        .filter(Document.filename.in_(filenames), Document.status == "active")
+        .all()
+    )
 
 
 def list_recent_uploads(db, limit: int = 20):

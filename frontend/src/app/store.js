@@ -1,4 +1,6 @@
 import { configureStore } from '@reduxjs/toolkit';
+import toast from 'react-hot-toast';
+import { applyTerminology, labelsFromState } from '@config/tenantLabels';
 import authReducer       from '@features/auth/authSlice';
 import dashboardReducer  from '@features/dashboard/dashboardSlice';
 import cddReducer        from '@features/cdd/cddSlice';
@@ -11,6 +13,7 @@ import styleReducer      from '@features/style/styleSlice';
 import promptsReducer    from '@features/prompts/promptsSlice';
 import analyticsReducer  from '@features/analytics/analyticsSlice';
 import importReducer     from '@features/import/importSlice';
+import jobsReducer       from '@features/jobs/jobsSlice';
 
 const store = configureStore({
   reducer: {
@@ -26,6 +29,7 @@ const store = configureStore({
     prompts:   promptsReducer,
     analytics: analyticsReducer,
     import:    importReducer,
+    jobs:      jobsReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
@@ -39,5 +43,20 @@ const store = configureStore({
     }),
   devTools: import.meta.env.DEV,
 });
+
+// Rewrite default product terms in every toast using the current tenant labels,
+// so notifications stay in sync with the rest of the UI even when a thunk
+// still has a hardcoded "Style"/"CDD"/"Blueprint"/"Title" string.
+function wrapToastMethod(method) {
+  const original = toast[method].bind(toast);
+  toast[method] = (message, opts) => {
+    if (typeof message === 'string') {
+      return original(applyTerminology(message, labelsFromState(store.getState)), opts);
+    }
+    return original(message, opts);
+  };
+}
+wrapToastMethod('success');
+wrapToastMethod('error');
 
 export default store;

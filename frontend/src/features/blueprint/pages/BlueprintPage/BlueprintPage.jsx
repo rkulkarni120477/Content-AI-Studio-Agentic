@@ -345,13 +345,18 @@ export default function BlueprintPage() {
         : undefined,
     };
     try {
-      const bp = await dispatch(generateBlueprintThunk(payload)).unwrap();
-      if (bp?.id) {
-        setViewBpId(bp.id);
-        setSelectedBpId(bp.id);
-        setViewBpDetail(bp);
-        dispatch(fetchBlueprintVersionsThunk(bp.id));
-        await dispatch(setActiveBlueprintThunk({ blueprintId: bp.id, courseId: Number(courseId) }));
+      const accepted = await dispatch(generateBlueprintThunk(payload)).unwrap();
+      if (accepted?.job_id) {
+        // Running in background — JobTracker toasts and refreshes the list.
+        setModuleConfirmed(false);
+        return;
+      }
+      if (accepted?.id) {
+        setViewBpId(accepted.id);
+        setSelectedBpId(accepted.id);
+        setViewBpDetail(accepted);
+        dispatch(fetchBlueprintVersionsThunk(accepted.id));
+        await dispatch(setActiveBlueprintThunk({ blueprintId: accepted.id, courseId: Number(courseId) }));
       }
       dispatch(fetchBlueprintsThunk(courseId));
       setModuleConfirmed(false);

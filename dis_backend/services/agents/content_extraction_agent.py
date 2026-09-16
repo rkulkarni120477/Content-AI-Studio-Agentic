@@ -43,6 +43,10 @@ class ContentExtractionAgent(BasePipelineAgent):
         state['has_images'] = result.has_images
         state['tables'] = result.tables or []
         state['slide_texts'] = result.slide_texts or []
+        # Structured per-page text for ebook_reference page-chunking. Kept on
+        # state so ContentUnitCreationAgent does not have to re-parse [Page N]
+        # markers unless the extraction was truncated by max_extracted_chars.
+        state['page_texts'] = result.page_texts or []
         return ctx.step_done(state, 'content_extraction')
 
         # =============================================================================

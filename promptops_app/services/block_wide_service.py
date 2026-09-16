@@ -1443,6 +1443,7 @@ def persist_cdd_and_respond(db, request_body, current_user, *, raw_output, secti
         sections_count=len(sections), full_content=raw_output, sections=sections,
         model_used=model_used or getattr(request_body, "model_choice", ""),
         tokens_used=tokens_used, auto_pinned=True,
+        source_context_unavailable=(prompt_provenance or {}).get("source_context_unavailable") or None,
     )
 
 

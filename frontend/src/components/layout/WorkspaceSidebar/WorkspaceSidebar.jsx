@@ -67,7 +67,10 @@ export default function WorkspaceSidebar() {
   useEffect(() => {
     if (!cid) return;
     dispatch(fetchCddsThunk(cid));
-    dispatch(fetchStylesThunk());
+    // Pass the URL courseId explicitly (mirrors fetchCddsThunk). Relying on the
+    // dashboard slice here missed the active Style right after an import, when
+    // the slice isn't hydrated yet — so the Global State pill showed "—".
+    dispatch(fetchStylesThunk({ courseId: cid }));
   }, [cid, dispatch]);
 
   function handleSignOut() {

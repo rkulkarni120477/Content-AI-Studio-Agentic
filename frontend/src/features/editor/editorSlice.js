@@ -47,10 +47,16 @@ const editorSlice = createSlice({
   reducers: {
     clearError(s) { s.error = null; },
     setSelectedGeneration(s, { payload }) {
-      s.selectedGenerationId = payload?.id ?? payload ?? null;
+      const id = payload?.id ?? payload ?? null;
+      s.selectedGenerationId = id;
       s.selectedGeneration = typeof payload === 'object' ? payload : null;
       s.genValidation = null;
+      // No selection → no blocks. Clearing here stops a previous title's blocks
+      // from lingering when a newly opened title has no generation to select.
+      if (!id) s.blocks = [];
     },
+    // Full reset of the editor's per-title content — dispatched on a title switch.
+    resetEditor() { return initialState; },
     clearValidation(s) { s.validation = null; s.genValidation = null; },
     setPlagiarismReport(s, { payload }) {
       s.plagiarismByBlock[payload.blockId] = payload.report;
@@ -145,7 +151,7 @@ const editorSlice = createSlice({
 });
 
 export const {
-  clearError, setSelectedGeneration, clearValidation, setPlagiarismReport, upsertBlock,
+  clearError, setSelectedGeneration, clearValidation, setPlagiarismReport, upsertBlock, resetEditor,
 } = editorSlice.actions;
 export default editorSlice.reducer;
 
