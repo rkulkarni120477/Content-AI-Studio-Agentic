@@ -1,11 +1,12 @@
 """Fully remove one ingested source so the same file can be ingested again.
 
 ``delete_source_document`` clears the raw upload, the processed artifacts, the
-OpenSearch chunks and the source-index entry — but not the structure store rows and
-not the client dedup manifest. Both of those survive a delete, and the manifest entry
-in particular makes a re-upload of the SAME bytes stop at the deduplication agent
-("same_file_hash"), so a document that was ingested with the wrong metadata cannot be
-re-ingested correctly without this.
+OpenSearch chunks, the Postgres catalogue row, and the S3 ``source_list.json``
+row — but not the structure store rows and not the client dedup manifest. Both of
+those survive a delete, and the manifest entry in particular makes a re-upload of
+the SAME bytes stop at the deduplication agent ("same_file_hash"), so a document
+that was ingested with the wrong metadata cannot be re-ingested correctly without
+this.
 
 Usage:
     python scripts/purge_source.py <client_id> <job_id> [<job_id> ...]

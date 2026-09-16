@@ -74,7 +74,18 @@ class ArtifactWriter:
         self.provider = tenant_cfg.storage.provider.lower()
         self.base_path = Path(tenant_cfg.storage.local.base_path)
         self.processed_bucket = tenant_cfg.storage.processed_bucket
+        self.raw_bucket = getattr(tenant_cfg.storage, "raw_bucket", None) or self.processed_bucket
         self.base_prefix = getattr(tenant_cfg.storage, "base_prefix", "")
+
+    def _logical_key(self, key: str) -> str:
+        return _strip_prefix(self.base_prefix, (key or "").replace("\\", "/").lstrip("/"))
+
+    def _bucket_for_prefix(self, prefix: str) -> str:
+        """Route listings the same way S3Provider routes objects: processed/ vs raw/."""
+        logical = self._logical_key(prefix)
+        if logical.startswith("processed/"):
+            return self.processed_bucket
+        return self.raw_bucket
 
     def job_prefix(self, namespace: str, job_id: str) -> str:
         env = self.settings.environment or "development"
@@ -151,10 +162,11 @@ class ArtifactWriter:
     def list_keys(self, prefix: str, suffix: str = "") -> List[str]:
         if self.provider == "s3":
             s3 = self._s3_client()
+            bucket = self._bucket_for_prefix(prefix)
             keys: List[str] = []
             token = None
             while True:
-                args = {"Bucket": self.processed_bucket, "Prefix": _join_prefix(self.base_prefix, prefix)}
+                args = {"Bucket": bucket, "Prefix": _join_prefix(self.base_prefix, prefix)}
                 if token:
                     args["ContinuationToken"] = token
                 resp = s3.list_objects_v2(**args)
@@ -168,6 +180,36 @@ class ArtifactWriter:
             return keys
 
         raise RuntimeError("DIS storage is S3-only. Cannot list local artifact storage.")
+
+    def list_common_prefixes(self, prefix: str) -> List[str]:
+        """Immediate child 'folders' under ``prefix`` (S3 Delimiter=/).
+
+        Returns logical keys (no ``storage.base_prefix``), each with a trailing slash.
+        """
+        if self.provider != "s3":
+            raise RuntimeError("DIS storage is S3-only. Cannot list local artifact storage.")
+        s3 = self._s3_client()
+        bucket = self._bucket_for_prefix(prefix)
+        norm = (prefix or "").replace("\\", "/").lstrip("/")
+        if norm and not norm.endswith("/"):
+            norm += "/"
+        storage_prefix = _join_prefix(self.base_prefix, norm)
+        out: List[str] = []
+        token = None
+        while True:
+            args = {"Bucket": bucket, "Prefix": storage_prefix, "Delimiter": "/"}
+            if token:
+                args["ContinuationToken"] = token
+            resp = s3.list_objects_v2(**args)
+            for item in resp.get("CommonPrefixes") or []:
+                k = _strip_prefix(self.base_prefix, item.get("Prefix") or "")
+                if not k:
+                    continue
+                out.append(k if k.endswith("/") else f"{k}/")
+            if not resp.get("IsTruncated"):
+                break
+            token = resp.get("NextContinuationToken")
+        return out
 
 
 def write_step_artifact(tenant_cfg: TenantConfig, state: Dict[str, Any], step: str) -> str:

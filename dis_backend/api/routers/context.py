@@ -208,7 +208,8 @@ async def source_download_url(
 @router.delete("/sources/{job_id}")
 async def delete_source(job_id: str, request: Request):
     """Permanently delete one Source Library document: raw upload, all processed
-    artifacts, OpenSearch chunks, and its source-index entry. Irreversible.
+    artifacts, OpenSearch chunks, the Postgres catalogue row, and its row in
+    S3 source_list.json. Irreversible.
     Restricted to client_admin/super_admin — a normal user cannot delete sources.
     """
     tenant = get_current_tenant(request)

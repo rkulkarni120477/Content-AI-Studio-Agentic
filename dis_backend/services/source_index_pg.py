@@ -226,6 +226,25 @@ def read_sources(tenant_cfg: TenantConfig, client_id: str) -> List[Dict[str, Any
     return sources
 
 
+def read_job_ids(tenant_cfg: TenantConfig, client_id: str) -> List[str]:
+    """Compact identity list for S3 orphan cleanup (Postgres is source of truth)."""
+    schema = _schema(tenant_cfg)
+    env = environment_name()
+    with connect(tenant_cfg) as conn:
+        with conn.cursor() as cur:
+            ensure_table(cur, schema)
+            cur.execute(
+                f"""
+                SELECT job_id FROM {schema}.source_index
+                WHERE client_id = %s AND environment = %s
+                """,
+                (client_id, env),
+            )
+            rows = cur.fetchall()
+            conn.commit()
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
 def count_sources(tenant_cfg: TenantConfig, client_id: str) -> int:
     schema = _schema(tenant_cfg)
     env = environment_name()
