@@ -274,7 +274,7 @@ _BUILDERS = {
 # Document-oriented formats whose block text is cleaned of inline Markdown
 # markers (e.g. "**") before building. Structured formats (json) and bundle
 # formats (zip / imscc) are left untouched.
-_CLEAN_FORMATS = {"md", "html", "docx", "xlsx", "pdf"}
+_CLEAN_FORMATS = {"md", "html", "xlsx", "pdf"}
 
 
 # ---------------------------------------------------------------------------
@@ -341,9 +341,9 @@ def export_content(db, request: ExportRequest) -> ExportResult:
                           f"Supported: {', '.join(MIME_TYPES)}.",
         )
 
-    # 2b. Strip inline Markdown markers (e.g. "**") for document exports so the
-    #     downloaded text is clean. Structural markers (headings/bullets) are
-    #     preserved for the DOCX exporter.
+    # 2b. Strip inline Markdown markers only for exporters that cannot render
+    #     them. DOCX keeps the source markup so its renderer can convert it into
+    #     native Word runs, lists, headings and tables.
     if request.fmt in _CLEAN_FORMATS:
         from promptops_app.exporters.text_clean import clean_blocks
         request = replace(request, blocks=clean_blocks(request.blocks))
