@@ -546,14 +546,14 @@ document_processing:
 structure_store:
   enabled: true          # RDS (Postgres): relational system-of-record; exact/ACS/day joins, reporting
   provider: postgres
-  url: 'postgresql://dis_user:Academian%23123@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db'
+  url: 'postgresql://dis_user:Academian%23123@dis-dev-postgres.co7gbazco3kw.us-east-1.rds.amazonaws.com:5432/dis_db_dev'
   schema_name: dis
   auto_create_schema: true
 vector_store:
   enabled: true          # OpenSearch: semantic kNN + tag filtering; used to map content to calendar days
   provider: opensearch
   endpoint: 'https://search-ai-platform-opensearch-6fjt7fienyf2aeactjfqdms4y4.us-east-1.es.amazonaws.com'
-  index_name: dis-content-dev-aim
+  index_name: dis-content-devlopment-aim
   region: us-east-1
   auth_mode: basic
   username: 'developer'
