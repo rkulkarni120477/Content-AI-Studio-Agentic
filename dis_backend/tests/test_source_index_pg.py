@@ -112,6 +112,15 @@ class _FakeCursor:
             ]
             self._fetch = rows
             return
+        if "select job_id" in sql_l:
+            client_id, env = params
+            rows = [
+                (j,)
+                for (c, e, j) in sorted(self.store)
+                if c == client_id and e == env
+            ]
+            self._fetch = rows
+            return
         if "select count" in sql_l:
             client_id, env = params
             n = sum(1 for (c, e, _) in self.store if c == client_id and e == env)
@@ -218,6 +227,14 @@ def test_delete_record(pg_store):
     source_index_pg.upsert_record(cfg, "aim", {"job_id": "j1", "title": "T"})
     source_index_pg.delete_record(cfg, "aim", "j1")
     assert source_index_pg.read_sources(cfg, "aim") == []
+
+
+def test_read_job_ids(pg_store):
+    cfg = _tenant()
+    source_index_pg.upsert_record(cfg, "aim", {"job_id": "j1", "title": "A"})
+    source_index_pg.upsert_record(cfg, "aim", {"job_id": "j2", "title": "B"})
+    assert set(source_index_pg.read_job_ids(cfg, "aim")) == {"j1", "j2"}
+    assert source_index_pg.read_job_ids(cfg, "cengage") == []
 
 
 def test_update_status_respects_only_if(pg_store):

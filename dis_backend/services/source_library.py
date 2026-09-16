@@ -107,6 +107,57 @@ def studio_payload_key(tenant_cfg: TenantConfig, client_id: str, job_id: str) ->
     return f"{source_base_prefix(tenant_cfg, client_id)}/{job_id}/studio_payload/payload.json"
 
 
+def processed_job_prefix(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> str:
+    return f"{source_base_prefix(tenant_cfg, client_id)}/{job_id}/"
+
+
+def raw_job_prefix(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> str:
+    namespace = tenant_cfg.get_namespace(client_id)
+    env = get_settings().environment or "development"
+    return f"raw/{namespace}/{env}/{job_id}/"
+
+
+def logical_storage_key(value: str, base_prefix: str = "") -> str:
+    """Normalize a catalogue key or ``s3://bucket/base/key`` to a logical storage key.
+
+    Catalogue rows mix three shapes: ``raw/...``, ``processed/...``, and full
+    ``s3://content-ai-studio/DIS/...`` URLs. Delete and cleanup both need the
+    logical key (no bucket, no ``storage.base_prefix``).
+    """
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    if text.startswith("s3://"):
+        parts = text.split("/", 3)
+        if len(parts) < 4 or not parts[3]:
+            return ""
+        text = parts[3]
+    text = text.lstrip("/")
+    bp = (base_prefix or "").strip().strip("/")
+    if bp and (text == bp or text.startswith(bp + "/")):
+        text = text[len(bp) + 1:] if text != bp else ""
+    return text
+
+
+def _job_prefix_from_key(logical_key: str, job_id: str) -> str:
+    """If ``logical_key`` is under this job, return ``raw|processed/.../{job_id}/``."""
+    key = (logical_key or "").replace("\\", "/").lstrip("/")
+    if not key or not job_id:
+        return ""
+    token = f"/{job_id}/"
+    idx = key.find(token)
+    if idx >= 0:
+        return key[: idx + len(token)]
+    suffix = f"/{job_id}"
+    if key.endswith(suffix):
+        return key + "/"
+    return ""
+
+
+_RESERVED_SOURCE_FOLDERS = frozenset({"source_index", "_dedup"})
+_RECORD_KEY_FIELDS = ("raw_key", "raw_storage_url", "payload_key", "content_key")
+
+
 def normalize_purpose(purpose: str, document_type: str) -> str:
     p = (purpose or "").strip().lower().replace("-", "_")
     d = (document_type or "").strip().lower()
@@ -381,6 +432,43 @@ def _read_source_index_s3(tenant_cfg: TenantConfig, client_id: str) -> Dict[str,
     return _empty_index(tenant_cfg, client_id)
 
 
+def _write_source_index_s3(tenant_cfg: TenantConfig, client_id: str, index: Dict[str, Any]) -> str:
+    """Write S3 ``source_list.json`` only — never touch Postgres."""
+    index["schema_version"] = "source_index_v1"
+    index["tenant_id"] = tenant_cfg.tenant_id
+    index["client_id"] = client_id
+    index["updated_at"] = datetime.utcnow().isoformat()
+    index.setdefault("sources", [])
+    return ArtifactWriter(tenant_cfg).write_json(source_index_key(tenant_cfg, client_id), index)
+
+
+def remove_source_from_s3_index(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> bool:
+    """Drop one job from S3 ``source_list.json``. Returns True if a row was removed."""
+    with source_index_lock(tenant_cfg.tenant_id, client_id):
+        index = _read_source_index_s3(tenant_cfg, client_id)
+        sources = list(index.get("sources") or [])
+        kept = [r for r in sources if str(r.get("job_id")) != str(job_id)]
+        if len(kept) == len(sources):
+            return False
+        index["sources"] = kept
+        _write_source_index_s3(tenant_cfg, client_id, index)
+        return True
+
+
+def retain_sources_in_s3_index(tenant_cfg: TenantConfig, client_id: str, keep_job_ids: set) -> int:
+    """Keep only Postgres job_ids in S3 ``source_list.json``. Returns removed count."""
+    keep = {str(j) for j in keep_job_ids}
+    with source_index_lock(tenant_cfg.tenant_id, client_id):
+        index = _read_source_index_s3(tenant_cfg, client_id)
+        sources = list(index.get("sources") or [])
+        kept = [r for r in sources if str(r.get("job_id") or "") in keep]
+        removed = len(sources) - len(kept)
+        if removed:
+            index["sources"] = kept
+            _write_source_index_s3(tenant_cfg, client_id, index)
+        return removed
+
+
 def _warn_if_s3_has_unmigrated_data(tenant_cfg: TenantConfig, client_id: str) -> None:
     """Loud signal when PG is empty but S3 still has a catalogue (deploy without backfill)."""
     try:
@@ -446,7 +534,7 @@ def write_source_index(tenant_cfg: TenantConfig, client_id: str, index: Dict[str
     sources = list(index.get("sources") or [])
     if source_index_pg.use_pg_source_index(tenant_cfg):
         return source_index_pg.replace_index(tenant_cfg, client_id, sources)
-    return ArtifactWriter(tenant_cfg).write_json(source_index_key(tenant_cfg, client_id), index)
+    return _write_source_index_s3(tenant_cfg, client_id, index)
 
 
 def update_source_record_status(
@@ -499,13 +587,195 @@ def upsert_source_record(tenant_cfg: TenantConfig, client_id: str, record: Dict[
         return write_source_index(tenant_cfg, client_id, index)
 
 
+def collect_source_s3_keys(
+    tenant_cfg: TenantConfig,
+    client_id: str,
+    job_id: str,
+    record: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Every raw + processed object for one job, including nested folder uploads.
+
+    Older catalogue rows often have ``raw_key=""`` with only ``raw_storage_url``.
+    Listing both job prefixes — plus any keys named on the record — is what
+    actually removes the files from S3.
+    """
+    writer = ArtifactWriter(tenant_cfg)
+    base_prefix = getattr(getattr(tenant_cfg, "storage", None), "base_prefix", "") or ""
+    prefixes = {
+        processed_job_prefix(tenant_cfg, client_id, job_id),
+        raw_job_prefix(tenant_cfg, client_id, job_id),
+    }
+    named: List[str] = []
+    for field in _RECORD_KEY_FIELDS:
+        logical = logical_storage_key((record or {}).get(field) or "", base_prefix)
+        if not logical:
+            continue
+        named.append(logical)
+        derived = _job_prefix_from_key(logical, str(job_id))
+        if derived:
+            prefixes.add(derived)
+
+    keys: List[str] = []
+    seen = set()
+    for prefix in prefixes:
+        try:
+            listed = writer.list_keys(prefix)
+        except Exception as exc:  # noqa: BLE001 — still delete named keys
+            logger.warning(
+                "cannot list S3 objects under %s for job_id=%s: %s: %s",
+                prefix, job_id, type(exc).__name__, exc,
+            )
+            listed = []
+        if not listed:
+            logger.info("no S3 objects listed under %s for job_id=%s", prefix, job_id)
+        for key in listed:
+            k = (key or "").replace("\\", "/").lstrip("/")
+            if k and k not in seen:
+                seen.add(k)
+                keys.append(k)
+    for key in named:
+        k = key.replace("\\", "/").lstrip("/")
+        if k and k not in seen:
+            seen.add(k)
+            keys.append(k)
+    return keys
+
+
+async def delete_source_s3_objects(tenant_cfg: TenantConfig, keys: List[str]) -> Dict[str, Any]:
+    from storage.provider import get_storage_provider
+
+    provider = get_storage_provider(tenant_cfg)
+    deleted, errors = [], []
+    seen = set()
+    for key in keys:
+        k = (key or "").replace("\\", "/").lstrip("/")
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        try:
+            await provider.delete(k)
+            deleted.append(k)
+        except Exception as exc:
+            errors.append({"key": k, "error": str(exc)})
+    return {"deleted": deleted, "errors": errors}
+
+
+def list_stored_job_ids(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, set]:
+    """Job folders present under processed/ and raw/ for this client+environment."""
+    writer = ArtifactWriter(tenant_cfg)
+    env = get_settings().environment or "development"
+    namespace = tenant_cfg.get_namespace(client_id)
+    processed_root = f"processed/{namespace}/{env}/"
+    raw_root = f"raw/{namespace}/{env}/"
+
+    def _ids(root: str, reserved: frozenset = frozenset()) -> set:
+        found: set = set()
+        try:
+            prefixes = writer.list_common_prefixes(root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cannot list S3 prefixes under %s: %s: %s", root, type(exc).__name__, exc)
+            return found
+        for prefix in prefixes:
+            rest = prefix[len(root):] if prefix.startswith(root) else prefix
+            job = rest.strip("/").split("/", 1)[0]
+            if job and job not in reserved:
+                found.add(job)
+        return found
+
+    return {
+        "processed": _ids(processed_root, _RESERVED_SOURCE_FOLDERS),
+        "raw": _ids(raw_root),
+    }
+
+
+def plan_orphaned_source_cleanup(tenant_cfg: TenantConfig, client_id: str) -> Dict[str, Any]:
+    """S3 / source_list.json leftovers whose job_id is no longer in Postgres."""
+    if not source_index_pg.use_pg_source_index(tenant_cfg):
+        raise RuntimeError(
+            f"structure_store is disabled for client_id={client_id}; "
+            "Postgres is not the source of truth"
+        )
+    pg_ids = set(source_index_pg.read_job_ids(tenant_cfg, client_id))
+    s3_index = _read_source_index_s3(tenant_cfg, client_id)
+    s3_records = list(s3_index.get("sources") or [])
+    s3_list_ids = {str(r.get("job_id")) for r in s3_records if r.get("job_id")}
+    stored = list_stored_job_ids(tenant_cfg, client_id)
+    processed_orphans = stored["processed"] - pg_ids
+    raw_orphans = stored["raw"] - pg_ids
+    list_orphans = s3_list_ids - pg_ids
+    orphans = processed_orphans | raw_orphans | list_orphans
+    records_by_id = {str(r.get("job_id")): r for r in s3_records if r.get("job_id")}
+    return {
+        "client_id": client_id,
+        "environment": source_index_pg.environment_name(),
+        "pg_count": len(pg_ids),
+        "s3_list_count": len(s3_list_ids),
+        "processed_folder_count": len(stored["processed"]),
+        "raw_folder_count": len(stored["raw"]),
+        "orphan_job_ids": sorted(orphans),
+        "processed_orphan_job_ids": sorted(processed_orphans),
+        "raw_orphan_job_ids": sorted(raw_orphans),
+        "s3_list_orphan_job_ids": sorted(list_orphans),
+        "orphan_records": {jid: records_by_id[jid] for jid in orphans if jid in records_by_id},
+    }
+
+
+async def apply_orphaned_source_cleanup(
+    tenant_cfg: TenantConfig,
+    client_id: str,
+    plan: Optional[Dict[str, Any]] = None,
+    *,
+    allow_empty_pg: bool = False,
+    delete_opensearch: bool = True,
+) -> Dict[str, Any]:
+    """Delete S3 leftovers for job_ids that are gone from Postgres. Irreversible."""
+    from services.indexing import opensearch_delete_by_job
+
+    plan = plan or plan_orphaned_source_cleanup(tenant_cfg, client_id)
+    orphans = list(plan.get("orphan_job_ids") or [])
+    if plan.get("pg_count", 0) == 0 and orphans and not allow_empty_pg:
+        raise RuntimeError(
+            f"REFUSING: Postgres source_index is empty for client_id={client_id} "
+            f"environment={plan.get('environment')} but S3 still has "
+            f"{len(orphans)} job folder(s)/list row(s). Check ENVIRONMENT / "
+            "structure_store.url, or pass --allow-empty-pg if this client should "
+            "have no sources."
+        )
+
+    jobs: List[Dict[str, Any]] = []
+    records = plan.get("orphan_records") or {}
+    for job_id in orphans:
+        keys = collect_source_s3_keys(tenant_cfg, client_id, job_id, records.get(job_id))
+        s3_result = await delete_source_s3_objects(tenant_cfg, keys)
+        os_result = (
+            opensearch_delete_by_job(tenant_cfg, job_id)
+            if delete_opensearch else {"status": "skipped"}
+        )
+        jobs.append({
+            "job_id": job_id,
+            "s3_objects_deleted": len(s3_result["deleted"]),
+            "s3_errors": s3_result["errors"],
+            "opensearch": os_result,
+        })
+
+    pg_ids = set(source_index_pg.read_job_ids(tenant_cfg, client_id))
+    s3_list_removed = retain_sources_in_s3_index(tenant_cfg, client_id, pg_ids)
+    return {
+        "client_id": client_id,
+        "environment": plan.get("environment"),
+        "pg_count": len(pg_ids),
+        "jobs": jobs,
+        "s3_list_rows_removed": s3_list_removed,
+    }
+
+
 async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> Dict[str, Any]:
     """Permanently delete one Source Library document: its raw upload, every
-    processed artifact under its job_id prefix, its OpenSearch chunks, and its
-    entry in the source index. Irreversible — callers must confirm first.
+    processed artifact under its job_id prefix, its OpenSearch chunks, its
+    Postgres catalogue row, and its row in S3 ``source_list.json``.
+    Irreversible — callers must confirm first.
     """
     from services.indexing import opensearch_delete_by_job
-    from storage.provider import get_storage_provider
 
     index = read_source_index(tenant_cfg, client_id)
     sources = index.get("sources", [])
@@ -513,42 +783,36 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
     if not record:
         raise FileNotFoundError(f"No source found for job_id '{job_id}'")
 
-    provider = get_storage_provider(tenant_cfg)
-    writer = ArtifactWriter(tenant_cfg)
-    namespace = tenant_cfg.get_namespace(client_id)
-    job_folder = f"processed/{namespace}/{get_settings().environment}/{job_id}/"
-
-    keys_to_delete = list(writer.list_keys(job_folder))
-    raw_key = record.get("raw_key") or ""
-    if raw_key:
-        keys_to_delete.append(raw_key)
-
-    deleted, errors = [], []
-    for key in keys_to_delete:
-        try:
-            await provider.delete(key)
-            deleted.append(key)
-        except Exception as exc:
-            errors.append({"key": key, "error": str(exc)})
-
+    keys_to_delete = collect_source_s3_keys(tenant_cfg, client_id, job_id, record)
+    s3_result = await delete_source_s3_objects(tenant_cfg, keys_to_delete)
     opensearch_result = opensearch_delete_by_job(tenant_cfg, job_id)
+
+    s3_index_removed = {"value": False}
 
     def _remove_index_row() -> None:
         if source_index_pg.use_pg_source_index(tenant_cfg):
             source_index_pg.delete_record(tenant_cfg, client_id, job_id)
+            s3_index_removed["value"] = remove_source_from_s3_index(
+                tenant_cfg, client_id, job_id,
+            )
             return
         with source_index_lock(tenant_cfg.tenant_id, client_id):
             fresh = read_source_index(tenant_cfg, client_id)
-            fresh["sources"] = [r for r in fresh.get("sources", []) if str(r.get("job_id")) != str(job_id)]
+            before = len(fresh.get("sources") or [])
+            fresh["sources"] = [
+                r for r in fresh.get("sources", []) if str(r.get("job_id")) != str(job_id)
+            ]
             write_source_index(tenant_cfg, client_id, fresh)
+            s3_index_removed["value"] = len(fresh["sources"]) != before
 
     await asyncio.to_thread(_remove_index_row)
 
     return {
         "job_id": job_id,
         "deleted": True,
-        "s3_objects_deleted": len(deleted),
-        "s3_errors": errors,
+        "s3_objects_deleted": len(s3_result["deleted"]),
+        "s3_errors": s3_result["errors"],
+        "s3_index_removed": bool(s3_index_removed["value"]),
         "opensearch": opensearch_result,
     }
 
