@@ -137,6 +137,17 @@ class ContentUnitCreationAgent(BasePipelineAgent):
                     'assets': [],
                 })
             self._tag_calendar_sheet_units(state, units)
+        elif (
+            str(effective_type or '').lower() == 'hangar_activity'
+            and (state.get('hangar_structure') or {}).get('sheets')
+        ):
+            units = self._hangar_sheet_units(state)
+        elif str(effective_type or doc_type or '').lower() == 'hangar_activity' and (
+            str(state.get('file_type') or '').lower() == 'pdf'
+            or str(state.get('filename') or '').lower().endswith('.pdf')
+        ):
+            # Hangar PDFs: one unit per page (ebook pattern), not word-chunks.
+            units = self._hangar_page_units(state)
         elif str(effective_type or doc_type or '').lower() == 'ebook_reference':
             units = self._ebook_page_units(state, effective_type or doc_type)
         else:
@@ -211,6 +222,169 @@ class ContentUnitCreationAgent(BasePipelineAgent):
         else:
             mark_units_pending(units)
 
+    def _hangar_sheet_units(self, state: PipelineState) -> List[Dict[str, Any]]:
+        """One Source Library / OpenSearch unit per Block hangar sheet."""
+        from services.aim_hangar import iter_hangar_sheets
+
+        hangar = state.get('hangar_structure') or {}
+        sheets = iter_hangar_sheets(hangar)
+        doc_meta = dict(state.get('doc_metadata') or {})
+        if len(sheets) > 1:
+            doc_meta.pop('block', None)
+            doc_meta.pop('block_number', None)
+            doc_meta.pop('block_id', None)
+        units: List[Dict[str, Any]] = []
+        for i, sheet in enumerate(sheets, 1):
+            days = sheet.get('days') or []
+            texts = [str(d.get('source_text') or '').strip() for d in days]
+            text = "\n\n".join(t for t in texts if t)
+            acs: List[str] = []
+            seen_acs = set()
+            for d in days:
+                for code in d.get('acs_codes') or []:
+                    if code and code not in seen_acs:
+                        seen_acs.add(code)
+                        acs.append(code)
+            sheet_name = sheet.get('sheet_name') or f"Sheet {i}"
+            sheet_index = int(
+                sheet.get('sheet_index') if sheet.get('sheet_index') is not None else i - 1
+            )
+            block = sheet.get('block') or (doc_meta.get('block') if len(sheets) == 1 else None)
+            block_number = sheet.get('block_number')
+            if block_number is None and block:
+                m = re.search(r"(\d+)", str(block))
+                block_number = int(m.group(1)) if m else None
+            units.append({
+                'content_unit_id': f"{state['job_id']}:hangar_sheet_{sheet_index}",
+                'unit_type': 'hangar_sheet',
+                'unit_number': i,
+                'title': sheet_name,
+                'text': text,
+                'visual_summary': '',
+                'keywords': list(dict.fromkeys(keywords(text) + acs)),
+                'topics': keywords(text, limit=12),
+                'metadata': {
+                    **doc_meta,
+                    'block': block,
+                    'block_number': block_number,
+                    'block_id': sheet.get('block_id') or (f"B{block_number}" if block_number else ''),
+                    'sheet_name': sheet_name,
+                    'sheet_index': sheet_index,
+                    'schedule': sheet.get('schedule') or 'unknown',
+                    'total_days': int(sheet.get('total_days_with_hangar') or len(days)),
+                    'acs_codes': acs,
+                    'document_type': 'hangar_activity',
+                    'content_type': 'hangar_activity',
+                    'tagging_status': 'pending',
+                },
+                'assets': [],
+            })
+        self._tag_hangar_sheet_units(state, units)
+        return units
+
+    def _tag_hangar_sheet_units(self, state: PipelineState, units: List[Dict[str, Any]]) -> None:
+        if not units:
+            return
+        from services.hangar_sheet_tagger import tag_hangar_sheet_units
+        from services.ebook_page_tagger import mark_units_pending, tagger_config_from_pipeline
+
+        ctx = self.ctx
+        use_llm = (
+            ctx.cfg.pipeline.llm_provider != 'mock'
+            and (ctx.cfg.pipeline.bedrock_enabled or ctx.cfg.pipeline.anthropic_enabled)
+        )
+        tcfg = tagger_config_from_pipeline(ctx.cfg.pipeline)
+        if use_llm and tcfg['enabled']:
+            errors = state.setdefault('errors', [])
+            try:
+                tag_hangar_sheet_units(
+                    units,
+                    call_llm_fn=call_llm,
+                    model_id=tcfg['model_id'],
+                    batch_size=tcfg['batch_size'],
+                    enabled=True,
+                    token_guard=getattr(ctx, 'guard', None),
+                    errors=errors,
+                )
+            except TokenLimitError as exc:
+                errors.append(str(exc))
+                mark_units_pending(units)
+        else:
+            mark_units_pending(units)
+
+    def _hangar_page_units(self, state: PipelineState) -> List[Dict[str, Any]]:
+        """One content unit per physical hangar PDF page, with LLM tags."""
+        ctx = self.ctx
+        raw_bytes = state.get('raw_bytes') or b''
+        page_texts: List[Dict[str, Any]] = []
+        filename = str(state.get('filename') or '').lower()
+        is_pdf = (
+            str(state.get('file_type') or '').lower() == 'pdf'
+            or filename.endswith('.pdf')
+        )
+
+        if raw_bytes and is_pdf:
+            page_texts = extract_pdf_pages(raw_bytes, max_chars=0)
+            if page_texts:
+                state['page_texts'] = page_texts
+                state['page_count'] = len(page_texts)
+                state['raw_text'] = "\n\n".join(
+                    f"[Page {p['pdf_page']}]\n{p.get('text') or ''}" for p in page_texts
+                )
+        if not page_texts:
+            page_texts = list(state.get('page_texts') or [])
+        if not page_texts:
+            page_texts = parse_page_texts_from_raw(state.get('raw_text') or '')
+
+        title = (state.get('doc_metadata') or {}).get('title') or state.get('filename') or 'Source'
+        doc_meta = dict(state.get('doc_metadata') or {})
+        doc_meta['document_type'] = 'hangar_activity'
+        doc_meta['content_type'] = 'hangar_activity'
+        # Short hangar PDFs rarely have ebook outlines — skip chapter citation.
+        units = build_ebook_page_units(
+            job_id=state['job_id'],
+            pages=page_texts,
+            doc_metadata=doc_meta,
+            unit_type='hangar_page',
+            title=title,
+            outline_map={},
+        )
+        # Ensure UI can label pages even without chapter-printed page_number.
+        for u in units:
+            meta = dict(u.get('metadata') or {})
+            if not meta.get('page_number') and meta.get('pdf_page') is not None:
+                meta['page_number'] = str(meta['pdf_page'])
+            meta['document_type'] = 'hangar_activity'
+            meta['content_type'] = 'hangar_activity'
+            u['metadata'] = meta
+
+        use_llm = (
+            ctx.cfg.pipeline.llm_provider != 'mock'
+            and (ctx.cfg.pipeline.bedrock_enabled or ctx.cfg.pipeline.anthropic_enabled)
+        )
+        tcfg = tagger_config_from_pipeline(ctx.cfg.pipeline)
+        if use_llm and tcfg['enabled'] and units:
+            errors = state.setdefault('errors', [])
+            try:
+                from services.hangar_page_tagger import tag_hangar_page_units
+                tag_hangar_page_units(
+                    units,
+                    call_llm_fn=call_llm,
+                    model_id=tcfg['model_id'],
+                    batch_size=tcfg['batch_size'],
+                    enabled=True,
+                    token_guard=getattr(ctx, 'guard', None),
+                    errors=errors,
+                )
+            except TokenLimitError as exc:
+                errors.append(str(exc))
+                from services.ebook_page_tagger import mark_units_pending
+                mark_units_pending(units)
+        else:
+            from services.ebook_page_tagger import mark_units_pending
+            mark_units_pending(units)
+        return units
+
     def _ebook_page_units(self, state: PipelineState, effective_type: str) -> List[Dict[str, Any]]:
         """One content unit per physical PDF page, with location + LLM tags."""
         ctx = self.ctx
@@ -268,8 +442,3 @@ class ContentUnitCreationAgent(BasePipelineAgent):
             except TokenLimitError as exc:
                 errors.append(str(exc))
         return units
-
-        # =============================================================================
-        # STEP: quality_check
-        # Purpose: Quality Check pipeline step.
-        # =============================================================================

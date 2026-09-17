@@ -76,6 +76,8 @@ _PAGE_CHUNK_METADATA_KEYS = frozenset({
     "chapter", "page_number", "printed_page", "pdf_page", "acs_codes",
     "topics", "summary", "chunking_strategy", "chunk_index",
     "document_type", "content_type", "visibility",
+    "block", "block_id", "block_number", "day_number", "day_id", "mapped_day",
+    "calendar_mapping_required",
     "tagging_status", "tagging_error", "tagging_attempted_at",
 })
 
@@ -189,13 +191,26 @@ def purpose_flags(purpose: str, document_type: str) -> Dict[str, bool]:
     }
 
 
-def chunking_strategy(purpose: str, document_type: str) -> str:
+def chunking_strategy(
+    purpose: str,
+    document_type: str,
+    units: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """Return product-level chunking policy.
 
-    Cengage/AIM style, CDD, blueprint sources are normally small authoritative
-    documents and should stay coherent. Course generation source material can be
-    chunked by the deeper pipeline later.
+    Hangar workbooks and hangar PDFs share ``document_type=hangar_activity`` but
+    need different strategies — resolve from unit_type when units are present.
     """
+    if units:
+        unit_types = {
+            str(u.get("unit_type") or "").strip().lower()
+            for u in units
+            if u
+        }
+        if "hangar_sheet" in unit_types or "calendar_sheet" in unit_types:
+            return "per_unit"
+        if "hangar_page" in unit_types:
+            return "page"
     p = normalize_purpose(purpose, document_type)
     d = (document_type or "").strip().lower()
     if d in PER_UNIT_DOC_TYPES:
@@ -223,7 +238,7 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
             text_parts.append(t)
     reading_content = str(payload.get("reading_content") or "\n\n".join(text_parts)).strip()
     title = str(meta.get("title") or source.get("name") or "Source Document")
-    strategy = chunking_strategy(purpose, document_type)
+    strategy = chunking_strategy(purpose, document_type, units=units)
     if strategy == "full_document":
         clean_units = [{
             "content_unit_id": f"{job_id}:0",
@@ -270,7 +285,7 @@ def build_clean_content_document(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "text": reading_content,
             }]
     from services.ebook_page_tagger import tagging_counts
-    counts = tagging_counts(clean_units) if strategy == "page" else {
+    counts = tagging_counts(clean_units) if strategy in {"page", "per_unit"} else {
         "tagging_failed_count": 0, "tagging_pending_count": 0,
     }
     return {

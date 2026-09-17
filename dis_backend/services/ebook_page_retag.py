@@ -485,10 +485,33 @@ def _tag_batch(
     batch_size: int,
     errors: List[str],
 ) -> None:
-    """Route a retag batch to the ebook page or calendar sheet tagger."""
+    """Route a retag batch to the ebook / calendar / hangar tagger."""
     from services.calendar_sheet_tagger import tag_calendar_sheet_units
+    from services.hangar_sheet_tagger import tag_hangar_sheet_units
+    from services.hangar_page_tagger import tag_hangar_page_units
 
-    if any(u.get("unit_type") == "calendar_sheet" for u in batch):
+    unit_types = {u.get("unit_type") for u in batch}
+    if "hangar_sheet" in unit_types:
+        tag_hangar_sheet_units(
+            batch,
+            call_llm_fn=call_llm_fn,
+            model_id=model_id,
+            batch_size=batch_size,
+            enabled=True,
+            token_guard=None,
+            errors=errors,
+        )
+    elif "hangar_page" in unit_types:
+        tag_hangar_page_units(
+            batch,
+            call_llm_fn=call_llm_fn,
+            model_id=model_id,
+            batch_size=batch_size,
+            enabled=True,
+            token_guard=None,
+            errors=errors,
+        )
+    elif "calendar_sheet" in unit_types:
         tag_calendar_sheet_units(
             batch,
             call_llm_fn=call_llm_fn,
