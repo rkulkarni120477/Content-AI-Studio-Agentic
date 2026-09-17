@@ -45,6 +45,25 @@ def _strip_prefix(prefix: str, key: str) -> str:
     return k
 
 
+def _as_logical_key(prefix: str, key: str) -> str:
+    """Normalize a write/read key to the ingest shape: ``processed/...`` or ``raw/...``.
+
+    Ingest passes ``processed/{ns}/{env}/{job}/studio_payload/payload.json``.
+    ``write_json`` returns ``s3://bucket/DIS/processed/...``. Callers that pass
+    that URL back used to put_object ``DIS/s3://bucket/DIS/processed/...`` —
+    which S3 Browser shows as a ``s3:`` folder under ``DIS/``.
+    """
+    text = (key or "").replace("\\", "/").strip()
+    if text.startswith("s3://"):
+        parts = text.split("/", 3)
+        text = parts[3] if len(parts) >= 4 else ""
+    return _strip_prefix(prefix, text.lstrip("/"))
+
+
+def _storage_key(prefix: str, key: str) -> str:
+    return _join_prefix(prefix, _as_logical_key(prefix, key))
+
+
 def _json_default(obj: Any) -> Any:
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
@@ -78,7 +97,7 @@ class ArtifactWriter:
         self.base_prefix = getattr(tenant_cfg.storage, "base_prefix", "")
 
     def _logical_key(self, key: str) -> str:
-        return _strip_prefix(self.base_prefix, (key or "").replace("\\", "/").lstrip("/"))
+        return _as_logical_key(self.base_prefix, key)
 
     def _bucket_for_prefix(self, prefix: str) -> str:
         """Route listings the same way S3Provider routes objects: processed/ vs raw/."""
@@ -146,7 +165,7 @@ class ArtifactWriter:
             if cfg.kms_key_id:
                 extra["ServerSideEncryption"] = "aws:kms"
                 extra["SSEKMSKeyId"] = cfg.kms_key_id
-            storage_key = _join_prefix(self.base_prefix, key)
+            storage_key = _storage_key(self.base_prefix, key)
             s3.put_object(Bucket=self.processed_bucket, Key=storage_key, Body=data, **extra)
             return f"s3://{self.processed_bucket}/{storage_key}"
 
@@ -155,7 +174,7 @@ class ArtifactWriter:
     def read_json(self, key: str) -> Any:
         if self.provider == "s3":
             s3 = self._s3_client()
-            storage_key = _join_prefix(self.base_prefix, key)
+            storage_key = _storage_key(self.base_prefix, key)
             return json.loads(s3.get_object(Bucket=self.processed_bucket, Key=storage_key)["Body"].read())
         raise RuntimeError("DIS storage is S3-only. Cannot read local artifact storage.")
 
@@ -166,7 +185,7 @@ class ArtifactWriter:
             keys: List[str] = []
             token = None
             while True:
-                args = {"Bucket": bucket, "Prefix": _join_prefix(self.base_prefix, prefix)}
+                args = {"Bucket": bucket, "Prefix": _storage_key(self.base_prefix, prefix)}
                 if token:
                     args["ContinuationToken"] = token
                 resp = s3.list_objects_v2(**args)
