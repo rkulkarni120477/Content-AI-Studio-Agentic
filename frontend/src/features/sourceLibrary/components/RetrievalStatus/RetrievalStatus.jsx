@@ -60,7 +60,12 @@ export default function RetrievalStatus({ doc }) {
   // extracted" would condemn every healthy document ingested before it existed.
   const chars = doc?.extracted_chars;
   const measured = chars !== null && chars !== undefined;
-  const blockMissing = !String(doc?.block || '').trim() && String(doc?.course_id) !== '-1';
+  // Multi-sheet calendars / AKTR leave document-level block empty on purpose and
+  // stamp block on each unit (blocks_covered). That is not "missing a block".
+  const covered = Array.isArray(doc?.blocks_covered) ? doc.blocks_covered.filter(Boolean) : [];
+  const blockMissing = !String(doc?.block || '').trim()
+    && covered.length === 0
+    && String(doc?.course_id) !== '-1';
   const ingestStatus = String(doc?.status || '').toLowerCase();
 
   let tone = 'ok';

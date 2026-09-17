@@ -6,10 +6,9 @@ vertically-merged spillover rows of an AIM 'Block N Teacher Calendar', and it do
 not understand the ACS-code / quiz / project / handbook columns.
 
 This module reads the workbook directly (so merged ranges are visible) and emits
-one rich record per teaching day, in the same ``days[]`` shape the pipeline already
-consumes (``services.agents.content_unit_creation_agent``), plus structured fields
-(``acs_codes``, ``handbook_refs``, ``quiz``, ``projects`` ...) used for tagging and
-a clean natural-language ``source_text`` used for embedding.
+one rich record per teaching day per sheet. Multi-sheet workbooks (e.g. "ALL
+Block Calendars_NEW FORMAT.xlsx") produce a ``sheets[]`` array; each sheet
+becomes one Source Library section with block stamped on the unit (AKTR-style).
 
 Entry points:
     looks_like_aim_teacher_calendar(content) -> bool   # self-gating format check
@@ -17,13 +16,10 @@ Entry points:
 
 Storage scope
 -------------
-The ``days[]`` this returns becomes one ``calendar_day`` content unit each
-(``content_unit_creation_agent``), which ingestion then writes to BOTH configured
-stores for the tenant: the vector store (OpenSearch, for semantic + tag search) and
-the structure store (RDS, the relational system-of-record). Both are populated at
-ingestion; as of 2026-07 the live read path (``services/context_retrieval.py``) still
-reads S3 source JSON and queries neither store, so they are filled ahead of that
-retrieval wiring. See ``config/clients/aim.yaml`` for the enable/disable decision.
+Each sheet becomes one ``calendar_sheet`` content unit
+(``content_unit_creation_agent``). Day rows land in Postgres
+``dis_calendar_days`` (one calendar_id per sheet). Source Library
+``content.json`` keeps sheet-level units (``per_unit``), not one blob.
 """
 from __future__ import annotations
 
@@ -50,6 +46,17 @@ _HEADER_CONCEPTS = (
     ("topic", re.compile(r"\btopics?\b", re.I)),
     ("acs", re.compile(r"\bacs\b", re.I)),
     ("handbook", re.compile(r"\bhandbook\b", re.I)),
+)
+
+#: Strict block number from a sheet name / banner / "Block N" filename — never
+#: a bare digit like the Windows download suffix "(1)".
+_BLOCK_RE = re.compile(r"\b(?:block|blk)\s*0*(\d+)\b", re.I)
+
+#: Subject-unit section header rows in the NEW FORMAT have no day number in
+#: column A and a non-numeric label in column B (e.g. "Aircraft Drawings").
+_SUBJECT_HEADER_SKIP = re.compile(
+    r"^(?:block\s+\d+|day\s*/?\s*night|weekend|topics?\s+covered)\b",
+    re.I,
 )
 
 
@@ -82,16 +89,40 @@ def _is_punct(tok: str) -> bool:
     return bool(tok) and re.fullmatch(r"[^\w]+", tok) is not None
 
 
+def _schedule_from_name(sheet_name: str) -> str:
+    low = (sheet_name or "").lower()
+    if "weekend" in low:
+        return "weekend"
+    if "day" in low and "night" in low:
+        return "day_night"
+    if "day/night" in low or "day-night" in low:
+        return "day_night"
+    return "unknown"
+
+
+def _block_number_from_text(*texts: Optional[str]) -> Optional[int]:
+    """Block number from sheet name / banner / explicit 'Block N' only."""
+    for text in texts:
+        if not text:
+            continue
+        m = _BLOCK_RE.search(str(text))
+        if m:
+            return int(m.group(1))
+    return None
+
+
 # ── field parsers ───────────────────────────────────────────────────────────
 def expand_acs(cell: str) -> List[str]:
     """Expand ACS-code cells into a flat, de-duplicated list.
 
-    Handles single codes, newline/comma/slash lists, and ranges such as
-    'AM.I.B.K1 - AM.I.B.K4' or 'AM.I.B.K1 – AM.I.B.K4' (expanded within the same
-    prefix + category)."""
+    Handles single codes, newline/comma/slash lists, ranges such as
+    'AM.I.B.K1 - AM.I.B.K4', and NEW FORMAT shorthand after a full code
+    ('AM.I.B.K1, K2, R1' -> AM.I.B.K1, AM.I.B.K2, AM.I.B.R1).
+    """
     if not cell:
         return []
     codes: List[str] = []
+    last_prefix: Optional[str] = None  # e.g. "AM.I.B."
     for chunk in re.split(r"[\n,;/]+", cell.replace(NBSP, " ")):
         chunk = chunk.strip()
         if not chunk:
@@ -105,8 +136,21 @@ def expand_acs(cell: str) -> List[str]:
             prefix, cat1, n1, cat2, n2 = m.groups()
             if (cat2 or cat1) == cat1 and int(n2) >= int(n1):
                 codes.extend(f"{prefix}{cat1}{i}" for i in range(int(n1), int(n2) + 1))
+                last_prefix = prefix
                 continue
-        codes.extend(re.findall(r"[A-Z]+(?:\.[A-Z0-9]+)+", chunk))
+        full = re.findall(r"[A-Z]+(?:\.[A-Z0-9]+)+", chunk)
+        if full:
+            codes.extend(full)
+            # Remember prefix of the last full code for shorthand siblings.
+            last = full[-1]
+            mpref = re.match(r"^([A-Z]+(?:\.[A-Z0-9]+)*\.)[A-Z]+\d+$", last)
+            if mpref:
+                last_prefix = mpref.group(1)
+            continue
+        # Shorthand: "K2", "R1", "S5" after a full dotted code on the same cell.
+        short = re.fullmatch(r"([A-Z]+)(\d+)", chunk)
+        if short and last_prefix:
+            codes.append(f"{last_prefix}{short.group(1)}{short.group(2)}")
     seen, uniq = set(), []
     for c in codes:
         if c not in seen:
@@ -116,7 +160,10 @@ def expand_acs(cell: str) -> List[str]:
 
 
 def parse_handbook(cell: str) -> List[Dict[str, Any]]:
-    """Parse handbook references into {handbook, chapter, pages}."""
+    """Parse handbook references into {handbook, chapter, pages}.
+
+    Accepts both ``pgs.`` (legacy) and ``pp.`` (NEW FORMAT).
+    """
     if not cell:
         return []
     refs: List[Dict[str, Any]] = []
@@ -130,7 +177,7 @@ def parse_handbook(cell: str) -> List[Dict[str, Any]]:
             current_hb = hb.group(0)
             line = line.replace(current_hb, "").strip()
         for ch in re.finditer(
-            r"Ch\.?\s*(\d+)\s*pgs?\.?\s*([\d\-\s]+(?:to[\d\-\s]+)?(?:[;,]\s*[\d\-\s]+)*)",
+            r"Ch\.?\s*(\d+)\s*(?:pgs?|pp)\.?\s*([\d\-\s]+(?:to[\d\-\s]+)?(?:[;,]\s*[\d\-\s]+)*)",
             line, re.I,
         ):
             refs.append({
@@ -223,68 +270,105 @@ def _compose_text(rec: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _is_subject_section_header(cells: List[str]) -> Optional[str]:
+    """NEW FORMAT section row: empty day col, non-numeric subject label in col B."""
+    day_cell = (cells[0] if cells else "").strip()
+    if day_cell:
+        return None
+    label = (cells[1] if len(cells) > 1 else "").strip()
+    if not label or re.fullmatch(r"\d+", label):
+        return None
+    if _is_header(cells) or _SUBJECT_HEADER_SKIP.search(label):
+        return None
+    # Banner rows often put the whole "Block N (Day/Night): ..." in col B.
+    if _BLOCK_RE.search(label) and ":" in label:
+        return None
+    return label
+
+
 # ── workbook loading ─────────────────────────────────────────────────────────
-def _first_sheet_rows(content: bytes):
+def _load_workbook(content: bytes):
     import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)  # merges visible
-    return wb, wb.worksheets[0]
+    return openpyxl.load_workbook(io.BytesIO(content), data_only=True)
 
 
-def looks_like_aim_teacher_calendar(content: bytes) -> bool:
-    """True if the first worksheet contains the AIM teacher-calendar header row.
-
-    Used to self-gate: the parser only runs on this specific column layout, so
-    other tenants' spreadsheets fall through to the generic extractor untouched.
-    """
-    try:
-        _wb, ws = _first_sheet_rows(content)
-    except Exception:
-        return False
-    for row in ws.iter_rows(min_row=1, max_row=8, max_col=_MAX_COLS, values_only=True):
+def _sheet_has_aim_header(ws, max_scan: int = 8) -> bool:
+    for row in ws.iter_rows(min_row=1, max_row=max_scan, max_col=_MAX_COLS, values_only=True):
         if _is_header([_clean(c) for c in row]):
             return True
     return False
 
 
-def build_calendar_structure(content: bytes, filename: str,
-                             block_hint: Optional[str] = None) -> Dict[str, Any]:
-    """Parse an AIM teacher-calendar workbook into the pipeline ``calendar_structure``."""
-    wb, ws = _first_sheet_rows(content)
-    max_c = min(ws.max_column, _MAX_COLS)
+def looks_like_aim_teacher_calendar(content: bytes) -> bool:
+    """True if ANY worksheet contains the AIM teacher-calendar header row.
 
-    # Dense grid; propagate the top-left value of each vertical merge downward so a
-    # merged 'Days' cell keeps its number across the day's spillover rows.
+    Used to self-gate: the parser only runs on this specific column layout, so
+    other tenants' spreadsheets fall through to the generic extractor untouched.
+    """
+    try:
+        wb = _load_workbook(content)
+    except Exception:
+        return False
+    for ws in wb.worksheets:
+        if _sheet_has_aim_header(ws):
+            return True
+    return False
+
+
+def _banner_text(grid: List[List[str]], max_rows: int = 3) -> str:
+    parts: List[str] = []
+    for row in grid[:max_rows]:
+        for cell in row:
+            if cell and not _is_header((row + [""] * _MAX_COLS)[:_MAX_COLS]):
+                parts.append(cell)
+    return " ".join(parts)
+
+
+def _parse_sheet(ws, sheet_index: int, block_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse one AIM calendar worksheet into a sheet record, or None if no header."""
+    if not _sheet_has_aim_header(ws):
+        return None
+
+    max_c = min(ws.max_column or 1, _MAX_COLS)
     grid = [[_clean(ws.cell(r, c).value) for c in range(1, max_c + 1)]
-            for r in range(1, ws.max_row + 1)]
+            for r in range(1, (ws.max_row or 0) + 1)]
     for mr in ws.merged_cells.ranges:
         if mr.min_col > max_c:
             continue
-        top = _clean(ws.cell(mr.min_row, mr.min_col).value)
         for r in range(mr.min_row, mr.max_row + 1):
             if r == mr.min_row:
                 continue
             for c in range(mr.min_col, min(mr.max_col, max_c) + 1):
                 if not grid[r - 1][c - 1]:
-                    grid[r - 1][c - 1] = ""  # explicit: spillover cell stays empty
+                    grid[r - 1][c - 1] = ""
 
-    block_num = None
-    for src in (block_hint, filename):
-        if src:
-            m = re.search(r"(?:Block\s*0*)?(\d+)", src, re.I)
-            if m:
-                block_num = int(m.group(1))
-                break
+    banner = _banner_text(grid)
+    block_num = _block_number_from_text(ws.title, banner, block_hint)
+    schedule = _schedule_from_name(ws.title)
 
-    # Pass 1: gather day rows, folding real spillover content (skip punctuation-only
-    # separator rows such as a stray backtick that Excel stores as a full-width merge).
+    # Pass 1: day rows + NEW FORMAT subject-section headers carried forward.
     raw_days: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
+    current_subject: Optional[str] = None
     for row in grid:
         cells = (row + [""] * max_c)[:max_c]
         if _is_header(cells):
             continue
+        section = _is_subject_section_header(cells)
+        if section:
+            current_subject = section
+            current = None
+            continue
         day_cell = cells[0].strip()
         if re.fullmatch(r"\d+", day_cell):
+            # NEW FORMAT: col B is subject-day number; prepend carried unit name.
+            subject_cell = cells[1].strip() if len(cells) > 1 else ""
+            if current_subject and re.fullmatch(r"\d+", subject_cell):
+                cells = list(cells)
+                cells[1] = f"{current_subject} - Day {subject_cell}"
+            elif current_subject and not subject_cell:
+                cells = list(cells)
+                cells[1] = current_subject
             current = {"day_number": int(day_cell), "cells": [[c] if c else [] for c in cells]}
             raw_days.append(current)
         elif current:
@@ -306,6 +390,9 @@ def build_calendar_structure(content: bytes, filename: str,
     days: List[Dict[str, Any]] = []
     for day_number, unit, sub_day, joined in prelim:
         topics_list = _split_list(joined[2])
+        lesson_title = joined[1]
+        if unit and sub_day is not None and not re.search(r"\bDay\s*\d+\s*$", lesson_title, re.I):
+            lesson_title = f"{unit} - Day {sub_day}"
         rec: Dict[str, Any] = {
             "day_number": day_number,
             "block": block_label(block_num) if block_num else "",
@@ -313,19 +400,19 @@ def build_calendar_structure(content: bytes, filename: str,
             "block_number": block_num,
             "subject_unit": unit,
             "subject_day": sub_day,
-            "day_type": _day_type(joined[1]),
-            "lesson_title": joined[1],
+            "day_type": _day_type(lesson_title),
+            "lesson_title": lesson_title,
             "topic": "; ".join(topics_list)[:300],
             "topics_list": topics_list,
-            "acs_codes": expand_acs(joined[3]),
-            "acs_codes_raw": re.sub(r"\s+", " ", joined[3]).strip(),
-            "handbook_refs": parse_handbook(joined[4]),
-            "projects": _split_list(joined[5]),
-            "project_acs_codes": expand_acs(joined[6]),
-            "quiz": parse_quiz(joined[7], subj_lookup),
-            "supplemental_resources": _split_list(joined[8]),
-            "test_prep_activities": _split_list(joined[9]),
-            "hangar_activities": _split_list(joined[10]) if max_c > 10 else [],
+            "acs_codes": expand_acs(joined[3] if len(joined) > 3 else ""),
+            "acs_codes_raw": re.sub(r"\s+", " ", (joined[3] if len(joined) > 3 else "")).strip(),
+            "handbook_refs": parse_handbook(joined[4] if len(joined) > 4 else ""),
+            "projects": _split_list(joined[5] if len(joined) > 5 else ""),
+            "project_acs_codes": expand_acs(joined[6] if len(joined) > 6 else ""),
+            "quiz": parse_quiz(joined[7] if len(joined) > 7 else "", subj_lookup),
+            "supplemental_resources": _split_list(joined[8] if len(joined) > 8 else ""),
+            "test_prep_activities": _split_list(joined[9] if len(joined) > 9 else ""),
+            "hangar_activities": _split_list(joined[10]) if max_c > 10 and len(joined) > 10 else [],
         }
         rec["source_text"] = _compose_text(rec)
         # Backward-compatible fields consumed by the existing pipeline / retrieval.
@@ -338,14 +425,97 @@ def build_calendar_structure(content: bytes, filename: str,
 
     days.sort(key=lambda d: d["day_number"])
     return {
+        "sheet_name": ws.title,
+        "sheet_index": sheet_index,
+        "block": block_label(block_num) if block_num else "",
+        "block_number": block_num,
+        "block_id": f"B{block_num}" if block_num else "",
+        "schedule": schedule,
+        "banner": banner[:500] if banner else "",
+        "total_days_detected": len(days),
+        "days": days,
+    }
+
+
+def build_calendar_structure(content: bytes, filename: str,
+                             block_hint: Optional[str] = None) -> Dict[str, Any]:
+    """Parse an AIM teacher-calendar workbook into the pipeline ``calendar_structure``.
+
+    Multi-sheet workbooks return ``sheets[]`` (one entry per AIM calendar sheet).
+    Top-level ``days`` is empty for multi-sheet files so callers that still read
+    ``days`` do not silently treat Block 1's schedule as the whole workbook.
+    Single-sheet (legacy) workbooks also populate top-level ``days`` /
+    ``block`` for backward compatibility with older readers.
+    """
+    wb = _load_workbook(content)
+    # Filename block only when it says "Block N" / "BLK N" — never "(1)".
+    file_block = _block_number_from_text(filename)
+    hint_block = _block_number_from_text(block_hint) if block_hint else None
+    # Prefer an explicit Block-N hint; else sheet name; else filename Block-N.
+    effective_hint = block_label(hint_block or file_block) if (hint_block or file_block) else None
+
+    sheets: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    for idx, ws in enumerate(wb.worksheets):
+        try:
+            parsed = _parse_sheet(ws, idx, block_hint=effective_hint)
+        except Exception as exc:  # noqa: BLE001 — one bad sheet must not sink the book
+            skipped.append({"sheet": ws.title, "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        if parsed is None:
+            skipped.append({"sheet": ws.title, "reason": "no AIM calendar header row"})
+            continue
+        if not parsed.get("days"):
+            skipped.append({"sheet": ws.title, "reason": "no day rows detected"})
+            continue
+        sheets.append(parsed)
+
+    total_days = sum(int(s.get("total_days_detected") or 0) for s in sheets)
+    blocks_covered = []
+    for s in sheets:
+        b = s.get("block")
+        if b and b not in blocks_covered:
+            blocks_covered.append(b)
+
+    # Legacy single-sheet shape: keep top-level days/block populated.
+    single = len(sheets) == 1
+    first = sheets[0] if single else None
+    return {
         "structure_type": "course_calendar",
         "processing_profile": "aim_teacher_calendar",
         "profile": "aim_teacher_calendar",
         "course_name": "AIM General",
-        "block": block_label(block_num) if block_num else "",
-        "block_number": block_num,
+        "block": first.get("block", "") if single else "",
+        "block_number": first.get("block_number") if single else None,
+        "blocks_covered": blocks_covered,
+        "total_days_detected": total_days,
+        "sheets": sheets,
+        # Empty for multi-sheet so upsert / day-unit paths do not invent a
+        # single-block calendar from sheet 0 alone.
+        "days": list(first.get("days") or []) if single else [],
+        "skipped_sheets": skipped,
+        "confidence": "high" if sheets else "low",
+        "warnings": [] if sheets else ["No AIM calendar day rows detected."],
+    }
+
+
+def iter_calendar_sheets(calendar_structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalize legacy (days-only) and multi-sheet calendar_structure to sheets[]."""
+    if not calendar_structure:
+        return []
+    sheets = calendar_structure.get("sheets") or []
+    if sheets:
+        return list(sheets)
+    days = calendar_structure.get("days") or []
+    if not days:
+        return []
+    return [{
+        "sheet_name": calendar_structure.get("sheet_name") or "Calendar",
+        "sheet_index": 0,
+        "block": calendar_structure.get("block") or "",
+        "block_number": calendar_structure.get("block_number"),
+        "block_id": calendar_structure.get("block_id") or "",
+        "schedule": calendar_structure.get("schedule") or "unknown",
         "total_days_detected": len(days),
         "days": days,
-        "confidence": "high" if days else "low",
-        "warnings": [] if days else ["No AIM calendar day rows detected."],
-    }
+    }]

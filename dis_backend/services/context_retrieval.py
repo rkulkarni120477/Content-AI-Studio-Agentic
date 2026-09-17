@@ -612,20 +612,34 @@ class ContextRetrievalService:
                 # Keep permissive because old calendar metadata may not have block_id.
                 pass
             cal = payload.get("calendar_structure") or {}
-            for day in cal.get("days", []) or []:
-                try:
-                    day_no = int(day.get("day_number") or 0)
-                except Exception:
-                    day_no = 0
-                if day_no == int(requested_day_number):
-                    hints.extend([
-                        str(day.get("lesson_title") or ""),
-                        str(day.get("topic") or ""),
-                        str(day.get("source_text") or ""),
-                        " ".join(day.get("activities") or []),
-                        " ".join(day.get("assignments") or []),
-                        " ".join(day.get("assessments") or []),
-                    ])
+            # Multi-sheet calendars put days under sheets[]; legacy payloads keep
+            # a top-level days[]. Walk both so Block-N day hints still resolve.
+            from services.aim_calendar import iter_calendar_sheets
+            want_num = None
+            if block_id:
+                m = re.search(r"(\d+)", block_id)
+                want_num = int(m.group(1)) if m else None
+            for sheet in iter_calendar_sheets(cal):
+                if want_num is not None:
+                    sheet_block = str(sheet.get("block") or sheet.get("block_id") or "")
+                    have = re.search(r"(\d+)", sheet_block)
+                    # Skip sheets that declare a different block; keep untagged.
+                    if have and int(have.group(1)) != want_num:
+                        continue
+                for day in sheet.get("days") or []:
+                    try:
+                        day_no = int(day.get("day_number") or 0)
+                    except Exception:
+                        day_no = 0
+                    if day_no == int(requested_day_number):
+                        hints.extend([
+                            str(day.get("lesson_title") or ""),
+                            str(day.get("topic") or ""),
+                            str(day.get("source_text") or ""),
+                            " ".join(day.get("activities") or []),
+                            " ".join(day.get("assignments") or []),
+                            " ".join(day.get("assessments") or []),
+                        ])
         hint_text = " ".join(h for h in hints if h).strip()
         return {"day_number": int(requested_day_number), "day_id": requested_day_id, "text": hint_text, "terms": terms(hint_text)} if hint_text else {}
 

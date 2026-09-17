@@ -37,6 +37,8 @@ _RETAG_META_KEYS = frozenset({
     "tagging_status", "tagging_error", "tagging_attempted_at",
     "chapter", "page_number", "printed_page", "pdf_page",
     "chunking_strategy", "chunk_index",
+    "sheet_name", "sheet_index", "schedule", "total_days",
+    "block", "block_id", "block_number",
 })
 
 
@@ -466,7 +468,46 @@ def _last_page_label(batch: List[Dict[str, Any]]) -> Any:
     if not batch:
         return None
     meta = batch[-1].get("metadata") or {}
-    return meta.get("page_number") or meta.get("pdf_page") or batch[-1].get("unit_number")
+    return (
+        meta.get("sheet_name")
+        or meta.get("page_number")
+        or meta.get("pdf_page")
+        or batch[-1].get("title")
+        or batch[-1].get("unit_number")
+    )
+
+
+def _tag_batch(
+    batch: List[Dict[str, Any]],
+    *,
+    call_llm_fn,
+    model_id: str,
+    batch_size: int,
+    errors: List[str],
+) -> None:
+    """Route a retag batch to the ebook page or calendar sheet tagger."""
+    from services.calendar_sheet_tagger import tag_calendar_sheet_units
+
+    if any(u.get("unit_type") == "calendar_sheet" for u in batch):
+        tag_calendar_sheet_units(
+            batch,
+            call_llm_fn=call_llm_fn,
+            model_id=model_id,
+            batch_size=batch_size,
+            enabled=True,
+            token_guard=None,
+            errors=errors,
+        )
+    else:
+        tag_ebook_page_units(
+            batch,
+            call_llm_fn=call_llm_fn,
+            model_id=model_id,
+            batch_size=batch_size,
+            enabled=True,
+            token_guard=None,
+            errors=errors,
+        )
 
 
 def retag_ebook_pages(
@@ -564,13 +605,11 @@ def retag_ebook_pages(
     try:
         for start in range(0, total, batch_size):
             batch = units[start:start + batch_size]
-            tag_ebook_page_units(
+            _tag_batch(
                 batch,
                 call_llm_fn=call_llm,
                 model_id=tcfg["model_id"],
                 batch_size=len(batch),
-                enabled=True,
-                token_guard=None,
                 errors=errors,
             )
             done = start + len(batch)

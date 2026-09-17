@@ -66,8 +66,36 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
         elif doc_type == 'course_calendar':
             state['calendar_structure'] = self._extract_calendar(state, filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'course_calendar'
-            state.setdefault('doc_metadata', {})['block'] = block_label(state['calendar_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns))
-            state.setdefault('doc_metadata', {})['calendar_days_detected'] = len(state['calendar_structure'].get('days', []))
+            cal = state['calendar_structure'] or {}
+            sheets = cal.get('sheets') or []
+            meta = state.setdefault('doc_metadata', {})
+            # Multi-sheet workbooks (ALL Block Calendars) span many blocks — stamp
+            # block on each sheet unit, not the document (same pattern as AKTR).
+            # A single-sheet legacy calendar still gets a document-level block.
+            if len(sheets) > 1:
+                meta['block'] = None
+                meta['blocks_covered'] = cal.get('blocks_covered') or [
+                    s.get('block') for s in sheets if s.get('block')
+                ]
+                meta['calendar_sheets_detected'] = len(sheets)
+                meta['calendar_days_detected'] = int(cal.get('total_days_detected') or 0)
+            else:
+                sheet_block = (sheets[0].get('block') if sheets else None) or cal.get('block')
+                meta['block'] = block_label(
+                    sheet_block or infer_block(filename, text, doc_processing.structure_patterns)
+                )
+                meta['calendar_sheets_detected'] = len(sheets) or 1
+                meta['calendar_days_detected'] = int(
+                    cal.get('total_days_detected')
+                    or len(cal.get('days') or [])
+                    or (len(sheets[0].get('days') or []) if sheets else 0)
+                )
+            skipped = cal.get('skipped_sheets') or []
+            if skipped:
+                state.setdefault('errors', []).append(
+                    'course_calendar: skipped sheets '
+                    + ', '.join(f"{s.get('sheet')} ({s.get('reason')})" for s in skipped[:12])
+                )
         elif doc_type == 'syllabus':
             state['syllabus_structure'] = extract_syllabus_structure(filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'syllabus'

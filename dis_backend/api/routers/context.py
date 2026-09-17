@@ -811,13 +811,14 @@ def _run_retag_in_background(runner: Any, client_id: str, job_id: str) -> None:
 
 @router.post("/sources/{job_id}/content/retag")
 async def source_content_retag(job_id: str, body: RetagBody, request: Request):
-    """Re-run per-page LLM content tagging for selected (or all failed) ebook pages.
+    """Re-run LLM content tagging for selected (or all failed) units.
 
-    Uses text already stored in Postgres — does not re-download the PDF.
+    Works for ebook ``page`` units and course-calendar ``calendar_sheet`` units.
+    Uses text already stored in Postgres — does not re-download the source file.
 
     ``all_failed=true`` starts a background job (returns immediately) and reports
     progress via GET .../content/retag/progress. Specific ``unit_ids`` still run
-    synchronously so Retry-this-page stays a short request.
+    synchronously so Retry-this-page / Retry-this-section stays a short request.
     """
     tenant = get_current_tenant(request)
     client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))

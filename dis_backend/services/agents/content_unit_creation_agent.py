@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -80,33 +81,62 @@ class ContentUnitCreationAgent(BasePipelineAgent):
                     },
                     'assets': [],
                 })
-        elif doc_type == 'course_calendar' and calendar.get('days'):
-            for day in calendar.get('days', []):
-                day_no = day.get('day_number') or len(units) + 1
-                text = day.get('source_text') or day.get('topic') or ''
-                # Carry structured calendar fields into unit metadata so they are
-                # searchable/filterable in the vector store and usable to tag other
-                # ingested content (quiz/project/lesson) back to a block+day. Only
-                # keys present on the day survive, so non-AIM calendars are unaffected.
-                # These units are persisted to BOTH the vector store (OpenSearch) and
-                # the structure store (RDS) downstream; metadata_json in RDS preserves
-                # these same fields. See services/aim_calendar.py "Storage scope".
-                cal_meta = {k: day[k] for k in (
-                    'block_id', 'block_number', 'subject_unit', 'subject_day',
-                    'day_type', 'acs_codes', 'acs_codes_raw', 'handbook_refs',
-                    'projects', 'project_acs_codes', 'quiz', 'supplemental_resources',
-                    'test_prep_activities', 'hangar_activities',
-                ) if k in day}
-                unit_keywords = list(dict.fromkeys(keywords(text) + list(day.get('acs_codes') or [])))
-                # doc_metadata is spread FIRST, and this day's own day_number LAST.
-                # Spread last, it clobbered the per-day value with the DOCUMENT's
-                # day_number — which for a calendar is None (the AIM profile derives it
-                # from a B#D# filename token that a whole-block calendar has no reason
-                # to carry). Measured on Block 6: all 20 calendar_day units stored
-                # day_number=None, so ENUMERATE could attribute none of them, acs_by_day
-                # came out empty for every day, and each day row reached the Blueprint
-                # with no ACS codes at all.
-                units.append({'content_unit_id': f"{state['job_id']}:calendar_day_{day_no}", 'unit_type': ctx.cfg.document_processing.unit_type_map.get('course_calendar', 'calendar_day'), 'unit_number': int(day_no), 'title': day.get('lesson_title') or f'Day {day_no}', 'text': text, 'visual_summary': '', 'keywords': unit_keywords, 'topics': keywords((day.get('topic') or '') + ' ' + text, limit=12), 'metadata': {**state.get('doc_metadata', {}), 'block': calendar.get('block') or (state.get('doc_metadata') or {}).get('block'), **cal_meta, 'day_number': day_no}, 'assets': []})
+        elif doc_type == 'course_calendar' and (calendar.get('sheets') or calendar.get('days')):
+            # One Source Library / OpenSearch unit PER SHEET (title = sheet name),
+            # not per teaching day. Day rows live in Postgres dis_calendar_days for
+            # enumerate/Blueprint. A 32-sheet ALL-blocks workbook must not explode
+            # into ~640 section dropdown entries.
+            from services.aim_calendar import iter_calendar_sheets
+            sheets = iter_calendar_sheets(calendar)
+            doc_meta = dict(state.get('doc_metadata') or {})
+            # Drop document-level block so multi-sheet units keep their own stamp.
+            if len(sheets) > 1:
+                doc_meta.pop('block', None)
+                doc_meta.pop('block_number', None)
+                doc_meta.pop('block_id', None)
+            for i, sheet in enumerate(sheets, 1):
+                days = sheet.get('days') or []
+                texts = [str(d.get('source_text') or d.get('topic') or '').strip() for d in days]
+                text = "\n\n".join(t for t in texts if t)
+                acs: List[str] = []
+                seen_acs = set()
+                for d in days:
+                    for code in d.get('acs_codes') or []:
+                        if code and code not in seen_acs:
+                            seen_acs.add(code)
+                            acs.append(code)
+                sheet_name = sheet.get('sheet_name') or f"Sheet {i}"
+                sheet_index = int(sheet.get('sheet_index') if sheet.get('sheet_index') is not None else i - 1)
+                block = sheet.get('block') or (doc_meta.get('block') if len(sheets) == 1 else None)
+                block_number = sheet.get('block_number')
+                if block_number is None and block:
+                    m = re.search(r"(\d+)", str(block))
+                    block_number = int(m.group(1)) if m else None
+                units.append({
+                    'content_unit_id': f"{state['job_id']}:calendar_sheet_{sheet_index}",
+                    'unit_type': 'calendar_sheet',
+                    'unit_number': i,
+                    'title': sheet_name,
+                    'text': text,
+                    'visual_summary': '',
+                    'keywords': list(dict.fromkeys(keywords(text) + acs)),
+                    'topics': keywords(text, limit=12),
+                    'metadata': {
+                        **doc_meta,
+                        'block': block,
+                        'block_number': block_number,
+                        'block_id': sheet.get('block_id') or (f"B{block_number}" if block_number else ''),
+                        'sheet_name': sheet_name,
+                        'sheet_index': sheet_index,
+                        'schedule': sheet.get('schedule') or 'unknown',
+                        'total_days': int(sheet.get('total_days_detected') or len(days)),
+                        'acs_codes': acs,
+                        'document_type': 'course_calendar',
+                        'content_type': 'course_calendar',
+                    },
+                    'assets': [],
+                })
+            self._tag_calendar_sheet_units(state, units)
         elif str(effective_type or doc_type or '').lower() == 'ebook_reference':
             units = self._ebook_page_units(state, effective_type or doc_type)
         else:
@@ -149,6 +179,37 @@ class ContentUnitCreationAgent(BasePipelineAgent):
         state['content_units'] = units
         state['chunks'] = [{'chunk_id': u['content_unit_id'], 'text': u['text'], 'chunk_index': u['unit_number'] - 1} for u in units]
         return ctx.step_done(state, 'content_unit_creation')
+
+    def _tag_calendar_sheet_units(self, state: PipelineState, units: List[Dict[str, Any]]) -> None:
+        """Ebook-style LLM topics/summary/ACS on each calendar sheet (fail-soft)."""
+        if not units:
+            return
+        from services.calendar_sheet_tagger import tag_calendar_sheet_units
+        from services.ebook_page_tagger import mark_units_pending, tagger_config_from_pipeline
+
+        ctx = self.ctx
+        use_llm = (
+            ctx.cfg.pipeline.llm_provider != 'mock'
+            and (ctx.cfg.pipeline.bedrock_enabled or ctx.cfg.pipeline.anthropic_enabled)
+        )
+        tcfg = tagger_config_from_pipeline(ctx.cfg.pipeline)
+        if use_llm and tcfg['enabled']:
+            errors = state.setdefault('errors', [])
+            try:
+                tag_calendar_sheet_units(
+                    units,
+                    call_llm_fn=call_llm,
+                    model_id=tcfg['model_id'],
+                    batch_size=tcfg['batch_size'],
+                    enabled=True,
+                    token_guard=getattr(ctx, 'guard', None),
+                    errors=errors,
+                )
+            except TokenLimitError as exc:
+                errors.append(str(exc))
+                mark_units_pending(units)
+        else:
+            mark_units_pending(units)
 
     def _ebook_page_units(self, state: PipelineState, effective_type: str) -> List[Dict[str, Any]]:
         """One content unit per physical PDF page, with location + LLM tags."""
