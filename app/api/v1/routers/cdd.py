@@ -392,9 +392,7 @@ def generate_cdd(
     from promptops_app.repositories import job_repository
 
     params = request_body.model_dump()
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     job_id = job_repository.create_job(
         db,
         user_name=current_user.username,
@@ -1513,9 +1511,7 @@ def regenerate_cdd_item(
     cdd = _get_cdd_or_404(db, cdd_id, current_user)
     params = request_body.model_dump()
     params["cdd_id"] = cdd_id
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     job_id = job_repository.create_job(
         db,
         user_name=current_user.username,
@@ -2031,9 +2027,7 @@ def regenerate_cdd_section(
     cdd = _get_cdd_or_404(db, cdd_id, current_user)
     params = request_body.model_dump()
     params["cdd_id"] = cdd_id
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     job_id = job_repository.create_job(
         db,
         user_name=current_user.username,

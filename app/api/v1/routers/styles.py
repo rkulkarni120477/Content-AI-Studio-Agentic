@@ -533,9 +533,7 @@ def generate_style_intelligence(
     style = _get_style_or_404(db, style_id, current_user)
     params = request_body.model_dump()
     params["style_id"] = style_id
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     # Prefer request scope; fall back to the style's own project.
     project_id = request_body.project_id or getattr(style, "project_id", None)
     course_id = request_body.course_id

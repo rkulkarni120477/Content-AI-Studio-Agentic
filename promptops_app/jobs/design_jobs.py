@@ -19,14 +19,39 @@ from promptops_app.services.budget_service import BudgetExceededError
 _log = logging.getLogger(__name__)
 
 
+def stamp_job_user(params: dict, current_user) -> dict:
+    """Persist the caller identity the worker needs to reconstruct.
+
+    ``_get_*_or_404`` helpers read ``_is_platform_admin`` and ``_project_id``
+    off the request user. Storing only username/role made the worker rebuild a
+    user that fails every tenant check, so Style Understand (and CDD/Blueprint
+    regen) jobs died immediately with a generic failure message.
+    """
+    params["user_name"] = getattr(current_user, "username", "") or "cas-user"
+    params["user_id"] = getattr(current_user, "id", None)
+    params["role"] = getattr(current_user, "role", "user")
+    params["is_platform_admin"] = bool(getattr(current_user, "_is_platform_admin", False))
+    params["user_project_id"] = getattr(current_user, "_project_id", None)
+    return params
+
+
 def _reconstruct_user(params: dict) -> types.SimpleNamespace:
     name = params.get("user_name", "") or "cas-user"
     user_id = params.get("user_id")
+    is_platform_admin = bool(params.get("is_platform_admin", False))
+    user_project_id = params.get("user_project_id")
+    if user_project_id is None and not is_platform_admin:
+        # Jobs queued before user_project_id was persisted still carry the
+        # workspace project_id from the original request body. Using it keeps
+        # _get_*_or_404 from 404ing a row the HTTP handler already authorized.
+        user_project_id = params.get("project_id")
     return types.SimpleNamespace(
         username=name,
         id=name if user_id is None else user_id,
         email=name,
         role=params.get("role", "user"),
+        _is_platform_admin=is_platform_admin,
+        _project_id=user_project_id,
     )
 
 
@@ -55,11 +80,22 @@ def _fail(db, job, exc: Exception, generic: str) -> None:
     if job is None:
         return
     try:
-        message = str(exc) if isinstance(exc, BudgetExceededError) else generic
-        # HTTPException / ValidationError often carry a useful detail string.
-        detail = getattr(exc, "detail", None)
-        if isinstance(detail, str) and detail.strip() and not isinstance(exc, BudgetExceededError):
-            message = detail.strip()[:2000]
+        from app.core.exceptions import AppError
+
+        if isinstance(exc, BudgetExceededError):
+            message = str(exc)
+        elif isinstance(exc, AppError) and str(getattr(exc, "message", "") or "").strip():
+            # AppError.detail is a dict, so the string-detail branch below
+            # never fired — LLM / validation / 404 reasons were replaced with
+            # the generic "please try again" the activity bell shows.
+            message = str(exc.message).strip()[:2000]
+        else:
+            detail = getattr(exc, "detail", None)
+            message = (
+                detail.strip()[:2000]
+                if isinstance(detail, str) and detail.strip()
+                else generic
+            )
         set_failed(db, job, message)
     except Exception:  # pragma: no cover
         pass
