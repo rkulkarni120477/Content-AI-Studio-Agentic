@@ -21,6 +21,7 @@ from services.ebook_page_tagger import (
 from services.indexing import generate_embeddings, opensearch_upsert, rds_upsert
 from services.pipeline.common import call_llm
 from services.source_library import (
+    logical_storage_key,
     read_source_index,
     source_content_key,
     studio_payload_key,
@@ -48,6 +49,17 @@ def _parse_meta(v: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return dict(v or {})
+
+
+def _retag_artifact_key(value: str, fallback: str, base_prefix: str) -> str:
+    """Same logical key ingest writes: ``processed/{ns}/{env}/{job}/...``.
+
+    Catalogue ``payload_key`` is often the ``s3://bucket/DIS/...`` URL returned
+    by ``write_json``. Passing that URL back into ``write_json`` used to create
+    ``DIS/s3://...`` objects. Strip it the same way delete/cleanup already do.
+    """
+    logical = logical_storage_key(value or "", base_prefix)
+    return logical or fallback
 
 
 def _load_units_from_pg(
@@ -330,8 +342,16 @@ def _patch_s3_artifacts(
     writer = ArtifactWriter(tenant_cfg)
     index = read_source_index(tenant_cfg, client_id)
     record = next((r for r in index.get("sources", []) if str(r.get("job_id")) == str(job_id)), None) or {}
-    content_key = record.get("content_key") or source_content_key(tenant_cfg, client_id, job_id)
-    payload_key = record.get("payload_key") or studio_payload_key(tenant_cfg, client_id, job_id)
+    content_key = _retag_artifact_key(
+        record.get("content_key"),
+        source_content_key(tenant_cfg, client_id, job_id),
+        writer.base_prefix,
+    )
+    payload_key = _retag_artifact_key(
+        record.get("payload_key"),
+        studio_payload_key(tenant_cfg, client_id, job_id),
+        writer.base_prefix,
+    )
 
     by_id = {u["content_unit_id"]: u for u in updated_units if u.get("content_unit_id")}
 

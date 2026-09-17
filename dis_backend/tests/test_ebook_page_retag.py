@@ -106,3 +106,26 @@ def test_batch_helpers():
     ]
     assert _batch_failed_count(batch) == 1
     assert _last_page_label(batch) == 3
+
+
+def test_retag_payload_key_matches_ingest_logical_path():
+    """Catalogue stores write_json's s3:// URL; retag must write processed/... not DIS/s3://."""
+    from services.ebook_page_retag import _retag_artifact_key
+
+    job = "56ba47ba-0f9b-4ff9-9b9e-de77e58ff908"
+    ingest = f"processed/aim_ns/aim/development/{job}/studio_payload/payload.json"
+    catalog = f"s3://content-ai-studio-dev/DIS/{ingest}"
+    assert _retag_artifact_key(catalog, "fallback", "DIS") == ingest
+    assert _retag_artifact_key(ingest, "fallback", "DIS") == ingest
+    assert _retag_artifact_key("", ingest, "DIS") == ingest
+    assert _retag_artifact_key("   ", ingest, "DIS") == ingest
+
+
+def test_write_json_storage_key_does_not_embed_s3_url():
+    from services.artifacts import _storage_key
+
+    ingest = "processed/aim_ns/aim/development/job-1/studio_payload/payload.json"
+    expected = f"DIS/{ingest}"
+    assert _storage_key("DIS", ingest) == expected
+    assert _storage_key("DIS", f"s3://content-ai-studio-dev/DIS/{ingest}") == expected
+    assert _storage_key("DIS", expected) == expected
