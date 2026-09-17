@@ -15,6 +15,7 @@ export const sourceLibraryApi = {
   getRetagProgress: (jobId, params = {}) => api.get(SOURCE_LIBRARY.RETAG_PROGRESS(jobId), { params }),
   searchSource: (jobId, params = {}) => api.get(SOURCE_LIBRARY.SEARCH(jobId), { params }),
   deleteDocument: (jobId, params = {}) => api.delete(SOURCE_LIBRARY.DELETE_DOCUMENT(jobId), { params }),
+  reindexDocument: (jobId, params = {}) => api.post(SOURCE_LIBRARY.INDEX(jobId), {}, { params }),
   getMetadata: (jobId, params = {}) => api.get(SOURCE_LIBRARY.METADATA(jobId), { params }),
   patchMetadata: (jobId, payload, params = {}) => api.patch(SOURCE_LIBRARY.METADATA(jobId), payload, { params }),
   revertMetadata: (jobId, params = {}) => api.post(SOURCE_LIBRARY.METADATA_REVERT(jobId), {}, { params }),

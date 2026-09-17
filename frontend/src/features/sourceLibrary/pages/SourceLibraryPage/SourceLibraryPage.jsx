@@ -5,7 +5,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { selectUser, selectIsAdmin } from '@features/auth/authSlice';
 import { selectSelectedProject, selectSelectedCourse } from '@features/dashboard/dashboardSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
-import RetrievalStatus from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
+import RetrievalStatus, { canReindex } from '@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus';
 import { acceptAttribute, rejectionReason as policyRejectionReason } from '@features/sourceLibrary/utils/uploadPolicy';
 import {
   optionsKeyForTaxonomyKey,
@@ -148,6 +148,7 @@ export default function SourceLibraryPage() {
   const [silentRetryTick, setSilentRetryTick] = useState(0);
   const [showAllCourses, setShowAllCourses] = useState(false);
   const [deletingId, setDeletingId] = useState('');
+  const [reindexingId, setReindexingId] = useState('');
 
   const L = useLabels();
   const purposeLabels = uiConfig?.purpose_labels || {};
@@ -307,6 +308,23 @@ export default function SourceLibraryPage() {
       setError(errorMessage(e, 'Could not delete this document.'));
     } finally {
       setDeletingId('');
+    }
+  }
+
+  async function handleReindexDocument(doc) {
+    const jobId = doc.job_id || doc.document_id;
+    if (!jobId) return;
+    setReindexingId(jobId);
+    setError('');
+    try {
+      const result = await sourceLibraryApi.reindexDocument(jobId, withScope({}));
+      const n = Number(result?.units_indexed || 0);
+      toast.success(n ? `Indexed ${n} unit${n === 1 ? '' : 's'} for search.` : 'Re-index finished.');
+      await loadDocuments(filters);
+    } catch (e) {
+      setError(errorMessage(e, 'Could not re-index this document.'));
+    } finally {
+      setReindexingId('');
     }
   }
 
@@ -847,6 +865,17 @@ export default function SourceLibraryPage() {
                           >
                             Edit metadata
                           </button>
+                          {isAdmin && canReindex(doc) && (
+                            <button
+                              type="button"
+                              className={`${styles.button} ${styles.buttonSecondary}`}
+                              disabled={reindexingId === (doc.job_id || doc.document_id)}
+                              onClick={() => handleReindexDocument(doc)}
+                              title="Send already-extracted text to the search index. This is not still running."
+                            >
+                              {reindexingId === (doc.job_id || doc.document_id) ? 'Indexing…' : 'Re-index'}
+                            </button>
+                          )}
                           {isAdmin && (
                             <button
                               type="button"

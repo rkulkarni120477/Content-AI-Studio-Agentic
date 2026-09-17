@@ -72,9 +72,14 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
             state['syllabus_structure'] = extract_syllabus_structure(filename, text, tables, doc_processing)
             state['specialized_structure_type'] = 'syllabus'
             state.setdefault('doc_metadata', {})['block'] = block_label(state['syllabus_structure'].get('block') or infer_block(filename, text, doc_processing.structure_patterns))
-        elif doc_type in {'quiz_exam', 'quiz_answer_key'}:
+        elif doc_type in {'quiz_exam', 'quiz_answer_key'} or str(effective_type).lower() in {
+            'quiz', 'quiz_exam', 'final_exam', 'quiz_answer_key', 'final_exam_answer_key',
+        }:
+            # AIM remaps quiz_exam → quiz / final_exam on content_type after
+            # classification. Using only pipeline doc_type skipped exam structure
+            # once the LLM classifier (or an empty extract) left doc_type as other.
             state['quiz_structure'] = extract_quiz_structure(filename, text, doc_processing)
-            state['specialized_structure_type'] = state['quiz_structure'].get('structure_type', doc_type)
+            state['specialized_structure_type'] = state['quiz_structure'].get('structure_type', doc_type or effective_type)
         elif doc_type in {'project_activity', 'project_key', 'instructor_guide'}:
             state['project_structure'] = extract_project_structure(filename, text, doc_processing)
             state['specialized_structure_type'] = state['project_structure'].get('structure_type', doc_type)

@@ -42,6 +42,16 @@ import styles from './RetrievalStatus.module.scss';
  * whose index is unreachable should still say plainly that a file yielded no
  * text, rather than hiding a definite answer behind "Unknown".
  */
+export function canReindex(doc) {
+  const ingest = String(doc?.status || '').toLowerCase();
+  if (ingest === 'processing' || ingest === 'pending' || ingest === 'failed') return false;
+  const chars = doc?.extracted_chars;
+  if (chars !== null && chars !== undefined && Number(chars) === 0) return false;
+  const indexed = doc?.indexed_units;
+  if (indexed === null || indexed === undefined) return false;
+  return Number(indexed) === 0 && Number(doc?.total_units ?? 0) > 0;
+}
+
 export default function RetrievalStatus({ doc }) {
   const units = Number(doc?.total_units ?? 0);
   const indexed = doc?.indexed_units;
@@ -71,7 +81,7 @@ export default function RetrievalStatus({ doc }) {
     tone = 'error';
     label = 'Nothing extracted';
     detail = 'No text was recovered from this file, so no generation can use it. '
-      + 'It needs re-ingesting with an extractor that can read this format.';
+      + 'Re-index cannot help — re-upload the file after an extractor can read this format.';
   } else if (indexed === null || indexed === undefined) {
     tone = 'unknown';
     label = 'Unknown';
@@ -79,11 +89,12 @@ export default function RetrievalStatus({ doc }) {
   } else if (units === 0) {
     tone = 'error';
     label = 'Nothing extracted';
-    detail = 'No text was recovered from this file. No generation can use it until it is re-ingested.';
+    detail = 'No text was recovered from this file. Re-index cannot help — re-upload it.';
   } else if (Number(indexed) === 0) {
     tone = 'error';
     label = 'Not indexed';
-    detail = `${units} unit${units === 1 ? '' : 's'} extracted but never reached the search index, so generation cannot see this document. The text is still stored — re-indexing restores it.`;
+    detail = `${units} unit${units === 1 ? '' : 's'} extracted but never reached the search index. `
+      + 'Indexing already finished — this is not still running. The text is stored; use Re-index to send it to search.';
   } else if (Number(indexed) < units) {
     tone = 'warn';
     label = `Partly searchable · ${indexed}/${units}`;
