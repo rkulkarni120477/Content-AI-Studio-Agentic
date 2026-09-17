@@ -241,7 +241,7 @@ def upsert_document(cur, schema: str, state: Dict[str, Any], environment: str) -
         INSERT INTO {schema}.dis_documents(document_id, job_id, tenant_id, client_id, document_title, document_type, source_file_name, source_file_type, source_relative_path, raw_storage_url, payload_storage_url, metadata_json, environment)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
         ON CONFLICT(document_id) DO UPDATE SET metadata_json=EXCLUDED.metadata_json, payload_storage_url=EXCLUDED.payload_storage_url
-    """, (doc_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), meta.get("title") or state.get("filename"), state.get("doc_type"), state.get("filename"), state.get("file_type"), state.get("source_relative_path"), state.get("raw_storage_url"), state.get("artifact_urls", {}).get("studio_payload", ""), json.dumps(meta), environment))
+    """, (doc_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), meta.get("title") or state.get("filename"), meta.get("document_type") or meta.get("content_type") or state.get("doc_type"), state.get("filename"), state.get("file_type"), state.get("source_relative_path"), state.get("raw_storage_url"), state.get("artifact_urls", {}).get("studio_payload", ""), json.dumps(meta), environment))
     return doc_id
 
 
@@ -449,7 +449,13 @@ def _build_bulk_actions(
             "client_id": state.get("client_id"),
             "source_file_name": state.get("filename"),
             "source_file_type": state.get("file_type"),
-            "document_type": state.get("doc_type"),
+            "document_type": (
+                meta.get("document_type")
+                or meta.get("content_type")
+                or (state.get("doc_metadata") or {}).get("document_type")
+                or (state.get("doc_metadata") or {}).get("content_type")
+                or state.get("doc_type")
+            ),
             "course_name": meta.get("course_name") or meta.get("course") or state.get("doc_metadata", {}).get("course_name"),
             "block": meta.get("block") or state.get("doc_metadata", {}).get("block"),
             "day_number": meta.get("day_number"),

@@ -108,6 +108,30 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
             # once the LLM classifier (or an empty extract) left doc_type as other.
             state['quiz_structure'] = extract_quiz_structure(filename, text, doc_processing)
             state['specialized_structure_type'] = state['quiz_structure'].get('structure_type', doc_type or effective_type)
+        elif str(effective_type or '').lower() == 'hangar_activity':
+            hangar = self._extract_hangar(state, filename)
+            if hangar and (hangar.get('sheets') or []):
+                state['hangar_structure'] = hangar
+                state['specialized_structure_type'] = 'hangar_activities_workbook'
+                meta = state.setdefault('doc_metadata', {})
+                sheets = hangar.get('sheets') or []
+                if len(sheets) > 1:
+                    meta['block'] = None
+                    meta['block_number'] = None
+                    meta['block_id'] = None
+                meta['blocks_covered'] = hangar.get('blocks_covered') or [
+                    s.get('block') for s in sheets if s.get('block')
+                ]
+                meta['hangar_sheets_detected'] = len(sheets)
+                skipped = hangar.get('skipped_sheets') or []
+                if skipped:
+                    state.setdefault('errors', []).append(
+                        'hangar_activity: skipped sheets '
+                        + ', '.join(
+                            f"{s.get('sheet')} ({s.get('reason')})" for s in skipped[:12]
+                        )
+                    )
+            # PDF / non-workbook hangar: no specialized structure; page units later.
         elif doc_type in {'project_activity', 'project_key', 'instructor_guide'}:
             state['project_structure'] = extract_project_structure(filename, text, doc_processing)
             state['specialized_structure_type'] = state['project_structure'].get('structure_type', doc_type)
@@ -140,6 +164,27 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
             state.setdefault('errors', []).append(f'knowledge_test_report: {exc}')
             return {'structure_type': 'knowledge_test_report', 'blocks': [], 'skipped_sheets': []}
 
+    def _extract_hangar(self, state, filename):
+        """Parse hangar activities summary workbooks into per-Block-sheet records."""
+        raw_bytes = state.get('raw_bytes') or b''
+        is_excel = str(filename).lower().endswith(('.xlsx', '.xls'))
+        if not raw_bytes or not is_excel:
+            return None
+        try:
+            from services.aim_hangar import (
+                looks_like_hangar_activities_workbook,
+                build_hangar_structure,
+            )
+            if not looks_like_hangar_activities_workbook(raw_bytes):
+                return None
+            block_hint = (state.get('doc_metadata') or {}).get('block')
+            return build_hangar_structure(raw_bytes, filename, block_hint)
+        except Exception as exc:  # noqa: BLE001 — never sink the document over this
+            state.setdefault('errors', []).append(
+                f'hangar_activity: workbook parser failed ({type(exc).__name__}: {exc})'
+            )
+            return None
+
     def _extract_calendar(self, state, filename, text, tables, doc_processing):
         """Use the AIM column-aware parser for AIM teacher-calendar workbooks;
         fall back to the generic row-based extractor for everything else."""
@@ -166,9 +211,4 @@ class SpecializedStructureExtractionAgent(BasePipelineAgent):
                     f'course_calendar: AIM parser failed on {filename} '
                     f'({type(exc).__name__}: {exc}); fell back to the generic extractor')
         return extract_calendar_structure(filename, text, tables, doc_processing)
-
-        # =============================================================================
-        # STEP: content_unit_creation
-        # Purpose: Content Unit Creation pipeline step.
-        # =============================================================================
 
