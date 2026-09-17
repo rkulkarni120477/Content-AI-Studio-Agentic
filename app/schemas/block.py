@@ -87,7 +87,7 @@ class BlockAutosaveResponse(BaseModel):
 class BlockRegenerateRequest(BaseModel):
     """Body for POST /blocks/{id}/regenerate — AI full-block regeneration."""
 
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     feedback_instruction: str = Field(
         default="",
         max_length=3000,
@@ -111,7 +111,7 @@ class BlockRegenerateItemRequest(BaseModel):
     item_index: int = Field(..., ge=0)
     section_key: str
     feedback: str = Field(default="", max_length=2000)
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
 
 
 class BlockRegenerateItemResponse(BaseModel):

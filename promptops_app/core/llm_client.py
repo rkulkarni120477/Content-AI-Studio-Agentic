@@ -251,6 +251,34 @@ def _get_openai_session() -> requests.Session:
     return _openai_session
 
 
+def _openai_uses_completion_tokens(model: str) -> bool:
+    """GPT-5.6 chat-completions models reject `max_tokens` and non-default temperature."""
+    return (model or "").lower().startswith("gpt-5.6")
+
+
+def _openai_payload(target_model: str, system_prompt: str, user_prompt: str,
+                    max_tokens: Optional[int]) -> tuple[dict, int]:
+    """Build a Chat Completions body and the output cap that was requested.
+
+    GPT-5.6 requires ``max_completion_tokens`` (not ``max_tokens``) and does not
+    accept a custom temperature. Older chat models keep the previous payload.
+    """
+    cap = max_tokens or DEFAULT_MAX_OUTPUT_TOKENS
+    data: dict = {
+        "model": target_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    if _openai_uses_completion_tokens(target_model):
+        data["max_completion_tokens"] = cap
+    else:
+        data["temperature"] = 0.3
+        data["max_tokens"] = cap
+    return data, cap
+
+
 def call_openai(system_prompt: str, user_prompt: str, usage_ctx: Optional["UsageLogContext"] = None,
                 max_tokens: Optional[int] = None) -> str:
     """Send a prompt to OpenAI and return the response text. No truncation applied.
@@ -263,7 +291,7 @@ def call_openai(system_prompt: str, user_prompt: str, usage_ctx: Optional["Usage
     """
     if not settings.openai_api_key:
         return "ERROR: OpenAI API Key not configured."
-    # display names like "GPT-5.4" should never reach this legacy function —
+    # display names like "GPT-5.6 Terra" should never reach this legacy function —
     # route through generate_text() → _invoke_primary() → _call_openai_raw() instead.
     target_model = settings.openai_model
     try:
@@ -307,15 +335,7 @@ def _call_openai_raw(
     )
 
     url = "https://api.openai.com/v1/chat/completions"
-    data = {
-        "model": target_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
-    }
+    data, output_cap = _openai_payload(target_model, system_prompt, user_prompt, max_tokens)
     _log.info("llm_call_started", extra={
         "event": "llm_call_started", "provider": "openai", "model": target_model,
         "system_prompt": system_prompt, "user_prompt": user_prompt,
@@ -364,7 +384,7 @@ def _call_openai_raw(
                 "llm_output_truncated", extra={
                     "event": "llm_output_truncated", "provider": "openai",
                     "model": target_model, "finish_reason": result.stop_reason,
-                    "max_tokens": data["max_tokens"],
+                    "max_tokens": output_cap,
                     "completion_tokens": result.completion_tokens,
                 })
         duration_s = time.monotonic() - start

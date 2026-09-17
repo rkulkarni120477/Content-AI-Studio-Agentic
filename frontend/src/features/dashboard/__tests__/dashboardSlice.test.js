@@ -30,7 +30,7 @@ const baseState = {
   selectedProject: { id: 5, name: 'Project 5' },
   selectedCluster: { id: 1, name: 'Existing Cluster' },
   selectedCourse: null,
-  modelChoice: 'GPT-5.4', expertDomain: '', targetAudience: '', audienceCategory: '',
+  modelChoice: 'GPT-5.6 Terra', expertDomain: '', targetAudience: '', audienceCategory: '',
   isLoadingProjects: false, isLoadingClusters: false, isLoadingCourses: false, isLoadingModels: false,
   error: null,
 };

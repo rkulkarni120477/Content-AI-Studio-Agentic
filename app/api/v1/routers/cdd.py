@@ -939,7 +939,7 @@ def import_cdd(
     project_id: int = Form(..., description="Parent project id."),
     course_title: str = Form("", description="Block / course title. Blank → derived from the file."),
     document_title: str = Form("", description="Document label. Blank → '<block> — CDD'."),
-    model_choice: str = Form("GPT-5.4", description="Model used only for the LLM restructure path."),
+    model_choice: str = Form("GPT-5.6 Terra", description="Model used only for the LLM restructure path."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("cdd.generate")),
 ) -> CDDGenerateResponse:

@@ -86,7 +86,7 @@ def run_outline_import_job(job_id: str) -> None:
         course_id = params.get("course_id")
         project_id = params.get("project_id")
         cdd_id = params.get("cdd_id")
-        model_choice = params.get("model_choice", "GPT-5.4")
+        model_choice = params.get("model_choice", "GPT-5.6 Terra")
         current_user = _reconstruct_user(params)
 
         from promptops_app.services.outline_import_persist import persist_imported_outline

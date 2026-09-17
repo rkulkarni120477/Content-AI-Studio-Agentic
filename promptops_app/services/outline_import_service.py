@@ -625,7 +625,7 @@ def normalize_import(filename: str, data: bytes, *,
                      document_title: str = "",
                      hint_kind: Optional[str] = None,
                      hint_number: Optional[int] = None,
-                     model_choice: str = "GPT-5.4", usage_ctx=None) -> OutlineImportResult:
+                     model_choice: str = "GPT-5.6 Terra", usage_ctx=None) -> OutlineImportResult:
     """Extract *data* and normalize it into an Outline — either a DLU **day**
     Outline (five-part accordions) or a **module** Outline (freeform sections).
 

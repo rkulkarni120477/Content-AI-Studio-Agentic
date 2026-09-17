@@ -435,7 +435,7 @@ def _derive_block(sections: List[Tuple[str, str]], flat_text: str, fallback: str
 # --------------------------------------------------------------------------- #
 def normalize_import(filename: str, data: bytes, *,
                      course_title: str = "", document_title: str = "",
-                     model_choice: str = "GPT-5.4", usage_ctx=None) -> ImportResult:
+                     model_choice: str = "GPT-5.6 Terra", usage_ctx=None) -> ImportResult:
     """Extract *data* and normalize it into the canonical CDD worksheet shape.
 
     ``course_title`` / ``document_title`` are the user's edits from the form (may

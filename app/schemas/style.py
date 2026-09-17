@@ -39,7 +39,7 @@ class StyleActivateRequest(BaseModel):
 class StyleUnderstandRequest(BaseModel):
     """Body for POST /api/v1/styles/{id}/understand — trigger AI intelligence generation."""
 
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     extra_instructions: str = Field(default="", max_length=12000)
     document_ids: list[str] = Field(default_factory=list, description="Optional DIS source document/job IDs to use for this Understand/Refine call.")
     prompt_id: Optional[int] = Field(

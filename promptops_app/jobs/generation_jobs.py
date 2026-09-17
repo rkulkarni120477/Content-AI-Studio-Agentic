@@ -211,7 +211,7 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         b_type             = params["b_type"]
         eff_cdd_id         = params.get("eff_cdd_id")
         eff_bp_id          = params.get("eff_bp_id")
-        model_choice       = params.get("model_choice", "GPT-5.4")
+        model_choice       = params.get("model_choice", "GPT-5.6 Terra")
         target_audience    = params.get("target_audience", "")
         expert_domain      = params.get("expert_domain", "")
         expert_exp         = params.get("expert_exp", 20)

@@ -13,7 +13,7 @@ import styles from './ClusterPromptManager.module.scss';
 const NONE_CLUSTER = '';
 
 export default function ClusterPromptManager({ clusters = [] }) {
-  const modelChoice = useAppSelector(selectModelChoice) || 'GPT-5.4';
+  const modelChoice = useAppSelector(selectModelChoice) || 'GPT-5.6 Terra';
   const apiReady = isClusterPromptApiAvailable();
   const [tab, setTab] = useState(0);
 

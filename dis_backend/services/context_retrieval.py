@@ -12,6 +12,16 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# region agent log
+def _agent_dbg(hypothesis_id, location, message, data):
+    try:
+        import json as _json, time as _time
+        with open(r"c:\xampp\htdocs\Content-AI-Studio-\debug-292e81.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId": "292e81", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(_time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+# endregion
+
 from config.settings import TenantConfig, get_settings
 from services.artifacts import ArtifactWriter
 from services.source_library import read_source_index, source_filter_options as compact_filter_options
@@ -723,6 +733,19 @@ class ContextRetrievalService:
                     payload = self._record_to_payload(rec)
                     payload["content_units"] = doc.get("content_units") or []
                     payload["reading_content"] = doc.get("reading_content") or ""
+                    # region agent log
+                    _cu = payload.get("content_units") or []
+                    _agent_dbg("H2", "context_retrieval.py:_iter_payloads", "s3 content payload", {
+                        "job_id": rec.get("job_id"),
+                        "document_type": rec.get("document_type"),
+                        "source_file_type": rec.get("source_file_type"),
+                        "source_file_name": rec.get("source_file_name"),
+                        "unit_count": len(_cu),
+                        "units_with_text": sum(1 for u in _cu if str(u.get("text") or "").strip()),
+                        "reading_chars": len(str(payload.get("reading_content") or "")),
+                        "chunking_strategy": (doc or {}).get("chunking_strategy"),
+                    })
+                    # endregion
                     yield payload
                 except Exception as exc:
                     # A single unreadable/corrupt source record must not abort
@@ -910,6 +933,15 @@ class ContextRetrievalService:
             if field in filters and filters.get(field) is not None:
                 expected = bool(filters.get(field))
                 if bool(meta_all.get(field)) != expected:
+                    # region agent log
+                    if field in {"use_for_course_generation", "use_for_style", "use_for_cdd", "use_for_blueprint"}:
+                        _agent_dbg("H1", "context_retrieval.py:_passes_filters:bool", "bool gate rejected", {
+                            "field": field, "expected": expected, "actual": bool(meta_all.get(field)),
+                            "document_type": meta_all.get("document_type") or meta_all.get("doc_type"),
+                            "purpose": meta_all.get("purpose"), "source_file_type": source.get("type"),
+                            "source_file_name": source.get("name"), "job_id": payload.get("job_id"),
+                        })
+                    # endregion
                     return False
 
         # Purpose gate.
@@ -926,7 +958,17 @@ class ContextRetrievalService:
         )
         purpose = str(filters.get("purpose") or "").strip().lower()
         if purpose and purpose not in {"all", "*", "any"} and not explicit_selection:
-            if purpose not in [str(p).lower() for p in self._purposes_for_payload(payload)]:
+            _purposes = [str(p).lower() for p in self._purposes_for_payload(payload)]
+            if purpose not in _purposes:
+                # region agent log
+                _agent_dbg("H1", "context_retrieval.py:_passes_filters:purpose", "purpose gate rejected", {
+                    "filter_purpose": purpose, "payload_purposes": _purposes,
+                    "document_type": meta_all.get("document_type") or meta_all.get("doc_type"),
+                    "stored_purpose": meta_all.get("purpose"), "source_file_type": source.get("type"),
+                    "source_file_name": source.get("name"), "job_id": payload.get("job_id"),
+                    "use_for_course_generation": bool(meta_all.get("use_for_course_generation")),
+                })
+                # endregion
                 return False
 
         # Dynamic metadata filters from CAS Source Library config.
@@ -1018,7 +1060,24 @@ class ContextRetrievalService:
         if not needs_units:
             for payload in self._iter_source_records(client_id, filters):
                 # Empty synthetic unit -> doc-level gate (see _passes_filters).
-                if not self._passes_filters({}, payload, filters):
+                _passed = self._passes_filters({}, payload, filters)
+                # region agent log
+                _meta = payload.get("metadata") or {}
+                _src = payload.get("source_file") or {}
+                _agent_dbg("H1", "context_retrieval.py:retrieve_allow", "allow-set candidate", {
+                    "job_id": payload.get("job_id"),
+                    "document_type": _meta.get("document_type") or _meta.get("doc_type"),
+                    "purpose": _meta.get("purpose"),
+                    "use_for_course_generation": bool(_meta.get("use_for_course_generation")),
+                    "purposes": self._purposes_for_payload(payload),
+                    "source_file_type": _src.get("type"),
+                    "source_file_name": _src.get("name"),
+                    "passed": _passed,
+                    "filter_purpose": filters.get("purpose"),
+                    "filter_use_for_cg": filters.get("use_for_course_generation"),
+                })
+                # endregion
+                if not _passed:
                     continue
                 _jid = payload.get("job_id")
                 if not _jid:
@@ -1056,6 +1115,21 @@ class ContextRetrievalService:
         budget_dropped: List[Dict[str, Any]] = []
         selected, used_tokens, combined = self._pack_units(
             chosen_units, top_k, token_budget, include_visual_summary, dropped=budget_dropped)
+        # region agent log
+        _agent_dbg("H3", "context_retrieval.py:retrieve_result", "retrieval packed result", {
+            "retrieval_method": retrieval_method,
+            "allowed_job_count": len(allowed_jobs),
+            "chosen_count": len(chosen_units),
+            "selected_count": len(selected),
+            "combined_chars": len(combined or ""),
+            "chosen_file_types": [u.get("source_file_type") for u in chosen_units[:20]],
+            "chosen_names": [u.get("source_file_name") for u in chosen_units[:20]],
+            "selected_names": [u.get("source_file_name") for u in selected[:20]],
+            "budget_dropped": [{"name": d.get("source_file_name"), "reason": d.get("reason"), "tokens": d.get("estimated_tokens")} for d in budget_dropped[:10]],
+            "filter_purpose": filters.get("purpose"),
+            "query_len": len(query_text or ""),
+        })
+        # endregion
         return {
             "context_pack_id": f"ctx_{uuid.uuid4().hex[:12]}",
             "tenant_id": self.tenant_cfg.tenant_id,
@@ -1175,6 +1249,18 @@ class ContextRetrievalService:
         max_raw = max((float(h.get("_score") or 0.0) for h in hits), default=0.0) or 1.0
         units: List[Dict[str, Any]] = []
         seen: set = set()
+        # region agent log
+        _agent_dbg("H3", "context_retrieval.py:_vector_units", "opensearch hits", {
+            "hit_count": len(hits),
+            "allowed_job_count": len(allowed_jobs),
+            "hits": [{"job_id": h.get("job_id"), "document_type": h.get("document_type"),
+                      "source_file_type": h.get("source_file_type"),
+                      "source_file_name": h.get("source_file_name"),
+                      "unit_type": h.get("unit_type"),
+                      "text_len": len(str(h.get("text") or "")),
+                      "allowed": h.get("job_id") in allowed_jobs} for h in hits[:25]],
+        })
+        # endregion
         for h in hits:
             job_id = h.get("job_id")
             # SECURITY: only surface chunks from docs the S3 gate already allowed.
@@ -1373,7 +1459,25 @@ def _load_source_content_doc_for_view(self, client_id: str, job_id: str) -> Dict
     index = read_source_index(self.tenant_cfg, client_id)
     record = next((r for r in index.get("sources", []) if str(r.get("job_id")) == str(job_id)), None)
     if record and record.get("content_key"):
-        return self.writer.read_json(record.get("content_key"))
+        doc = self.writer.read_json(record.get("content_key"))
+        # region agent log
+        _units = (doc or {}).get("content_units") or []
+        _agent_dbg("H2", "context_retrieval.py:_load_source_content_doc_for_view", "loaded content.json", {
+            "job_id": job_id,
+            "content_key": record.get("content_key"),
+            "document_type": (doc or {}).get("document_type") or record.get("document_type"),
+            "source_file_type": (doc or {}).get("source_file_type") or record.get("source_file_type"),
+            "source_file_name": (doc or {}).get("source_file_name") or record.get("source_file_name"),
+            "chunking_strategy": (doc or {}).get("chunking_strategy"),
+            "unit_count": len(_units),
+            "units_with_text": sum(1 for u in _units if str(u.get("text") or "").strip()),
+            "reading_chars": len(str((doc or {}).get("reading_content") or "")),
+            "extracted_chars": record.get("extracted_chars"),
+            "indexed_units": record.get("indexed_units"),
+            "total_units": record.get("total_units"),
+        })
+        # endregion
+        return doc
     # Backward compatibility for old payload-only uploads.
     payload = self._load_payload_by_job(client_id, job_id)
     units = payload.get("content_units", [])

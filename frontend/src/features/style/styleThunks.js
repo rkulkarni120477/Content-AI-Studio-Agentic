@@ -146,7 +146,7 @@ export const regenerateStyleThunk = createAsyncThunk(
     const promptId = (arg && typeof arg === 'object') ? arg.promptId : undefined;
     try {
       const state = getState();
-      const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
+      const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.6 Terra';
       const courseId = state?.dashboard?.selectedCourse?.id ?? null;
       const accepted = await styleService.regenerateStyle(styleId, {
         model_choice: modelChoice,
@@ -182,7 +182,7 @@ export const refineStyleThunk = createAsyncThunk(
   async ({ styleId, corrections }, { dispatch, getState, rejectWithValue }) => {
     try {
       const state = getState();
-      const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.4';
+      const modelChoice = state?.dashboard?.modelChoice || 'GPT-5.6 Terra';
       const courseId = state?.dashboard?.selectedCourse?.id ?? null;
       const accepted = await styleService.regenerateStyle(styleId, {
         model_choice: modelChoice,

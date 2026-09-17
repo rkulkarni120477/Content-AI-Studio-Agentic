@@ -60,7 +60,7 @@ export const editorService = {
   autosaveBlock: (id, content) => api.post(BLOCKS.AUTOSAVE(id), { content }),
 
   regenerateBlock: (id, data) => api.post(BLOCKS.REGENERATE(id), {
-    model_choice: data.model_choice || 'GPT-5.4',
+    model_choice: data.model_choice || 'GPT-5.6 Terra',
     feedback_instruction: data.feedback_instruction || data.instruction || '',
   }),
 

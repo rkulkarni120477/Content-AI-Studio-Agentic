@@ -1180,7 +1180,7 @@ def regen_single_item(
     item_index: int,
     item_text: str,
     custom_instruction: str,
-    model_choice: str = "GPT-5.4",
+    model_choice: str = "GPT-5.6 Terra",
     learning_signals: str = "",
 ) -> str:
     """
@@ -2708,7 +2708,7 @@ def cluster_selection_page():
                                 with st.spinner("Generating cluster prompt with AI…"):
                                     try:
                                         from promptops_app.services.llm_service import generate_text as _cp_llm_call
-                                        _cp_mc = st.session_state.get("model_choice", "GPT-5.4")
+                                        _cp_mc = st.session_state.get("model_choice", "GPT-5.6 Terra")
                                         if _cp_ai_mode == "Refine My Draft":
                                             _cp_ai_sys_p = (
                                                 "You are an expert prompt engineer for eLearning. "

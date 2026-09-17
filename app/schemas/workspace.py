@@ -23,7 +23,7 @@ class WorkspaceRead(BaseModel):
 class SidebarConfig(BaseModel):
     """Sidebar model/audience configuration persisted between sessions."""
 
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     expert_domain: str = Field(default="")
     target_audience: str = Field(default="")
     audience_category: str = Field(default="Professional/Corporate")
@@ -44,7 +44,7 @@ class WorkspaceUpdateRequest(BaseModel):
 class WorkspaceConfigUpdateRequest(BaseModel):
     """Body for PUT /api/v1/workspace/config — persists sidebar settings."""
 
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     expert_domain: str = Field(default="", max_length=200)
     target_audience: str = Field(default="", max_length=200)
     audience_category: str = Field(default="Professional/Corporate")

@@ -42,7 +42,7 @@ class BlockWideGenerateRequest(BaseModel):
     quality_tier: Optional[str] = Field(
         default=None, description="'draft' | 'standard' | 'premium' (default standard)."
     )
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     extra_instructions: str = Field(default="", max_length=5000)
     cdd_id: Optional[int] = Field(default=None, description="Optional CDD context (blueprint).")
     target_audience: str = Field(default="", max_length=200)

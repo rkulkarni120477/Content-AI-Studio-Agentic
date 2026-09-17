@@ -51,10 +51,14 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gpt-4-turbo":     {"input": 10.00,  "output": 30.00},
     "gpt-4":           {"input": 30.00,  "output": 60.00},
     "gpt-3.5-turbo":   {"input":  0.50,  "output":  1.50},
+    "gpt-5.6-sol":     {"input":  4.00,  "output": 20.00},
+    "gpt-5.6-terra":   {"input":  2.00,  "output": 12.00},
+    "gpt-5.6-luna":    {"input":  0.20,  "output":  1.20},
     # Anthropic Claude (via AWS Bedrock)
     "claude-opus":     {"input": 15.00,  "output": 75.00},
     "claude-sonnet":   {"input":  3.00,  "output": 15.00},
     "claude-haiku":    {"input":  0.80,  "output":  4.00},
+    "claude-fable":    {"input": 10.00,  "output": 50.00},
     # Embeddings (AWS Bedrock). Output is 0 by definition — an embedding call
     # returns a vector, not generated tokens — so only the input side is charged.
     # These matter because the fallback below is ~250x Titan's real price: DIS
@@ -89,8 +93,16 @@ def _find_pricing(model_name: str) -> dict[str, float]:
     if "gpt-4-turbo"  in lc: return MODEL_PRICING["gpt-4-turbo"]
     if "gpt-4"        in lc: return MODEL_PRICING["gpt-4"]
     if "gpt-3.5"      in lc: return MODEL_PRICING["gpt-3.5-turbo"]
+    # GPT-5.6 family — Luna/Terra before Sol so a hyphenated id cannot fall
+    # through to Sol, and the bare `gpt-5.6` alias (which OpenAI routes to Sol)
+    # still prices as Sol.
+    if "5.6-luna"  in lc or "5.6 luna"  in lc: return MODEL_PRICING["gpt-5.6-luna"]
+    if "5.6-terra" in lc or "5.6 terra" in lc: return MODEL_PRICING["gpt-5.6-terra"]
+    if "5.6-sol"   in lc or "5.6 sol"   in lc or "gpt-5.6" in lc:
+        return MODEL_PRICING["gpt-5.6-sol"]
     if "claude-opus"  in lc: return MODEL_PRICING["claude-opus"]
     if "claude-haiku" in lc: return MODEL_PRICING["claude-haiku"]
+    if "claude-fable" in lc: return MODEL_PRICING["claude-fable"]
     if "claude"       in lc or "sonnet" in lc: return MODEL_PRICING["claude-sonnet"]
     return MODEL_PRICING["_default"]
 

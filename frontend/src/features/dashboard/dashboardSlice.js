@@ -13,7 +13,7 @@ const initialState = {
   selectedCluster: null,
   selectedCourse:  null,
   // Sidebar generation context
-  modelChoice:      'GPT-5.4',
+    modelChoice:      'GPT-5.6 Terra',
   expertDomain:     '',
   targetAudience:   '',
   audienceCategory: '',

@@ -101,7 +101,7 @@ class PromptAIGenerateRequest(BaseModel):
         description="Plain-language description of the prompt's purpose.",
         examples=["I need a prompt that creates interactive coding exercises with hints."],
     )
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
 
 
 class PromptAISuggestResponse(BaseModel):

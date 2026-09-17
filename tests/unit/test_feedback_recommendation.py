@@ -121,13 +121,13 @@ def test_resolve_none_override_uses_course_default():
 
 
 def test_actual_model_on_success_is_requested():
-    assert fs._actual_model_display("GPT-5.4", _fake_llm(status="success")) == "GPT-5.4"
+    assert fs._actual_model_display("GPT-5.6 Terra", _fake_llm(status="success")) == "GPT-5.6 Terra"
 
 
 def test_actual_model_on_fallback_maps_provider_id():
-    # requested a Bedrock model, but the service fell back to OpenAI gpt-4o
-    result = _fake_llm(status="fallback_success", model="gpt-4o")
-    assert fs._actual_model_display("Claude Haiku 4.5 (Bedrock)", result) == "GPT-5.4"
+    # requested a Bedrock model, but the service fell back to OpenAI gpt-5.6-sol
+    result = _fake_llm(status="fallback_success", model="gpt-5.6-sol")
+    assert fs._actual_model_display("Claude Haiku 4.5 (Bedrock)", result) == "GPT-5.6 Sol"
 
 
 def test_format_guidance():

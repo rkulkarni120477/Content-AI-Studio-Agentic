@@ -148,7 +148,7 @@ class TestCompleteRepliesStillGoThrough:
 class TestTheModelGetsItsOwnCeiling:
     @pytest.mark.parametrize(
         "model_choice,expected",
-        [("GPT-5.4", 16384), ("Claude Sonnet 5 (Bedrock)", 64000)],
+        [("GPT-5.6 Terra", 128000), ("Claude Sonnet 5 (Bedrock)", 64000)],
     )
     def test_max_tokens_is_the_catalog_ceiling(
         self, client, auth_headers, db, course, project, llm, model_choice, expected

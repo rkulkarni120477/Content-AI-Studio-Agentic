@@ -61,7 +61,7 @@ def run_regenerate_item_job(job_id: str) -> None:
         item_index = params["item_index"]
         section_key = params.get("section_key") or ""
         feedback = params.get("feedback") or ""
-        model_choice = params.get("model_choice", "GPT-5.4")
+        model_choice = params.get("model_choice", "GPT-5.6 Terra")
         user_name = params.get("user_name", "")
 
         set_running(db, job, 20, "Loading block...")
@@ -160,7 +160,7 @@ def run_regenerate_block_job(job_id: str) -> None:
         params = json.loads(job.request_json or "{}")
         block_id = int(params["block_id"])
         request = BlockRegenerateRequest(
-            model_choice=params.get("model_choice", "GPT-5.4"),
+            model_choice=params.get("model_choice", "GPT-5.6 Terra"),
             feedback_instruction=params.get("feedback_instruction") or "",
         )
         user = types.SimpleNamespace(
