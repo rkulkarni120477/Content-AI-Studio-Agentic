@@ -42,7 +42,7 @@ class ClusterPromptAIGenerateRequest(BaseModel):
     context: str = Field(..., min_length=1, description="Context / instructions for the AI.")
     draft_system_prompt: Optional[str] = Field(default=None)
     draft_user_prompt_template: Optional[str] = Field(default=None)
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
 
 
 class ClusterPromptAIGenerateResponse(BaseModel):

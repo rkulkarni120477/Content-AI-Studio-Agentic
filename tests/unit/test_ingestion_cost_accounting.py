@@ -47,11 +47,27 @@ def test_cohere_embeddings_are_recognised_too():
     ("global.anthropic.claude-sonnet-5", 3.00),
     ("global.anthropic.claude-opus-5", 15.00),
     ("global.anthropic.claude-haiku-4-5-20251001-v1:0", 0.80),
+    ("global.anthropic.claude-fable-5-1", 10.00),
+    ("global.anthropic.claude-fable-5", 10.00),
     ("gpt-4o", 5.00),
+    ("gpt-5.6-sol", 4.00),
+    ("gpt-5.6-terra", 2.00),
+    ("gpt-5.6-luna", 0.20),
+    ("GPT-5.6 Sol", 4.00),
 ])
 def test_the_embedding_rules_did_not_disturb_chat_pricing(model, expected_input):
     """The embedding checks run first, so this pins that they only match embeddings."""
     assert _find_pricing(model)["input"] == expected_input
+
+
+@pytest.mark.parametrize("model,expected_output", [
+    ("gpt-5.6-sol", 20.00),
+    ("gpt-5.6-terra", 12.00),
+    ("gpt-5.6-luna", 1.20),
+])
+def test_gpt56_family_has_distinct_output_prices(model, expected_output):
+    """Luna/Terra must not inherit Sol (or gpt-4o) rates via a broad substring."""
+    assert _find_pricing(model)["output"] == expected_output
 
 
 def test_an_unknown_model_still_falls_back_rather_than_costing_zero():

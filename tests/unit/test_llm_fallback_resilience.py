@@ -28,6 +28,26 @@ def test_bedrock_retries_without_temperature_when_model_rejects_it():
     assert '"temperature"' not in second_body
 
 
+def test_gpt56_chat_completions_use_max_completion_tokens_and_omit_temperature():
+    """GPT-5.6 rejects `max_tokens` and a custom temperature on Chat Completions.
+
+    Shipping Sol/Terra/Luna in the catalog with the gpt-4o payload would make every
+    selected-model generation 400 before a token is produced.
+    """
+    from promptops_app.core.llm_client import _openai_payload
+
+    data, cap = _openai_payload("gpt-5.6-sol", "sys", "user", 128000)
+    assert cap == 128000
+    assert data["max_completion_tokens"] == 128000
+    assert "max_tokens" not in data
+    assert "temperature" not in data
+
+    legacy, _ = _openai_payload("gpt-4o", "sys", "user", 16384)
+    assert legacy["max_tokens"] == 16384
+    assert legacy["temperature"] == 0.3
+    assert "max_completion_tokens" not in legacy
+
+
 def test_bedrock_retry_does_not_mask_unrelated_errors():
     from promptops_app.core.llm_client import _invoke_bedrock_with_retry
 
@@ -51,11 +71,12 @@ def test_fallback_caps_max_tokens_to_fallback_models_own_ceiling():
          patch("promptops_app.services.llm_service.settings") as mock_settings:
         mock_settings.openai_api_key = "test-key"
         mock_call.return_value = MagicMock()
-        llm_service._invoke_fallback("Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=32000)
+        llm_service._invoke_fallback("Claude Opus 5 (Bedrock)", "sys", "user", max_tokens=200000)
 
     assert mock_call.called
     _, kwargs = mock_call.call_args
-    assert kwargs["max_tokens"] == 16384  # gpt-4o's own catalog ceiling, not Opus's 32000
+    from promptops_app.core.models import OPENAI_MODELS
+    assert kwargs["max_tokens"] == OPENAI_MODELS[0].max_output_tokens
 
 
 def test_fallback_leaves_max_tokens_untouched_when_already_within_ceiling():

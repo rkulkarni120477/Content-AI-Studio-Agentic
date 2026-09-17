@@ -56,7 +56,7 @@ class BlueprintGenerateRequest(BaseModel):
     )
     extra_instructions: str = Field(default="", max_length=5000)
     style_id: Optional[int] = None
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     teacher_mode: bool = Field(
         default=False,
         description="If True, uses the teacher-facing prompt variant.",
@@ -126,7 +126,7 @@ class BlueprintRegenerateItemRequest(BaseModel):
     section_content: str = Field(description="Current markdown content of that section.")
     item_index: int = Field(..., ge=0, description="Index of the item to regenerate.")
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
 
 
 class BlueprintRegenerateItemResponse(BaseModel):
@@ -152,7 +152,7 @@ class BlueprintRegenerateSectionRequest(BaseModel):
         ),
     )
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     teacher_mode: bool = Field(default=False, description="Use teacher-facing prompts when true.")
 
 

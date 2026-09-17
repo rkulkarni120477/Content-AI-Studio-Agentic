@@ -94,7 +94,7 @@ def run_ce_validation(
     content: str,
     db,
     active_style=None,
-    model_choice: str = "GPT-5.4",
+    model_choice: str = "GPT-5.6 Terra",
     llm_call_fn: Optional[Callable] = None,
 ) -> str:
     """Validate and auto-fix *content* against CE_Checklist or Writing Rules.

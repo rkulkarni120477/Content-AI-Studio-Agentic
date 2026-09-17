@@ -101,9 +101,9 @@ class CDDGenerateRequest(BaseModel):
 
     # ── Sidebar config (passed from the React workspace state) ────────────────
     model_choice: str = Field(
-        default="GPT-5.4",
+        default="GPT-5.6 Terra",
         description="LLM model to use. Must be a valid entry from /api/v1/admin/model-catalog.",
-        examples=["GPT-5.4", "claude-sonnet-4-5"],
+        examples=["GPT-5.6 Terra", "claude-sonnet-4-5"],
     )
     target_audience: str = Field(
         default="",
@@ -396,7 +396,7 @@ class CDDRegenerateItemRequest(BaseModel):
     section_content: str = Field(description="Current markdown content of that section.")
     item_index: int = Field(..., ge=0, description="Index of the item to regenerate.")
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     use_sources: Optional[bool] = Field(
         default=None,
         description=(
@@ -429,7 +429,7 @@ class CDDRegenerateSectionRequest(BaseModel):
 
     section_key: str = Field(description="Section to regenerate, e.g. 'Course Structure'.")
     feedback: str = Field(default="", max_length=2000, description="Optional regeneration instruction.")
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
 
 
 class CDDDigestRepairResponse(BaseModel):

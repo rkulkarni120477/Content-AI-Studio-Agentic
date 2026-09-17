@@ -123,7 +123,7 @@ describe('what the block-wide request actually carries', () => {
     project_id: 23,
     course_title: 'Block 9 Aircraft Systems-II',
     quality_tier: 'standard',
-    model_choice: 'GPT-5.4',
+    model_choice: 'GPT-5.6 Terra',
     style_id: 7,
     prompt_id: 82,
   };

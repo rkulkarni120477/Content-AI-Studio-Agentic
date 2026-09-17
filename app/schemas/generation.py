@@ -65,7 +65,7 @@ class GenerationLaunchRequest(BaseModel):
     )
 
     # Sidebar config
-    model_choice: str = Field(default="GPT-5.4")
+    model_choice: str = Field(default="GPT-5.6 Terra")
     target_audience: str = Field(default="")
     expert_domain: str = Field(default="")
     audience_category: str = Field(default="Professional/Corporate")

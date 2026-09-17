@@ -45,15 +45,38 @@ class ModelDef:
 MODEL_CATALOG: tuple[ModelDef, ...] = (
     # ── OpenAI GPT Models ──────────────────────────────────────────────────
     ModelDef(
-        display_name="GPT-5.4",
+        display_name="GPT-5.6 Sol",
         description=(
-            "Balanced intelligence and speed — the recommended choice for "
-            "most eLearning content generation tasks."
+            "Best quality for CDD, Blueprint, complex lesson generation, "
+            "and course reverse-engineering. 1.05M context, 128K output."
+        ),
+        tags=("reasoning", "premium"),
+        provider="openai",
+        api_model_id="gpt-5.6-sol",
+        max_output_tokens=128000,
+    ),
+    ModelDef(
+        display_name="GPT-5.6 Terra",
+        description=(
+            "Strong quality with materially lower cost — a good default for "
+            "most CAS generation. 1.05M context, 128K output."
         ),
         tags=("default", "reasoning"),
         provider="openai",
-        api_model_id="gpt-4o",
+        api_model_id="gpt-5.6-terra",
         is_default=True,
+        max_output_tokens=128000,
+    ),
+    ModelDef(
+        display_name="GPT-5.6 Luna",
+        description=(
+            "Bulk and simple tasks: tagging, metadata, summaries, "
+            "classification, and simple transformations. 1.05M context, 128K output."
+        ),
+        tags=("fast",),
+        provider="openai",
+        api_model_id="gpt-5.6-luna",
+        max_output_tokens=128000,
     ),
     # ── AWS Bedrock Models ─────────────────────────────────────────────────
     # Availability below was measured with the credentials CAS actually runs on
@@ -116,6 +139,31 @@ MODEL_CATALOG: tuple[ModelDef, ...] = (
         api_model_id="global.anthropic.claude-opus-5",
         max_output_tokens=64000,
     ),
+    ModelDef(
+        display_name="Claude Fable 5.1 (Bedrock)",
+        description=(
+            "Anthropic Claude Fable 5.1 on AWS Bedrock — frontier reasoning "
+            "for long-horizon content generation, with a 1M-token context window."
+        ),
+        tags=("reasoning", "premium"),
+        provider="bedrock",
+        api_model_id="global.anthropic.claude-fable-5-1",
+        max_output_tokens=128000,
+    ),
+    ModelDef(
+        display_name="Claude Fable 5 (Bedrock)",
+        description=(
+            "Anthropic Claude Fable 5 on AWS Bedrock — previous Fable generation "
+            "for complex knowledge work, with a 1M-token context window."
+        ),
+        tags=("reasoning", "premium"),
+        provider="bedrock",
+        # DIS already records this ID; a probe on DIS credentials failed with
+        # ValidationException. CAS uses a different principal — confirm invoke
+        # access before relying on it as a default path.
+        api_model_id="global.anthropic.claude-fable-5",
+        max_output_tokens=128000,
+    ),
 )
 
 # ── Convenience lookups ────────────────────────────────────────────────────
@@ -139,6 +187,7 @@ _COMPAT_ALIASES: dict[str, str] = {
     "Sonnet 4.5 (Bedrock)": "Claude Sonnet 4.5 (Bedrock)",
     "Claude Sonnet 4.6 (Bedrock)": "Claude Sonnet 5 (Bedrock)",
     "Claude Opus 4.8 (Bedrock)": "Claude Opus 5 (Bedrock)",
+    "GPT-5.4": "GPT-5.6 Terra",
 }
 
 _DEFAULT: ModelDef = next((m for m in MODEL_CATALOG if m.is_default), MODEL_CATALOG[0])

@@ -70,7 +70,7 @@ export const blueprintService = {
       day_number: data.day_number ?? undefined,
       extra_instructions: data.extra_instructions || '',
       style_id: data.style_id ?? null,
-      model_choice: data.model_choice || 'GPT-5.4',
+      model_choice: data.model_choice || 'GPT-5.6 Terra',
       teacher_mode: Boolean(data.teacher_mode),
       system_prompt_override: data.system_prompt_override || undefined,
       user_prompt_override: data.user_prompt_override || undefined,

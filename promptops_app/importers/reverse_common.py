@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from promptops_app.database import Block, CourseModule
 
 # Established default model choice in this codebase (see generation_jobs.py).
-DEFAULT_IMPORT_MODEL = "GPT-5.4"
+DEFAULT_IMPORT_MODEL = "GPT-5.6 Terra"
 
 # Per-block content caps keep reverse-gen prompts within a sane token budget.
 _BLUEPRINT_BLOCK_CHARS = 1500

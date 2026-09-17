@@ -369,6 +369,7 @@ _CONTEXT_TOKENS = {
     "global.anthropic.claude-sonnet-5": 1_000_000,
     "global.anthropic.claude-sonnet-4-6": 1_000_000,
     "global.anthropic.claude-fable-5": 1_000_000,
+    "global.anthropic.claude-fable-5-1": 1_000_000,
     # Available on Bedrock but NO model access for this account's role.
     "global.anthropic.claude-haiku-4-5-20251001-v1:0": 200_000,
     "global.anthropic.claude-opus-4-8": 1_000_000,
@@ -399,12 +400,13 @@ _MAX_OUTPUT_TOKENS = {
     "global.anthropic.claude-sonnet-5": 64_000,
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0": 64_000,
     "global.anthropic.claude-haiku-4-5-20251001-v1:0": 16_384,
+    "global.anthropic.claude-fable-5": 128_000,
+    "global.anthropic.claude-fable-5-1": 128_000,
     # Not in CAS's registry, so these are the published maxima rather than measured
     # ones. Safe to be wrong high: Bedrock does not reject an oversized max_tokens
     # (128,000 was accepted in the probe recorded in that registry), so the cost of
     # an over-guess is nothing while an under-guess silently shortens a digest.
     "global.anthropic.claude-sonnet-4-6": 64_000,
-    "global.anthropic.claude-fable-5": 64_000,
     "global.anthropic.claude-opus-4-8": 64_000,
     # Legacy Claude 3: 4,096 is the provider's hard maximum, so the flat 32,000 was
     # asking these ids for eight times what they can produce.

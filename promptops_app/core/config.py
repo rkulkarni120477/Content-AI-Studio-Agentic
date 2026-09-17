@@ -107,7 +107,7 @@ class AppSettings(BaseSettings):
 
     # ── LLM behaviour ─────────────────────────────────────────────────────────
     default_model: str = Field(
-        default="GPT-5.4",
+        default="GPT-5.6 Terra",
         alias="PROMPTOPS_DEFAULT_MODEL",
     )
     fallback_model: str = Field(

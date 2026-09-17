@@ -337,10 +337,10 @@ def test_refuses_content_larger_than_the_model_can_return():
     one once it has been committed."""
     huge = "| Day | Topic |\n" * 20000
     with pytest.raises(RegenerationTooLargeError) as exc:
-        R.assert_can_emit(huge, model_choice="GPT-5.4", label="Worksheet 4")
+        R.assert_can_emit(huge, model_choice="Claude Haiku 4.5 (Bedrock)", label="Worksheet 4")
     detail = exc.value.detail
     assert detail["tokens"] > detail["max_output_tokens"]
-    assert detail["model_choice"] == "GPT-5.4"
+    assert detail["model_choice"] == "Claude Haiku 4.5 (Bedrock)"
     # The message has to carry the numbers: "too large" alone gives the user no
     # way to judge how much smaller a target needs to be.
     assert "Worksheet 4" in str(exc.value)
@@ -361,7 +361,7 @@ def test_refusal_is_model_dependent():
     not a blanket size ban that would block work a capable model can do."""
     text = "word " * 17000
     with pytest.raises(RegenerationTooLargeError):
-        R.assert_can_emit(text, model_choice="GPT-5.4", label="x")
+        R.assert_can_emit(text, model_choice="Claude Haiku 4.5 (Bedrock)", label="x")
     R.assert_can_emit(text, model_choice="Claude Sonnet 5 (Bedrock)", label="x")
 
 
