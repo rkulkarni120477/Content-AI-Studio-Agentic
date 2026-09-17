@@ -209,7 +209,10 @@ def chunking_strategy(
         }
         if "hangar_sheet" in unit_types or "calendar_sheet" in unit_types:
             return "per_unit"
-        if "hangar_page" in unit_types:
+        # Word page units and ebook pages both use unit_type=page; hangar PDFs
+        # use hangar_page. Resolve from units so quiz/exam/guide Word files keep
+        # per-page metadata even when document_type is not ebook_reference.
+        if "hangar_page" in unit_types or "page" in unit_types:
             return "page"
     p = normalize_purpose(purpose, document_type)
     d = (document_type or "").strip().lower()

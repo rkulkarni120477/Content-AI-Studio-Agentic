@@ -13,10 +13,14 @@ const initialState = {
   selectedCluster: null,
   selectedCourse:  null,
   // Sidebar generation context
-    modelChoice:      'GPT-5.6 Terra',
+  modelChoice:      'GPT-5.6 Terra',
   expertDomain:     '',
   targetAudience:   '',
   audienceCategory: '',
+  // Once the user picks a model this session, JWT re-hydrates (course opens,
+  // layout remounts, in-flight fetch finishing after Apply) must not snap it
+  // back to whatever was previously embedded in the token.
+  modelChoiceTouched: false,
   // Loading/error
   isLoadingProjects: false,
   isLoadingClusters: false,
@@ -84,13 +88,19 @@ const dashboardSlice = createSlice({
     setSelectedCourse(state, { payload }) {
       state.selectedCourse = payload;
     },
-    setModelChoice(state, { payload })      { state.modelChoice = payload; },
+    setModelChoice(state, { payload }) {
+      state.modelChoice = payload;
+      state.modelChoiceTouched = true;
+    },
     setExpertDomain(state, { payload })     { state.expertDomain = payload; },
     setTargetAudience(state, { payload })   { state.targetAudience = payload; },
     setAudienceCategory(state, { payload }) { state.audienceCategory = payload; },
     clearError(state)                       { state.error = null; },
     applyWorkspaceConfig(state, { payload }) {
-      if (payload.model_choice)      state.modelChoice      = payload.model_choice;
+      // Honor an in-session user pick over a later JWT hydrate (stale or default).
+      if (payload.model_choice && !state.modelChoiceTouched) {
+        state.modelChoice = payload.model_choice;
+      }
       if (payload.expert_domain)     state.expertDomain     = payload.expert_domain;
       if (payload.target_audience)   state.targetAudience   = payload.target_audience;
       if (payload.audience_category) state.audienceCategory = payload.audience_category;

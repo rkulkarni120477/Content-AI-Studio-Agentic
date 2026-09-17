@@ -42,6 +42,8 @@ export const fetchWorkspaceConfigThunk = createAsyncThunk(
     try {
       const ws = await dashboardService.getWorkspace();
       const cfg = ws?.config || {};
+      // applyWorkspaceConfig itself refuses to overwrite a model the user already
+      // picked this session (stale in-flight JWT hydrate after Apply / select).
       dispatch(applyWorkspaceConfig(cfg));
       return cfg;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }

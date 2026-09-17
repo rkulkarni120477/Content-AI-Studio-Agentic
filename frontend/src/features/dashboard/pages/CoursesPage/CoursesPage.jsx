@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAppDispatch, useAppSelector } from '@app/hooks';
-import { fetchCoursesThunk, fetchWorkspaceConfigThunk } from '@features/dashboard/dashboardThunks';
+import { fetchCoursesThunk } from '@features/dashboard/dashboardThunks';
 import {
   selectCourses, selectSelectedProject, selectSelectedCluster,
   setSelectedProject, setSelectedCluster, setSelectedCourse,
@@ -120,7 +120,8 @@ export default function CoursesPage() {
 
   function handleOpen(course) {
     dispatch(setSelectedCourse(course));
-    dispatch(fetchWorkspaceConfigThunk(course.id));
+    // WorkspaceLayout hydrates sidebar config from the JWT once the course
+    // route mounts. Fetching here too raced Apply and could reset the model.
     const landing = role === ROLES.AUTHOR ? ROUTES.CDD(course.id) : ROUTES.STYLE(course.id);
     navigate(landing);
   }
