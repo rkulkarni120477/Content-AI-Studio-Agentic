@@ -99,6 +99,20 @@ describe('RetrievalStatus', () => {
     show({ total_units: 36, indexed_units: 12, block: 'Block 2' });
     expect(screen.getByText(/Partly searchable · 12\/36/)).toBeTruthy();
   });
+
+  it('reports a Word quiz with page units as searchable', () => {
+    show({
+      source_file_name: 'B2Q1.docx',
+      document_type: 'quiz',
+      total_units: 4,
+      indexed_units: 4,
+      extracted_chars: 8200,
+      block: 'Block 2',
+      chunking_strategy: 'page',
+    });
+    expect(screen.getByText(/Searchable · 4 units/)).toBeTruthy();
+    expect(screen.queryByText('Nothing extracted')).toBeNull();
+  });
 });
 
 /**

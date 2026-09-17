@@ -382,4 +382,72 @@ describe('MetadataEditorPage', () => {
     await screen.findByText('View document');
     expect(screen.queryByRole('button', { name: 'Re-index' })).toBeNull();
   });
+
+  it('Word quiz page units show in Sections and support Retry this page', async () => {
+    getOverview.mockResolvedValue({
+      preview: 'quiz preview',
+      document_type: 'quiz',
+      source_file_name: 'B2Q1.docx',
+      tagging_failed_count: 1,
+      tagging_pending_count: 0,
+      total_characters: 4200,
+    });
+    getUnits.mockResolvedValue({
+      units: [
+        {
+          unit_id: 'job-1:page_1',
+          page_number: '1',
+          tagging_status: 'ok',
+          title: 'Block 2 Quiz 1 — p. 1',
+          topics: ['landing gear'],
+          acs_codes: ['AM.I.D.K1'],
+          summary: 'Page one questions.',
+        },
+        {
+          unit_id: 'job-1:page_2',
+          page_number: '2',
+          tagging_status: 'failed',
+          title: 'Block 2 Quiz 1 — p. 2',
+          topics: [],
+          acs_codes: [],
+          summary: '',
+        },
+      ],
+      tagging_failed_count: 1,
+      tagging_pending_count: 0,
+    });
+    getUnitDetail.mockResolvedValue({
+      unit: {
+        unit_id: 'job-1:page_2',
+        title: 'Block 2 Quiz 1 — p. 2',
+        text: 'Question 5: Identify the torque link.',
+        topics: [],
+        metadata: {
+          page_number: '2',
+          tagging_status: 'failed',
+          summary: '',
+          acs_codes: [],
+          topics: [],
+        },
+      },
+    });
+    retagContent.mockResolvedValue({
+      retagged: 1,
+      tagging_failed_count: 0,
+      tagging_pending_count: 0,
+    });
+
+    renderPage('content', { view: true, section: 'job-1:page_2' });
+    expect(await screen.findByRole('option', { name: /p\. 1/ })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /p\. 2/ })).toBeTruthy();
+    expect(screen.getByDisplayValue('Question 5: Identify the torque link.')).toBeTruthy();
+
+    const retryThis = await screen.findByRole('button', { name: /Retry this page/i });
+    fireEvent.click(retryThis);
+    await waitFor(() => expect(retagContent).toHaveBeenCalledWith(
+      'job-1',
+      { unit_ids: ['job-1:page_2'] },
+      expect.any(Object),
+    ));
+  });
 });

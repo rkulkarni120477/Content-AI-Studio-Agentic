@@ -32,8 +32,9 @@ class ExtractionResult:
     has_images: bool = False
     tables: List[List[List[str]]] = None   # list of tables, each is rows of cells
     slide_texts: List[str] = None          # for PPTX: per-slide text
-    # Per-page PDF text for ebook_reference page-chunking. Each item is
-    # ``{"pdf_page": int, "text": str}``. Absent / empty for non-PDF types.
+    # Per-page text for page-chunking. Each item is ``{"pdf_page": int, "text": str}``.
+    # Populated for PDFs (physical pages) and DOCX/DOC (Word page/section breaks).
+    # Empty for other types (xlsx, pptx, plain text).
     page_texts: List[dict] = None
     raw_metadata: dict = None
 
@@ -266,13 +267,188 @@ def extract_docx(content: bytes, vision_fn=None, options: dict | None = None) ->
         log.error("[DOCX] No text recovered from OOXML or python-docx")
         return ExtractionResult(text="", has_images=has_images, tables=tables)
 
+    page_texts = extract_docx_pages(content)
+    # Prefer page-joined text when the page walk recovered content (textbox-aware).
+    if page_texts:
+        joined = "\n\n".join(
+            f"[Page {p['pdf_page']}]\n{p.get('text') or ''}" for p in page_texts
+        ).strip()
+        if len(joined) >= len(text):
+            text = joined
+    page_count = len(page_texts) if page_texts else max(1, len(text) // 3000)
+
     return ExtractionResult(
         text=text,
-        page_count=max(1, len(text) // 3000),
+        page_count=page_count,
         has_images=has_images,
         tables=tables or xml_result.tables,
+        page_texts=page_texts,
         raw_metadata=xml_result.raw_metadata,
     )
+
+
+# Explicit Word hard page breaks + next-page section breaks. Soft pagination
+# via lastRenderedPageBreak is also honored when Word saved it into the XML.
+_PAGE_SECTION_TYPES = frozenset({"nextPage", "oddPage", "evenPage"})
+
+
+def extract_docx_pages(content: bytes) -> List[dict]:
+    """Split a Word file into page-bounded texts for ebook-style unit creation.
+
+    Returns ``[{pdf_page: int, text: str}, ...]`` (1-based page index, same
+    shape as PDF ``page_texts`` so ``build_ebook_page_units`` can reuse it).
+
+    Split points, in document order:
+    - ``<w:br w:type="page"/>``
+    - section breaks whose type is nextPage / oddPage / evenPage
+    - ``<w:lastRenderedPageBreak/>`` when Word stored soft pagination
+
+    A file with no such breaks becomes a single page. Legacy OLE2 ``.doc``
+    (no page-break XML) becomes one page from the flattened extract.
+    Blank pages are omitted.
+    """
+    if not content:
+        return []
+    if content[:4] == _OLE2_MAGIC:
+        legacy = _extract_legacy_doc(content)
+        text = (legacy.text or "").strip()
+        if not text:
+            return []
+        return [{"pdf_page": 1, "text": text}]
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        return []
+    try:
+        xml_bytes = zf.read("word/document.xml")
+    except KeyError:
+        return []
+
+    pages = _ooxml_document_pages(xml_bytes)
+    if pages:
+        return pages
+
+    # No page markers and/or empty body walk — fall back to flat OOXML text.
+    flat = _extract_ooxml(content)
+    text = (flat.text or "").strip()
+    if not text:
+        return []
+    return [{"pdf_page": 1, "text": text}]
+
+
+def _ooxml_document_pages(xml_bytes: bytes) -> List[dict]:
+    """Walk ``word/document.xml`` body and emit one page per break."""
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
+
+    body = None
+    for elem in root.iter():
+        if _xml_local(elem.tag) == "body":
+            body = elem
+            break
+    if body is None:
+        return []
+
+    pages: List[dict] = []
+    buf: List[str] = []
+
+    def flush() -> None:
+        text = _normalize_extracted_text("".join(buf))
+        buf.clear()
+        if text:
+            pages.append({"pdf_page": len(pages) + 1, "text": text})
+
+    def append_text_node(elem: ET.Element) -> None:
+        local = _xml_local(elem.tag)
+        if local in {"t", "instrText"} and elem.text:
+            buf.append(elem.text)
+        elif local == "tab":
+            buf.append("\t")
+        elif local in {"br", "cr"}:
+            # Non-page line/carriage breaks only; page br is handled as a split.
+            if (_xml_attr(elem, "type") or "").lower() != "page":
+                buf.append("\n")
+        elif local == "tc":
+            buf.append("\t")
+        elif local in {"docPr", "cNvPr"}:
+            descr = (_xml_attr(elem, "descr") or "").strip()
+            title = (_xml_attr(elem, "name") or "").strip()
+            if descr:
+                buf.append(f"\n[{descr}]\n")
+            elif title and not title.lower().startswith("picture"):
+                buf.append(f"\n[{title}]\n")
+
+    def is_hard_page_break(elem: ET.Element) -> bool:
+        local = _xml_local(elem.tag)
+        if local == "lastRenderedPageBreak":
+            return True
+        if local == "br" and (_xml_attr(elem, "type") or "").lower() == "page":
+            return True
+        return False
+
+    def sect_pr_is_page_break(elem: ET.Element) -> bool:
+        """True for next-page style section breaks (not continuous/final props).
+
+        OOXML default for omitted ``w:type`` is ``nextPage``. ``continuous`` and
+        ``nextColumn`` stay on the same page.
+        """
+        if _xml_local(elem.tag) != "sectPr":
+            return False
+        sect_type = ""
+        for child in elem:
+            if _xml_local(child.tag) == "type":
+                sect_type = (_xml_attr(child, "val") or "").strip()
+                break
+        if not sect_type:
+            return True
+        if sect_type in {"continuous", "nextColumn"}:
+            return False
+        return sect_type in _PAGE_SECTION_TYPES
+
+    def walk(elem: ET.Element) -> bool:
+        """Collect text; return True if a deferred section page-break follows.
+
+        ``sectPr`` with nextPage lives in ``pPr`` (before runs). Defer the
+        flush until the enclosing paragraph finishes so its text stays on the
+        current page.
+        """
+        # In-place hard breaks: flush current page, then keep walking.
+        if is_hard_page_break(elem):
+            flush()
+            return False
+
+        # Section break marks the END of the current section/page.
+        if sect_pr_is_page_break(elem):
+            return True
+
+        append_text_node(elem)
+
+        deferred = False
+        for child in list(elem):
+            if walk(child):
+                deferred = True
+
+        local = _xml_local(elem.tag)
+        if local in {"p", "tr"}:
+            buf.append("\n")
+            # Flush only at paragraph/row boundary (not at pPr).
+            if deferred:
+                flush()
+            return False
+        return deferred
+
+    for child in list(body):
+        # Trailing body-level sectPr is the final section's formatting only.
+        if _xml_local(child.tag) == "sectPr":
+            continue
+        if walk(child):
+            flush()
+
+    flush()
+    return pages
 
 
 def _extract_ooxml(content: bytes) -> ExtractionResult:
@@ -475,12 +651,21 @@ def _extract_legacy_doc(content: bytes) -> ExtractionResult:
         log.warning("[DOCX] Legacy .doc file but antiword is not installed; using Python OLE scrape")
 
     if antiword_text.strip():
-        return ExtractionResult(text=antiword_text, page_count=max(1, len(antiword_text) // 3000))
+        text = antiword_text
+        return ExtractionResult(
+            text=text,
+            page_count=1,
+            page_texts=[{"pdf_page": 1, "text": text.strip()}] if text.strip() else [],
+        )
 
     scraped = _extract_ole_text_fallback(content)
     if scraped.strip():
         log.info("[DOCX] OLE scrape recovered %d chars from legacy .doc", len(scraped))
-        return ExtractionResult(text=scraped, page_count=max(1, len(scraped) // 3000))
+        return ExtractionResult(
+            text=scraped,
+            page_count=1,
+            page_texts=[{"pdf_page": 1, "text": scraped.strip()}],
+        )
 
     log.error("[DOCX] Legacy .doc yielded no text (antiword missing/failed and OLE scrape empty)")
     return ExtractionResult(text="")

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import reducer, {
   setSelectedProject, setSelectedCluster,
+  setModelChoice, applyWorkspaceConfig,
 } from '@features/dashboard/dashboardSlice';
 import { fetchCoursesThunk, fetchClustersThunk } from '@features/dashboard/dashboardThunks';
 
@@ -31,9 +32,45 @@ const baseState = {
   selectedCluster: { id: 1, name: 'Existing Cluster' },
   selectedCourse: null,
   modelChoice: 'GPT-5.6 Terra', expertDomain: '', targetAudience: '', audienceCategory: '',
+  modelChoiceTouched: false,
   isLoadingProjects: false, isLoadingClusters: false, isLoadingCourses: false, isLoadingModels: false,
   error: null,
 };
+
+// Bug: picking an LLM model in Target & Model would stick briefly, then snap
+// back when WorkspaceLayout / course navigation re-hydrated sidebar config
+// from a stale JWT (fetch started before Apply finished, or default Terra).
+describe('dashboardSlice — in-session model choice must not be overwritten by JWT hydrate', () => {
+  it('setModelChoice marks the pick as touched for this session', () => {
+    const next = reducer(baseState, setModelChoice('GPT-5.6 Sol'));
+    expect(next.modelChoice).toBe('GPT-5.6 Sol');
+    expect(next.modelChoiceTouched).toBe(true);
+  });
+
+  it('applyWorkspaceConfig hydrates model_choice when the user has not picked yet', () => {
+    const next = reducer(baseState, applyWorkspaceConfig({ model_choice: 'GPT-5.6 Luna' }));
+    expect(next.modelChoice).toBe('GPT-5.6 Luna');
+  });
+
+  it('applyWorkspaceConfig leaves a touched model_choice alone', () => {
+    let state = reducer(baseState, setModelChoice('GPT-5.6 Sol'));
+    state = reducer(state, applyWorkspaceConfig({ model_choice: 'GPT-5.6 Terra' }));
+    expect(state.modelChoice).toBe('GPT-5.6 Sol');
+    expect(state.modelChoiceTouched).toBe(true);
+  });
+
+  it('applyWorkspaceConfig still updates audience fields after a model pick', () => {
+    let state = reducer(baseState, setModelChoice('GPT-5.6 Sol'));
+    state = reducer(state, applyWorkspaceConfig({
+      model_choice: 'GPT-5.6 Terra',
+      expert_domain: 'Nursing',
+      audience_category: 'K-12 Student',
+    }));
+    expect(state.modelChoice).toBe('GPT-5.6 Sol');
+    expect(state.expertDomain).toBe('Nursing');
+    expect(state.audienceCategory).toBe('K-12 Student');
+  });
+});
 
 describe('dashboardSlice — selection reducers must not clobber independently-fetched lists', () => {
   it('setSelectedCluster leaves an already-loaded courses list intact', () => {

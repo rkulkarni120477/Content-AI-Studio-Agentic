@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from services.agents.base import BasePipelineAgent
 from services.pipeline.common import PipelineState, call_llm, safe_json, keywords
-from services.pipeline.extractors import ExtractionResult, extract
+from services.pipeline.extractors import ExtractionResult, extract, extract_docx_pages
 from services.specialized_extractors import (
     infer_doc_type,
     infer_block,
@@ -143,13 +143,16 @@ class ContentUnitCreationAgent(BasePipelineAgent):
         ):
             units = self._hangar_sheet_units(state)
         elif str(effective_type or doc_type or '').lower() == 'hangar_activity' and (
-            str(state.get('file_type') or '').lower() == 'pdf'
-            or str(state.get('filename') or '').lower().endswith('.pdf')
+            str(state.get('file_type') or '').lower() in {'pdf', 'docx', 'doc'}
+            or str(state.get('filename') or '').lower().endswith(('.pdf', '.docx', '.doc'))
         ):
-            # Hangar PDFs: one unit per page (ebook pattern), not word-chunks.
+            # Hangar PDFs and Word files: one unit per page (ebook pattern).
             units = self._hangar_page_units(state)
         elif str(effective_type or doc_type or '').lower() == 'ebook_reference':
             units = self._ebook_page_units(state, effective_type or doc_type)
+        elif self._is_word_file(state):
+            # Any other Word upload: page-break units (ebook-equivalent tagging).
+            units = self._word_page_units(state, effective_type or doc_type)
         else:
             slide_texts = state.get('slide_texts', []) or []
             visual_map = {v.get('unit_number'): v.get('visual_summary') for v in state.get('visual_units', []) or []}
@@ -312,8 +315,13 @@ class ContentUnitCreationAgent(BasePipelineAgent):
         else:
             mark_units_pending(units)
 
+    def _is_word_file(self, state: PipelineState) -> bool:
+        ft = str(state.get('file_type') or '').lower()
+        name = str(state.get('filename') or '').lower()
+        return ft in {'docx', 'doc'} or name.endswith(('.docx', '.doc'))
+
     def _hangar_page_units(self, state: PipelineState) -> List[Dict[str, Any]]:
-        """One content unit per physical hangar PDF page, with LLM tags."""
+        """One content unit per physical hangar PDF/Word page, with LLM tags."""
         ctx = self.ctx
         raw_bytes = state.get('raw_bytes') or b''
         page_texts: List[Dict[str, Any]] = []
@@ -322,9 +330,18 @@ class ContentUnitCreationAgent(BasePipelineAgent):
             str(state.get('file_type') or '').lower() == 'pdf'
             or filename.endswith('.pdf')
         )
+        is_word = self._is_word_file(state)
 
         if raw_bytes and is_pdf:
             page_texts = extract_pdf_pages(raw_bytes, max_chars=0)
+            if page_texts:
+                state['page_texts'] = page_texts
+                state['page_count'] = len(page_texts)
+                state['raw_text'] = "\n\n".join(
+                    f"[Page {p['pdf_page']}]\n{p.get('text') or ''}" for p in page_texts
+                )
+        elif raw_bytes and is_word:
+            page_texts = extract_docx_pages(raw_bytes)
             if page_texts:
                 state['page_texts'] = page_texts
                 state['page_count'] = len(page_texts)
@@ -335,6 +352,9 @@ class ContentUnitCreationAgent(BasePipelineAgent):
             page_texts = list(state.get('page_texts') or [])
         if not page_texts:
             page_texts = parse_page_texts_from_raw(state.get('raw_text') or '')
+        if not page_texts and (state.get('raw_text') or '').strip():
+            # Word with no markers and no prior page_texts: single page.
+            page_texts = [{"pdf_page": 1, "text": (state.get('raw_text') or '').strip()}]
 
         title = (state.get('doc_metadata') or {}).get('title') or state.get('filename') or 'Source'
         doc_meta = dict(state.get('doc_metadata') or {})
@@ -374,6 +394,74 @@ class ContentUnitCreationAgent(BasePipelineAgent):
                     batch_size=tcfg['batch_size'],
                     enabled=True,
                     token_guard=getattr(ctx, 'guard', None),
+                    errors=errors,
+                )
+            except TokenLimitError as exc:
+                errors.append(str(exc))
+                from services.ebook_page_tagger import mark_units_pending
+                mark_units_pending(units)
+        else:
+            from services.ebook_page_tagger import mark_units_pending
+            mark_units_pending(units)
+        return units
+
+    def _word_page_units(self, state: PipelineState, effective_type: str) -> List[Dict[str, Any]]:
+        """One content unit per Word page/section break — ebook-equivalent path."""
+        ctx = self.ctx
+        raw_bytes = state.get('raw_bytes') or b''
+        page_texts: List[Dict[str, Any]] = []
+
+        if raw_bytes:
+            page_texts = extract_docx_pages(raw_bytes)
+            if page_texts:
+                state['page_texts'] = page_texts
+                state['page_count'] = len(page_texts)
+                state['raw_text'] = "\n\n".join(
+                    f"[Page {p['pdf_page']}]\n{p.get('text') or ''}" for p in page_texts
+                )
+        if not page_texts:
+            page_texts = list(state.get('page_texts') or [])
+        if not page_texts:
+            page_texts = parse_page_texts_from_raw(state.get('raw_text') or '')
+        if not page_texts and (state.get('raw_text') or '').strip():
+            page_texts = [{"pdf_page": 1, "text": (state.get('raw_text') or '').strip()}]
+
+        title = (state.get('doc_metadata') or {}).get('title') or state.get('filename') or 'Source'
+        # Always use "page" so Source Library chunking_strategy resolves to page
+        # regardless of AIM unit_type_map (quiz_question, guide_section, …).
+        units = build_ebook_page_units(
+            job_id=state['job_id'],
+            pages=page_texts,
+            doc_metadata=state.get('doc_metadata') or {},
+            unit_type='page',
+            title=title,
+            outline_map={},
+        )
+        for u in units:
+            meta = dict(u.get('metadata') or {})
+            if not meta.get('page_number') and meta.get('pdf_page') is not None:
+                meta['page_number'] = str(meta['pdf_page'])
+            # Prefer "p. N" titles for Word (no PDF chapter citation).
+            pdf_page = meta.get('pdf_page')
+            if pdf_page is not None and not meta.get('chapter'):
+                u['title'] = f"{title} — p. {meta.get('page_number') or pdf_page}"[:160]
+            u['metadata'] = meta
+
+        use_llm = (
+            ctx.cfg.pipeline.llm_provider != 'mock'
+            and (ctx.cfg.pipeline.bedrock_enabled or ctx.cfg.pipeline.anthropic_enabled)
+        )
+        tcfg = tagger_config_from_pipeline(ctx.cfg.pipeline)
+        if use_llm and tcfg['enabled'] and units:
+            errors = state.setdefault('errors', [])
+            try:
+                tag_ebook_page_units(
+                    units,
+                    call_llm_fn=call_llm,
+                    model_id=tcfg['model_id'],
+                    batch_size=tcfg['batch_size'],
+                    enabled=True,
+                    token_guard=ctx.guard,
                     errors=errors,
                 )
             except TokenLimitError as exc:
