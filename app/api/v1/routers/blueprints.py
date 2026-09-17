@@ -248,9 +248,7 @@ def generate_blueprint(
     from promptops_app.repositories import job_repository
 
     params = request_body.model_dump()
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     job_id = job_repository.create_job(
         db,
         user_name=current_user.username,
@@ -1507,9 +1505,7 @@ def regenerate_blueprint_item(
     bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     params = request_body.model_dump()
     params["blueprint_id"] = blueprint_id
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     job_id = job_repository.create_job(
         db,
         user_name=current_user.username,
@@ -1636,9 +1632,7 @@ def regenerate_blueprint_section(
     bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     params = request_body.model_dump()
     params["blueprint_id"] = blueprint_id
-    params["user_name"] = current_user.username
-    params["user_id"] = getattr(current_user, "id", None)
-    params["role"] = getattr(current_user, "role", "user")
+    design_jobs.stamp_job_user(params, current_user)
     job_id = job_repository.create_job(
         db,
         user_name=current_user.username,
