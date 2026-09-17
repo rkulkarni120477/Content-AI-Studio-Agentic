@@ -19,6 +19,13 @@ export default function DocumentContentPanel({
   onRetag,
   isDocumentScope = false,
 }) {
+  const docType = String(
+    overview?.document_type || selectedUnit?.metadata?.document_type || '',
+  ).toLowerCase();
+  const unitNoun = docType === 'course_calendar' ? 'section' : 'page';
+  const unitNounPlural = docType === 'course_calendar' ? 'sections' : 'pages';
+  const retryThisLabel = docType === 'course_calendar' ? 'Retry this section' : 'Retry this page';
+
   if (structureError) {
     return <div className={styles.error}>{structureError}</div>;
   }
@@ -60,6 +67,11 @@ export default function DocumentContentPanel({
     || '',
   ).toLowerCase();
   const unitNeedsRetry = unitStatus === 'failed' || unitStatus === 'pending';
+  const sectionTitle = selectedUnit?.title
+    || selectedUnit?.metadata?.sheet_name
+    || (selectedUnit?.metadata?.page_number
+      ? `p. ${selectedUnit.metadata.page_number}`
+      : `Section ${sectionIndex + 1}`);
 
   return (
     <div className={styles.contentPanel}>
@@ -67,7 +79,7 @@ export default function DocumentContentPanel({
         <div className={styles.processingBanner}>
           <span className={styles.processingWarn}>
             Background processing is still running. These sections are a preview —
-            page units appear when extract, tagging, and indexing finish.
+            content units appear when extract, tagging, and indexing finish.
           </span>
         </div>
       )}
@@ -76,7 +88,7 @@ export default function DocumentContentPanel({
           <div className={styles.retagProgressHeader}>
             <span className={styles.taggingWarn}>
               {total > 0
-                ? `Tagging ${done} of ${total} pages · ${remaining} remaining`
+                ? `Tagging ${done} of ${total} ${unitNounPlural} · ${remaining} remaining`
                 : 'Starting content tagging…'}
             </span>
             <button type="button" className={styles.contentButton} disabled>
@@ -88,7 +100,7 @@ export default function DocumentContentPanel({
           </div>
           {retagProgress?.last_page != null && (
             <div className={styles.mutedNote}>
-              Last page tagged: {String(retagProgress.last_page)}
+              Last {unitNoun} tagged: {String(retagProgress.last_page)}
             </div>
           )}
         </div>
@@ -96,7 +108,7 @@ export default function DocumentContentPanel({
       {needsRetry > 0 && !isProcessing && !live && (
         <div className={styles.taggingBanner}>
           <span className={styles.taggingWarn}>
-            {needsRetry} page{needsRetry === 1 ? '' : 's'} need content tagging
+            {needsRetry} {needsRetry === 1 ? unitNoun : unitNounPlural} need content tagging
             {failedCount ? ` (${failedCount} failed)` : ''}
             {pendingCount ? ` (${pendingCount} pending)` : ''}
           </span>
@@ -121,8 +133,7 @@ export default function DocumentContentPanel({
         <div className={styles.unitDetail}>
           <div className={styles.sectionNavHeader}>
             <h4 className={styles.sectionTitle}>
-              {`Section ${sectionIndex + 1}`}
-              {selectedUnit.metadata?.page_number ? ` · p. ${selectedUnit.metadata.page_number}` : ''}
+              {sectionTitle}
               {unitNeedsRetry && (
                 <span className={`${styles.statusPill} ${styles.statusFailed}`}>
                   {selectedUnit.metadata?.tagging_status
@@ -143,7 +154,7 @@ export default function DocumentContentPanel({
                   ].filter(Boolean),
                 })}
               >
-                {retagging && !live ? 'Retrying…' : 'Retry this page'}
+                {retagging && !live ? 'Retrying…' : retryThisLabel}
               </button>
             )}
           </div>

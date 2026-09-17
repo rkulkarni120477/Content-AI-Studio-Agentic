@@ -79,6 +79,17 @@ describe('RetrievalStatus', () => {
     expect(screen.getByText('No block')).toBeTruthy();
   });
 
+  it('does not flag a multi-block calendar that uses blocks_covered', () => {
+    show({
+      total_units: 32,
+      indexed_units: 32,
+      block: '',
+      course_id: '101',
+      blocks_covered: ['Block 1', 'Block 2'],
+    });
+    expect(screen.queryByText('No block')).toBeNull();
+  });
+
   it('does not flag a global document for having no block', () => {
     show({ total_units: 5, indexed_units: 5, block: '', course_id: '-1' });
     expect(screen.queryByText('No block')).toBeNull();

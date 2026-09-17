@@ -144,7 +144,7 @@ def _apply_tag(unit: Dict[str, Any], tag: Dict[str, Any]) -> None:
 
 #: Wrapper keys models often put around the page-tag array. First hit wins.
 _TAG_LIST_KEYS = (
-    "pages", "results", "items", "data", "tags", "response",
+    "pages", "sheets", "results", "items", "data", "tags", "response",
     "page_tags", "annotations",
 )
 
@@ -279,8 +279,13 @@ def _normalize_tag_response(parsed: Any) -> List[Dict[str, Any]]:
         if isinstance(inner, list):
             return [x for x in inner if isinstance(x, dict)]
 
-    # Single page object: {"pdf_page": 3, "topics": [...], ...}
-    if "pdf_page" in parsed or "topics" in parsed or "acs_codes" in parsed:
+    # Single page/sheet object: {"pdf_page": 3, ...} or {"sheet_index": 0, ...}
+    if (
+        "pdf_page" in parsed
+        or "sheet_index" in parsed
+        or "topics" in parsed
+        or "acs_codes" in parsed
+    ):
         return [parsed]
 
     # Map keyed by pdf_page / page number: {"1": {...}, "2": {...}} or

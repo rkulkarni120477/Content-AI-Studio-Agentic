@@ -296,6 +296,9 @@ class _FakeCtx:
     def __init__(self):
         from config.settings import get_tenant_config
         self.cfg = get_tenant_config("aim")
+        # Unit-creation metadata tests must not invoke Bedrock; force mock.
+        self.cfg.pipeline.llm_provider = "mock"
+        self.guard = None
 
     def step_done(self, state, name):
         return state
@@ -308,25 +311,66 @@ def _units_for(state):
     return agent.run(state)["content_units"]
 
 
-def test_a_calendar_day_unit_keeps_its_own_day_number():
-    """Regression, measured on Block 6: doc_metadata was spread LAST over the unit
-    metadata, so the document's day_number (None — a whole-block calendar carries no
-    B#D# token) overwrote each day's own. ENUMERATE could then attribute none of the
-    20 calendar_day units, acs_by_day was empty for every day, and every day row
-    reached the Blueprint with no ACS codes."""
+def test_a_calendar_sheet_unit_keeps_its_own_block_and_acs():
+    """Source Library units are one per sheet (not per day). Day numbers live in
+    Postgres ``dis_calendar_days``; content units must carry the sheet's block and
+    the union of ACS codes so Block-N filters still see the right section.
+
+    (Earlier regression: day units lost day_number when doc_metadata was spread
+    last — that path is gone; sheet units must not lose block the same way.)
+    """
     units = _units_for({
         "job_id": "j",
         "doc_type": "course_calendar",
         "doc_metadata": {"content_type": "course_calendar", "block": "Block 6",
                          "day_number": None, "day_id": ""},
         "calendar_structure": {"block": "Block 6", "days": [
-            {"day_number": 1, "topic": "DC generation", "acs_codes": ["AM.II.K.K1"]},
-            {"day_number": 2, "topic": "Voltage regulators", "acs_codes": ["AM.II.K.K5"]},
+            {"day_number": 1, "topic": "DC generation", "acs_codes": ["AM.II.K.K1"],
+             "source_text": "Day 1 DC generation"},
+            {"day_number": 2, "topic": "Voltage regulators", "acs_codes": ["AM.II.K.K5"],
+             "source_text": "Day 2 Voltage regulators"},
         ]},
     })
-    assert [u["metadata"]["day_number"] for u in units] == [1, 2]
-    assert [u["metadata"]["acs_codes"] for u in units] == [["AM.II.K.K1"], ["AM.II.K.K5"]]
-    assert {u["metadata"]["block"] for u in units} == {"Block 6"}
+    assert len(units) == 1
+    assert units[0]["unit_type"] == "calendar_sheet"
+    assert units[0]["metadata"]["block"] == "Block 6"
+    assert units[0]["metadata"]["acs_codes"] == ["AM.II.K.K1", "AM.II.K.K5"]
+    assert units[0]["metadata"]["total_days"] == 2
+    assert units[0]["metadata"].get("tagging_status") == "pending"
+
+
+def test_multi_sheet_calendar_units_are_titled_by_sheet_name():
+    units = _units_for({
+        "job_id": "j",
+        "doc_type": "course_calendar",
+        "doc_metadata": {"content_type": "course_calendar", "block": None},
+        "calendar_structure": {
+            "block": "",
+            "days": [],
+            "sheets": [
+                {
+                    "sheet_name": "Block 1 (Day-Night)", "sheet_index": 0,
+                    "block": "Block 1", "block_number": 1, "schedule": "day_night",
+                    "days": [
+                        {"day_number": 1, "topic": "Math", "acs_codes": ["AM.I.H.K1"],
+                         "source_text": "Day 1 Math"},
+                    ],
+                },
+                {
+                    "sheet_name": "Block 2 (Weekend)", "sheet_index": 1,
+                    "block": "Block 2", "block_number": 2, "schedule": "weekend",
+                    "days": [
+                        {"day_number": 1, "topic": "Drawings", "acs_codes": ["AM.I.B.K1"],
+                         "source_text": "Day 1 Drawings"},
+                    ],
+                },
+            ],
+        },
+    })
+    assert [u["title"] for u in units] == ["Block 1 (Day-Night)", "Block 2 (Weekend)"]
+    assert [u["metadata"]["block"] for u in units] == ["Block 1", "Block 2"]
+    assert units[1]["metadata"]["schedule"] == "weekend"
+    assert units[0]["content_unit_id"] == "j:calendar_sheet_0"
 
 
 def test_a_knowledge_test_unit_keeps_its_own_block():

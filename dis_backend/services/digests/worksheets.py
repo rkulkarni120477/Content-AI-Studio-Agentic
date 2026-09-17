@@ -516,8 +516,9 @@ def build_source_file_inventory(en, tenant_cfg=None, cur=None, schema: str = "di
     by_type: Dict[str, Dict[str, Any]] = {}
 
     def _touch(u: Dict[str, Any], day_number) -> None:
-        if u.get("unit_type") == "calendar_day":
-            return  # structural placeholder, not a real source file
+        # Structural placeholders — not real source files in the inventory.
+        if u.get("unit_type") in {"calendar_day", "calendar_sheet"}:
+            return
         md = u.get("metadata_json") or {}
         doc_type = md.get("document_type") or "other"
         fname = md.get("source_file_name") or u.get("title") or "(untitled)"
@@ -1180,7 +1181,7 @@ def build_day_fields(day: Dict[str, Any], units: List[Dict[str, Any]],
         return (u.get("metadata_json") or {}).get("source_file_name") or u.get("title")
 
     files = sorted({
-        _fname(u) for u in units if u.get("unit_type") != "calendar_day" and _fname(u)
+        _fname(u) for u in units if u.get("unit_type") not in {"calendar_day", "calendar_sheet"} and _fname(u)
     })
     # The assigned reading is a source. A day whose digest was extracted from
     # tens of thousands of characters of handbook chapter rendered "—" in this

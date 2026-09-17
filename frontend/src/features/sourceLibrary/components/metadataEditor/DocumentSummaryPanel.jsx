@@ -5,6 +5,7 @@ export function sectionOptionLabel(unit, idx) {
   const st = String(unit?.tagging_status || '').toLowerCase();
   const mark = (st === 'failed' || st === 'pending') ? ` [${st}]` : '';
   if (unit?.page_number) return `p. ${unit.page_number}${mark}`;
+  if (unit?.title) return `${unit.title}${mark}`;
   return `Section ${idx + 1}${mark}`;
 }
 

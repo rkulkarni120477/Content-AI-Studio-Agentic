@@ -54,7 +54,7 @@ BLUEPRINT_DOC_TYPES = {"course_calendar", "syllabus", "chapter_outline", "module
 #: whose sixteen per-block units would be welded into one blob covering every block.
 #: Retrieval reads THIS file (context_retrieval._iter_payloads), so collapsing here is
 #: what a Block 6 request would have received.
-PER_UNIT_DOC_TYPES = {"knowledge_test_report"}
+PER_UNIT_DOC_TYPES = {"knowledge_test_report", "course_calendar"}
 
 #: ebook_reference is page-chunked: one unit per physical PDF page, each carrying
 #: chapter / page_number / ACS / topics. Collapsing to full_document would erase
@@ -67,6 +67,9 @@ PAGE_CHUNK_DOC_TYPES = {"ebook_reference"}
 _PER_UNIT_METADATA_KEYS = frozenset({
     "block", "block_id", "block_number", "day_number", "acs_codes", "missed_codes",
     "document_type", "content_type", "visibility", "sheet_name",
+    "sheet_index", "schedule", "total_days",
+    "topics", "summary",
+    "tagging_status", "tagging_error", "tagging_attempted_at",
 })
 
 _PAGE_CHUNK_METADATA_KEYS = frozenset({
@@ -371,6 +374,19 @@ def compact_source_record(
     # only; absent values stay empty/None. AIM profile transforms still write
     # into payload.metadata first.
     record.update(project_index_metadata(meta, _promote, registry))
+    # Multi-sheet calendars / AKTR rollups stamp block on each unit and leave
+    # document-level block empty. Surface blocks_covered so Source Library does
+    # not show a false "No block" warning for documents that cover many blocks.
+    covered = meta.get("blocks_covered")
+    if not covered:
+        seen = []
+        for u in payload.get("content_units") or []:
+            b = (u.get("metadata") or {}).get("block")
+            if b and b not in seen:
+                seen.append(b)
+        covered = seen
+    if covered:
+        record["blocks_covered"] = list(covered)
     # Ebook page-tagging retry badges (0 for non-page docs).
     from services.ebook_page_tagger import tagging_counts
     counts = tagging_counts(payload.get("content_units") or [])
@@ -1068,6 +1084,10 @@ def _view_units_for_content(content_doc: Dict[str, Any]) -> List[Dict[str, Any]]
             item["page_number"] = meta.get("page_number")
         if meta.get("pdf_page") is not None:
             item["pdf_page"] = meta.get("pdf_page")
+        if meta.get("sheet_name"):
+            item["sheet_name"] = meta.get("sheet_name")
+        if meta.get("sheet_index") is not None:
+            item["sheet_index"] = meta.get("sheet_index")
         out.append(item)
     return out
 

@@ -293,44 +293,95 @@ def delete_content_units_by_job(tenant_cfg: TenantConfig, job_id: str) -> Dict[s
 
 
 def upsert_calendar(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:
+    """Write one ``dis_course_calendars`` row per sheet (+ day rows).
+
+    Multi-sheet workbooks use ``cal_{job_id}:s{index}`` so Day-Night and Weekend
+    of the same block do not collide on day_number. Before insert, any prior
+    calendar rows for this job_id are deleted so a re-ingest does not leave the
+    legacy ``cal_{job_id}`` orphan beside the new sheet-scoped ids.
+    """
+    from services.aim_calendar import iter_calendar_sheets
+
     cal = state.get("calendar_structure") or {}
-    calendar_id = f"cal_{state.get('job_id')}"
-    cur.execute(f"""
-        INSERT INTO {schema}.dis_course_calendars(calendar_id, document_id, job_id, tenant_id, client_id, course_name, block, total_days, structure_json, environment)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
-        ON CONFLICT(calendar_id) DO UPDATE SET structure_json=EXCLUDED.structure_json, total_days=EXCLUDED.total_days
-    """, (calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), cal.get("course_name"), block_label(cal.get("block")), len(cal.get("days", [])), json.dumps(cal), environment))
-    # Day rows are keyed by day_number, so two parsed days claiming the same number
-    # overwrite each other. That is how a Block 13 calendar whose every row parsed as
-    # "day 1" stored 2 rows for 11 days and reported success: the collapse is the
-    # ON CONFLICT working exactly as written, and nothing counted what it ate.
-    seen_days: set = set()
-    collapsed: List[int] = []
-    count = 0
-    for day in cal.get("days", []):
-        day_number = day.get("day_number", count + 1)
-        if day_number in seen_days:
-            collapsed.append(day_number)
-        seen_days.add(day_number)
-        day_id = f"{calendar_id}:day_{day_number}"
+    job_id = state.get("job_id")
+    sheets = iter_calendar_sheets(cal)
+    if not sheets:
+        return 0
+
+    # Clear prior calendars for this job (legacy single-id + sheet-scoped).
+    cur.execute(
+        f"DELETE FROM {schema}.dis_calendar_days WHERE job_id = %s",
+        (job_id,),
+    )
+    cur.execute(
+        f"DELETE FROM {schema}.dis_course_calendars WHERE job_id = %s",
+        (job_id,),
+    )
+
+    total_stored = 0
+    for sheet in sheets:
+        sheet_index = int(sheet.get("sheet_index") if sheet.get("sheet_index") is not None else 0)
+        # Single-sheet legacy keeps cal_{job_id}; multi-sheet needs unique ids.
+        if len(sheets) == 1:
+            calendar_id = f"cal_{job_id}"
+        else:
+            calendar_id = f"cal_{job_id}:s{sheet_index}"
+        block = block_label(sheet.get("block") or cal.get("block"))
+        days = sheet.get("days") or []
+        # structure_json is the sheet record (includes days), not the whole workbook.
+        structure = {
+            "structure_type": "course_calendar",
+            "processing_profile": cal.get("processing_profile") or "aim_teacher_calendar",
+            "course_name": cal.get("course_name") or "AIM General",
+            "sheet_name": sheet.get("sheet_name"),
+            "sheet_index": sheet_index,
+            "schedule": sheet.get("schedule") or "unknown",
+            "block": block,
+            "block_number": sheet.get("block_number"),
+            "block_id": sheet.get("block_id") or "",
+            "total_days_detected": len(days),
+            "days": days,
+        }
         cur.execute(f"""
-            INSERT INTO {schema}.dis_calendar_days(calendar_day_id, calendar_id, document_id, job_id, tenant_id, client_id, block, day_number, week_number, topic, lesson_title, activities_json, assignments_json, assessments_json, source_text, source_location, environment)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
-            ON CONFLICT(calendar_day_id) DO UPDATE SET topic=EXCLUDED.topic, lesson_title=EXCLUDED.lesson_title, source_text=EXCLUDED.source_text
-        """, (day_id, calendar_id, document_id, state.get("job_id"), state.get("tenant_id"), state.get("client_id"), block_label(cal.get("block")), day_number, day.get("week_number"), day.get("topic"), day.get("lesson_title"), json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])), json.dumps(day.get("assessments", [])), day.get("source_text"), day.get("source_location"), environment))
-        count += 1
-    if collapsed:
-        # Loud, and carried in the state the pipeline reports: a calendar that stored
-        # a third of its days is not a successful ingest, and the downstream symptom
-        # (a Blueprint covering 2 of 11 days) gives no hint that the loss happened here.
-        log.error("calendar %s: %s of %s parsed days collapsed onto duplicate day "
-                  "numbers %s — the stored calendar is INCOMPLETE; the source almost "
-                  "certainly did not parse (check the extractor that produced it)",
-                  calendar_id, len(collapsed), count, sorted(set(collapsed)))
-        state.setdefault("errors", []).append(
-            f"calendar {calendar_id}: {len(collapsed)} of {count} parsed days shared a "
-            f"day_number and were overwritten; stored {len(seen_days)} distinct days")
-    return len(seen_days)
+            INSERT INTO {schema}.dis_course_calendars(calendar_id, document_id, job_id, tenant_id, client_id, course_name, block, total_days, structure_json, environment)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+            ON CONFLICT(calendar_id) DO UPDATE SET structure_json=EXCLUDED.structure_json, total_days=EXCLUDED.total_days, block=EXCLUDED.block
+        """, (calendar_id, document_id, job_id, state.get("tenant_id"), state.get("client_id"),
+              cal.get("course_name"), block, len(days), json.dumps(structure), environment))
+
+        # Day rows are keyed by day_number within THIS calendar_id, so two sheets
+        # both having day 1 do not overwrite each other. Within one sheet, duplicate
+        # day numbers still collapse — that is still a parse bug and must be loud.
+        seen_days: set = set()
+        collapsed: List[int] = []
+        count = 0
+        for day in days:
+            day_number = day.get("day_number", count + 1)
+            if day_number in seen_days:
+                collapsed.append(day_number)
+            seen_days.add(day_number)
+            day_id = f"{calendar_id}:day_{day_number}"
+            cur.execute(f"""
+                INSERT INTO {schema}.dis_calendar_days(calendar_day_id, calendar_id, document_id, job_id, tenant_id, client_id, block, day_number, week_number, topic, lesson_title, activities_json, assignments_json, assessments_json, source_text, source_location, environment)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
+                ON CONFLICT(calendar_day_id) DO UPDATE SET topic=EXCLUDED.topic, lesson_title=EXCLUDED.lesson_title, source_text=EXCLUDED.source_text
+            """, (day_id, calendar_id, document_id, job_id, state.get("tenant_id"), state.get("client_id"),
+                  block_label(day.get("block") or block), day_number, day.get("week_number"),
+                  day.get("topic"), day.get("lesson_title"),
+                  json.dumps(day.get("activities", [])), json.dumps(day.get("assignments", [])),
+                  json.dumps(day.get("assessments", [])), day.get("source_text"),
+                  day.get("source_location"), environment))
+            count += 1
+        if collapsed:
+            log.error("calendar %s: %s of %s parsed days collapsed onto duplicate day "
+                      "numbers %s — the stored calendar is INCOMPLETE; the source almost "
+                      "certainly did not parse (check the extractor that produced it)",
+                      calendar_id, len(collapsed), count, sorted(set(collapsed)))
+            state.setdefault("errors", []).append(
+                f"calendar {calendar_id}: {len(collapsed)} of {count} parsed days shared a "
+                f"day_number and were overwritten; stored {len(seen_days)} distinct days")
+        total_stored += len(seen_days)
+    return total_stored
 
 
 def upsert_syllabus(cur, schema: str, document_id: str, state: Dict[str, Any], environment: str) -> int:

@@ -212,7 +212,8 @@ _RESTRICTED_VISIBILITY = {"instructor_only", "internal", "internal_only",
 
 # Source types VERIFY / coverage reconciles per day (§4.2 source_availability).
 TRACKED_SOURCES = ["calendar", "slide", "guide_section", "project_task"]
-_UNIT_TO_SOURCE = {"calendar_day": "calendar", "slide": "slide",
+_UNIT_TO_SOURCE = {"calendar_day": "calendar", "calendar_sheet": "calendar",
+                   "slide": "slide",
                    "guide_section": "guide_section", "project_task": "project_task"}
 
 # Unit types that reliably carry a visual/diagram asset (vs. plain narrative text) —
@@ -904,7 +905,7 @@ def build_digest(day: Dict[str, Any], units: List[Dict[str, Any]], tenant_cfg,
     # so "does slide material exist?" still fired despite files already showing
     # in Source Files Today. Matching that column's own criterion exactly (any
     # non-calendar_day unit) is what actually reflects what the user can see.
-    has_other_units = any(u.get("unit_type") != "calendar_day" for u in units)
+    has_other_units = any(u.get("unit_type") not in {"calendar_day", "calendar_sheet"} for u in units)
     for s in ("slide", "guide_section"):
         if availability.get(s) == "missing" and not (has_other_units or reading_units):
             digest["review_flags"].append(f"MISSING_SOURCE — {s}")
