@@ -36,7 +36,14 @@ class ContentExtractionAgent(BasePipelineAgent):
     def run(self, state: PipelineState) -> PipelineState:
         ctx = self.ctx
         processing = getattr(ctx.cfg, 'processing', None)
-        extraction_options = {'max_pptx_slides': getattr(processing, 'max_pptx_slides', 80), 'pptx_extract_images': getattr(processing, 'pptx_extract_images', False), 'max_extracted_chars': getattr(processing, 'max_extracted_chars', 250000)}
+        extraction_options = {
+            'max_pptx_slides': getattr(processing, 'max_pptx_slides', 80),
+            'pptx_extract_images': getattr(processing, 'pptx_extract_images', False),
+            'max_extracted_chars': getattr(processing, 'max_extracted_chars', 250000),
+            # Upload-time preview leaves this off (fast). Image-only exam figures
+            # ("Figures 1–7") have no body text; OCR here is what gets them indexed.
+            'ocr_embedded_images': True,
+        }
         result: ExtractionResult = extract(state.get('filename', 'file.txt'), state.get('raw_bytes', b''), options=extraction_options)
         state['raw_text'] = result.text or ''
         state['page_count'] = result.page_count

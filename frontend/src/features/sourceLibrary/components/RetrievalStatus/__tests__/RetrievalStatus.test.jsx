@@ -140,4 +140,21 @@ describe('a file that yielded no text', () => {
     expect(screen.getByText(/Searchable/)).toBeTruthy();
     expect(screen.queryByText('Nothing extracted')).toBeNull();
   });
+
+  it('says indexing already finished, not that it is still running', () => {
+    show({ total_units: 1, indexed_units: 0, extracted_chars: 400, block: 'Block 5' });
+    expect(screen.getByText('Not indexed')).toBeTruthy();
+    expect(screen.getByText(/already finished/)).toBeTruthy();
+    expect(screen.queryByText(/Processing/)).toBeNull();
+  });
+});
+
+describe('canReindex', () => {
+  it('is true only for extracted-but-not-indexed documents', async () => {
+    const { canReindex } = await import('../RetrievalStatus');
+    expect(canReindex({ total_units: 1, indexed_units: 0, extracted_chars: 400, status: 'processed' })).toBe(true);
+    expect(canReindex({ total_units: 1, indexed_units: 0, extracted_chars: 0, status: 'processed' })).toBe(false);
+    expect(canReindex({ total_units: 1, indexed_units: 0, extracted_chars: 400, status: 'processing' })).toBe(false);
+    expect(canReindex({ total_units: 1, indexed_units: 1, extracted_chars: 400, status: 'processed' })).toBe(false);
+  });
 });

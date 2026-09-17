@@ -285,6 +285,26 @@ async def delete_source_document(
     return await dis_client.delete_source(job_id=job_id, current_user=current_user, client_id=resolved_client)
 
 
+@router.post("/documents/{job_id}/index")
+async def reindex_source_document(
+    job_id: str,
+    client_id: str = Query("", description="Optional fallback only. Project/course client is preferred."),
+    project_id: int | None = Query(default=None),
+    course_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Push already-extracted units into the search index. Does not re-extract.
+
+    Use this for "Not indexed" rows. A "Nothing extracted" file has no text to
+    index — re-upload it instead.
+    """
+    if str(getattr(current_user, "role", "") or "").lower() != "admin":
+        raise HTTPException(403, "Only admins can re-index Source Library documents")
+    resolved_client = await _resolved_client_async(current_user, db, client_id=client_id, project_id=project_id, course_id=course_id)
+    return await dis_client.reindex_source(job_id=job_id, current_user=current_user, client_id=resolved_client)
+
+
 @router.get("/upload-policy")
 async def get_upload_policy(current_user=Depends(get_current_user)) -> Dict[str, Any]:
     """What the Source Library will accept, and why it refuses the rest.

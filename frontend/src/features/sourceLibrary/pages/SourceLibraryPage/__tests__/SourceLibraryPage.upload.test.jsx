@@ -26,6 +26,7 @@ vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
     getUnitDetail: () => Promise.resolve({ unit: null }),
     searchSource: () => Promise.resolve({}),
     deleteDocument: () => Promise.resolve({}),
+    reindexDocument: () => Promise.resolve({ units_indexed: 1 }),
     uploadDocument: (...a) => uploadDocument(...a),
     scanFolder: () => Promise.resolve({}),
   },
@@ -46,6 +47,7 @@ vi.mock('@components/layout/PageContainer/PageContainer', () => ({
 
 vi.mock('@features/sourceLibrary/components/RetrievalStatus/RetrievalStatus', () => ({
   default: () => <span>status</span>,
+  canReindex: () => false,
 }));
 
 vi.mock('react-hot-toast', () => ({

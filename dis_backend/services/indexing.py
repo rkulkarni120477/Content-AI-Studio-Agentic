@@ -350,8 +350,7 @@ def generate_embeddings(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict
         state["embedding_ready_chunks"] = []
         return {"status": "skipped", "reason": "embedding.enabled=false"}
     try:
-        import boto3
-        client = boto3.client("bedrock-runtime", region_name=cfg.region or tenant_cfg.storage.s3.region or get_settings().aws_region)
+        client = _bedrock_runtime_client(_embedding_bedrock_kwargs(tenant_cfg))
         embedded = []
         clipped = 0
         for unit in state.get("content_units", []) or []:
@@ -376,7 +375,7 @@ def generate_embeddings(tenant_cfg: TenantConfig, state: Dict[str, Any]) -> Dict
                 "units_clipped": clipped}
     except Exception as exc:
         state["embedding_ready_chunks"] = []
-        return {"status": "failed", "error": str(exc)}
+        return {"status": "failed", "error": _embedding_credential_error(exc)}
 
 
 def _build_bulk_actions(
@@ -658,23 +657,59 @@ _OS_READ_CLIENTS: Dict[str, Any] = {}
 _OS_WRITE_CLIENTS: Dict[str, Any] = {}
 
 
-def _bedrock_runtime_client(region: str):
-    """Return a cached bedrock-runtime client for `region` with bounded retries.
+def _embedding_bedrock_kwargs(tenant_cfg: TenantConfig) -> dict:
+    """boto3 kwargs for embedding calls — same credential split as call_llm.
 
-    Explicit connect/read timeouts + a small retry budget keep a slow or
-    throttling Bedrock endpoint from stacking latency on the retrieval path.
+    generate_embeddings used to construct a bare ``boto3.client("bedrock-runtime")``
+    with only a region. This host has no instance role, so that raised
+    ``Unable to locate credentials`` even when AWS_* / DIS_BEDROCK_* were set in
+    dis_backend/.env. Re-index then failed after extraction had already succeeded
+    (docx extraction does not need Bedrock; indexing does).
     """
-    client = _BEDROCK_CLIENTS.get(region)
+    settings = get_settings()
+    kwargs = dict(settings.bedrock_client_kwargs())
+    region = (
+        str(getattr(tenant_cfg.embedding, "region", None) or "").strip()
+        or str(getattr(getattr(getattr(tenant_cfg, "storage", None), "s3", None), "region", None) or "").strip()
+        or kwargs.get("region_name")
+        or settings.aws_region
+    )
+    kwargs["region_name"] = region
+    return kwargs
+
+
+def _embedding_credential_error(exc: Exception) -> str:
+    msg = str(exc)
+    name = type(exc).__name__
+    if "Unable to locate credentials" in msg or name == "NoCredentialsError":
+        return (
+            "Unable to locate credentials for Bedrock embeddings. "
+            "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
+            "(or DIS_BEDROCK_ACCESS_KEY_ID / DIS_BEDROCK_SECRET_ACCESS_KEY) "
+            "in dis_backend/.env — this process has no instance role."
+        )
+    return msg
+
+
+def _bedrock_runtime_client(client_kwargs: dict):
+    """Return a cached bedrock-runtime client for these credentials/region.
+
+    Cache key includes credentials, not just region: two principals in the same
+    region must not share a client. Explicit connect/read timeouts + a small
+    retry budget keep a slow Bedrock endpoint from stacking on retrieval.
+    """
+    key = tuple(sorted((k, str(v)) for k, v in (client_kwargs or {}).items()))
+    client = _BEDROCK_CLIENTS.get(key)
     if client is None:
         import boto3
         from botocore.config import Config
         client = boto3.client(
             "bedrock-runtime",
-            region_name=region,
             config=Config(retries={"max_attempts": 3, "mode": "standard"},
                           connect_timeout=5, read_timeout=30),
+            **(client_kwargs or {}),
         )
-        _BEDROCK_CLIENTS[region] = client
+        _BEDROCK_CLIENTS[key] = client
     return client
 
 
@@ -690,8 +725,7 @@ def embed_query(tenant_cfg: TenantConfig, text: str) -> List[float]:
     text = (text or "").strip()
     if not cfg.enabled or not text:
         return []
-    region = cfg.region or tenant_cfg.storage.s3.region or get_settings().aws_region
-    client = _bedrock_runtime_client(region)
+    client = _bedrock_runtime_client(_embedding_bedrock_kwargs(tenant_cfg))
     body = json.dumps({"inputText": text[: cfg.max_input_chars], "dimensions": cfg.dimension, "normalize": True})
     resp = client.invoke_model(modelId=cfg.model_id, body=body)
     data = json.loads(resp["body"].read())

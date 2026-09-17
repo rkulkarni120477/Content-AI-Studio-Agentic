@@ -111,3 +111,54 @@ def test_embeddings_switched_off_still_indexes_text(monkeypatch):
     result = indexing.opensearch_upsert(_Cfg(), state)
     assert result["status"] == "completed"
     assert len(calls["units"]) == 1
+
+
+def test_generate_embeddings_passes_configured_bedrock_credentials(monkeypatch):
+    """Re-index failed with Unable to locate credentials because generate_embeddings
+    built a bare boto3 client and ignored DIS_BEDROCK_* / AWS_* from settings."""
+    import json
+    import types
+
+    from services import indexing
+
+    seen = {}
+
+    class _Body:
+        def read(self):
+            return json.dumps({"embedding": [0.1, 0.2]})
+
+    class _Client:
+        def invoke_model(self, modelId=None, body=None):
+            return {"body": _Body()}
+
+    monkeypatch.setattr(indexing, "get_settings", lambda: types.SimpleNamespace(
+        aws_region="us-east-1",
+        bedrock_client_kwargs=lambda: {
+            "region_name": "us-east-1",
+            "aws_access_key_id": "AKIATEST",
+            "aws_secret_access_key": "secret",
+        },
+    ))
+    monkeypatch.setattr(indexing, "_bedrock_runtime_client", lambda kwargs: seen.update(kwargs) or _Client())
+
+    cfg = types.SimpleNamespace(
+        embedding=types.SimpleNamespace(
+            enabled=True, region="us-east-1", model_id="amazon.titan-embed-text-v2:0",
+            dimension=1024, max_input_chars=24000,
+        ),
+        storage=types.SimpleNamespace(s3=types.SimpleNamespace(region="us-east-1")),
+    )
+    result = indexing.generate_embeddings(cfg, {"content_units": [{"title": "t", "text": "hello"}]})
+    assert result["status"] == "completed"
+    assert seen["aws_access_key_id"] == "AKIATEST"
+
+
+def test_missing_credentials_error_names_the_env_file():
+    from services.indexing import _embedding_credential_error
+
+    class NoCredentialsError(Exception):
+        pass
+
+    msg = _embedding_credential_error(NoCredentialsError("Unable to locate credentials"))
+    assert "dis_backend/.env" in msg
+    assert "DIS_BEDROCK_ACCESS_KEY_ID" in msg

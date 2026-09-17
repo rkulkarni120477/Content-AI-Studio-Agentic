@@ -15,6 +15,7 @@ const getUnitDetail = vi.fn();
 const patchUnitMetadata = vi.fn();
 const retagContent = vi.fn();
 const getRetagProgress = vi.fn();
+const reindexDocument = vi.fn();
 
 vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
   default: {
@@ -28,6 +29,7 @@ vi.mock('@features/sourceLibrary/services/sourceLibraryApi', () => ({
     patchUnitMetadata: (...a) => patchUnitMetadata(...a),
     retagContent: (...a) => retagContent(...a),
     getRetagProgress: (...a) => getRetagProgress(...a),
+    reindexDocument: (...a) => reindexDocument(...a),
   },
 }));
 
@@ -151,6 +153,7 @@ describe('MetadataEditorPage', () => {
     });
     retagContent.mockResolvedValue({ retagged: 0, tagging_failed_count: 0 });
     getRetagProgress.mockResolvedValue({ progress: null });
+    reindexDocument.mockResolvedValue({ units_indexed: 1 });
   });
 
   afterEach(() => {
@@ -363,5 +366,20 @@ describe('MetadataEditorPage', () => {
       expect.any(Object),
     ));
     expect(patchMetadata).not.toHaveBeenCalled();
+  });
+
+  it('shows Re-index on view when the document has extracted text', async () => {
+    getOverview.mockResolvedValue({ preview: 'doc preview', total_characters: 1840 });
+    renderPage('ai', { view: true });
+    const btn = await screen.findByRole('button', { name: 'Re-index' });
+    fireEvent.click(btn);
+    await waitFor(() => expect(reindexDocument).toHaveBeenCalledWith('job-1', expect.any(Object)));
+  });
+
+  it('hides Re-index when nothing was extracted', async () => {
+    getOverview.mockResolvedValue({ preview: '', total_characters: 0 });
+    renderPage('ai', { view: true });
+    await screen.findByText('View document');
+    expect(screen.queryByRole('button', { name: 'Re-index' })).toBeNull();
   });
 });

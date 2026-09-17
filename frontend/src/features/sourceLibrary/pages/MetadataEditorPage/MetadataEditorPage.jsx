@@ -7,6 +7,7 @@ import Modal from '@components/common/Modal/Modal';
 import Button from '@components/common/Button/Button';
 import Loader from '@components/common/Loader/Loader';
 import { selectSelectedProject } from '@features/dashboard/dashboardSlice';
+import { selectIsAdmin } from '@features/auth/authSlice';
 import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import DocumentSummaryPanel from '@features/sourceLibrary/components/metadataEditor/DocumentSummaryPanel';
 import DocumentContentPanel from '@features/sourceLibrary/components/metadataEditor/DocumentContentPanel';
@@ -116,6 +117,7 @@ export default function MetadataEditorPage() {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const project = useSelector(selectSelectedProject);
+  const isAdmin = useSelector(selectIsAdmin);
 
   const isView = /\/view\/?$/.test(location.pathname);
   const tabs = isView ? VIEW_TABS : EDIT_TABS;
@@ -147,6 +149,7 @@ export default function MetadataEditorPage() {
   const [retagging, setRetagging] = useState(false);
   const [retagMessage, setRetagMessage] = useState('');
   const [retagProgress, setRetagProgress] = useState(null);
+  const [reindexing, setReindexing] = useState(false);
 
   const scopeParams = useMemo(() => ({
     course_id: courseId,
@@ -532,6 +535,19 @@ export default function MetadataEditorPage() {
     }
   }
 
+  async function handleReindex() {
+    setReindexing(true);
+    try {
+      const result = await sourceLibraryApi.reindexDocument(jobId, scopeParams);
+      const n = Number(result?.units_indexed || 0);
+      toast.success(n ? `Indexed ${n} unit${n === 1 ? '' : 's'} for search.` : 'Re-index finished.');
+    } catch (err) {
+      toast.error(errorMessage(err, 'Could not re-index this document.'));
+    } finally {
+      setReindexing(false);
+    }
+  }
+
   const filteredPickerDocs = pickerDocs.filter((doc) => {
     if (String(doc.job_id || doc.document_id) === String(jobId)) return false;
     const q = pickerSearch.trim().toLowerCase();
@@ -568,7 +584,19 @@ export default function MetadataEditorPage() {
                 : 'Review and refine the tags extracted from this document'}
             </p>
           </div>
-          {isDirty ? <span className={styles.unsavedBadge}>● Unsaved changes</span> : null}
+          <div className={styles.headerActions}>
+            {isDirty ? <span className={styles.unsavedBadge}>● Unsaved changes</span> : null}
+            {isAdmin && Number(overview?.total_characters || 0) > 0 && (
+              <Button
+                variant="secondary"
+                onClick={handleReindex}
+                loading={reindexing}
+                disabled={isProcessing}
+              >
+                Re-index
+              </Button>
+            )}
+          </div>
         </div>
 
         {error ? <div className={styles.error}>{error}</div> : null}

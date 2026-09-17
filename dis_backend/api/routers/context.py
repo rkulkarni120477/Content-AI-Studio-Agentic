@@ -205,6 +205,29 @@ async def source_download_url(
     }
 
 
+@router.post("/sources/{job_id}/index")
+async def reindex_source(job_id: str, request: Request):
+    """Send already-extracted units to the search index without re-uploading.
+
+    "Not indexed" is a finished ingest: text is stored, OpenSearch has 0 units.
+    This is the UI Re-index action. Empty extracts are refused (re-upload).
+    """
+    tenant = get_current_tenant(request)
+    role = getattr(request.state, "role", "user")
+    if role == "user":
+        raise HTTPException(403, "Only admins can re-index Source Library documents")
+    client_id = getattr(request.state, "client_id", tenant.effective_client_id(""))
+    from services.source_library import SourceReindexError, reindex_source_document
+    try:
+        return await anyio.to_thread.run_sync(
+            functools.partial(reindex_source_document, tenant, client_id, job_id)
+        )
+    except SourceReindexError as exc:
+        raise HTTPException(exc.status_code, exc.message) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @router.delete("/sources/{job_id}")
 async def delete_source(job_id: str, request: Request):
     """Permanently delete one Source Library document: raw upload, all processed

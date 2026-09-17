@@ -817,6 +817,126 @@ async def delete_source_document(tenant_cfg: TenantConfig, client_id: str, job_i
     }
 
 
+class SourceReindexError(Exception):
+    """Re-index refused or failed. ``status_code`` is the HTTP status to surface."""
+
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+_REINDEX_BATCH = 100
+
+
+def reindex_source_document(tenant_cfg: TenantConfig, client_id: str, job_id: str) -> Dict[str, Any]:
+    """Push already-extracted units into OpenSearch without re-uploading the file.
+
+    "Not indexed" is a finished job: the text is in source_content, but the
+    vector index has zero units. Re-indexing restores search. It cannot invent
+    text — a "Nothing extracted" document must be re-uploaded instead.
+
+    Does not use the in-memory job store. Production jobs vanish on restart;
+    the Source Library record and content.json are what still exist.
+    """
+    from services.indexing import generate_embeddings, opensearch_upsert
+
+    index = read_source_index(tenant_cfg, client_id)
+    record = next((r for r in index.get("sources", []) if str(r.get("job_id")) == str(job_id)), None)
+    if not record:
+        raise SourceReindexError(f"No source found for job_id '{job_id}'", 404)
+
+    ingest = str(record.get("status") or "").lower()
+    if ingest in {"processing", "pending"}:
+        raise SourceReindexError(
+            "Ingestion is still running. Wait until it finishes — this is not a stuck index.",
+            409,
+        )
+
+    writer = ArtifactWriter(tenant_cfg)
+    content_doc: Dict[str, Any] = {}
+    content_key = record.get("content_key")
+    if content_key:
+        try:
+            content_doc = writer.read_json(content_key) or {}
+        except Exception as exc:
+            raise SourceReindexError(f"Could not read extracted content: {exc}", 404) from exc
+
+    units: List[Dict[str, Any]] = []
+    for i, unit in enumerate(content_doc.get("content_units") or [], 1):
+        text = str(unit.get("text") or "").strip()
+        if not text:
+            continue
+        units.append({
+            "content_unit_id": unit.get("content_unit_id") or f"{job_id}:{i}",
+            "unit_type": unit.get("unit_type") or "chunk",
+            "unit_number": int(unit.get("unit_number") or i),
+            "title": unit.get("title") or record.get("title") or "",
+            "text": text,
+            "visual_summary": unit.get("visual_summary") or "",
+            "keywords": unit.get("keywords") or [],
+            "topics": unit.get("topics") or [],
+            "metadata": unit.get("metadata") or {
+                "block": record.get("block"),
+                "course_id": record.get("course_id"),
+                "course_name": record.get("course_name"),
+                "document_type": record.get("document_type"),
+                "purpose": record.get("purpose"),
+            },
+        })
+
+    if not units:
+        raise SourceReindexError(
+            "No text was recovered from this file, so it cannot be indexed. "
+            "Re-upload it after an extractor can read this format.",
+            409,
+        )
+
+    state: Dict[str, Any] = {
+        "job_id": job_id,
+        "tenant_id": record.get("tenant_id") or tenant_cfg.tenant_id,
+        "client_id": record.get("client_id") or client_id,
+        "filename": record.get("source_file_name") or "",
+        "file_type": record.get("source_file_type") or "",
+        "doc_type": record.get("document_type") or "",
+        "doc_metadata": {
+            "block": record.get("block"),
+            "course_id": record.get("course_id"),
+            "course_name": record.get("course_name"),
+            "document_type": record.get("document_type"),
+            "purpose": record.get("purpose"),
+        },
+        "content_units": units,
+    }
+
+    indexed = 0
+    for offset in range(0, len(units), _REINDEX_BATCH):
+        batch_state = {**state, "content_units": units[offset:offset + _REINDEX_BATCH]}
+        emb = generate_embeddings(tenant_cfg, batch_state)
+        if emb.get("status") == "failed":
+            raise SourceReindexError(
+                f"Embedding failed: {emb.get('error') or 'unknown error'}", 502,
+            )
+        up = opensearch_upsert(tenant_cfg, batch_state)
+        if up.get("status") == "failed":
+            raise SourceReindexError(
+                f"Search index write failed: {up.get('error') or 'unknown error'}", 502,
+            )
+        if up.get("status") == "skipped":
+            raise SourceReindexError(
+                up.get("reason") or "Search index is disabled for this tenant.", 409,
+            )
+        indexed += int(up.get("documents_indexed") or 0)
+
+    logger.info("reindexed job_id=%s units=%d indexed=%d", job_id, len(units), indexed)
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "units_available": len(units),
+        "units_indexed": indexed,
+    }
+
+
 def extracted_chars(content_doc: Dict[str, Any]) -> int:
     """How much text a document actually yielded, across its content units.
 

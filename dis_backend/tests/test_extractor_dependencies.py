@@ -44,6 +44,11 @@ def test_image_installs_antiword():
         "extract to empty text and be indexed as successful — silently, with no "
         "failed job and no error surfaced to the user."
     )
+    assert "tesseract-ocr" in pkgs, (
+        "tesseract-ocr is missing from dis_backend/Dockerfile. Image-only DOCX "
+        "exam figures will extract to empty text when the OOXML walker finds no "
+        "body paragraphs."
+    )
 
 
 def test_legacy_doc_path_still_depends_on_that_binary():
@@ -61,6 +66,7 @@ def test_health_reports_a_missing_extractor_binary_as_degraded(monkeypatch):
     deps = main._extractor_dependencies()
     assert deps["antiword"]["present"] is False
     assert deps["antiword"]["used_for"]
+    assert deps["tesseract"]["present"] is False
 
 
 def test_health_reports_the_binary_when_present(monkeypatch):

@@ -195,6 +195,7 @@ async def docs_user():
 #: away instead of buried per-file in ingestion logs.
 _EXTRACTOR_BINARIES = {
     "antiword": "pre-2007 binary .doc (OLE2) text extraction",
+    "tesseract": "OCR for image-only DOCX exam figures and scanned pages",
 }
 
 
