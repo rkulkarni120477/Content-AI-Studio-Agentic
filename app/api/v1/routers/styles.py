@@ -418,7 +418,10 @@ async def append_style_documents(
     files: list[UploadFile] = File(default=None),
     document_ids: str = Form(
         default="",
-        description="JSON array of document library IDs to link, e.g. [1, 2, 3]",
+        description=(
+            "JSON array of document IDs to link. Integers are CAS library docs; "
+            "non-numeric strings are DIS Source Library document/job IDs."
+        ),
     ),
     additional_instructions: str = Form(
         default="",
@@ -440,15 +443,24 @@ async def append_style_documents(
     uploaded: list[str] = []
     errors: list[str] = []
     new_doc_ids: list[int] = []
+    new_dis_ids: list[str] = []
 
     if document_ids.strip():
         try:
             parsed = json.loads(document_ids)
-            if isinstance(parsed, list):
-                new_doc_ids.extend(int(x) for x in parsed)
+            if not isinstance(parsed, list):
+                raise TypeError("document_ids must be a list")
+            legacy_ids, dis_ids = _split_dis_and_legacy_doc_ids(
+                [str(x) for x in parsed if x is not None and str(x).strip()]
+            )
+            new_doc_ids.extend(legacy_ids)
+            new_dis_ids.extend(dis_ids)
         except (json.JSONDecodeError, TypeError, ValueError):
             from app.core.exceptions import ValidationError
-            raise ValidationError("document_ids must be a JSON array of integers.")
+            raise ValidationError(
+                "document_ids must be a JSON array of CAS library integers "
+                "and/or DIS Source Library document IDs."
+            )
 
     for upload in files or []:
         raw_bytes = await upload.read()
@@ -487,25 +499,42 @@ async def append_style_documents(
         uploaded.append(name)
 
     unique_ids = list(dict.fromkeys(new_doc_ids))
-    if not unique_ids:
+    existing_dis = _extract_dis_ids(style)
+    merged_dis = list(dict.fromkeys([*existing_dis, *new_dis_ids]))
+    added_dis = len(merged_dis) - len(existing_dis)
+
+    if not unique_ids and added_dis <= 0 and not uploaded:
         from app.core.exceptions import ValidationError
         raise ValidationError("No new files selected or uploaded.")
 
-    added = add_files_to_style(db, style, unique_ids)
+    added = 0
+    if unique_ids:
+        added += add_files_to_style(db, style, unique_ids)
+    added += max(0, added_dis)
 
+    visible = _visible_custom_instructions(getattr(style, "custom_instructions", "") or "")
     if additional_instructions.strip():
-        prev = (style.custom_instructions or "").strip()
         extra = additional_instructions.strip()
-        style.custom_instructions = f"{prev}\n{extra}".strip() if prev else extra
+        visible = f"{visible}\n{extra}".strip() if visible else extra
+
+    hidden_dis_marker = _encode_dis_ids(merged_dis)
+    style.custom_instructions = "\n".join(
+        x for x in [visible, hidden_dis_marker] if x
+    ).strip() or None
+
+    if added_dis > 0 or additional_instructions.strip():
+        style.understanding_status = "stale"
+        style.updated_at = datetime.now(timezone.utc)
 
     db.commit()
 
     _log.info(
-        "style_documents_appended  user=%s  style_id=%d  added=%d  uploaded=%d",
+        "style_documents_appended  user=%s  style_id=%d  added=%d  uploaded=%d  dis_added=%d",
         current_user.username,
         style_id,
         added,
         len(uploaded),
+        max(0, added_dis),
     )
     return StyleDocumentUploadResponse(uploaded=uploaded, errors=errors, added=added)
 

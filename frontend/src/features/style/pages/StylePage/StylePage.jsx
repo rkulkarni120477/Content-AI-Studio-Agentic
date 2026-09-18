@@ -34,6 +34,7 @@ import InlinePromptControls from '@components/generation/InlinePromptControls/In
 import CreateStyleForm from '@features/style/components/CreateStyleForm/CreateStyleForm';
 import StyleDetailsPanel from '@features/style/components/StyleDetailsPanel/StyleDetailsPanel';
 import Select from '@components/common/Select/Select';
+import sourceLibraryApi from '@features/sourceLibrary/services/sourceLibraryApi';
 import toast from 'react-hot-toast';
 import { extractErrorMessage } from '@utils/helpers';
 import { styleUnderstandingText } from '@features/style/utils/styleUnderstanding';
@@ -50,6 +51,15 @@ import styles from './StylePage.module.scss';
 function documentPreviewText(preview) {
   if (!preview) return '';
   return preview.content ?? preview.text ?? preview.full_content ?? '';
+}
+
+function sourceLibraryDocId(doc) {
+  return String(doc?.job_id || doc?.document_id || doc?.id || '').trim();
+}
+
+function sourceLibraryDocLabel(doc) {
+  return doc?.source_file_name || doc?.title || doc?.filename || doc?.name
+    || `Source ${sourceLibraryDocId(doc) || '?'}`;
 }
 
 export default function StylePage() {
@@ -220,12 +230,20 @@ export default function StylePage() {
     setFilesExtraInstructions('');
     setFilesModalLoading(true);
     try {
-      const [full, libDocs] = await Promise.all([
+      const params = {};
+      if (selectedCourse?.id) params.course_id = selectedCourse.id;
+      else if (selectedProject?.id) params.project_id = selectedProject.id;
+
+      const [full, libRes] = await Promise.all([
         styleService.getStyle(styleId),
-        styleService.listAllDocuments(),
+        sourceLibraryApi.listDocuments(params),
       ]);
-      setLinkedDocIds(new Set((full.reference_documents || []).map((d) => d.id)));
-      setModalLibraryDocs(libDocs);
+      setLinkedDocIds(new Set(
+        (full.reference_documents || [])
+          .map((d) => String(d.id ?? '').trim())
+          .filter(Boolean),
+      ));
+      setModalLibraryDocs(libRes.documents || libRes.sources || []);
     } catch (e) {
       toast.error(extractErrorMessage(e));
       setFilesStyleId(null);
@@ -244,12 +262,14 @@ export default function StylePage() {
     setModalLibraryDocs([]);
   }
 
-  const availableLibDocs = (modalLibraryDocs.length ? modalLibraryDocs : documents || [])
-    .filter((d) => !linkedDocIds.has(d.id));
+  const availableLibDocs = modalLibraryDocs.filter((d) => {
+    const id = sourceLibraryDocId(d);
+    return id && !linkedDocIds.has(id);
+  });
 
   const librarySelectOptions = availableLibDocs.map((d) => ({
-    value: d.id,
-    label: d.name || `Document #${d.id}`,
+    value: sourceLibraryDocId(d),
+    label: sourceLibraryDocLabel(d),
   }));
 
   async function onAppendStyleFiles() {
@@ -810,7 +830,8 @@ export default function StylePage() {
             />
             {librarySelectOptions.length === 0 && (
               <p className={styles.addFilesEmpty}>
-                No library documents available to add (all are already linked or the registry is empty).
+                No Source Library documents available to add (all are already linked, or none are
+                ingested for this {L.titleLower} yet).
               </p>
             )}
 
