@@ -159,6 +159,7 @@ describe('MetadataEditorPage', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it('renders three tabs', async () => {
@@ -348,6 +349,25 @@ describe('MetadataEditorPage', () => {
     renderPage('content', { view: true, section: 'u1' });
     expect(await screen.findByText(/Tagging 25 of 100 pages · 75 remaining/)).toBeTruthy();
   });
+
+  it('does not stack retag progress polls while one request is still in flight', async () => {
+    let resolveHang;
+    const hang = new Promise((resolve) => { resolveHang = resolve; });
+    getRetagProgress.mockImplementation(() => hang.then(() => ({ progress: null })));
+
+    renderPage('content', { view: true, section: 'u1' });
+    await waitFor(() => expect(getRetagProgress).toHaveBeenCalledTimes(1));
+
+    // Several 2s intervals fire while the first request is still hanging — guard must skip.
+    await new Promise((r) => setTimeout(r, 4500));
+    expect(getRetagProgress).toHaveBeenCalledTimes(1);
+
+    resolveHang();
+    await waitFor(
+      () => expect(getRetagProgress.mock.calls.length).toBeGreaterThan(1),
+      { timeout: 5000 },
+    );
+  }, 15_000);
 
   it('edit mode saves section metadata via patchUnitMetadata', async () => {
     renderPage('ai', { view: false, section: 'u1' });

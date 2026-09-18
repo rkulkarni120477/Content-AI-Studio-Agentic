@@ -270,11 +270,17 @@ export default function MetadataEditorPage() {
 
   useEffect(() => {
     if (!jobId || !isProcessing) return undefined;
+    let inFlight = false;
     const timer = window.setInterval(async () => {
+      // Skip if the previous loadUnits is still hanging (dead API / proxy).
+      if (inFlight) return;
+      inFlight = true;
       try {
         await loadUnits();
       } catch {
         // Keep last known state; next poll may succeed.
+      } finally {
+        inFlight = false;
       }
     }, 8000);
     return () => window.clearInterval(timer);
@@ -286,10 +292,20 @@ export default function MetadataEditorPage() {
     let cancelled = false;
     let unitsTick = 0;
     let announcedTerminal = false;
+    // One request at a time — a hung API must not stack pending XHRs every 2s.
+    let inFlight = false;
+    let abortController = null;
 
     async function pollRetag() {
+      if (inFlight || cancelled) return;
+      inFlight = true;
+      abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
       try {
-        const res = await sourceLibraryApi.getRetagProgress(jobId, scopeParams);
+        const res = await sourceLibraryApi.getRetagProgress(
+          jobId,
+          scopeParams,
+          abortController ? { signal: abortController.signal } : {},
+        );
         if (cancelled) return;
         const progress = res?.progress ?? null;
         setRetagProgress(progress);
@@ -324,8 +340,14 @@ export default function MetadataEditorPage() {
         if (!progress) {
           setRetagging(false);
         }
-      } catch {
-        // Keep last known progress; next poll may succeed.
+      } catch (err) {
+        // Aborted on unmount / remount — ignore. Other failures: keep last progress.
+        if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED' || err?.name === 'AbortError') {
+          return;
+        }
+      } finally {
+        inFlight = false;
+        abortController = null;
       }
     }
 
@@ -334,6 +356,7 @@ export default function MetadataEditorPage() {
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      try { abortController?.abort(); } catch { /* ignore */ }
     };
   }, [jobId, isView, scopeParams, loadUnits]);
 
