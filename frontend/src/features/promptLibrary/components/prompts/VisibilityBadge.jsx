@@ -8,7 +8,10 @@ import { visibilityLabel } from '../../utils/prompt';
 export default function VisibilityBadge({ prompt }) {
   if (prompt.prompt_kind === 'pipeline') {
     const pipe = prompt.pipeline || {};
-    const state = pipe.workflow_state;
+    // An archived row's version keeps whatever workflow_state it had, so
+    // rendering it here would pair "🗄 Archived" with "Active" on the same
+    // card. Archival outranks it: the card already carries the Archived badge.
+    const state = prompt.archived ? null : pipe.workflow_state;
     const stateLabel = state && state.charAt(0).toUpperCase() + state.slice(1).replace('_', ' ');
     return (
       <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
