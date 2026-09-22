@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from '@app/hooks';
 import {
   validatePackageThunk,
   startImportThunk,
+  cancelImportThunk,
   fetchImportRecordThunk,
 } from '@features/import/importThunks';
 import { resetImport, selectImport } from '@features/import/importSlice';
@@ -12,6 +13,7 @@ import Button from '@components/common/Button/Button';
 import Input from '@components/common/Input/Input';
 import FileUpload from '@components/common/FileUpload/FileUpload';
 import Loader from '@components/common/Loader/Loader';
+import ConfirmDialog from '@components/common/ConfirmDialog/ConfirmDialog';
 import { ROUTES } from '@utils/constants';
 import { useLabels } from '@hooks/useLabels';
 import styles from './ImportWizardPage.module.scss';
@@ -67,6 +69,8 @@ export default function ImportWizardPage() {
 
   const [file, setFile] = useState(null);
   const [name, setName] = useState('');
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   // Fresh wizard when project/cluster changes (not on every HMR remount of same URL).
   const entryKey = `${pid}:${clusterId ?? ''}`;
@@ -113,6 +117,14 @@ export default function ImportWizardPage() {
     }
     // Workspace Editor: /workspace/:courseId/editor
     navigate(ROUTES.EDITOR(resolvedCourseId));
+  }
+
+  async function handleConfirmCancel() {
+    setCancelling(true);
+    await dispatch(cancelImportThunk(importId));
+    setCancelling(false);
+    setConfirmingCancel(false);
+    navigate(coursesRoute);
   }
 
   function handleFeedbackImport() {
@@ -252,6 +264,14 @@ export default function ImportWizardPage() {
                 </Button>
               </div>
             )}
+
+            {!contentReady && (
+              <div className={styles.actions}>
+                <Button variant="ghost" onClick={() => setConfirmingCancel(true)}>
+                  Cancel Import
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
@@ -308,6 +328,17 @@ export default function ImportWizardPage() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmingCancel}
+        onClose={() => setConfirmingCancel(false)}
+        onConfirm={handleConfirmCancel}
+        title="Cancel Import"
+        message={`Stop this import and delete everything reconstructed so far? The ${L.titleLower} will not be created. This cannot be undone.`}
+        confirmLabel="Cancel Import"
+        cancelLabel="Keep Going"
+        loading={cancelling}
+      />
     </div>
   );
 }
