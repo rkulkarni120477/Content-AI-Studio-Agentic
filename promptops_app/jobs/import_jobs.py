@@ -34,12 +34,23 @@ from promptops_app.importers.imscc_importer import parse_package
 from promptops_app.importers.package_extractor import PackageValidationError
 from promptops_app.jobs.job_status import (
     JobStatus,
+    is_job_cancelled,
     set_completed,
     set_failed,
     set_running,
 )
+from promptops_app.repositories import course_repository
 
 _log = logging.getLogger(__name__)
+
+
+class _ImportCancelled(Exception):
+    """Raised from inside progress_cb to unwind editor_builder.build() early.
+
+    Only meaningful before ``reconstructed = True`` — see the comment at its
+    check site. Past that point the course is real and kept, matching every
+    other failure path in this job.
+    """
 
 # (progress_pct, label) — same convention as job_status.STAGE_* for the UI.
 STAGE_EXTRACT = (10, "Extracting package...")
@@ -99,10 +110,14 @@ def run_import_job(job_id: str) -> None:
         # ── Stage 1 — Extract ─────────────────────────────────────────
         set_running(db, job, *STAGE_EXTRACT)
         data = _read_package(package_path)
+        if is_job_cancelled(db, job_id):
+            raise _ImportCancelled()
 
         # ── Stage 2 — Parse (extract + full content parse) ────────────
         set_running(db, job, *STAGE_PARSE)
         course = parse_package(data)
+        if is_job_cancelled(db, job_id):
+            raise _ImportCancelled()
         if course_import is not None:
             course_import.structure_counts_json = json.dumps(course.structure_counts())
             course_import.status = "reconstructing"
@@ -112,6 +127,10 @@ def run_import_job(job_id: str) -> None:
         set_running(db, job, *STAGE_RECONSTRUCT_START)
 
         def _progress(done: int, total: int, label: str) -> None:
+            # Checked on every call (the Editor loop, minutes for a big package)
+            # so Cancel actually lands instead of running to completion regardless.
+            if is_job_cancelled(db, job_id):
+                raise _ImportCancelled()
             base, _ = STAGE_RECONSTRUCT_START
             pct = base + int((STAGE_RECONSTRUCT_END - base) * (done / total)) if total else STAGE_RECONSTRUCT_END
             set_running(db, job, pct, label)
@@ -154,6 +173,13 @@ def run_import_job(job_id: str) -> None:
             job_id, course_id, result.modules_created, result.blocks_created, len(result.warnings),
         )
 
+    except _ImportCancelled:
+        # job.status is already CANCELLED (set by POST .../imports/{id}/cancel,
+        # which is what we polled to get here) — purge the invisible shell so
+        # nothing lingers for support/debugging to trip over later, same as a
+        # user hitting "Permanently delete" on it themselves.
+        _log.info("Import job %s cancelled mid-run — purging course %s", job_id, course_id)
+        course_repository.purge_course(db, course_id)   # commits internally
     except PackageValidationError as exc:
         _log.warning("Import job %s: invalid package: %s", job_id, exc)
         _mark_failed(db, job, course_import, f"Invalid IMSCC package: {exc}",

@@ -208,6 +208,53 @@ def test_run_import_job_end_to_end(db, monkeypatch, mock_llm):
     assert db.query(CourseDesignDocument).filter_by(course_id=course_id).count() == 1
 
 
+def test_cancel_mid_run_purges_the_course_entirely(db, monkeypatch):
+    """The Cancel Import button: is_job_cancelled is checked at every stage
+    boundary and inside the per-module progress callback, so a cancel lands
+    even deep into reconstruction — not just before the job starts. Unlike a
+    failed import (hidden but kept for its audit trail), a cancelled one is
+    purged outright: the user asked for it to not exist."""
+    from promptops_app.jobs import import_jobs
+    from promptops_app.repositories import job_repository
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.is_job_cancelled", lambda db, job_id: True)
+
+    course = _new_course(db, name="Cancelled", project_id=4)
+    course_id = course.id
+    course.is_active = False
+    db.commit()
+    ci = CourseImport(course_id=course_id, project_id=4, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    fd, pkg_path = tempfile.mkstemp(prefix="test_imscc_", suffix=".imscc")
+    import os
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(build_content_imscc())
+
+    job_id = job_repository.create_job(
+        db,
+        user_name="u",
+        request_params={
+            "import_id": import_id, "course_id": course_id, "project_id": 4,
+            "user_name": "u", "package_path": pkg_path, "package_name": "x.imscc",
+        },
+        project_id=4, course_id=course_id, job_type="import",
+    )
+
+    import_jobs.run_import_job(job_id)
+
+    db.expire_all()
+    assert db.query(Course).filter_by(id=course_id).first() is None
+    assert db.query(CourseImport).filter_by(id=import_id).first() is None
+    assert db.query(GenerationJob).filter_by(id=job_id).first() is None
+    assert not os.path.isfile(pkg_path)   # staged package still cleaned up
+
+
 def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     """A course row is created eagerly (API layer), invisible from the start
     (is_active=False — see start_import), so the user can watch progress

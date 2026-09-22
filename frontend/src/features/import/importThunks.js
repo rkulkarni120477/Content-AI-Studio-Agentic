@@ -40,6 +40,18 @@ export const startImportThunk = createAsyncThunk(
   },
 );
 
+export const cancelImportThunk = createAsyncThunk(
+  'import/cancelImport',
+  async (importId, { rejectWithValue }) => {
+    try {
+      await importService.cancelImport(importId);
+      return true;
+    } catch (e) {
+      return rejectWithValue(extractErrorMessage(e));
+    }
+  },
+);
+
 export const fetchImportRecordThunk = createAsyncThunk(
   'import/fetchRecord',
   async (importId, { rejectWithValue }) => {
