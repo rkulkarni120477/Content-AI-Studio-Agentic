@@ -274,19 +274,35 @@ def base_prompt_query(db: Session) -> Query:
 def browse_prompts_query(db: Session, role: str | None, user_team,
                          kind: str | None = None,
                          include_deleted: bool = False,
+                         archived_only: bool = False,
                          project_id: int | None = None,
                          is_platform_admin: bool = False) -> Query:
     """Console browse across kinds. ``kind`` in {library, pipeline, all};
     callers without pipeline-manager access are silently stripped to
     library-only regardless of the requested kind (server-side, no 403).
-    ``include_deleted`` (doc §9 "unless explicitly enabled") surfaces
-    soft-deleted rows too — pipeline managers only; ignored for everyone
-    else."""
+
+    Archival is a third axis, orthogonal to kind and to the active version's
+    workflow_state (doc §9 "unless explicitly enabled"), and both flags below
+    are pipeline-manager-only — silently ignored for everyone else, same
+    convention as ``kind``:
+    - neither: live rows only (the default every other surface relies on).
+    - ``include_deleted``: live + archived, for a caller that wants the whole
+      set in one list.
+    - ``archived_only``: archived rows ONLY, which is what a filter labelled
+      "Archived" has to mean. It wins over ``include_deleted`` — the narrower
+      request is never widened — and it must stay server-side: the list count
+      and the CSV export both read the returned rows, so a client-side filter
+      would leave both of them reporting the unfiltered set.
+    """
     kind = (kind or "library").strip().lower()
     if kind not in ("library", "pipeline", "all") or not can_manage_pipeline_prompts(role):
         kind = "library"
+    if not can_manage_pipeline_prompts(role):
+        include_deleted = archived_only = False
     q = db.query(Prompt)
-    if not (include_deleted and can_manage_pipeline_prompts(role)):
+    if archived_only:
+        q = q.filter(Prompt.deleted_at.isnot(None))
+    elif not include_deleted:
         q = q.filter(Prompt.deleted_at.is_(None))
     if kind != "all":
         q = q.filter(Prompt.prompt_kind == kind)
