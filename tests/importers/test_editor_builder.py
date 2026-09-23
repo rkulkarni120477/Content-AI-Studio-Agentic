@@ -255,6 +255,68 @@ def test_cancel_mid_run_purges_the_course_entirely(db, monkeypatch):
     assert not os.path.isfile(pkg_path)   # staged package still cleaned up
 
 
+def test_cancel_landing_right_after_reconstruction_still_purges(db, monkeypatch):
+    """Caught live: a real package can finish reconstruction (CPU-only, no
+    LLM calls) in a couple seconds -- faster than the user's own Cancel
+    click round-trips to the server. build() returning didn't re-check
+    cancellation, so the course got unhidden with 21 modules / 155
+    generations and the job just sat there reporting status=cancelled while
+    the course stayed fully visible and "Imported". This reproduces that
+    exact race: build() succeeds, and only THEN does the job get marked
+    cancelled (simulating the two requests landing in that order) -- the
+    check right after build() must still catch it and purge."""
+    from promptops_app.jobs import import_jobs
+    from promptops_app.jobs.job_status import set_cancelled
+    from promptops_app.repositories import job_repository
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+
+    course = _new_course(db, name="RaceCancelled", project_id=5)
+    course_id = course.id
+    course.is_active = False
+    db.commit()
+    ci = CourseImport(course_id=course_id, project_id=5, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    fd, pkg_path = tempfile.mkstemp(prefix="test_imscc_", suffix=".imscc")
+    import os
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(build_content_imscc())
+
+    job_id = job_repository.create_job(
+        db,
+        user_name="u",
+        request_params={
+            "import_id": import_id, "course_id": course_id, "project_id": 5,
+            "user_name": "u", "package_path": pkg_path, "package_name": "x.imscc",
+        },
+        project_id=5, course_id=course_id, job_type="import",
+    )
+
+    real_build = editor_builder.build
+
+    def build_then_cancel(db_, *a, **kw):
+        result = real_build(db_, *a, **kw)
+        job = db_.query(GenerationJob).filter_by(id=job_id).first()
+        set_cancelled(db_, job)   # the cancel request "lands" right here
+        return result
+
+    monkeypatch.setattr(import_jobs.editor_builder, "build", build_then_cancel)
+
+    import_jobs.run_import_job(job_id)
+
+    db.expire_all()
+    assert db.query(Course).filter_by(id=course_id).first() is None
+    assert db.query(CourseModule).filter_by(course_id=course_id).count() == 0
+    assert db.query(Generation).filter_by(course_id=course_id).count() == 0
+    assert db.query(CourseImport).filter_by(id=import_id).first() is None
+    assert db.query(GenerationJob).filter_by(id=job_id).first() is None
+
+
 def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     """A course row is created eagerly (API layer), invisible from the start
     (is_active=False — see start_import), so the user can watch progress

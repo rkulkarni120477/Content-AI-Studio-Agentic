@@ -100,7 +100,9 @@ export default function PromptListPage() {
     // Workflow status = the active version's state (doc §8).
     if (wfState) params.state = wfState;
     // Archived rows only on explicit opt-in (doc §9), admin-gated server-side.
-    if (showArchived) params.include_archived = '1';
+    // The filter RESTRICTS to archived rows rather than adding them to the live
+    // ones — server-side, so the row count and the CSV export agree with it.
+    if (showArchived) params.archived_only = '1';
     if (sort) params.sort = sort;
     return params;
   }
@@ -387,7 +389,7 @@ export default function PromptListPage() {
           </select>
           <label
             style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '.8rem', cursor: 'pointer' }}
-            title="Archived prompts are excluded from generation and all pickers; show them here to inspect or restore"
+            title="Show only archived prompts — excluded from generation and all pickers until restored"
           >
             <input
               type="checkbox"

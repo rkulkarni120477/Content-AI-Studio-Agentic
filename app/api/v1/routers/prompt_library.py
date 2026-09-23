@@ -231,8 +231,18 @@ def _in_use_message(p: Prompt, usage: dict) -> str:
 # Prompts
 # ==============================================================================
 
-def _include_archived(request: Request) -> bool:
-    return (request.query_params.get("include_archived") or "").strip().lower() in ("1", "true", "yes")
+def _flag(request: Request, name: str) -> bool:
+    return (request.query_params.get(name) or "").strip().lower() in ("1", "true", "yes")
+
+
+def _archive_scope(request: Request) -> dict:
+    """Browse kwargs for the archival axis, shared by list and search so the
+    two can never drift. ``archived_only=1`` narrows to archived rows (the
+    "Archived" filter); ``include_archived=1`` keeps its older, additive
+    meaning — live + archived — for callers that already send it.
+    """
+    return {"include_deleted": _flag(request, "include_archived"),
+            "archived_only": _flag(request, "archived_only")}
 
 
 @router.get("/prompts")
@@ -240,7 +250,7 @@ def list_prompts(request: Request, db: Session = Depends(get_db),
                  user=Depends(require_permission("prompt_library.view"))):
     kind = request.query_params.get("kind")
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
-                                 include_deleted=_include_archived(request), **_tenant_kwargs(user))
+                                 **_archive_scope(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_optin(request, svc.list_query_loaders(q))
     return _paginated_body(_list_rows(db, items, **_tenant_kwargs(user)), total, page, limit)
@@ -254,7 +264,7 @@ def search_prompts(request: Request, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="q query parameter required")
     kind = request.query_params.get("kind")
     q = svc.browse_prompts_query(db, user.role, None, kind=kind,
-                                 include_deleted=_include_archived(request), **_tenant_kwargs(user))
+                                 **_archive_scope(request), **_tenant_kwargs(user))
     q = svc.apply_list_filters(q, dict(request.query_params))
     items, total, page, limit = _paginate_forced(request, svc.list_query_loaders(q))
     return _paginated_body(_list_rows(db, items, **_tenant_kwargs(user)), total, page, limit, extra={"q": q_text})
