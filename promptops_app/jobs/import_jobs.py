@@ -144,6 +144,14 @@ def run_import_job(job_id: str) -> None:
             user_name=user_name,
             progress_cb=_progress,
         )
+        # Cancel can still land in the gap between the Editor loop's last
+        # progress_cb call and here — build() returning doesn't re-check.
+        # Caught here it's the difference between "never existed" and "exists,
+        # unhidden, and Cancel silently did nothing" (the bug this closes: a
+        # fast CPU-only build on a real package can clear this whole function
+        # in seconds, well inside the round trip of the user's own click).
+        if is_job_cancelled(db, job_id):
+            raise _ImportCancelled()
         reconstructed = True   # Editor has real content — never hide/archive past this point
 
         # The course was created invisible (is_active=False — see start_import
@@ -161,7 +169,13 @@ def run_import_job(job_id: str) -> None:
         # ── Stages 5–7 — Reverse-generate design artifacts (non-fatal) ─
         # Runs only after reconstruction succeeded. Any failure here leaves the
         # Editor fully usable and is retryable — it must NEVER fail the import.
+        # Cancel is the one exception _reverse_generate re-raises instead of
+        # swallowing (see its own except clause) — these are the LLM-heavy
+        # stages, the ones actually worth interrupting instead of paying for.
         _reverse_generate(db, job, course_id, user_name, result)
+
+        if is_job_cancelled(db, job_id):
+            raise _ImportCancelled()
 
         # ── Stage 4/Finalize ──────────────────────────────────────────
         set_running(db, job, *STAGE_FINALIZE)
@@ -175,10 +189,12 @@ def run_import_job(job_id: str) -> None:
 
     except _ImportCancelled:
         # job.status is already CANCELLED (set by POST .../imports/{id}/cancel,
-        # which is what we polled to get here) — purge the invisible shell so
-        # nothing lingers for support/debugging to trip over later, same as a
-        # user hitting "Permanently delete" on it themselves.
-        _log.info("Import job %s cancelled mid-run — purging course %s", job_id, course_id)
+        # which is what we polled to get here). Purge unconditionally — this
+        # can now fire even after is_active flipped True (a fast reconstruct
+        # can beat the cancel request's own round trip), and the confirm
+        # dialog promises deletion regardless of how far the job got, not
+        # just while the shell was still invisible.
+        _log.info("Import job %s cancelled — purging course %s", job_id, course_id)
         course_repository.purge_course(db, course_id)   # commits internally
     except PackageValidationError as exc:
         _log.warning("Import job %s: invalid package: %s", job_id, exc)
@@ -270,12 +286,16 @@ def _reverse_generate(db, job, course_id: int, user_name: str, result, *, stages
         if not modules:
             return
 
+        if is_job_cancelled(db, job.id):
+            raise _ImportCancelled()
         set_running(db, job, *bp_stage)
         bp_result = reverse_blueprint.build_blueprints(
             db, course=course_row, model_choice=model_choice, user_name=user_name, modules=modules,
         )
         result.warnings.extend(bp_result.warnings)
 
+        if is_job_cancelled(db, job.id):
+            raise _ImportCancelled()
         set_running(db, job, *cdd_stage)
         cdd_result = reverse_cdd.build_cdd(
             db, course=course_row, model_choice=model_choice, user_name=user_name, modules=modules,
@@ -290,12 +310,21 @@ def _reverse_generate(db, job, course_id: int, user_name: str, result, *, stages
             ).update({ModuleBlueprint.cdd_id: cdd_result.cdd_id}, synchronize_session=False)
             db.commit()
 
+        if is_job_cancelled(db, job.id):
+            raise _ImportCancelled()
         set_running(db, job, *style_stage)
         style_result = style_analyzer.build_style(
             db, course=course_row, model_choice=model_choice, user_name=user_name, modules=modules,
         )
         result.warnings.extend(style_result.warnings)
 
+    except _ImportCancelled:
+        # Re-raise rather than swallow: the one caller that cares
+        # (run_import_job) needs this to reach ITS except clause and purge.
+        # run_reverse_gen_job's own generic except still catches it same as
+        # any other failure — no special-casing needed there, and correctly
+        # so: cancelling a RETRY must never purge an already-real course.
+        raise
     except Exception as exc:  # noqa: BLE001 - reverse-gen is best-effort
         db.rollback()
         _log.warning("Import job: reverse-generation failed (Editor still usable): %s", exc)
