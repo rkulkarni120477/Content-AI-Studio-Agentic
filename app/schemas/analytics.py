@@ -78,8 +78,16 @@ class AuditTrailFiltersResponse(BaseModel):
     page_sizes: list[int] = Field(default_factory=lambda: [25, 50, 100])
 
 
-class AuditTrailQuery(BaseModel):
-    """Query parameters for GET /api/v1/analytics/audit-trail and export."""
+class AuditTrailFilters(BaseModel):
+    """Filters shared by GET /api/v1/analytics/audit-trail and its /export.
+
+    No pagination fields here on purpose: export always writes every matching
+    row (capped internally at 100k, see export_audit_trail) and never reads
+    page/page_size, so the two never belonged on the same model. They used to
+    live on one shared schema, and a caller sending an out-of-range page_size
+    for export (a value that would only ever matter for the list view) failed
+    validation for a param the export request doesn't even use.
+    """
 
     entity_type: Optional[str] = Field(
         default=None,
@@ -105,6 +113,11 @@ class AuditTrailQuery(BaseModel):
         default=None,
         description="Inclusive end date (YYYY-MM-DD).",
     )
+
+
+class AuditTrailQuery(AuditTrailFilters):
+    """Query parameters for GET /api/v1/analytics/audit-trail (paginated list only)."""
+
     page: int = Field(default=1, ge=1, description="Page number (1-indexed).")
     page_size: int = Field(
         default=25, ge=1, le=200, description="Number of rows per page.",

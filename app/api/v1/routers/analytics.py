@@ -26,6 +26,7 @@ from app.core.dependencies import get_current_user, get_db, require_permission
 from app.schemas.analytics import (
     AnalyticsSummaryResponse,
     AuditEventRead,
+    AuditTrailFilters,
     AuditTrailFiltersResponse,
     AuditTrailQuery,
     CddBlueprintEventRow,
@@ -235,8 +236,13 @@ def get_audit_trail_filters(
     )
 
 
-def _resolve_audit_trail_query(query: AuditTrailQuery, current_user) -> tuple[dict, AuditTrailQuery]:
-    """Apply role scoping and parse dates for audit trail queries."""
+def _resolve_audit_trail_query(query: AuditTrailFilters, current_user) -> tuple[dict, AuditTrailFilters]:
+    """Apply role scoping and parse dates for audit trail queries.
+
+    Takes the filters base, not the paginated AuditTrailQuery: only touches
+    actor/date/etc, and export calls this with an AuditTrailFilters that has
+    no page/page_size at all.
+    """
     from app.core.permissions import effective_rbac_check
 
     actor = query.actor
@@ -302,12 +308,17 @@ def list_audit_trail(
     description="Downloads audit events as CSV using the same filters as GET /audit-trail.",
 )
 def export_audit_trail(
-    query: Annotated[AuditTrailQuery, Query()],
+    query: Annotated[AuditTrailFilters, Query()],
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.audit_log")),
 ) -> Response:
     """
     Export audit events as a CSV download (respects current filters).
+
+    Takes AuditTrailFilters, not AuditTrailQuery: page/page_size don't apply
+    here (every matching row is exported, capped at 100k below) and a caller
+    is free to send any page_size it likes to GET /audit-trail without ever
+    risking this endpoint's export.
 
     Replicates the "Export Audit Log" button in the Streamlit Analytics tab.
     """
