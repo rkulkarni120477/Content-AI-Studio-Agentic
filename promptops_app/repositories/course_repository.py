@@ -118,8 +118,10 @@ def list_courses_for_cluster(db, cluster_id: int, *, include_archived: bool = Fa
 def purge_course(db, course_id: int) -> None:
     """Permanently delete a course and all owned content.
 
-    Caller must ensure the course exists (typically already archived).
-    Does **not** delete shared Style rows — only clears ``active_style_id``.
+    Safe to call even if the course row is already gone (e.g. a second purge
+    sweeping up rows a still-running job wrote after the first purge) — see
+    the no-early-return note below. Does **not** delete shared Style rows —
+    only clears ``active_style_id``.
     """
     # No early return when the course row is already gone: a still-running
     # import job can keep writing rows for a course_id after it was purged

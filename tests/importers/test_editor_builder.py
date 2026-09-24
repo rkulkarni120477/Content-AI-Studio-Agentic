@@ -209,7 +209,7 @@ def test_run_import_job_end_to_end(db, monkeypatch, mock_llm):
 
 
 def test_cancel_mid_run_purges_the_course_entirely(db, monkeypatch):
-    """The Cancel Import button: is_job_cancelled is checked at every stage
+    """The Cancel Import button: is_import_cancelled is checked at every stage
     boundary and inside the per-module progress callback, so a cancel lands
     even deep into reconstruction — not just before the job starts. Unlike a
     failed import (hidden but kept for its audit trail), a cancelled one is
@@ -219,7 +219,7 @@ def test_cancel_mid_run_purges_the_course_entirely(db, monkeypatch):
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
     monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
-    monkeypatch.setattr("promptops_app.jobs.import_jobs.is_job_cancelled", lambda db, job_id: True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.is_import_cancelled", lambda db, job_id: True)
 
     course = _new_course(db, name="Cancelled", project_id=4)
     course_id = course.id
@@ -378,6 +378,65 @@ def test_cancel_during_blueprints_leaves_no_orphans(db, monkeypatch):
     assert db.query(ModuleBlueprint).filter_by(course_id=course_id).count() == 0
     assert db.query(CourseModule).filter_by(course_id=course_id).count() == 0
     assert db.query(Generation).filter_by(course_id=course_id).count() == 0
+
+
+def test_late_purge_during_finalize_is_treated_as_cancel_not_a_crash(db, monkeypatch):
+    """PR #187 review: no is_import_cancelled() check covers the window
+    between the last one (right after _reverse_generate) and
+    _finalize/set_completed. A purge landing there deletes both the course
+    and this job row out from under an already-expired ORM object, so the
+    next write raises ObjectDeletedError/StaleDataError instead of the
+    checked _ImportCancelled -- and used to propagate out of the job instead
+    of being treated as the cancel it actually is."""
+    from promptops_app.jobs import import_jobs
+    from promptops_app.jobs.job_status import set_cancelled
+    from promptops_app.repositories import course_repository, job_repository
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+
+    course = _new_course(db, name="LatePurgeRace", project_id=7)
+    course_id = course.id
+    course.is_active = False
+    db.commit()
+    ci = CourseImport(course_id=course_id, project_id=7, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    fd, pkg_path = tempfile.mkstemp(prefix="test_imscc_", suffix=".imscc")
+    import os
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(build_content_imscc())
+
+    job_id = job_repository.create_job(
+        db,
+        user_name="u",
+        request_params={
+            "import_id": import_id, "course_id": course_id, "project_id": 7,
+            "user_name": "u", "package_path": pkg_path, "package_name": "x.imscc",
+        },
+        project_id=7, course_id=course_id, job_type="import",
+    )
+
+    real_finalize = import_jobs._finalize
+
+    def finalize_after_late_endpoint_purge(db_, course_id_, course_import_, import_id_, result_):
+        # What the cancel endpoint now does, landing after the last checked
+        # is_import_cancelled() but before this function commits anything.
+        set_cancelled(db_, db_.query(GenerationJob).filter_by(id=job_id).first())
+        course_repository.purge_course(db_, course_id_)
+        real_finalize(db_, course_id_, course_import_, import_id_, result_)
+
+    monkeypatch.setattr(import_jobs, "_finalize", finalize_after_late_endpoint_purge)
+
+    import_jobs.run_import_job(job_id)   # must not raise
+
+    db.expire_all()
+    assert db.query(Course).filter_by(id=course_id).first() is None
+    assert db.query(CourseImport).filter_by(id=import_id).first() is None
+    assert db.query(GenerationJob).filter_by(id=job_id).first() is None
 
 
 def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
