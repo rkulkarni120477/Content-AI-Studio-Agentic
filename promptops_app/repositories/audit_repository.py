@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from sqlalchemy import func
+
 from promptops_app.database import AuditLog
 
 
@@ -61,10 +63,11 @@ def count_audit_logs(
     date_from: datetime = None,
     date_to: datetime = None,
 ) -> int:
-    q = _base_query(db, user_id=user_id, action=action, entity_type=entity_type,
+    q = _base_query(db, select_col=func.count(AuditLog.id),
+                    user_id=user_id, action=action, entity_type=entity_type,
                     project_id=project_id, course_id=course_id,
                     date_from=date_from, date_to=date_to)
-    return q.count()
+    return q.scalar()
 
 
 def list_audit_logs(
@@ -80,7 +83,8 @@ def list_audit_logs(
     limit: int = 50,
     offset: int = 0,
 ) -> list:
-    q = _base_query(db, user_id=user_id, action=action, entity_type=entity_type,
+    q = _base_query(db, select_col=AuditLog,
+                    user_id=user_id, action=action, entity_type=entity_type,
                     project_id=project_id, course_id=course_id,
                     date_from=date_from, date_to=date_to)
     return q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
@@ -89,9 +93,9 @@ def list_audit_logs(
 def _base_query(
     db,
     *,
-    user_id, action, entity_type, project_id, course_id, date_from, date_to,
+    select_col, user_id, action, entity_type, project_id, course_id, date_from, date_to,
 ):
-    q = db.query(AuditLog)
+    q = db.query(select_col)
     if user_id:
         q = q.filter(AuditLog.user_id == user_id)
     if action:
