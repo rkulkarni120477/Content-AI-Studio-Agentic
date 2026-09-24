@@ -88,8 +88,18 @@ def is_job_cancelled(db, job_id: str) -> bool:
     """Re-read the job row; return True if the user cancelled while we were working."""
     from promptops_app.database import GenerationJob
 
+    from sqlalchemy.exc import InvalidRequestError
+
+    # A row that no longer exists reads as cancelled: purge_course deletes the
+    # job along with its course, and a job that keeps running after that only
+    # writes orphans into a course that's gone. refresh() raises (rather than
+    # returning None) when another session deleted a row this one still has
+    # cached, hence both checks.
     row = db.get(GenerationJob, job_id)
     if row is None:
-        return False
-    db.refresh(row)
+        return True
+    try:
+        db.refresh(row)
+    except InvalidRequestError:
+        return True
     return row.status == JobStatus.CANCELLED

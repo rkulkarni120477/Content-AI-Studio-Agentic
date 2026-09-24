@@ -121,16 +121,19 @@ def purge_course(db, course_id: int) -> None:
     Caller must ensure the course exists (typically already archived).
     Does **not** delete shared Style rows — only clears ``active_style_id``.
     """
+    # No early return when the course row is already gone: a still-running
+    # import job can keep writing rows for a course_id after it was purged
+    # (e.g. blueprints), and a second purge must sweep those. Everything below
+    # filters by course_id, so it's safe with no course row.
     course = get_course_by_id(db, course_id)
-    if course is None:
-        return
 
-    # Clear soft pointers so design-doc / style deletes are not blocked by the course row.
-    course.active_cdd_id = None
-    course.active_blueprint_id = None
-    course.active_style_id = None
-    course.import_id = None
-    db.flush()
+    if course is not None:
+        # Clear soft pointers so design-doc / style deletes are not blocked by the course row.
+        course.active_cdd_id = None
+        course.active_blueprint_id = None
+        course.active_style_id = None
+        course.import_id = None
+        db.flush()
 
     gen_ids = [
         g.id for g in db.query(Generation.id).filter(Generation.course_id == course_id).all()
@@ -287,7 +290,8 @@ def purge_course(db, course_id: int) -> None:
         synchronize_session=False
     )
 
-    db.delete(course)
+    if course is not None:
+        db.delete(course)
     db.commit()
     _log.info("course_purged  course_id=%d", course_id)
 

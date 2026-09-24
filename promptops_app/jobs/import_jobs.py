@@ -45,12 +45,10 @@ _log = logging.getLogger(__name__)
 
 
 class _ImportCancelled(Exception):
-    """Raised from inside progress_cb to unwind editor_builder.build() early.
-
-    Only meaningful before ``reconstructed = True`` — see the comment at its
-    check site. Past that point the course is real and kept, matching every
-    other failure path in this job.
-    """
+    """Unwinds the job to its purge handler from any stage, including inside
+    editor_builder.build() (via progress_cb) and _reverse_generate. Unlike a
+    failure, a cancel purges even after reconstruction: the user asked for the
+    title not to exist."""
 
 # (progress_pct, label) — same convention as job_status.STAGE_* for the UI.
 STAGE_EXTRACT = (10, "Extracting package...")

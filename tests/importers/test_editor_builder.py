@@ -317,6 +317,69 @@ def test_cancel_landing_right_after_reconstruction_still_purges(db, monkeypatch)
     assert db.query(GenerationJob).filter_by(id=job_id).first() is None
 
 
+def test_cancel_during_blueprints_leaves_no_orphans(db, monkeypatch):
+    """Caught live on cas-dev: the cancel landed during Blueprint generation (one
+    long LLM loop), so the course stayed visible for minutes. Now the cancel
+    endpoint purges immediately; the worker, still inside build_blueprints,
+    then writes a blueprint into the deleted course (ModuleBlueprint.course_id
+    has no FK, so nothing stops it). The worker must stop at its next check
+    (a deleted job reads as cancelled) and its purge must sweep that orphan
+    even though the course row is already gone."""
+    from types import SimpleNamespace
+
+    from promptops_app.database import ModuleBlueprint
+    from promptops_app.jobs import import_jobs
+    from promptops_app.jobs.job_status import set_cancelled
+    from promptops_app.repositories import course_repository, job_repository
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    monkeypatch.setattr("promptops_app.jobs.import_jobs.SessionLocal", factory)
+
+    course = _new_course(db, name="CancelMidBlueprint", project_id=6)
+    course_id = course.id
+    course.is_active = False
+    db.commit()
+    ci = CourseImport(course_id=course_id, project_id=6, status="queued", package_name="x.imscc")
+    db.add(ci)
+    db.commit()
+    db.refresh(ci)
+    import_id = ci.id
+
+    fd, pkg_path = tempfile.mkstemp(prefix="test_imscc_", suffix=".imscc")
+    import os
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(build_content_imscc())
+
+    job_id = job_repository.create_job(
+        db,
+        user_name="u",
+        request_params={
+            "import_id": import_id, "course_id": course_id, "project_id": 6,
+            "user_name": "u", "package_path": pkg_path, "package_name": "x.imscc",
+        },
+        project_id=6, course_id=course_id, job_type="import",
+    )
+
+    def blueprints_then_endpoint_cancel(db_, **kw):
+        # What cancel_import now does, landing mid-Blueprint...
+        set_cancelled(db_, db_.query(GenerationJob).filter_by(id=job_id).first())
+        course_repository.purge_course(db_, course_id)
+        # ...then the worker's own in-flight write, into the now-deleted course.
+        db_.add(ModuleBlueprint(title="late", module_title="late", course_id=course_id))
+        db_.commit()
+        return SimpleNamespace(warnings=[], blueprint_ids=[])
+
+    monkeypatch.setattr(import_jobs.reverse_blueprint, "build_blueprints", blueprints_then_endpoint_cancel)
+
+    import_jobs.run_import_job(job_id)
+
+    db.expire_all()
+    assert db.query(Course).filter_by(id=course_id).first() is None
+    assert db.query(ModuleBlueprint).filter_by(course_id=course_id).count() == 0
+    assert db.query(CourseModule).filter_by(course_id=course_id).count() == 0
+    assert db.query(Generation).filter_by(course_id=course_id).count() == 0
+
+
 def test_failed_import_job_hides_the_empty_course_shell(db, monkeypatch):
     """A course row is created eagerly (API layer), invisible from the start
     (is_active=False — see start_import), so the user can watch progress

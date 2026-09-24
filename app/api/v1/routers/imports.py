@@ -344,4 +344,21 @@ def cancel_import(
     set_cancelled(db, job)
     _log.info("import_cancelled  user=%s  import_id=%d  job=%s",
               current_user.username, record.id, job.id)
+
+    # Purge here, not only when the worker next notices: a cancel that lands
+    # mid-Blueprint (one long LLM loop) otherwise leaves the course visible for
+    # minutes. The worker still stops at its next check (a deleted job reads as
+    # cancelled) and its own purge sweeps anything it wrote in between.
+    # "import" only: cancelling an import_reverse RETRY must never purge an
+    # already-real course.
+    if job.job_type == "import":
+        from promptops_app.repositories import course_repository
+
+        course_id = record.course_id
+        try:
+            course_repository.purge_course(db, course_id)
+        except Exception:  # noqa: BLE001 - the worker's own purge is the backstop
+            db.rollback()
+            _log.exception("import_cancel_purge_deferred  import_id=%d  course_id=%s",
+                           import_id, course_id)
     return MessageResponse(message="Import cancelled.")
