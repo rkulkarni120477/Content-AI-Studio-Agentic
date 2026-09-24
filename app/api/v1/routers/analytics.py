@@ -316,9 +316,9 @@ def export_audit_trail(
     Export audit events as a CSV download (respects current filters).
 
     Takes AuditTrailFilters, not AuditTrailQuery: page/page_size don't apply
-    here (every matching row is exported, capped at 100k below) and a caller
-    is free to send any page_size it likes to GET /audit-trail without ever
-    risking this endpoint's export.
+    here, so this endpoint doesn't declare them at all — every matching row
+    is exported (capped at 100k below), and an extra page_size on the
+    request is simply ignored rather than validated.
 
     Replicates the "Export Audit Log" button in the Streamlit Analytics tab.
     """

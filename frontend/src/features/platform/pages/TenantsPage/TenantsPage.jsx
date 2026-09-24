@@ -238,7 +238,13 @@ export default function TenantsPage() {
       downloadBlob(response.data, 'audit-trail.csv');
       toast.success('Audit trail exported.');
     } catch (e) {
-      toast.error(extractErrorMessage(e));
+      // Never surface a raw API/HTTP error here (CAS-136): a validation
+      // error still reaches extractErrorMessage as a technical field/message
+      // string, and a non-JSON error body (plain-text 500, proxy 502/504
+      // HTML) isn't unwrapped at all, leaving axios's generic
+      // "Request failed with status code ..." — same problem either way.
+      console.error('Audit trail export failed', e);
+      toast.error('Unable to export audit logs. Please try again.');
     } finally {
       setAuditExporting(false);
     }
