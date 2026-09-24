@@ -99,14 +99,19 @@ def is_job_cancelled(db, job_id: str, *, missing_is_cancelled: bool = False) -> 
     from sqlalchemy.exc import InvalidRequestError
 
     # refresh() raises (rather than returning None) when another session
-    # deleted a row this one still has cached, hence both checks below.
+    # deleted a row this one still has cached. On the generation-job path
+    # (missing_is_cancelled=False) this re-raises, exactly matching pre-PR
+    # behaviour: refresh() was called with no try/except at all, so a mid-run
+    # deleted row failed the job instead of letting it keep going.
     row = db.get(GenerationJob, job_id)
     if row is None:
         return missing_is_cancelled
     try:
         db.refresh(row)
     except InvalidRequestError:
-        return missing_is_cancelled
+        if missing_is_cancelled:
+            return True
+        raise
     return row.status == JobStatus.CANCELLED
 
 

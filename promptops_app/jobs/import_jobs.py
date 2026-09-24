@@ -190,7 +190,12 @@ def run_import_job(job_id: str) -> None:
             set_completed(db, job, course_id)   # result_entity_id = course_id
         except (ObjectDeletedError, StaleDataError):
             db.rollback()
-            raise _ImportCancelled()
+            # Confirm it was actually the cancel race before purging — this
+            # exception pair can have other causes, and purging a fully
+            # reconstructed course on a false positive would destroy it.
+            if is_import_cancelled(db, job_id):
+                raise _ImportCancelled()
+            raise
         _log.info(
             "import_completed  job=%s  course_id=%s  modules=%d  blocks=%d  warnings=%d",
             job_id, course_id, result.modules_created, result.blocks_created, len(result.warnings),
