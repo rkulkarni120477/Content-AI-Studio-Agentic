@@ -56,6 +56,8 @@ router = APIRouter()
 )
 def get_summary(
     project_id: int | None = Query(default=None),
+    date_from: str | None = Query(default=None, description="Inclusive start date (YYYY-MM-DD)."),
+    date_to: str | None = Query(default=None, description="Inclusive end date (YYYY-MM-DD)."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> AnalyticsSummaryResponse:
@@ -69,17 +71,22 @@ def get_summary(
         document_repository, generation_repository, prompt_repository,
     )
 
+    parsed_from = _parse_audit_date(date_from)
+    parsed_to = _parse_audit_date(date_to, end_of_day=True)
+
     scope = dict(
         user_name=current_user.username,
         project_id=project_id,
         is_admin=(current_user.role == "admin"),
+        date_from=parsed_from,
+        date_to=parsed_to,
     )
 
     return AnalyticsSummaryResponse(
         generations=analytics_repository.count_generations_scoped(db, **scope),
         blocks=generation_repository.count_blocks_scoped(db, **scope),
-        prompt_assets=prompt_repository.count_prompts(db),
-        documents=document_repository.count_documents(db),
+        prompt_assets=prompt_repository.count_prompts(db, date_from=parsed_from, date_to=parsed_to),
+        documents=document_repository.count_documents(db, date_from=parsed_from, date_to=parsed_to),
         cdds=cdd_repository.count_cdds_scoped(db, **scope),
         blueprints=blueprint_repository.count_blueprints_scoped(db, **scope),
     )
@@ -92,26 +99,30 @@ def get_summary(
     description="Admin only. Returns generation and block counts per project.",
 )
 def get_project_analytics(
+    date_from: str | None = Query(default=None, description="Inclusive start date (YYYY-MM-DD)."),
+    date_to: str | None = Query(default=None, description="Inclusive end date (YYYY-MM-DD)."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("analytics.view_all")),
 ) -> list[ProjectAnalyticsRow]:
     """Return project-level metrics for the admin comparison table."""
     from promptops_app.repositories import analytics_repository
 
+    parsed_from = _parse_audit_date(date_from)
+    parsed_to = _parse_audit_date(date_to, end_of_day=True)
+
     projects = analytics_repository.list_active_projects_for_analytics(db)
-    rows = []
-    for p in projects:
-        gen_ids = analytics_repository.get_project_generation_ids(db, p.id)
-        rows.append(ProjectAnalyticsRow(
+    metrics = analytics_repository.get_project_metrics_batch(
+        db, [p.id for p in projects], date_from=parsed_from, date_to=parsed_to,
+    )
+    return [
+        ProjectAnalyticsRow(
             project_id=p.id,
             project_name=p.name,
             client=p.client_name or "—",
-            generations=len(gen_ids),
-            blocks=analytics_repository.count_project_blocks(db, gen_ids),
-            cdds=analytics_repository.count_project_cdds(db, p.id),
-            blueprints=analytics_repository.count_project_blueprints(db, p.id),
-        ))
-    return rows
+            **metrics[p.id],
+        )
+        for p in projects
+    ]
 
 
 @router.get(

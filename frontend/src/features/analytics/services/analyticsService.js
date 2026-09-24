@@ -10,7 +10,7 @@ function asList(data) {
 
 export const analyticsService = {
   getSummary:           (p)  => api.get(ANALYTICS.SUMMARY, { params: p }),
-  getProjectAnalytics:  ()   => api.get(ANALYTICS.PROJECTS),
+  getProjectAnalytics:  (p)  => api.get(ANALYTICS.PROJECTS, { params: p }),
   getGenerationHistory: (p)  => api.get(ANALYTICS.GENERATION_HISTORY, { params: p }),
   getPromptVersionHistory: (p) =>
     api.get(ANALYTICS.HISTORY_PROMPT_VERSIONS, { params: p }).then(asList),

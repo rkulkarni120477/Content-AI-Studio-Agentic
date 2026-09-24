@@ -38,6 +38,15 @@ const initialState = {
   },
   isLoading:  false,
   error:      null,
+  // Tracks the requestId of the most recently DISPATCHED summary/project
+  // fetch, so a slower/out-of-order response from an earlier, superseded
+  // fetch (the "Last 7 Days" request still in flight when the user has
+  // already switched to "Last 30 Days", whose own fetch resolves first)
+  // can't win the race and clobber the dashboard with the wrong range's
+  // numbers once it finally lands. Same pattern as dashboardSlice's
+  // coursesRequestId/clustersRequestId.
+  summaryRequestId: null,
+  projectRowsRequestId: null,
 };
 
 const analyticsSlice = createSlice({
@@ -52,11 +61,28 @@ const analyticsSlice = createSlice({
   },
   extraReducers: (b) => {
     b
-      .addCase(fetchSummaryThunk.pending,   (s) => { s.isLoading = true; })
-      .addCase(fetchSummaryThunk.fulfilled,  (s, { payload }) => { s.isLoading = false; s.summary = payload; })
-      .addCase(fetchSummaryThunk.rejected,   (s, { payload }) => { s.isLoading = false; s.error = payload; })
+      .addCase(fetchSummaryThunk.pending,   (s, action) => {
+        s.summaryRequestId = action.meta.requestId;
+        s.isLoading = true;
+      })
+      .addCase(fetchSummaryThunk.fulfilled,  (s, action) => {
+        if (action.meta.requestId !== s.summaryRequestId) return;
+        s.isLoading = false;
+        s.summary = action.payload;
+      })
+      .addCase(fetchSummaryThunk.rejected,   (s, action) => {
+        if (action.meta.requestId !== s.summaryRequestId) return;
+        s.isLoading = false;
+        s.error = action.payload;
+      })
 
-      .addCase(fetchProjectAnalyticsThunk.fulfilled, (s, { payload }) => { s.projectRows = payload || []; })
+      .addCase(fetchProjectAnalyticsThunk.pending, (s, action) => {
+        s.projectRowsRequestId = action.meta.requestId;
+      })
+      .addCase(fetchProjectAnalyticsThunk.fulfilled, (s, action) => {
+        if (action.meta.requestId !== s.projectRowsRequestId) return;
+        s.projectRows = action.payload || [];
+      })
       .addCase(fetchGenerationHistoryThunk.fulfilled, (s, { payload }) => { s.genHistory = payload || []; })
       .addCase(fetchHistoryExtrasThunk.pending, (s) => { s.historyExtrasError = null; })
       .addCase(fetchHistoryExtrasThunk.fulfilled, (s, { payload }) => {

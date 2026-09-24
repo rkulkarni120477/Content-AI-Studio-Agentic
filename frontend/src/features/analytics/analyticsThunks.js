@@ -20,8 +20,8 @@ export const fetchSummaryThunk = createAsyncThunk(
 
 export const fetchProjectAnalyticsThunk = createAsyncThunk(
   'analytics/fetchProjects',
-  async (_, { rejectWithValue }) => {
-    try { return await analyticsService.getProjectAnalytics(); }
+  async (filters, { getState, rejectWithValue }) => {
+    try { return await analyticsService.getProjectAnalytics(paramsFrom(filters, { getState })); }
     catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );
