@@ -328,8 +328,9 @@ def hard_delete_tenant(db: Session, project, deleted_by: str) -> None:
     is purged via course_repository.purge_course, which already implements
     that full cascade (and commits per course — not one atomic transaction
     for the whole tenant, matching purge_course's own existing behavior
-    elsewhere; purge_course is idempotent — it no-ops on an already-gone
-    course — so re-running this after a partial failure is safe). What's
+    elsewhere; purge_course is idempotent — it still sweeps by course_id
+    when the course row is already gone — so re-running this after a
+    partial failure is safe). What's
     left here is everything scoped directly to the project or one of its
     clusters rather than to a specific course: clusters, memberships, custom
     roles, the legacy project_user_assignments grant table, project-level

@@ -22,6 +22,8 @@ import logging
 import os
 from datetime import datetime, timezone
 
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
+
 from promptops_app.database import Course, CourseImport, GenerationJob, ModuleBlueprint, SessionLocal
 from promptops_app.importers import (
     editor_builder,
@@ -34,7 +36,7 @@ from promptops_app.importers.imscc_importer import parse_package
 from promptops_app.importers.package_extractor import PackageValidationError
 from promptops_app.jobs.job_status import (
     JobStatus,
-    is_job_cancelled,
+    is_import_cancelled,
     set_completed,
     set_failed,
     set_running,
@@ -45,12 +47,10 @@ _log = logging.getLogger(__name__)
 
 
 class _ImportCancelled(Exception):
-    """Raised from inside progress_cb to unwind editor_builder.build() early.
-
-    Only meaningful before ``reconstructed = True`` — see the comment at its
-    check site. Past that point the course is real and kept, matching every
-    other failure path in this job.
-    """
+    """Unwinds the job to its purge handler from any stage, including inside
+    editor_builder.build() (via progress_cb) and _reverse_generate. Unlike a
+    failure, a cancel purges even after reconstruction: the user asked for the
+    title not to exist."""
 
 # (progress_pct, label) — same convention as job_status.STAGE_* for the UI.
 STAGE_EXTRACT = (10, "Extracting package...")
@@ -110,13 +110,13 @@ def run_import_job(job_id: str) -> None:
         # ── Stage 1 — Extract ─────────────────────────────────────────
         set_running(db, job, *STAGE_EXTRACT)
         data = _read_package(package_path)
-        if is_job_cancelled(db, job_id):
+        if is_import_cancelled(db, job_id):
             raise _ImportCancelled()
 
         # ── Stage 2 — Parse (extract + full content parse) ────────────
         set_running(db, job, *STAGE_PARSE)
         course = parse_package(data)
-        if is_job_cancelled(db, job_id):
+        if is_import_cancelled(db, job_id):
             raise _ImportCancelled()
         if course_import is not None:
             course_import.structure_counts_json = json.dumps(course.structure_counts())
@@ -129,7 +129,7 @@ def run_import_job(job_id: str) -> None:
         def _progress(done: int, total: int, label: str) -> None:
             # Checked on every call (the Editor loop, minutes for a big package)
             # so Cancel actually lands instead of running to completion regardless.
-            if is_job_cancelled(db, job_id):
+            if is_import_cancelled(db, job_id):
                 raise _ImportCancelled()
             base, _ = STAGE_RECONSTRUCT_START
             pct = base + int((STAGE_RECONSTRUCT_END - base) * (done / total)) if total else STAGE_RECONSTRUCT_END
@@ -150,7 +150,7 @@ def run_import_job(job_id: str) -> None:
         # unhidden, and Cancel silently did nothing" (the bug this closes: a
         # fast CPU-only build on a real package can clear this whole function
         # in seconds, well inside the round trip of the user's own click).
-        if is_job_cancelled(db, job_id):
+        if is_import_cancelled(db, job_id):
             raise _ImportCancelled()
         reconstructed = True   # Editor has real content — never hide/archive past this point
 
@@ -174,14 +174,28 @@ def run_import_job(job_id: str) -> None:
         # stages, the ones actually worth interrupting instead of paying for.
         _reverse_generate(db, job, course_id, user_name, result)
 
-        if is_job_cancelled(db, job_id):
+        if is_import_cancelled(db, job_id):
             raise _ImportCancelled()
 
         # ── Stage 4/Finalize ──────────────────────────────────────────
-        set_running(db, job, *STAGE_FINALIZE)
-        _finalize(db, course_id, course_import, import_id, result)
-
-        set_completed(db, job, course_id)   # result_entity_id = course_id
+        # No cancel check covers this block — a purge can still land in the
+        # gap right after the is_import_cancelled() check above, and
+        # purge_course deletes both the course and this job row. Writing to
+        # either then raises ObjectDeletedError/StaleDataError deep inside a
+        # flush, not _ImportCancelled — same outcome as the checked cancel
+        # above, just caught one beat late instead of left to blow up the job.
+        try:
+            set_running(db, job, *STAGE_FINALIZE)
+            _finalize(db, course_id, course_import, import_id, result)
+            set_completed(db, job, course_id)   # result_entity_id = course_id
+        except (ObjectDeletedError, StaleDataError):
+            db.rollback()
+            # Confirm it was actually the cancel race before purging — this
+            # exception pair can have other causes, and purging a fully
+            # reconstructed course on a false positive would destroy it.
+            if is_import_cancelled(db, job_id):
+                raise _ImportCancelled()
+            raise
         _log.info(
             "import_completed  job=%s  course_id=%s  modules=%d  blocks=%d  warnings=%d",
             job_id, course_id, result.modules_created, result.blocks_created, len(result.warnings),
@@ -286,7 +300,7 @@ def _reverse_generate(db, job, course_id: int, user_name: str, result, *, stages
         if not modules:
             return
 
-        if is_job_cancelled(db, job.id):
+        if is_import_cancelled(db, job.id):
             raise _ImportCancelled()
         set_running(db, job, *bp_stage)
         bp_result = reverse_blueprint.build_blueprints(
@@ -294,7 +308,7 @@ def _reverse_generate(db, job, course_id: int, user_name: str, result, *, stages
         )
         result.warnings.extend(bp_result.warnings)
 
-        if is_job_cancelled(db, job.id):
+        if is_import_cancelled(db, job.id):
             raise _ImportCancelled()
         set_running(db, job, *cdd_stage)
         cdd_result = reverse_cdd.build_cdd(
@@ -310,7 +324,7 @@ def _reverse_generate(db, job, course_id: int, user_name: str, result, *, stages
             ).update({ModuleBlueprint.cdd_id: cdd_result.cdd_id}, synchronize_session=False)
             db.commit()
 
-        if is_job_cancelled(db, job.id):
+        if is_import_cancelled(db, job.id):
             raise _ImportCancelled()
         set_running(db, job, *style_stage)
         style_result = style_analyzer.build_style(
