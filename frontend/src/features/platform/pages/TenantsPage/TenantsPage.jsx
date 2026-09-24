@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import { platformService } from '@features/platform/services/platformService';
 import { analyticsService } from '@features/analytics/services/analyticsService';
-import { buildAuditTrailParams } from '@features/analytics/utils/auditTrailParams';
+import { buildAuditTrailFilterParams, buildAuditTrailParams } from '@features/analytics/utils/auditTrailParams';
 import { useAuth } from '@hooks/useAuth';
 import { ROLE_LABELS, ROLES, ROUTES } from '@utils/constants';
 import { downloadBlob, extractErrorMessage, formatTimestamp } from '@utils/helpers';
@@ -233,12 +233,18 @@ export default function TenantsPage() {
     setAuditExporting(true);
     try {
       const response = await analyticsService.exportAudit(
-        buildAuditTrailParams({ page: 1, pageSize: 5000, filters: auditFilters }),
+        buildAuditTrailFilterParams(auditFilters),
       );
       downloadBlob(response.data, 'audit-trail.csv');
       toast.success('Audit trail exported.');
     } catch (e) {
-      toast.error(extractErrorMessage(e));
+      // Never surface a raw API/HTTP error here (CAS-136): a validation
+      // error still reaches extractErrorMessage as a technical field/message
+      // string, and a non-JSON error body (plain-text 500, proxy 502/504
+      // HTML) isn't unwrapped at all, leaving axios's generic
+      // "Request failed with status code ..." — same problem either way.
+      console.error('Audit trail export failed', e);
+      toast.error('Unable to export audit logs. Please try again.');
     } finally {
       setAuditExporting(false);
     }
