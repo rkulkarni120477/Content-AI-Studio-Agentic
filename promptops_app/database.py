@@ -575,6 +575,12 @@ class Generation(Base):
     # double-charging usage. Nullable: rows created outside the job path
     # (or before this column existed) simply carry no job_id.
     job_id = Column(String(64), nullable=True, index=True)
+    # Source traceability (CAS AIM findings, Phase 3): which DIS source units
+    # actually grounded this generation. Mirrors BlueprintVersion.generation_params
+    # — JSON-encoded {"dis_source_units": [...]}, read by ArtifactReferenceTrace
+    # on the Editor page. Nullable: rows created before this column existed, or
+    # any generation path that never resolved DIS context, simply carry none.
+    generation_params = Column(Text, nullable=True)
     blocks = relationship("Block", back_populates="generation", cascade="all, delete-orphan")
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
@@ -1727,6 +1733,8 @@ def _run_legacy_ddl():
         "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45)",
         # workflow_events — review comment stored with each transition (Phase 11)
         "ALTER TABLE workflow_events ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT ''",
+        # generations — source traceability (CAS AIM findings, Phase 3)
+        "ALTER TABLE generations ADD COLUMN IF NOT EXISTS generation_params TEXT",
         # generation_jobs — extended schema (Phase 6)
         "ALTER TABLE generation_jobs ADD COLUMN IF NOT EXISTS current_step VARCHAR(160) DEFAULT 'Queued'",
         "ALTER TABLE generation_jobs ADD COLUMN IF NOT EXISTS input_payload_json TEXT",
