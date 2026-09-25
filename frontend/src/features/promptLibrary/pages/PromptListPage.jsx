@@ -11,6 +11,7 @@ import {
 } from '../api/prompts';
 import { fetchPromptsByCourse } from '../api/flow';
 import { useDebounce } from '@hooks/useDebounce';
+import ErrorState from '@components/common/ErrorState/ErrorState';
 import { plCourses } from '../paths';
 import CompactSelect from '../components/CompactSelect';
 import DeletePromptDialog from '../components/prompts/DeletePromptDialog';
@@ -47,6 +48,9 @@ export default function PromptListPage() {
   // which the previous rows stay on screen behind aria-busy.
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // A failed load must not read as an empty library (whose copy tells the user
+  // to adjust filters, which cannot help) — it gets its own state with Retry.
+  const [loadError, setLoadError] = useState(false);
   const [exporting, setExporting] = useState(false);
   // Typing must not fire one full request per keystroke; the other filters are
   // discrete clicks and stay immediate.
@@ -126,6 +130,10 @@ export default function PromptListPage() {
       // Tolerate both list shapes: the endpoint returns a bare array, or
       // {items,total,…} if a caller ever opts into its page/limit params.
       setPrompts(Array.isArray(list) ? list : list?.items || []);
+      // Cleared on success, not when the retry starts: clearing early would
+      // flash the empty-library copy (the rows are [] after a failure) while
+      // the retry is still in flight.
+      setLoadError(false);
       // Only a SUCCESSFUL load retires the placeholder — if the first one
       // failed, the next attempt should still read as loading rather than as
       // an empty library.
@@ -135,6 +143,7 @@ export default function PromptListPage() {
       // neither clear the rows nor raise a toast.
       if (controller.signal.aborted || err?.name === 'AbortError' || !isCurrent()) return;
       setPrompts([]);
+      setLoadError(true);
       show('Could not load prompts.');
     } finally {
       if (isCurrent()) {
@@ -420,7 +429,7 @@ export default function PromptListPage() {
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={handleExportCsv}
-            disabled={loading || refreshing || exporting || prompts.length === 0}
+            disabled={loading || refreshing || exporting || loadError || prompts.length === 0}
             title="Download filtered prompts as CSV (includes full prompt text)"
           >
             {exporting ? 'Exporting…' : '⬇ Export CSV'}
@@ -438,6 +447,13 @@ export default function PromptListPage() {
       >
         {loading ? (
           <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 48 }}>Loading…</p>
+        ) : loadError ? (
+          <ErrorState
+            title="Couldn't load prompts"
+            message="The prompt list could not be retrieved. Check your connection and try again."
+            onRetry={() => void load()}
+            retryLabel="Retry"
+          />
         ) : !prompts.length ? (
           <div className="empty">
             <div className="big">📭</div>
