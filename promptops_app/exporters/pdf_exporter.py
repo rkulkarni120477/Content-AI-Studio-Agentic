@@ -142,7 +142,13 @@ def build_pdf(topic: str, blocks: list[tuple[str, str]], template: str = "defaul
         return out
 
     def grid(data, widths) -> Table:
-        t = Table(data, colWidths=widths, repeatRows=1)
+        t = Table(
+            data,
+            colWidths=widths,
+            repeatRows=1,
+            splitByRow=1,
+            splitInRow=1,
+        )
         t.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(_RULE)),
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
