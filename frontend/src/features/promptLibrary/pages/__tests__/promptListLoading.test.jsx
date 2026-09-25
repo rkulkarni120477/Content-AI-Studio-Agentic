@@ -174,3 +174,90 @@ describe('Prompt Library list loading', () => {
     expect(fetchPrompts.mock.calls[1][1].signal.aborted).toBe(true);
   });
 });
+
+// AC 5: a failed load used to fall through to the empty-library state, whose
+// "Try adjusting the search or filters" copy sends the user after a problem
+// that is not there. It must read as a failure, with a way to retry.
+describe('Prompt Library list load failure', () => {
+  const EMPTY_COPY = /No prompt titles found/;
+
+  it('shows a load error with Retry, not the empty-library state', async () => {
+    fetchPrompts.mockRejectedValueOnce(new Error('boom'));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.getByText("Couldn't load prompts")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.getByRole('button', { name: /Export CSV/ }).disabled).toBe(true);
+  });
+
+  it('Retry refetches and replaces the error with the rows', async () => {
+    fetchPrompts.mockRejectedValueOnce(new Error('boom'));
+    renderPage();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy());
+
+    fetchPrompts.mockResolvedValueOnce([row(1, 'Alpha')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    expect(fetchPrompts).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a failed refetch replaces the stale rows with the error', async () => {
+    fetchPrompts.mockResolvedValueOnce([row(1, 'Alpha')]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+
+    fetchPrompts.mockRejectedValueOnce(new Error('boom'));
+    type(screen.getByLabelText('Search prompts'), 'z');
+
+    await waitFor(() => expect(screen.getByText("Couldn't load prompts")).toBeTruthy(), { timeout: 2000 });
+    expect(screen.queryByText('Alpha')).toBeNull();
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+
+    // While the retry is in flight the error stays up — the empty-library copy
+    // must not flash in between.
+    const retry = deferred();
+    fetchPrompts.mockReturnValueOnce(retry.promise);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(fetchPrompts).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    retry.resolve([row(2, 'Beta')]);
+    await waitFor(() => expect(screen.getByText('Beta')).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a genuinely empty result still shows the empty state, not the error', async () => {
+    fetchPrompts.mockResolvedValueOnce([]);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(EMPTY_COPY)).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a load cancelled by a newer search does not show the error', async () => {
+    fetchPrompts.mockResolvedValueOnce([row(1, 'Alpha')]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+
+    // The superseded request rejects the way fetch does when its signal aborts.
+    fetchPrompts.mockImplementationOnce((_params, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    const fresh = deferred();
+    fetchPrompts.mockReturnValueOnce(fresh.promise);
+
+    const search = screen.getByLabelText('Search prompts');
+    type(search, 'a');
+    await waitFor(() => expect(fetchPrompts).toHaveBeenCalledTimes(2), { timeout: 2000 });
+    type(search, 'b');
+    await waitFor(() => expect(fetchPrompts).toHaveBeenCalledTimes(3), { timeout: 2000 });
+
+    fresh.resolve([row(3, 'Fresh')]);
+    await waitFor(() => expect(screen.getByText('Fresh')).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(show).not.toHaveBeenCalled();
+  });
+});
