@@ -458,9 +458,14 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
                 context_injection="",
             ) + context
 
-        # Append user's additional instructions if provided
+        # Append user's additional instructions if provided. Stated as taking
+        # precedence over standing/built-in guidance where the two conflict —
+        # CAS_Findings_v0.1.docx traced several "the built-in prompt overrode
+        # my instructions" complaints to this append having no precedence
+        # stated at all (see ADDITIONAL_INSTRUCTIONS_HEADING).
         if extra_instructions and extra_instructions.strip():
-            user_p += f"\n\n**Additional Instructions:**\n{extra_instructions.strip()}"
+            from promptops_app.services.user_directives import ADDITIONAL_INSTRUCTIONS_HEADING
+            user_p += f"\n\n{ADDITIONAL_INSTRUCTIONS_HEADING}\n{extra_instructions.strip()}"
 
         # ── Stage 3 — LLM call ────────────────────────────────────────
         set_running(db, job, *STAGE_LLM)

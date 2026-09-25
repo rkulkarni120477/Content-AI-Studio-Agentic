@@ -153,13 +153,19 @@ class TestRunGenerationJob:
         self, db, job_env, capture_llm
     ):
         from promptops_app.jobs.generation_jobs import run_generation_job
+        from promptops_app.services.user_directives import ADDITIONAL_INSTRUCTIONS_HEADING
 
         job = _make_job(db, extra_instructions="Use UK spelling.")
         run_generation_job(job.id)
 
         assert capture_llm[0]["user"].rstrip().endswith(
-            "**Additional Instructions:**\nUse UK spelling."
+            f"{ADDITIONAL_INSTRUCTIONS_HEADING}\nUse UK spelling."
         )
+        # CAS AIM findings, Phase 4: the append must state precedence over
+        # standing/built-in guidance, not just relabel the text -- a bare
+        # "Additional Instructions:" heading with no precedence stated is
+        # exactly what let the built-in prompt win every conflict.
+        assert "preference to any standing guidance" in capture_llm[0]["user"]
 
 
 class TestGenerateWiring:

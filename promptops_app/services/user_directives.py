@@ -85,6 +85,21 @@ _INSTRUCTIONS_HEADING = (
     "schema):"
 )
 
+#: Same precedence rule as _INSTRUCTIONS_HEADING above, for the single-call
+#: generation path (generation_jobs.py) instead of the block-wide MAP/REDUCE
+#: one. That path has no structured-extraction contract to protect (freeform
+#: lesson content, not per-field digest cells), so this omits the "don't add
+#: /drop a field, don't alter the output schema" caveats — they don't apply
+#: here and would just be confusing. The core rule is identical: CAS findings
+#: v0.1 (AIM DLU storyboard review) traced several "the built-in prompt
+#: overrode my instructions" complaints to this path appending the
+#: requester's words with no precedence stated at all, so a conflicting
+#: built-in default won every time.
+ADDITIONAL_INSTRUCTIONS_HEADING = (
+    "**Additional Instructions** (typed by the requester for this specific run — "
+    "apply them in preference to any standing guidance above that they conflict with):"
+)
+
 _STYLE_HEADING = (
     "ACTIVE INSTRUCTIONAL STYLE — apply throughout (voice, terminology, structure "
     "and conventions; it governs HOW content is written, never WHICH fields exist "
