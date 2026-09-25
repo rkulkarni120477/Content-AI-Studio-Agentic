@@ -560,6 +560,52 @@ def test_day_context_structured_fetch(monkeypatch):
     assert any(f.startswith("THIN_DAY:2") for f in empty["flags"])
 
 
+def test_day_context_supplement_round_robins_across_documents(monkeypatch):
+    """CAS findings doc, Phase 2: a large/dominant source document (e.g. a
+    1,000+ page handbook) can otherwise fill every one of the top-K kNN slots
+    by score alone, so a smaller tagged reference document never gets in even
+    though it's topically relevant. The supplement must take turns across
+    distinct source documents (job_id) instead of a flat top-K by score."""
+    from services.digests import day_scoped
+    from services.digests.enumerate import EnumerateResult
+
+    days = [{"day_number": 4, "topic": "Hydraulics", "lesson_title": "Hydraulics", "source_text": ""}]
+
+    def fake_enumerate(tenant_cfg, block, client_id="", **kwargs):
+        return EnumerateResult(block=block, client_id="aim", calendar_id="c",
+                               total_days=1, enumerated_days=1, days=days,
+                               units_by_day={4: []}, acs_by_day={}, declared_acs=[])
+
+    monkeypatch.setattr(day_scoped, "enumerate_block", fake_enumerate)
+    monkeypatch.setattr(indexing, "fetch_digests", lambda cfg, block, cid: [])
+    monkeypatch.setattr(indexing, "embed_query", lambda cfg, text: [0.1, 0.2])
+
+    # One dominant handbook (job "faa") supplies 20 higher-scoring hits; three
+    # smaller reference textbooks (jobs "book_a"/"book_b"/"book_c") each supply
+    # one lower-scoring hit. A flat top-6-by-score would be entirely "faa".
+    handbook_hits = [
+        {"content_unit_id": f"faa-{i}", "unit_type": "page", "title": f"FAA p{i}",
+         "text": "faa text", "job_id": "faa", "_score": 20.0 - i}
+        for i in range(20)
+    ]
+    textbook_hits = [
+        {"content_unit_id": f"{jid}-1", "unit_type": "page", "title": f"{jid} p1",
+         "text": f"{jid} text", "job_id": jid, "_score": 1.0}
+        for jid in ("book_a", "book_b", "book_c")
+    ]
+    monkeypatch.setattr(indexing, "vector_search",
+                        lambda cfg, cid, q, emb, size=40, allowed_job_ids=None: handbook_hits + textbook_hits)
+
+    out = day_scoped.day_context(_tenant(), "Block 8", 4, client_id="aim", supplement_k=6)
+
+    job_ids = {s["content_unit_id"].split("-")[0] for s in out["supplement"]}
+    assert job_ids == {"faa", "book_a", "book_b", "book_c"}, (
+        "every tagged reference document must contribute at least one supplemental "
+        f"unit within the budget, got: {job_ids}"
+    )
+    assert len(out["supplement"]) == 6
+
+
 # --------------------------------------------------------------------------- #
 # CurriculumProfile seam (§5.5 / D8) — AIM profile #1 + registry selection.
 # --------------------------------------------------------------------------- #
