@@ -223,6 +223,10 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         selected_component  = params.get("selected_component", {})
         supp_files          = params.get("supplementary_files", [])
         extra_instructions  = params.get("extra_instructions", "")
+        # Retrieved Source Library text, not user-typed -- kept separate from
+        # extra_instructions so it never gets wrapped under
+        # ADDITIONAL_INSTRUCTIONS_HEADING below (see generations.py).
+        dis_context_block   = params.get("dis_context_block", "")
         # User-selected pipeline prompt from the "Prompt Template" dropdown.
         # None → normal component/default resolution.
         sel_prompt_id       = params.get("prompt_id")
@@ -466,6 +470,14 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
         if extra_instructions and extra_instructions.strip():
             from promptops_app.services.user_directives import ADDITIONAL_INSTRUCTIONS_HEADING
             user_p += f"\n\n{ADDITIONAL_INSTRUCTIONS_HEADING}\n{extra_instructions.strip()}"
+
+        # Appended separately, after (and regardless of) the block above: it
+        # is retrieved context, not a user instruction, and already states
+        # its own precedence ("Follow active Style, approved CDD, active
+        # Blueprint... first") -- it must never inherit the "takes
+        # precedence over standing guidance" framing meant for typed text.
+        if dis_context_block and dis_context_block.strip():
+            user_p += dis_context_block
 
         # ── Stage 3 — LLM call ────────────────────────────────────────
         set_running(db, job, *STAGE_LLM)

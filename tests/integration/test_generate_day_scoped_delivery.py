@@ -198,13 +198,15 @@ class TestTheSourceMaterialIsActuallyDelivered:
         self, client, auth_headers, db, aim_course, aim_project, digest_on, dis
     ):
         """Resolving is not enough -- it has to reach the params the
-        generation job actually reads from (extra_instructions), which is
-        what generation_jobs.py folds into the final prompt."""
+        generation job actually reads from (dis_context_block, kept separate
+        from extra_instructions per the Phase 4 PR review -- retrieved
+        context must not be wrapped as if the user typed it), which is what
+        generation_jobs.py folds into the final prompt."""
         resp = _launch(client, auth_headers, aim_course, aim_project, day=4)
         job_id = resp.json()["job_id"]
 
         params = _job_request_params(db, job_id)
-        assert SOURCE_MARKER in params["extra_instructions"]
+        assert SOURCE_MARKER in params["dis_context_block"]
         assert params["dis_source_units"], "day units resolved but not recorded on the job"
 
     def test_the_source_marker_reaches_the_model(

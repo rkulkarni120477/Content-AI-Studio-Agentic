@@ -225,7 +225,16 @@ def launch_generation(
             "metadata": {},
         },
         "supplementary_files": [f.model_dump() for f in request_body.supplementary_files],
-        "extra_instructions":  (request_body.extra_instructions or "") + (dis_context_block or ""),
+        # Kept separate from dis_context_block on purpose: generation_jobs.py
+        # wraps extra_instructions under ADDITIONAL_INSTRUCTIONS_HEADING,
+        # which states it takes precedence over standing guidance. The DIS
+        # block is retrieved Source Library text, not something the user
+        # typed, and already carries its own "Follow active Style, approved
+        # CDD, active Blueprint... first" line -- concatenating the two
+        # would present retrieved context as a user instruction that
+        # overrides Style/CDD/Blueprint, contradicting the block's own text.
+        "extra_instructions":  request_body.extra_instructions or "",
+        "dis_context_block":   dis_context_block or "",
         "dis_source_units":    dis_source_units,
         # "" when DIS answered (including with nothing); a reason when the
         # lookup itself failed. Read back onto the Generation's own audit

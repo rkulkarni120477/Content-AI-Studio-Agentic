@@ -167,6 +167,54 @@ class TestRunGenerationJob:
         # exactly what let the built-in prompt win every conflict.
         assert "preference to any standing guidance" in capture_llm[0]["user"]
 
+    def test_dis_context_is_not_presented_as_a_user_instruction(
+        self, db, job_env, capture_llm
+    ):
+        """PR review (Phase 4): generations.py used to concatenate the DIS
+        Source Library block onto extra_instructions, so it got wrapped under
+        ADDITIONAL_INSTRUCTIONS_HEADING along with any real user text --
+        presenting retrieved context as something the user typed that
+        overrides Style/CDD/Blueprint, contradicting the DIS block's own
+        "Follow active Style, approved CDD, active Blueprint... first" line.
+        dis_context_block must travel as its own param and land outside the
+        heading, whether or not the user also typed real instructions."""
+        from promptops_app.jobs.generation_jobs import run_generation_job
+        from promptops_app.services.user_directives import ADDITIONAL_INSTRUCTIONS_HEADING
+
+        dis_block = (
+            "\n\n---\nCOURSE GENERATION CONTEXT FROM DIS SOURCE LIBRARY\n"
+            "Use this as grounding for generated content. Follow active Style, "
+            "approved CDD, active Blueprint, and selected content type first. "
+            "Do not expose internal DIS metadata.\n\n"
+            "Some retrieved chunk.\n---\n"
+        )
+        job = _make_job(db, extra_instructions="Use UK spelling.", dis_context_block=dis_block)
+        run_generation_job(job.id)
+
+        user_prompt = capture_llm[0]["user"]
+        heading_pos = user_prompt.index(ADDITIONAL_INSTRUCTIONS_HEADING)
+        heading_block_end = heading_pos + len(f"{ADDITIONAL_INSTRUCTIONS_HEADING}\nUse UK spelling.")
+
+        # The DIS block must not appear inside the heading's own span.
+        assert "DIS SOURCE LIBRARY" not in user_prompt[:heading_block_end]
+        # It must still be present, verbatim, elsewhere in the prompt.
+        assert dis_block in user_prompt
+        assert "Follow active Style, approved CDD, active Blueprint" in user_prompt
+
+    def test_dis_context_alone_with_no_user_instructions_is_still_not_headed(
+        self, db, job_env, capture_llm
+    ):
+        from promptops_app.jobs.generation_jobs import run_generation_job
+        from promptops_app.services.user_directives import ADDITIONAL_INSTRUCTIONS_HEADING
+
+        dis_block = "\n\n---\nCOURSE GENERATION CONTEXT FROM DIS SOURCE LIBRARY\nSome retrieved chunk.\n---\n"
+        job = _make_job(db, extra_instructions="", dis_context_block=dis_block)
+        run_generation_job(job.id)
+
+        user_prompt = capture_llm[0]["user"]
+        assert ADDITIONAL_INSTRUCTIONS_HEADING not in user_prompt
+        assert dis_block in user_prompt
+
 
 class TestGenerateWiring:
     """Phase 8: with PROMPT_RESOLVE_BY_COMPONENT on, the lesson path resolves
