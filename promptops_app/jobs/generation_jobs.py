@@ -59,6 +59,7 @@ from promptops_app.jobs.job_status import (
     JobStatus,
     STAGE_CONTEXT,
     STAGE_CE_VALIDATION,
+    STAGE_CONTINUITY_REVIEW,
     STAGE_LLM,
     STAGE_PROMPT,
     STAGE_SAVE,
@@ -531,6 +532,23 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             _log.warning(
                 "Job %s CE validation failed (non-fatal) — using original output: %s",
                 job_id, _ce_exc,
+            )
+
+        # ── Stage 4.5 — Continuity review ─────────────────────────────
+        # Second look at screen-to-screen transitions (CAS AIM findings,
+        # Phase 5) — skipped internally for short/single-section content,
+        # never fatal to the job.
+        set_running(db, job, *STAGE_CONTINUITY_REVIEW)
+        if is_job_cancelled(db, job_id):
+            _log.info("Job %s cancelled before continuity review", job_id)
+            return
+        try:
+            from promptops_app.services.continuity_review_service import run_continuity_review
+            out = run_continuity_review(out, model_choice=model_choice, llm_call_fn=_llm_call)
+        except Exception as _cr_exc:
+            _log.warning(
+                "Job %s continuity review failed (non-fatal) — using prior output: %s",
+                job_id, _cr_exc,
             )
 
         # ── Stage 5 — Split into blocks ───────────────────────────────

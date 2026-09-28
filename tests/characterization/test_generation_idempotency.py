@@ -98,7 +98,9 @@ class TestGenerationRetryIdempotency:
         run_generation_job(job.id)
 
         db.expire_all()
-        assert len(capture_llm) == 1
+        # 2 calls: the primary generation, then the continuity review pass
+        # (CANNED_LLM_TEXT has 3 headings, meeting its review threshold).
+        assert len(capture_llm) == 2
         gens_after_first = _gen_count(db)
         blocks_after_first = _block_count(db)
         gen = db.query(Generation).order_by(Generation.id.desc()).first()
@@ -108,7 +110,7 @@ class TestGenerationRetryIdempotency:
         run_generation_job(job.id)
 
         db.expire_all()
-        assert len(capture_llm) == 1, "retry must not call the LLM again"
+        assert len(capture_llm) == 2, "retry must not call the LLM again"
         assert _gen_count(db) == gens_after_first, "retry must not add a Generation"
         assert _block_count(db) == blocks_after_first, "retry must not add Blocks"
 
