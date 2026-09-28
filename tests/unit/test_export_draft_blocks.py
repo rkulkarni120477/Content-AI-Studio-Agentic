@@ -29,12 +29,13 @@ def course(db):
     return c
 
 
-def _make_block(db, course, *, workflow_state: str, topic: str = "Lesson 1", created_at=None):
+def _make_block(db, course, *, workflow_state: str, topic: str = "Lesson 1", created_at=None, blueprint_id=None):
     from promptops_app.database import Block, Generation
 
     gen = Generation(
         prompt_name="", prompt_version="", block_type="Lesson", topic=topic,
         output_text="body", created_by="tester", course_id=course.id,
+        blueprint_id=blueprint_id,
         **({"created_at": created_at} if created_at else {}),
     )
     db.add(gen)
@@ -139,6 +140,51 @@ class TestExportableOnlyFlag:
         ordered, modules, views = build_blueprint_export_layout(db, course.id, exportable_only=True)
 
         assert {b.id for b in ordered} == {older.id, newer.id}
+
+    def test_a_topic_shared_across_two_blueprints_survives_in_both_modules(self, db, course):
+        """PR review, round 2 (blocker): the first fix keyed on topic alone,
+        course-wide -- when two blueprints share a topic name (confirmed on
+        dev: "Learning Outcomes / Key Terms" appears under 19 blueprints
+        across several courses), only the newer generation survived
+        `candidates`, so the OTHER blueprint's module silently lost that
+        section (blocks_by_gen had nothing left for its own latest gen).
+        Keying on (blueprint_id, topic) must keep each blueprint's own
+        latest generation independently, even though they share a topic."""
+        from promptops_app.database import ModuleBlueprint
+        from promptops_app.repositories.generation_repository import build_blueprint_export_layout
+
+        bp1 = ModuleBlueprint(
+            project_id=course.project_id, course_id=course.id,
+            title="Module 1", module_title="Module 1", module_number=1, created_by="tester",
+        )
+        bp2 = ModuleBlueprint(
+            project_id=course.project_id, course_id=course.id,
+            title="Module 2", module_title="Module 2", module_number=2, created_by="tester",
+        )
+        db.add_all([bp1, bp2])
+        db.commit()
+        db.refresh(bp1)
+        db.refresh(bp2)
+
+        shared_topic = "Learning Outcomes / Key Terms"
+        now = datetime.utcnow()
+        # bp1's topic was regenerated once -- the stale attempt must still drop.
+        _make_block(db, course, workflow_state="draft", topic=shared_topic,
+                    blueprint_id=bp1.id, created_at=now - timedelta(hours=1))
+        bp1_latest = _make_block(db, course, workflow_state="draft", topic=shared_topic,
+                                  blueprint_id=bp1.id, created_at=now)
+        # bp2 shares the exact same topic string but is a different blueprint.
+        bp2_latest = _make_block(db, course, workflow_state="draft", topic=shared_topic,
+                                  blueprint_id=bp2.id, created_at=now - timedelta(minutes=30))
+
+        ordered, modules, views = build_blueprint_export_layout(db, course.id, exportable_only=False)
+
+        ordered_ids = {b.id for b in ordered}
+        assert bp1_latest.id in ordered_ids
+        assert bp2_latest.id in ordered_ids
+        view_by_title = {v["title"]: v for v in views}
+        assert bp1_latest.id in [b.id for b in view_by_title["Module 1"]["blocks"]]
+        assert bp2_latest.id in [b.id for b in view_by_title["Module 2"]["blocks"]]
 
     def test_untitled_generations_are_never_collapsed_into_each_other(self, db, course):
         """A blank topic must not become a single shared dedup key that

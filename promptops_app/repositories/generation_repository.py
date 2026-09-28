@@ -322,16 +322,28 @@ def build_blueprint_export_layout(
         # list_latest_generations_for_blueprint; every older attempt's blocks
         # then fell into "leftover" and got appended as a second (or third...)
         # copy of the same content in a "Course Content" module. Collapse to
-        # the latest generation per topic course-wide first, same rule, so a
-        # stale regeneration never becomes a leftover in the first place. A
-        # blank topic keys on the generation's own id so untitled/ad-hoc
+        # the latest generation per (blueprint, topic) first, the same key
+        # list_latest_generations_for_blueprint already uses, so a stale
+        # regeneration never becomes a leftover in the first place.
+        #
+        # Round 2 of this review: an earlier version of this fix keyed on
+        # topic ALONE, course-wide -- when two blueprints in the same course
+        # share a topic name (confirmed on dev: "Learning Outcomes / Key
+        # Terms" appears under 19 blueprints across several courses), only
+        # the newest generation survived candidates, and the blueprint loop
+        # silently lost that section from every OTHER blueprint's module
+        # (blocks_by_gen had nothing left for it). Keying on
+        # (blueprint_id, topic) matches the blueprint loop's own scoping, so
+        # each blueprint keeps its latest generation independently. A blank
+        # topic keys on the generation's own id so untitled/ad-hoc
         # generations are never collapsed into each other.
         gens_by_created_desc = sorted(gens, key=lambda g: g.created_at or g.id, reverse=True)
-        latest_gen_id_by_topic: dict[str, int] = {}
+        latest_gen_id_by_key: dict[tuple, int] = {}
         for g in gens_by_created_desc:
-            key = _norm(g.topic) or f"__gen_{g.id}"
-            latest_gen_id_by_topic.setdefault(key, g.id)
-        latest_gen_ids = set(latest_gen_id_by_topic.values())
+            topic_key = _norm(g.topic)
+            key = (g.blueprint_id, topic_key) if topic_key else (g.blueprint_id, f"__gen_{g.id}")
+            latest_gen_id_by_key.setdefault(key, g.id)
+        latest_gen_ids = set(latest_gen_id_by_key.values())
         candidates = [b for b in all_blocks if b.generation_id in latest_gen_ids]
 
     if workflow_state:
