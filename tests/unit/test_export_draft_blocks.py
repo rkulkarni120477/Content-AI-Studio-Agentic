@@ -8,6 +8,8 @@ permission, same endpoint, no approval-workflow change.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 
@@ -27,12 +29,13 @@ def course(db):
     return c
 
 
-def _make_block(db, course, *, workflow_state: str, topic: str = "Lesson 1"):
+def _make_block(db, course, *, workflow_state: str, topic: str = "Lesson 1", created_at=None):
     from promptops_app.database import Block, Generation
 
     gen = Generation(
         prompt_name="", prompt_version="", block_type="Lesson", topic=topic,
         output_text="body", created_by="tester", course_id=course.id,
+        **({"created_at": created_at} if created_at else {}),
     )
     db.add(gen)
     db.commit()
@@ -94,6 +97,61 @@ class TestExportableOnlyFlag:
         )
 
         assert [b.id for b in ordered] == [published.id]
+
+    def test_a_stale_regeneration_of_the_same_topic_is_not_duplicated_into_the_draft_package(
+        self, db, course,
+    ):
+        """PR review (blocker): with exportable_only=False the candidate pool
+        isn't already narrowed to approved/published blocks, so every past
+        regeneration of the same topic is still a candidate. The blueprint
+        loop only ever pulls the latest generation per topic
+        (list_latest_generations_for_blueprint); every OLDER attempt's block
+        used to fall into 'leftover' and get appended as a second copy of the
+        same content -- exactly the ID's report: regenerate Day 4 from
+        outline v2, the draft export contains v2 followed by the stale v1
+        copy. This has no blueprint at all (plain leftover path), which is
+        enough to reproduce it without a blueprint fixture."""
+        from promptops_app.repositories.generation_repository import build_blueprint_export_layout
+
+        now = datetime.utcnow()
+        stale_v1 = _make_block(db, course, workflow_state="draft", topic="Day 4", created_at=now - timedelta(hours=1))
+        latest_v2 = _make_block(db, course, workflow_state="draft", topic="Day 4", created_at=now)
+
+        ordered, modules, views = build_blueprint_export_layout(db, course.id, exportable_only=False)
+
+        assert [b.id for b in ordered] == [latest_v2.id]
+        assert stale_v1.id not in [b.id for b in ordered]
+
+    def test_exportable_only_true_still_includes_every_approved_block_regardless_of_topic_recency(
+        self, db, course,
+    ):
+        """The fix is scoped to exportable_only=False only, per the review --
+        confirm the existing (already-narrowed-to-approved) behavior is
+        untouched: two approved blocks of the same topic both still export,
+        since exportable_only=True already can't produce this bug (a
+        superseded draft is not 'approved')."""
+        from promptops_app.repositories.generation_repository import build_blueprint_export_layout
+
+        now = datetime.utcnow()
+        older = _make_block(db, course, workflow_state="approved", topic="Day 4", created_at=now - timedelta(hours=1))
+        newer = _make_block(db, course, workflow_state="approved", topic="Day 4", created_at=now)
+
+        ordered, modules, views = build_blueprint_export_layout(db, course.id, exportable_only=True)
+
+        assert {b.id for b in ordered} == {older.id, newer.id}
+
+    def test_untitled_generations_are_never_collapsed_into_each_other(self, db, course):
+        """A blank topic must not become a single shared dedup key that
+        silently drops every untitled generation but the last."""
+        from promptops_app.repositories.generation_repository import build_blueprint_export_layout
+
+        now = datetime.utcnow()
+        first = _make_block(db, course, workflow_state="draft", topic="", created_at=now - timedelta(hours=1))
+        second = _make_block(db, course, workflow_state="draft", topic="", created_at=now)
+
+        ordered, modules, views = build_blueprint_export_layout(db, course.id, exportable_only=False)
+
+        assert {b.id for b in ordered} == {first.id, second.id}
 
 
 class TestExportCourseEndpointExposesTheFlag:
