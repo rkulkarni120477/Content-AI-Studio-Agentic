@@ -41,7 +41,6 @@ import { dashboardService } from '@features/dashboard/services/dashboardService'
 import { downloadBlob } from '@utils/helpers';
 import { EXPORT_TEMPLATES, WORKFLOW_EXPORTABLE } from '@utils/constants';
 import { formatDateTime, extractErrorMessage } from '@utils/helpers';
-import { useAuth } from '@hooks/useAuth';
 import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import ValidationPanel from '@features/editor/components/ValidationPanel/ValidationPanel';
@@ -53,6 +52,7 @@ import Select from '@components/common/Select/Select';
 import Loader from '@components/common/Loader/Loader';
 import EditorBlockCard from '@features/editor/components/EditorBlockCard/EditorBlockCard';
 import ReviewPanel from '@features/review/components/ReviewPanel/ReviewPanel';
+import { useAuth } from '@hooks/useAuth';
 import { useLabels } from '@hooks/useLabels';
 import styles from './EditorPage.module.scss';
 
@@ -77,7 +77,7 @@ export default function EditorPage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
   const L = useLabels();
-  const { isAdmin, user } = useAuth();
+  const { user } = useAuth();
   const ceReviewEnabled = Boolean(user?.ce_review_enabled);
 
   const generations = useAppSelector(selectGenerations);
@@ -217,13 +217,9 @@ export default function EditorPage() {
 
   const courseComplete = displayGens.length > 0 && allCourseApproved;
 
-  const allGenExportable = blocks.length > 0
-    && blocks.every((b) => WORKFLOW_EXPORTABLE.includes(b.workflow_state));
-
-  const canExportGen = isAdmin || allGenExportable;
   const genValSum = validationSummary(genValidation);
   const exportBlockedByValidation = genValSum.errors > 0;
-  const canExportGenFinal = canExportGen && !exportBlockedByValidation;
+  const canExportGenFinal = !exportBlockedByValidation;
 
   const courseValSum = validationSummary(validation);
 
@@ -396,11 +392,6 @@ export default function EditorPage() {
     <details className={styles.streamlitExpander}>
       <summary className={styles.streamlitExpander__summary}>📦 Export</summary>
       <div className={styles.streamlitExpander__body}>
-        {!canExportGen && selectedGenId && !isAdmin && (
-          <p className={styles.exportLock}>
-            🔒 Export locked — all blocks must be <strong>Approved</strong> or <strong>Published</strong> before exporting. Submit content for review and get it approved first.
-          </p>
-        )}
         <div className={styles.topExportRow}>
           {moduleOptions.length > 0 && (
             <div className={styles.moduleExportPanel}>
@@ -437,7 +428,7 @@ export default function EditorPage() {
 
           {displayGens.length > 0 && (
             <div className={styles.genExportPanel}>
-              {exportBlockedByValidation && canExportGen && (
+              {exportBlockedByValidation && (
                 <p className={styles.exportBlockErr}>
                   ❌ Export blocked — {genValSum.errors} error(s) found. Run Validate in the Plagiarism &amp; Citation Dashboard.
                 </p>

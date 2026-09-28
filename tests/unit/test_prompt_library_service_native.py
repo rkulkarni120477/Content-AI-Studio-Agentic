@@ -471,6 +471,74 @@ class TestStateFilter:
         assert svc.apply_list_filters(q, {"state": "in_review"}).all() == []
 
 
+class TestSearchFilter:
+    """CAS-107 — ``q`` matches the name the console renders, and nothing the
+    user cannot see.
+
+    Both halves of the bug came from one omission: ``q`` LIKE'd ``Prompt.title``,
+    which is NULL on every pipeline row, so the console's only searchable
+    columns were description and the version body. Searching a prompt's exact
+    on-screen name returned nothing, while unrelated rows matched on template
+    text hidden below the card's 72px clip.
+    """
+
+    def _pipe(self, db, name, *, description="", body="body"):
+        p = Prompt(prompt_kind="pipeline", name=name, owner="admin",
+                   component_type="cdd", description=description)
+        db.add(p)
+        db.flush()
+        db.add(PromptVersion(prompt_id=p.id, version="v1", version_number=1,
+                             user_prompt_template=body, is_active=True,
+                             workflow_state="active"))
+        db.flush()
+        return p
+
+    def _browse(self, db, args, kind="pipeline"):
+        q = svc.browse_prompts_query(db, "admin", None, kind=kind)
+        return {svc._prompt_base_dict(p)["title"]
+                for p in svc.apply_list_filters(q, args).all()}
+
+    def test_pipeline_row_is_found_by_its_displayed_name(self, db):
+        # The ticket's repro verbatim: the exact on-screen name returned 0 rows
+        # because that name lives in `name` and only `title` was searched.
+        self._pipe(db, "Gen Ai generator")
+        self._pipe(db, "unrelated")
+        assert self._browse(db, {"q": "Gen Ai generator"}) == {"Gen Ai generator"}
+        # Case- and substring-insensitive, same as before for titles.
+        assert self._browse(db, {"q": "gen ai"}) == {"Gen Ai generator"}
+
+    def test_library_row_is_still_found_by_its_title(self, db):
+        # The other kind fills `title`, not `name` — the coalesce must not have
+        # traded one broken kind for the other.
+        _mk_library_prompt(db, title="Searchable Lib")
+        assert "Searchable Lib" in self._browse(db, {"q": "searchable"}, kind="all")
+
+    def test_body_text_does_not_match(self, db):
+        """The assertion that matters: the row that WAS wrongly returned.
+
+        `q` must not reach the version template — that is what put AIM DLU
+        Outline and default_generate_prompt in a search for "test", with the
+        matching text ~1.5k characters below the card's visible area."""
+        self._pipe(db, "AIM DLU Outline", body="write a unit test for the day")
+        self._pipe(db, "test01", description="test 12")
+        assert self._browse(db, {"q": "test"}) == {"test01"}
+
+    def test_description_still_matches(self, db):
+        # Descriptions render unclipped on the card, so a hit there is legible
+        # and stays searchable — dropping the body must not drop this too.
+        self._pipe(db, "BP - Animesh", description="Just for testing")
+        assert self._browse(db, {"q": "testing"}) == {"BP - Animesh"}
+
+    def test_a_to_z_sorts_pipeline_rows_by_displayed_name(self, db):
+        # The UI's "A → Z" (sort=title) ordered by a column that is NULL on
+        # every pipeline row, leaving all of them tied and the option inert.
+        for name in ("cherry", "Apple", "banana"):
+            self._pipe(db, name)
+        q = svc.browse_prompts_query(db, "admin", None, kind="pipeline")
+        rows = svc.apply_list_filters(q, {"sort": "title"}).all()
+        assert [r.name for r in rows] == ["Apple", "banana", "cherry"]
+
+
 class TestPromotionHelpers:
     """Phase 12 — registry-name helpers behind promote-to-pipeline."""
 

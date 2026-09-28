@@ -84,12 +84,40 @@ def set_cancelled(db, job) -> None:
     db.commit()
 
 
-def is_job_cancelled(db, job_id: str) -> bool:
-    """Re-read the job row; return True if the user cancelled while we were working."""
+def is_job_cancelled(db, job_id: str, *, missing_is_cancelled: bool = False) -> bool:
+    """Re-read the job row; return True if the user cancelled while we were working.
+
+    missing_is_cancelled is for the import path only (see is_import_cancelled):
+    purge_course deletes the job row along with its course, and a job that
+    keeps running after that only writes orphans into a course that's gone.
+    Generation jobs are never purged this way, so they keep the original
+    "no row = not cancelled" reading — a missing generation-job row (e.g. a
+    course or tenant hard-delete) must not be read as a cancel.
+    """
     from promptops_app.database import GenerationJob
 
+    from sqlalchemy.exc import InvalidRequestError
+
+    # refresh() raises (rather than returning None) when another session
+    # deleted a row this one still has cached. On the generation-job path
+    # (missing_is_cancelled=False) this re-raises, exactly matching pre-PR
+    # behaviour: refresh() was called with no try/except at all, so a mid-run
+    # deleted row failed the job instead of letting it keep going.
     row = db.get(GenerationJob, job_id)
     if row is None:
-        return False
-    db.refresh(row)
+        return missing_is_cancelled
+    try:
+        db.refresh(row)
+    except InvalidRequestError:
+        if missing_is_cancelled:
+            return True
+        raise
     return row.status == JobStatus.CANCELLED
+
+
+def is_import_cancelled(db, job_id: str) -> bool:
+    """is_job_cancelled, but a purged (deleted) job row also reads as cancelled.
+
+    Import-path only — see is_job_cancelled's missing_is_cancelled docstring.
+    """
+    return is_job_cancelled(db, job_id, missing_is_cancelled=True)

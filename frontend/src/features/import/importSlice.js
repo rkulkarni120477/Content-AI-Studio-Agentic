@@ -3,6 +3,7 @@ import {
   validatePackageThunk,
   startImportThunk,
   pollImportJobThunk,
+  cancelImportThunk,
   fetchImportRecordThunk,
 } from './importThunks';
 
@@ -86,6 +87,12 @@ const importSlice = createSlice({
       .addCase(pollImportJobThunk.rejected, (s, { payload }) => {
         s.step = 'error';
         s.error = payload || 'Lost contact with the import job.';
+      })
+
+      // ── Cancel import (the job purges the course server-side) ──────
+      .addCase(cancelImportThunk.fulfilled, () => ({ ...initialState }))
+      .addCase(cancelImportThunk.rejected, (s, { payload }) => {
+        s.error = payload || 'Could not cancel the import.';
       })
 
       // ── Import record (warnings surfacing) ────────────────────────

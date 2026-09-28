@@ -5,6 +5,7 @@
 .env.local
 .env.*
 !.env.example
+.env_*
 
 # Local backup of stale tables/code before removal (contains prod data — never commit)
 stale_removal_backup/

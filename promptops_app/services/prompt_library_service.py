@@ -274,19 +274,35 @@ def base_prompt_query(db: Session) -> Query:
 def browse_prompts_query(db: Session, role: str | None, user_team,
                          kind: str | None = None,
                          include_deleted: bool = False,
+                         archived_only: bool = False,
                          project_id: int | None = None,
                          is_platform_admin: bool = False) -> Query:
     """Console browse across kinds. ``kind`` in {library, pipeline, all};
     callers without pipeline-manager access are silently stripped to
     library-only regardless of the requested kind (server-side, no 403).
-    ``include_deleted`` (doc §9 "unless explicitly enabled") surfaces
-    soft-deleted rows too — pipeline managers only; ignored for everyone
-    else."""
+
+    Archival is a third axis, orthogonal to kind and to the active version's
+    workflow_state (doc §9 "unless explicitly enabled"), and both flags below
+    are pipeline-manager-only — silently ignored for everyone else, same
+    convention as ``kind``:
+    - neither: live rows only (the default every other surface relies on).
+    - ``include_deleted``: live + archived, for a caller that wants the whole
+      set in one list.
+    - ``archived_only``: archived rows ONLY, which is what a filter labelled
+      "Archived" has to mean. It wins over ``include_deleted`` — the narrower
+      request is never widened — and it must stay server-side: the list count
+      and the CSV export both read the returned rows, so a client-side filter
+      would leave both of them reporting the unfiltered set.
+    """
     kind = (kind or "library").strip().lower()
     if kind not in ("library", "pipeline", "all") or not can_manage_pipeline_prompts(role):
         kind = "library"
+    if not can_manage_pipeline_prompts(role):
+        include_deleted = archived_only = False
     q = db.query(Prompt)
-    if not (include_deleted and can_manage_pipeline_prompts(role)):
+    if archived_only:
+        q = q.filter(Prompt.deleted_at.isnot(None))
+    elif not include_deleted:
         q = q.filter(Prompt.deleted_at.is_(None))
     if kind != "all":
         q = q.filter(Prompt.prompt_kind == kind)
@@ -342,13 +358,30 @@ def list_query_loaders(q: Query) -> Query:
     )
 
 
+def _display_name():
+    """The name the console actually renders, as a SQL expression.
+
+    The two kinds fill two different columns and never both: library rows have
+    ``title``, pipeline rows have ``name``. Every read path already hides that
+    behind a fallback (see ``_prompt_base_dict``), so a query that reaches for
+    either column alone silently no-ops on one whole kind — with the console
+    pinned to ``kind=pipeline``, ``Prompt.title`` is NULL on every row it can
+    return. That is how CAS-107 (search) and the dead "A → Z" sort both
+    shipped. Anything meaning "the name the user sees" must use THIS.
+    """
+    return func.coalesce(Prompt.title, Prompt.name)
+
+
 def apply_sort(q: Query, sort: str) -> Query:
+    # "title" is the UI's A → Z: it sorts by the rendered name, so it needs the
+    # same fallback the renderer uses — ordering by Prompt.title alone left all
+    # 53 pipeline rows tied on NULL and the option doing nothing.
     if sort == "title":
-        return q.order_by(Prompt.title)
+        return q.order_by(func.lower(_display_name()))
     if sort == "created":
         return q.order_by(Prompt.created_at.desc())
     if sort == "category":
-        return q.order_by(Prompt.category, Prompt.title)
+        return q.order_by(Prompt.category, func.lower(_display_name()))
     return q.order_by(Prompt.updated_at.desc())
 
 
@@ -374,24 +407,20 @@ def apply_visibility_filter(q: Query, role: str | None, user_team,
     )
 
 
-def _active_content_matches(like: str):
-    """Filter: the active version's snapshot matches ``like`` (replaces the
-    old LIKE over pl_prompts.content — content lives on the version now)."""
-    return Prompt.versions.any(
-        PromptVersion.is_active.is_(True)
-        & func.lower(PromptVersion.user_prompt_template).like(like)
-    )
-
-
 def apply_list_filters(q: Query, args: dict) -> Query:
     search = (args.get("q") or "").strip()
     if search:
         like = f"%{search.lower()}%"
+        # Name and description only — the two fields the card renders in full.
+        # The active version's body is deliberately NOT searched: .card-content
+        # clips at 72px, so a hit 1.5k characters into a template returns a row
+        # with no visible reason for matching (CAS-107's "unrelated results").
+        # An unranked substring filter can only honestly match what is legible;
+        # real body search needs snippets and ranking, which is its own ticket.
         q = q.filter(
             or_(
-                func.lower(Prompt.title).like(like),
+                func.lower(_display_name()).like(like),
                 func.lower(Prompt.description).like(like),
-                _active_content_matches(like),
             )
         )
 

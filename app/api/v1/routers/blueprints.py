@@ -1990,12 +1990,11 @@ def export_module_lessons(
     Combine every lesson generated for this module (blueprint) into a single file.
 
     Only the most recent generation per distinct lesson topic is included (a lesson
-    regenerated 9 times still contributes one section), and only blocks in an
-    exportable workflow state (approved/published) — mirrors export_course.
+    regenerated 9 times still contributes one section). Editor exports intentionally
+    include content in every workflow state so authors can download work in progress.
     """
     from promptops_app.repositories import generation_repository
     from promptops_app.services.export_service import ExportRequest, export_content
-    from promptops_app.core.constants import WorkflowState
 
     bp = _get_blueprint_or_404(db, blueprint_id, current_user)
 
@@ -2004,10 +2003,9 @@ def export_module_lessons(
         raise WorkflowError("No generated lessons found for this module.")
 
     gen_ids = [g.id for g in latest_gens]
-    all_blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
-    exportable_blocks = [b for b in all_blocks if b.workflow_state.lower() in WorkflowState.EXPORTABLE]
-    if not exportable_blocks:
-        raise WorkflowError("No approved or published lessons found for this module yet.")
+    lesson_blocks = generation_repository.list_blocks_for_gen_ids(db, gen_ids)
+    if not lesson_blocks:
+        raise WorkflowError("No lesson content found for this module yet.")
 
     # Order sections by lesson number (parsed from the generation's topic), not by
     # database insertion order, so the combined file reads Lesson 1 -> Lesson 2 -> ...
@@ -2018,11 +2016,11 @@ def export_module_lessons(
         m = re.match(r"lesson\s*(\d+)", topic, re.I)
         return (int(m.group(1)) if m else 9999, topic, block.id)
 
-    exportable_blocks.sort(key=_lesson_order)
+    lesson_blocks.sort(key=_lesson_order)
 
     export_req = ExportRequest(
         fmt=format, topic=bp.title,
-        blocks=[(b.block_label, b.content or "") for b in exportable_blocks],
+        blocks=[(b.block_label, b.content or "") for b in lesson_blocks],
         user_name=current_user.username, is_admin=(current_user.role == "admin"),
         entity_type="module", entity_id=bp.id,
         file_name=f"{bp.title.replace(' ', '_')}_lessons.{format}",
@@ -2032,7 +2030,7 @@ def export_module_lessons(
         raise WorkflowError(f"Export failed: {result.error_message}")
 
     _log.info("module_lessons_exported  user=%s  blueprint_id=%d  format=%s  blocks=%d",
-              current_user.username, blueprint_id, format, len(exportable_blocks))
+              current_user.username, blueprint_id, format, len(lesson_blocks))
 
     return Response(
         content=result.data, media_type=result.mime_type,

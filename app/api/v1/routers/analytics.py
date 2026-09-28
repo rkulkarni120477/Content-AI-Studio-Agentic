@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from datetime import date as _date, datetime as _dt, timedelta as _timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -26,6 +27,7 @@ from app.core.dependencies import get_current_user, get_db, require_permission
 from app.schemas.analytics import (
     AnalyticsSummaryResponse,
     AuditEventRead,
+    AuditTrailFilters,
     AuditTrailFiltersResponse,
     AuditTrailQuery,
     CddBlueprintEventRow,
@@ -56,6 +58,9 @@ router = APIRouter()
 )
 def get_summary(
     project_id: int | None = Query(default=None),
+    date_from: _date | None = Query(default=None, description="Inclusive start date."),
+    date_to: _date | None = Query(default=None, description="Inclusive end date."),
+    tz_offset_minutes: int = Query(default=0, description="Browser's Date.getTimezoneOffset() value, so date ranges line up with the user's local calendar day."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> AnalyticsSummaryResponse:
@@ -69,17 +74,21 @@ def get_summary(
         document_repository, generation_repository, prompt_repository,
     )
 
+    parsed_from, parsed_to = _resolve_date_range(date_from, date_to, tz_offset_minutes)
+
     scope = dict(
         user_name=current_user.username,
         project_id=project_id,
         is_admin=(current_user.role == "admin"),
+        date_from=parsed_from,
+        date_to=parsed_to,
     )
 
     return AnalyticsSummaryResponse(
         generations=analytics_repository.count_generations_scoped(db, **scope),
         blocks=generation_repository.count_blocks_scoped(db, **scope),
-        prompt_assets=prompt_repository.count_prompts(db),
-        documents=document_repository.count_documents(db),
+        prompt_assets=prompt_repository.count_prompts(db, date_from=parsed_from, date_to=parsed_to),
+        documents=document_repository.count_documents(db, date_from=parsed_from, date_to=parsed_to),
         cdds=cdd_repository.count_cdds_scoped(db, **scope),
         blueprints=blueprint_repository.count_blueprints_scoped(db, **scope),
     )
@@ -92,26 +101,30 @@ def get_summary(
     description="Admin only. Returns generation and block counts per project.",
 )
 def get_project_analytics(
+    date_from: _date | None = Query(default=None, description="Inclusive start date."),
+    date_to: _date | None = Query(default=None, description="Inclusive end date."),
+    tz_offset_minutes: int = Query(default=0, description="Browser's Date.getTimezoneOffset() value, so date ranges line up with the user's local calendar day."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("analytics.view_all")),
 ) -> list[ProjectAnalyticsRow]:
     """Return project-level metrics for the admin comparison table."""
     from promptops_app.repositories import analytics_repository
 
+    parsed_from, parsed_to = _resolve_date_range(date_from, date_to, tz_offset_minutes)
+
     projects = analytics_repository.list_active_projects_for_analytics(db)
-    rows = []
-    for p in projects:
-        gen_ids = analytics_repository.get_project_generation_ids(db, p.id)
-        rows.append(ProjectAnalyticsRow(
+    metrics = analytics_repository.get_project_metrics_batch(
+        db, [p.id for p in projects], date_from=parsed_from, date_to=parsed_to,
+    )
+    return [
+        ProjectAnalyticsRow(
             project_id=p.id,
             project_name=p.name,
             client=p.client_name or "—",
-            generations=len(gen_ids),
-            blocks=analytics_repository.count_project_blocks(db, gen_ids),
-            cdds=analytics_repository.count_project_cdds(db, p.id),
-            blueprints=analytics_repository.count_project_blueprints(db, p.id),
-        ))
-    return rows
+            **metrics[p.id],
+        )
+        for p in projects
+    ]
 
 
 @router.get(
@@ -165,6 +178,27 @@ def get_usage_summary(
     )
 
 
+def _resolve_date_range(
+    date_from: _date | None, date_to: _date | None, tz_offset_minutes: int = 0,
+) -> tuple[_dt | None, _dt | None]:
+    """Turn calendar-date query params into a UTC timestamp range.
+
+    `tz_offset_minutes` is the browser's own Date.getTimezoneOffset() value
+    (minutes to ADD to local time to reach UTC), so a range like "This Month"
+    lines up with the user's own local midnight-to-midnight, not UTC's --
+    without it, a user ahead of UTC (e.g. IST) can see "This Month" as empty
+    for the first few hours of the month.
+
+    The upper bound is exclusive (start of the day after date_to), so it
+    never misses rows saved in the last second of date_to the way a literal
+    "23:59:59" cutoff would.
+    """
+    offset = _timedelta(minutes=tz_offset_minutes)
+    start = _dt.combine(date_from, _dt.min.time()) + offset if date_from else None
+    end = _dt.combine(date_to, _dt.min.time()) + _timedelta(days=1) + offset if date_to else None
+    return start, end
+
+
 def _parse_audit_date(value: str | None, *, end_of_day: bool = False):
     from datetime import datetime as dt
 
@@ -179,7 +213,7 @@ def _parse_audit_date(value: str | None, *, end_of_day: bool = False):
         return None
 
 
-def _audit_event_row(record) -> AuditEventRead:
+def _audit_event_row(record, *, include_metadata: bool = True) -> AuditEventRead:
     from app.schemas.analytics import _parse_audit_metadata
     from promptops_app.services.audit_service import get_event_meta
 
@@ -195,7 +229,11 @@ def _audit_event_row(record) -> AuditEventRead:
         project_id=record.project_id,
         course_id=record.course_id,
         ip_address=record.ip_address,
-        metadata=_parse_audit_metadata(record.metadata_json),
+        # Not touching record.metadata_json here when include_metadata is
+        # False matters, not just skipping it in the response: the list
+        # query defers that column (see list_audit_logs), so accessing it
+        # would trigger a per-row lazy-load and defeat the whole fix.
+        metadata=_parse_audit_metadata(record.metadata_json) if include_metadata else None,
         created_at=record.created_at,
     )
 
@@ -235,8 +273,13 @@ def get_audit_trail_filters(
     )
 
 
-def _resolve_audit_trail_query(query: AuditTrailQuery, current_user) -> tuple[dict, AuditTrailQuery]:
-    """Apply role scoping and parse dates for audit trail queries."""
+def _resolve_audit_trail_query(query: AuditTrailFilters, current_user) -> tuple[dict, AuditTrailFilters]:
+    """Apply role scoping and parse dates for audit trail queries.
+
+    Takes the filters base, not the paginated AuditTrailQuery: only touches
+    actor/date/etc, and export calls this with an AuditTrailFilters that has
+    no page/page_size at all.
+    """
     from app.core.permissions import effective_rbac_check
 
     actor = query.actor
@@ -288,10 +331,18 @@ def list_audit_trail(
         date_to=trail_kw["date_to"],
         limit=q.page_size,
         offset=offset,
+        # CAS-140: the list view never renders metadata_json until a row is
+        # expanded (see GET /audit-trail/{id}), but it averages ~35KB and
+        # reaches 2.3MB on actions like content.generated/cdd.created --
+        # fetching it for every row on every page was the actual page-load
+        # and filtered-search cost, confirmed by profiling against a real
+        # copy of prod data (not just the count query the first attempt at
+        # this ticket fixed).
+        include_metadata=False,
     )
 
     return PaginatedResponse.create(
-        items=[_audit_event_row(e) for e in events],
+        items=[_audit_event_row(e, include_metadata=False) for e in events],
         total=total, page=q.page, page_size=q.page_size,
     )
 
@@ -302,12 +353,17 @@ def list_audit_trail(
     description="Downloads audit events as CSV using the same filters as GET /audit-trail.",
 )
 def export_audit_trail(
-    query: Annotated[AuditTrailQuery, Query()],
+    query: Annotated[AuditTrailFilters, Query()],
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.audit_log")),
 ) -> Response:
     """
     Export audit events as a CSV download (respects current filters).
+
+    Takes AuditTrailFilters, not AuditTrailQuery: page/page_size don't apply
+    here, so this endpoint doesn't declare them at all — every matching row
+    is exported (capped at 100k below), and an extra page_size on the
+    request is simply ignored rather than validated.
 
     Replicates the "Export Audit Log" button in the Streamlit Analytics tab.
     """
@@ -343,6 +399,34 @@ def export_audit_trail(
 
 
 @router.get(
+    "/audit-trail/{event_id}",
+    response_model=AuditEventRead,
+    summary="Single audit event, with full metadata",
+    description=(
+        "On-demand detail fetch for one row of GET /audit-trail (metadata "
+        "included) -- used when a row is expanded in the UI, so the list "
+        "endpoint itself never has to carry every row's metadata_json."
+    ),
+)
+def get_audit_trail_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> AuditEventRead:
+    from app.core.exceptions import NotFoundError
+    from app.core.permissions import effective_rbac_check
+    from promptops_app.services.audit_service import get_audit_event
+
+    record = get_audit_event(db, event_id)
+    if record is None:
+        raise NotFoundError("Audit event", event_id)
+    if not effective_rbac_check(current_user, "analytics.view_all") and record.user_id != current_user.username:
+        raise NotFoundError("Audit event", event_id)
+
+    return _audit_event_row(record, include_metadata=True)
+
+
+@router.get(
     "/generations",
     response_model=list[GenerationHistoryRow],
     summary="Recent generation history",
@@ -350,6 +434,9 @@ def export_audit_trail(
 def get_generation_history(
     limit: int = Query(default=20, ge=1, le=100),
     project_id: int | None = Query(default=None),
+    date_from: _date | None = Query(default=None, description="Inclusive start date."),
+    date_to: _date | None = Query(default=None, description="Inclusive end date."),
+    tz_offset_minutes: int = Query(default=0, description="Browser's Date.getTimezoneOffset() value, so date ranges line up with the user's local calendar day."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> list[GenerationHistoryRow]:
@@ -358,7 +445,11 @@ def get_generation_history(
         blueprint_repository, cdd_repository, generation_repository,
     )
 
-    scope = dict(user_name=current_user.username, project_id=project_id, is_admin=(current_user.role == "admin"))
+    parsed_from, parsed_to = _resolve_date_range(date_from, date_to, tz_offset_minutes)
+    scope = dict(
+        user_name=current_user.username, project_id=project_id, is_admin=(current_user.role == "admin"),
+        date_from=parsed_from, date_to=parsed_to,
+    )
     gens = generation_repository.list_recent_generations(db, limit=limit, **scope)
 
     rows = []

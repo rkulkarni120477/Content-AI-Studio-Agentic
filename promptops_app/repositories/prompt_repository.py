@@ -110,8 +110,13 @@ def get_prompt_by_name(db, name: str):
     return db.query(Prompt).filter(Prompt.name == name).first()
 
 
-def count_prompts(db) -> int:
-    return db.query(Prompt).count()
+def count_prompts(db, *, date_from=None, date_to=None) -> int:
+    q = db.query(Prompt)
+    if date_from is not None:
+        q = q.filter(Prompt.created_at >= date_from)
+    if date_to is not None:
+        q = q.filter(Prompt.created_at < date_to)
+    return q.count()
 
 
 # ---------------------------------------------------------------------------

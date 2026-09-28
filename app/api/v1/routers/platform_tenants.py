@@ -384,9 +384,9 @@ def delete_tenant(
 
     Not fully atomic — purge_course commits per course — so a failure
     partway through can leave the tenant partially deleted. Re-running this
-    delete is safe: purge_course no-ops on an already-gone course, and every
-    other step here is a plain filtered delete that no-ops once its rows are
-    already gone.
+    delete is safe: purge_course still sweeps by course_id on an
+    already-gone course, and every other step here is a plain filtered
+    delete that no-ops once its rows are already gone.
     """
     project = _get_tenant_or_404(db, project_id)
     name = project.name

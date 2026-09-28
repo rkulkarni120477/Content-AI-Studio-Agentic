@@ -33,6 +33,7 @@ import logging
 from promptops_app.database import SystemLog, log_event
 from promptops_app.repositories.audit_repository import (
     create_audit_log,
+    get_audit_log_by_id,
     list_audit_logs,
     count_audit_logs,
     list_distinct_actors,
@@ -213,6 +214,7 @@ def get_audit_trail(
     course_id: int = None,
     date_from=None,
     date_to=None,
+    include_metadata: bool = True,
 ) -> list:
     """Query AuditLog with optional filters. Returns newest-first."""
     return list_audit_logs(
@@ -226,12 +228,18 @@ def get_audit_trail(
         date_to     = date_to,
         limit       = limit,
         offset      = offset,
+        include_metadata = include_metadata,
     )
 
 
 def count_trail(db, **kwargs) -> int:
     """Count audit records matching the same filter set as get_audit_trail."""
     return count_audit_logs(db, **kwargs)
+
+
+def get_audit_event(db, event_id: int):
+    """Single audit row, metadata included -- for the on-demand detail fetch."""
+    return get_audit_log_by_id(db, event_id)
 
 
 def get_event_meta(action: str) -> dict:

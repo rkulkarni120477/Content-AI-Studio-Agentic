@@ -141,6 +141,28 @@ class TestExplicitArchiveAccess:
         rows = client.get(f"{base}&include_archived=1", headers=author_headers).json()
         assert [p for p in rows if p["id"] == dead.id] == []
 
+    def test_archived_only_excludes_the_live_rows(
+            self, client, auth_headers, author_headers, db):
+        """CAS-108 — the "Archived" filter narrows, it does not add.
+
+        The absence assertion is the one that matters: the bug shipped because
+        include_archived widens the set, and every test here only ever checked
+        that the archived row was PRESENT."""
+        dead = self._archived_pipeline_row(db)
+        live = make_db_prompt(db, "arch_live", system="S", user="U",
+                              component_type="cdd")
+        base = "/api/v1/prompt-library/prompts?kind=pipeline"
+        rows = client.get(f"{base}&archived_only=1", headers=auth_headers).json()
+        ids = [p["id"] for p in rows]
+        assert dead.id in ids and live.id not in ids
+        # Narrower wins: sending both never widens back to live + archived.
+        ids = [p["id"] for p in client.get(
+            f"{base}&include_archived=1&archived_only=1", headers=auth_headers).json()]
+        assert dead.id in ids and live.id not in ids
+        # Non-admins: flag ignored, and no archived row leaks through it.
+        rows = client.get(f"{base}&archived_only=1", headers=author_headers).json()
+        assert [p for p in rows if p["id"] == dead.id] == []
+
     def test_admin_can_open_and_restore_an_archived_row(self, client, auth_headers, db):
         dead = self._archived_pipeline_row(db)
         r = client.get(f"/api/v1/prompt-library/prompts/{dead.id}", headers=auth_headers)
