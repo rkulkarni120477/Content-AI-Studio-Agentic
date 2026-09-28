@@ -635,7 +635,7 @@ export default function EditorPage() {
 
         {selectedGenId && (
           <ArtifactReferenceTrace
-            title="Source documents used for this generation"
+            title="Source Library documents used for this generation"
             generationParams={genDetail?.generation_params}
             fallbackParams={selectedGen?.generation_params}
           />
