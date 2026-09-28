@@ -151,7 +151,12 @@ def day_context(
     if supplement_k and query_text:
         try:
             emb = indexing.embed_query(tenant_cfg, query_text)
-            hits = indexing.vector_search(tenant_cfg, cid, query_text, emb, size=max(supplement_k * 3, 12))
+            # Over-fetch well past supplement_k*3: a single large/topically-dominant
+            # source (e.g. a 1,000+ page handbook already covered via day_units) can
+            # otherwise fill every raw top-K slot by score alone, so a smaller
+            # tagged reference never gets a candidate slot to round-robin over below.
+            hits = indexing.vector_search(tenant_cfg, cid, query_text, emb, size=max(supplement_k * 6, 30))
+            eligible: List[Dict[str, Any]] = []
             for h in hits:
                 if h.get("content_unit_id") in own_ids:
                     continue
@@ -163,6 +168,28 @@ def day_context(
                 # text gate the day's own units use before returning any text.
                 if not _supplement_allowed(h, audience):
                     continue
+                eligible.append(h)
+
+            # Round-robin by source document (job_id) instead of a flat top-K by
+            # score: `eligible` is still score-ordered within each document, but
+            # taking turns across documents means one dominant source can't crowd
+            # out every other tagged reference — the same "one big doc starves the
+            # others" problem context_retrieval.py's _ensure_doc_coverage solves
+            # for explicit-selection retrieval, applied here to the ranked pool.
+            by_job: Dict[Any, List[Dict[str, Any]]] = {}
+            for h in eligible:
+                by_job.setdefault(h.get("job_id"), []).append(h)
+            ordered: List[Dict[str, Any]] = []
+            round_idx = 0
+            while len(ordered) < supplement_k and round_idx < max((len(v) for v in by_job.values()), default=0):
+                for hits_for_job in by_job.values():
+                    if round_idx < len(hits_for_job):
+                        ordered.append(hits_for_job[round_idx])
+                        if len(ordered) >= supplement_k:
+                            break
+                round_idx += 1
+
+            for h in ordered:
                 full = h.get("text") or ""
                 truncated = bool(_SUPPLEMENT_TEXT_CAP) and len(full) > _SUPPLEMENT_TEXT_CAP
                 text = full[:_SUPPLEMENT_TEXT_CAP] if truncated else full
@@ -177,8 +204,6 @@ def day_context(
                     # supplement themselves instead of pasting `text` into a prompt.
                     "text_truncated": truncated,
                 })
-                if len(supplement) >= supplement_k:
-                    break
         except Exception as exc:  # noqa: BLE001 — supplement is best-effort
             log.warning("day_context: kNN supplement failed for block=%s day=%s: %s", block, day, exc)
             flags.append("SUPPLEMENT_FAILED")
