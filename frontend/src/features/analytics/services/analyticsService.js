@@ -25,6 +25,7 @@ export const analyticsService = {
   getUsage:             (p)  => api.get(ANALYTICS.USAGE, { params: p }),
   getAuditTrailFilters: () => api.get(ANALYTICS.AUDIT_TRAIL_FILTERS),
   getAuditTrail:        (p)  => api.get(ANALYTICS.AUDIT_TRAIL, { params: p }),
+  getAuditEvent:        (id) => api.get(ANALYTICS.AUDIT_TRAIL_EVENT(id)),
   getGenerationTrace:   (id) => api.get(GENERATE.TRACE(id)),
   getProjectCourses:    (projectId) =>
     api.get(PROJECTS.COURSES(projectId), { params: { page_size: 200 } }).then(asList),

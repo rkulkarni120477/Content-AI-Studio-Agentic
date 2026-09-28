@@ -179,7 +179,7 @@ def _parse_audit_date(value: str | None, *, end_of_day: bool = False):
         return None
 
 
-def _audit_event_row(record) -> AuditEventRead:
+def _audit_event_row(record, *, include_metadata: bool = True) -> AuditEventRead:
     from app.schemas.analytics import _parse_audit_metadata
     from promptops_app.services.audit_service import get_event_meta
 
@@ -195,7 +195,11 @@ def _audit_event_row(record) -> AuditEventRead:
         project_id=record.project_id,
         course_id=record.course_id,
         ip_address=record.ip_address,
-        metadata=_parse_audit_metadata(record.metadata_json),
+        # Not touching record.metadata_json here when include_metadata is
+        # False matters, not just skipping it in the response: the list
+        # query defers that column (see list_audit_logs), so accessing it
+        # would trigger a per-row lazy-load and defeat the whole fix.
+        metadata=_parse_audit_metadata(record.metadata_json) if include_metadata else None,
         created_at=record.created_at,
     )
 
@@ -288,10 +292,18 @@ def list_audit_trail(
         date_to=trail_kw["date_to"],
         limit=q.page_size,
         offset=offset,
+        # CAS-140: the list view never renders metadata_json until a row is
+        # expanded (see GET /audit-trail/{id}), but it averages ~35KB and
+        # reaches 2.3MB on actions like content.generated/cdd.created --
+        # fetching it for every row on every page was the actual page-load
+        # and filtered-search cost, confirmed by profiling against a real
+        # copy of prod data (not just the count query the first attempt at
+        # this ticket fixed).
+        include_metadata=False,
     )
 
     return PaginatedResponse.create(
-        items=[_audit_event_row(e) for e in events],
+        items=[_audit_event_row(e, include_metadata=False) for e in events],
         total=total, page=q.page, page_size=q.page_size,
     )
 
@@ -340,6 +352,34 @@ def export_audit_trail(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=audit_trail.csv"},
     )
+
+
+@router.get(
+    "/audit-trail/{event_id}",
+    response_model=AuditEventRead,
+    summary="Single audit event, with full metadata",
+    description=(
+        "On-demand detail fetch for one row of GET /audit-trail (metadata "
+        "included) -- used when a row is expanded in the UI, so the list "
+        "endpoint itself never has to carry every row's metadata_json."
+    ),
+)
+def get_audit_trail_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("system.analytics")),
+) -> AuditEventRead:
+    from app.core.exceptions import NotFoundError
+    from app.core.permissions import effective_rbac_check
+    from promptops_app.services.audit_service import get_audit_event
+
+    record = get_audit_event(db, event_id)
+    if record is None:
+        raise NotFoundError("Audit event", event_id)
+    if not effective_rbac_check(current_user, "analytics.view_all") and record.user_id != current_user.username:
+        raise NotFoundError("Audit event", event_id)
+
+    return _audit_event_row(record, include_metadata=True)
 
 
 @router.get(
