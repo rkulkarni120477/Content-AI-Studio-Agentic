@@ -174,12 +174,16 @@ def restore_cdd_version(
 
 
 def count_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admin: bool = True,
-                      *, include_archived: bool = False) -> int:
+                      *, include_archived: bool = False, date_from=None, date_to=None) -> int:
     q = _live_only(db.query(CourseDesignDocument), include_archived=include_archived)
     if not is_admin and user_name:
         q = q.filter(CourseDesignDocument.created_by == user_name)
         if project_id:
             q = q.filter(CourseDesignDocument.project_id == project_id)
+    if date_from is not None:
+        q = q.filter(CourseDesignDocument.created_at >= date_from)
+    if date_to is not None:
+        q = q.filter(CourseDesignDocument.created_at < date_to)
     return q.count()
 
 

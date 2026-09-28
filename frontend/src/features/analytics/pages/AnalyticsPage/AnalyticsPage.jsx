@@ -121,7 +121,7 @@ export default function AnalyticsPage({ embedded = false }) {
     if (isPlatformAdmin) {
       dispatch(fetchPermissionsOverviewThunk());
       if (canClearDb) dispatch(fetchClearPresetsThunk());
-      dispatch(fetchProjectAnalyticsThunk());
+      dispatch(fetchProjectAnalyticsThunk(filters));
     }
   }
 

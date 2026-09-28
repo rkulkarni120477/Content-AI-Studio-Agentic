@@ -38,6 +38,8 @@ def list_recent_generations(
     user_name: str = None,
     project_id: int = None,
     is_admin: bool = True,
+    date_from=None,
+    date_to=None,
     limit: int = 20,
 ):
     q = db.query(Generation)
@@ -45,6 +47,10 @@ def list_recent_generations(
         q = q.filter(Generation.created_by == user_name)
         if project_id:
             q = q.filter(Generation.project_id == project_id)
+    if date_from is not None:
+        q = q.filter(Generation.created_at >= date_from)
+    if date_to is not None:
+        q = q.filter(Generation.created_at < date_to)
     return q.order_by(Generation.created_at.desc()).limit(limit).all()
 
 
@@ -602,12 +608,22 @@ def count_blocks_scoped(
     user_name: str = None,
     project_id: int = None,
     is_admin: bool = True,
+    date_from=None,
+    date_to=None,
 ) -> int:
+    # Scoped by the parent Generation's created_at, not Block's own — a block
+    # can be edited/reviewed well after its generation, so "generations
+    # created in this range" is the meaningful date scope here, matching
+    # count_generations_scoped right above it in the summary counters.
     q = db.query(Generation)
     if not is_admin and user_name:
         q = q.filter(Generation.created_by == user_name)
         if project_id:
             q = q.filter(Generation.project_id == project_id)
+    if date_from is not None:
+        q = q.filter(Generation.created_at >= date_from)
+    if date_to is not None:
+        q = q.filter(Generation.created_at < date_to)
     gen_ids = [r[0] for r in q.with_entities(Generation.id).all()]
     if not gen_ids:
         return 0
