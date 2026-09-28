@@ -19,6 +19,7 @@ celery_app = Celery(
         "promptops_app.jobs.plagiarism_jobs",
         # Generation/import pipeline tasks (P4.1). Thin wrappers around the
         # existing run_* functions; only used when PROMPTOPS_USE_CELERY=1.
+        # (celery_tasks also registers the CE Review checklist_import task.)
         "promptops_app.jobs.celery_tasks",
     ],
 )

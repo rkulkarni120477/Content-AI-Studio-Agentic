@@ -88,6 +88,13 @@ PERMISSION_CATEGORIES: list[dict] = [
         ],
     },
     {
+        "category": "ce_review",
+        "label": "CE Agent Review",
+        "permissions": [
+            {"key": "review.configure", "label": "Upload & manage the CE checklist"},
+        ],
+    },
+    {
         "category": "export",
         "label": "Export",
         "permissions": [

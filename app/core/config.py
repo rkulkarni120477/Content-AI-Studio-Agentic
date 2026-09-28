@@ -222,6 +222,20 @@ class AppSettings(BaseSettings):
         default=False,
         alias="IMPORT_COURSES_ENABLED",
     )
+    # CE Agent Review (checklist-based content review). Default OFF: when false the
+    # review-checklist / reviews routers are not mounted and the Editor's AI Review
+    # section is hidden, so the app is behaviourally identical to today. See
+    # docs/ce-agent-review-plan.md.
+    ce_review_enabled: bool = Field(
+        default=False,
+        alias="CE_REVIEW_ENABLED",
+    )
+    # CE review retention (days) for finding/result detail rows. 0 = keep forever
+    # (default). Ships OFF; a future maintenance task can call the prune helper.
+    ce_review_retention_days: int = Field(
+        default=0,
+        alias="CE_REVIEW_RETENTION_DAYS",
+    )
     approval_sla_hours: int = Field(
         default=24,
         alias="PROMPTOPS_APPROVAL_SLA_HOURS",

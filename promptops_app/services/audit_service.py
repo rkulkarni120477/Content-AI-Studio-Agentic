@@ -120,6 +120,11 @@ AUDIT_EVENTS: dict[str, dict] = {
     "workflow.bulk_approved":  {"level": "success", "entity": "workflow",   "icon": "✅", "label": "Blocks bulk-approved"},
     "workflow.reset_draft":    {"level": "info",    "entity": "workflow",   "icon": "↩️", "label": "Block reset to draft"},
 
+    # ── CE Agent Review ───────────────────────────────────────────────────────
+    "content.reviewed":         {"level": "info",    "entity": "generation", "icon": "🤖", "label": "Content reviewed (CE Agent)"},
+    "review.fix_applied":       {"level": "info",    "entity": "block",      "icon": "🩹", "label": "Review fix applied"},
+    "review.finding_dismissed": {"level": "info",    "entity": "block",      "icon": "🚫", "label": "Review finding dismissed"},
+
     # ── Prompts ───────────────────────────────────────────────────────────────
     "prompt.version_deployed": {"level": "info",    "entity": "prompt",     "icon": "📜", "label": "Prompt version deployed"},
     "prompt.created":          {"level": "info",    "entity": "prompt",     "icon": "📚", "label": "Prompt asset created"},

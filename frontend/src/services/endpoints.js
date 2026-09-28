@@ -129,6 +129,30 @@ export const FEEDBACK = {
   BULK_DELETE: '/api/v1/feedback/bulk-delete',
 };
 
+// ─── CE Agent Review — checklist management ───────────────────────────────────
+export const REVIEW_CHECKLISTS = {
+  LIST:        '/api/v1/review-checklists',
+  UPLOAD:      '/api/v1/review-checklists/upload',
+  ACTIVE:      '/api/v1/review-checklists/active',
+  GET:         (id) => `/api/v1/review-checklists/${id}`,
+  UPDATE_ITEM: (id, itemId) => `/api/v1/review-checklists/${id}/items/${itemId}`,   // PATCH + DELETE
+  BULK_DELETE_ITEMS: (id) => `/api/v1/review-checklists/${id}/items/bulk-delete`,
+  REORDER:     (id) => `/api/v1/review-checklists/${id}/reorder`,
+  ARCHIVE:     (id) => `/api/v1/review-checklists/${id}/archive`,
+};
+
+// ─── CE Agent Review — review runs ────────────────────────────────────────────
+export const REVIEWS = {
+  START: '/api/v1/reviews',
+  GET:   (id) => `/api/v1/reviews/${id}`,
+  LIST:  '/api/v1/reviews',
+  CHECKLIST_RESULTS: (id) => `/api/v1/reviews/${id}/checklist-results`,
+  FINDINGS: (id) => `/api/v1/reviews/${id}/findings`,
+  APPLY_FINDING: (id, fid) => `/api/v1/reviews/${id}/findings/${fid}/apply`,
+  APPLY_FINDINGS: (id) => `/api/v1/reviews/${id}/findings/apply`,
+  DISMISS_FINDING: (id, fid) => `/api/v1/reviews/${id}/findings/${fid}/dismiss`,
+};
+
 // ─── Source Library / DIS ─────────────────────────────────────────────────────
 export const SOURCE_LIBRARY = {
   ME:               '/api/v1/source-library/me',

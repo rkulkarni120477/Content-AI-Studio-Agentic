@@ -514,24 +514,29 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             return
 
         # ── Stage 4 — CE Validation ───────────────────────────────────
-        set_running(db, job, *STAGE_CE_VALIDATION)
-        if is_job_cancelled(db, job_id):
-            _log.info("Job %s cancelled before CE validation", job_id)
-            return
-        try:
-            from promptops_app.services.ce_validation_service import run_ce_validation
-            out = run_ce_validation(
-                out,
-                db,
-                active_style=_active_style,
-                model_choice=model_choice,
-                llm_call_fn=_llm_call,
-            )
-        except Exception as _ce_exc:
-            _log.warning(
-                "Job %s CE validation failed (non-fatal) — using original output: %s",
-                job_id, _ce_exc,
-            )
+        # Retired when the visible CE Agent Review is enabled: that feature
+        # replaces this silent auto-fix (which rewrote content the user never
+        # saw). Flag off → unchanged legacy behaviour.
+        from app.core.config import settings as _cfg
+        if not getattr(_cfg, "ce_review_enabled", False):
+            set_running(db, job, *STAGE_CE_VALIDATION)
+            if is_job_cancelled(db, job_id):
+                _log.info("Job %s cancelled before CE validation", job_id)
+                return
+            try:
+                from promptops_app.services.ce_validation_service import run_ce_validation
+                out = run_ce_validation(
+                    out,
+                    db,
+                    active_style=_active_style,
+                    model_choice=model_choice,
+                    llm_call_fn=_llm_call,
+                )
+            except Exception as _ce_exc:
+                _log.warning(
+                    "Job %s CE validation failed (non-fatal) — using original output: %s",
+                    job_id, _ce_exc,
+                )
 
         # ── Stage 5 — Split into blocks ───────────────────────────────
         set_running(db, job, *STAGE_SPLIT)

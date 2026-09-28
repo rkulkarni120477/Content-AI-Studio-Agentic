@@ -114,6 +114,12 @@ _PERMISSIONS: dict[str, list[str]] = {
     "feedback.recommend":    [_ADMIN, _REVIEWER, _AUTHOR],
     "feedback.delete":       [_ADMIN, _REVIEWER, _AUTHOR],
 
+    # ── CE Agent Review ───────────────────────────────────────────────────────
+    # Managing the client-wide CE checklist. Running reviews and applying fixes
+    # (added in later steps) reuse editor.edit; this key is only for curating the
+    # checklist the whole client is judged against.
+    "review.configure":      [_ADMIN, _REVIEWER, _AUTHOR],
+
     # ── Export ────────────────────────────────────────────────────────────────
     "export.course":         [_ADMIN, _REVIEWER, _AUTHOR],
     "export.audit_log":      [_ADMIN, _REVIEWER],
