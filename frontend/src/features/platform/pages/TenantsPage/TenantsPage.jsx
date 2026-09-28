@@ -98,6 +98,8 @@ export default function TenantsPage() {
   const [auditFilterOptions, setAuditFilterOptions] = useState(null);
   const [auditExporting, setAuditExporting] = useState(false);
   const [expandedAuditId, setExpandedAuditId] = useState(null);
+  const [auditDetails, setAuditDetails] = useState({}); // id -> event with metadata, fetched on demand
+  const [auditDetailLoadingId, setAuditDetailLoadingId] = useState(null);
   const [viewContentEvent, setViewContentEvent] = useState(null);
   // Which tenant's labels are being edited; null shows the organization list.
   const [configTenantId, setConfigTenantId] = useState(null);
@@ -259,8 +261,25 @@ export default function TenantsPage() {
     setView('analytics');
   }
 
-  function toggleAuditDetail(id) {
-    setExpandedAuditId((cur) => (cur === id ? null : id));
+  async function toggleAuditDetail(id) {
+    if (expandedAuditId === id) {
+      setExpandedAuditId(null);
+      return;
+    }
+    setExpandedAuditId(id);
+    // CAS-140: the list response no longer carries metadata_json (it's what
+    // made the page/filtered-search slow -- some rows carry MBs of it) --
+    // fetch the one row's full detail only when it's actually expanded.
+    if (auditDetails[id]) return;
+    setAuditDetailLoadingId(id);
+    try {
+      const event = await analyticsService.getAuditEvent(id);
+      setAuditDetails((d) => ({ ...d, [id]: event }));
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    } finally {
+      setAuditDetailLoadingId(null);
+    }
   }
 
   function tenantName(projectId) {
@@ -597,10 +616,12 @@ export default function TenantsPage() {
                         {expandedAuditId === ev.id && (
                           <tr className={styles.auditDetailRow}>
                             <td colSpan={4}>
-                              {ev.metadata && Object.keys(ev.metadata).length > 0 ? (
+                              {auditDetailLoadingId === ev.id ? (
+                                <p className={styles.emptyHint}>Loading details…</p>
+                              ) : auditDetails[ev.id]?.metadata && Object.keys(auditDetails[ev.id].metadata).length > 0 ? (
                                 <>
                                   <dl className={styles.auditDetail}>
-                                    {Object.entries(ev.metadata).map(([k, v]) => (
+                                    {Object.entries(auditDetails[ev.id].metadata).map(([k, v]) => (
                                       CONTENT_KEYS.includes(k) || v === null || v === undefined || v === '' ? null : (
                                         <div key={k} className={styles.auditDetail__row}>
                                           <dt>{k}</dt>
@@ -609,8 +630,8 @@ export default function TenantsPage() {
                                       )
                                     ))}
                                   </dl>
-                                  {CONTENT_KEYS.some((k) => ev.metadata[k]) && (
-                                    <Button variant="secondary" size="xs" onClick={() => setViewContentEvent(ev)}>
+                                  {CONTENT_KEYS.some((k) => auditDetails[ev.id].metadata[k]) && (
+                                    <Button variant="secondary" size="xs" onClick={() => setViewContentEvent(auditDetails[ev.id])}>
                                       📄 View Content
                                     </Button>
                                   )}

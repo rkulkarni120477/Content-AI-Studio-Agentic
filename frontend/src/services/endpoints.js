@@ -324,6 +324,7 @@ export const ANALYTICS = {
   REVIEWS:              '/api/v1/analytics/reviews',
   AUDIT_TRAIL:          '/api/v1/analytics/audit-trail',
   AUDIT_TRAIL_FILTERS:  '/api/v1/analytics/audit-trail/filters',
+  AUDIT_TRAIL_EVENT:    (id) => `/api/v1/analytics/audit-trail/${id}`,
   AUDIT_EXPORT:         '/api/v1/analytics/audit-trail/export',
   GENERATION_HISTORY:   '/api/v1/analytics/generations',
   HISTORY_PROMPT_VERSIONS: '/api/v1/analytics/history/prompt-versions',
