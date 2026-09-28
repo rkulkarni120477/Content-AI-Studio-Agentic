@@ -544,7 +544,16 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             return
         try:
             from promptops_app.services.continuity_review_service import run_continuity_review
-            out = run_continuity_review(out, model_choice=model_choice, llm_call_fn=_llm_call)
+            out = run_continuity_review(
+                out, model_choice=model_choice, llm_call_fn=_llm_call,
+                usage_ctx=UsageLogContext(
+                    user_name=user_name,
+                    project_id=project_id,
+                    course_id=course_id,
+                    entity_type="generation",
+                    entity_id=job_id,
+                ),
+            )
         except Exception as _cr_exc:
             _log.warning(
                 "Job %s continuity review failed (non-fatal) — using prior output: %s",
