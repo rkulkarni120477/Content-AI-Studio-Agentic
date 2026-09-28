@@ -183,7 +183,7 @@ def count_cdds_scoped(db, user_name: str = None, project_id: int = None, is_admi
     if date_from is not None:
         q = q.filter(CourseDesignDocument.created_at >= date_from)
     if date_to is not None:
-        q = q.filter(CourseDesignDocument.created_at <= date_to)
+        q = q.filter(CourseDesignDocument.created_at < date_to)
     return q.count()
 
 

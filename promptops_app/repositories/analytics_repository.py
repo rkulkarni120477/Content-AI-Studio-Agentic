@@ -18,7 +18,7 @@ def count_generations_scoped(db, user_name: str = None, project_id: int = None, 
     if date_from is not None:
         q = q.filter(Generation.created_at >= date_from)
     if date_to is not None:
-        q = q.filter(Generation.created_at <= date_to)
+        q = q.filter(Generation.created_at < date_to)
     return q.count()
 
 
@@ -37,12 +37,9 @@ def get_project_metrics_batch(db, project_ids: list, *, date_from=None, date_to=
 
     That loop (get_project_generation_ids + count_project_blocks +
     count_project_cdds + count_project_blueprints, one round each PER project)
-    was the actual cost of GET /analytics/projects: 15 projects meant up to 60
-    sequential DB round-trips, ~12s end to end once the dev DB is a real
-    network hop away over the tunnel rather than localhost -- confirmed live
-    in the request-timing logs, not assumed. Query count was the bottleneck,
-    not rows scanned, so aggregating is what actually fixes it; date-range
-    filtering was never the expensive part.
+    was the query-count bottleneck behind GET /analytics/projects; aggregating
+    into 4 GROUP BY queries removes it regardless of project count.
+    Date-range filtering was never the expensive part.
 
     Returns {project_id: {"generations": n, "blocks": n, "cdds": n, "blueprints": n}},
     defaulting to zero for a project_id with no matching rows at all (a plain
@@ -59,7 +56,7 @@ def get_project_metrics_batch(db, project_ids: list, *, date_from=None, date_to=
     if date_from is not None:
         gen_q = gen_q.filter(Generation.created_at >= date_from)
     if date_to is not None:
-        gen_q = gen_q.filter(Generation.created_at <= date_to)
+        gen_q = gen_q.filter(Generation.created_at < date_to)
     for pid, count in gen_q.group_by(Generation.project_id).all():
         result[pid]["generations"] = count
 
@@ -75,27 +72,33 @@ def get_project_metrics_batch(db, project_ids: list, *, date_from=None, date_to=
     if date_from is not None:
         block_q = block_q.filter(Generation.created_at >= date_from)
     if date_to is not None:
-        block_q = block_q.filter(Generation.created_at <= date_to)
+        block_q = block_q.filter(Generation.created_at < date_to)
     for pid, count in block_q.group_by(Generation.project_id).all():
         result[pid]["blocks"] = count
 
+    # deleted_at IS NULL: the summary counters (count_cdds_scoped /
+    # count_blueprints_scoped) already exclude archived rows via _live_only,
+    # so the comparison table must match them or a title with an archived
+    # CDD/blueprint would show a higher count here than in the cards above.
     cdd_q = db.query(CourseDesignDocument.project_id, func.count(CourseDesignDocument.id)).filter(
-        CourseDesignDocument.project_id.in_(project_ids)
+        CourseDesignDocument.project_id.in_(project_ids),
+        CourseDesignDocument.deleted_at.is_(None),
     )
     if date_from is not None:
         cdd_q = cdd_q.filter(CourseDesignDocument.created_at >= date_from)
     if date_to is not None:
-        cdd_q = cdd_q.filter(CourseDesignDocument.created_at <= date_to)
+        cdd_q = cdd_q.filter(CourseDesignDocument.created_at < date_to)
     for pid, count in cdd_q.group_by(CourseDesignDocument.project_id).all():
         result[pid]["cdds"] = count
 
     bp_q = db.query(ModuleBlueprint.project_id, func.count(ModuleBlueprint.id)).filter(
-        ModuleBlueprint.project_id.in_(project_ids)
+        ModuleBlueprint.project_id.in_(project_ids),
+        ModuleBlueprint.deleted_at.is_(None),
     )
     if date_from is not None:
         bp_q = bp_q.filter(ModuleBlueprint.created_at >= date_from)
     if date_to is not None:
-        bp_q = bp_q.filter(ModuleBlueprint.created_at <= date_to)
+        bp_q = bp_q.filter(ModuleBlueprint.created_at < date_to)
     for pid, count in bp_q.group_by(ModuleBlueprint.project_id).all():
         result[pid]["blueprints"] = count
 

@@ -168,5 +168,5 @@ def count_blueprints_scoped(db, user_name: str = None, project_id: int = None, i
     if date_from is not None:
         q = q.filter(ModuleBlueprint.created_at >= date_from)
     if date_to is not None:
-        q = q.filter(ModuleBlueprint.created_at <= date_to)
+        q = q.filter(ModuleBlueprint.created_at < date_to)
     return q.count()

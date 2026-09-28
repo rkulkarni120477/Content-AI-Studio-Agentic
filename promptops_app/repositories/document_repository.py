@@ -10,7 +10,7 @@ def count_documents(db, *, date_from=None, date_to=None) -> int:
     if date_from is not None:
         q = q.filter(Document.uploaded_at >= date_from)
     if date_to is not None:
-        q = q.filter(Document.uploaded_at <= date_to)
+        q = q.filter(Document.uploaded_at < date_to)
     return q.count()
 
 

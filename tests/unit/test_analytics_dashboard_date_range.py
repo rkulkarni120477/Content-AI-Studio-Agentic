@@ -138,3 +138,114 @@ def test_project_metrics_batch_defaults_to_zero_for_a_project_with_no_rows(db):
 
     metrics = get_project_metrics_batch(db, [empty.id])
     assert metrics[empty.id] == {"generations": 0, "blocks": 0, "cdds": 0, "blueprints": 0}
+
+
+def test_generation_history_also_respects_the_date_range(client, auth_headers, db):
+    """PR review: GET /analytics/generations (the Interactive System History
+    table) never declared date_from/date_to at all, so it was the one section
+    of the dashboard that stayed the same no matter what range was picked."""
+    now = datetime.utcnow()
+    _make_generation(db, now - timedelta(days=3))
+    _make_generation(db, now - timedelta(days=20))
+
+    resp_7 = client.get(
+        "/api/v1/analytics/generations",
+        params={"date_from": (now - timedelta(days=7)).strftime("%Y-%m-%d")},
+        headers=auth_headers,
+    )
+    resp_30 = client.get(
+        "/api/v1/analytics/generations",
+        params={"date_from": (now - timedelta(days=30)).strftime("%Y-%m-%d")},
+        headers=auth_headers,
+    )
+    assert resp_7.status_code == 200 and resp_30.status_code == 200
+    assert len(resp_7.json()) == 1
+    assert len(resp_30.json()) == 2
+
+
+def test_an_invalid_date_gets_a_422_instead_of_being_silently_dropped(client, auth_headers):
+    """PR review: date_from/date_to used to be `str`, so a malformed value
+    (e.g. a month of 13) fell through _parse_audit_date's except-None and the
+    endpoint quietly returned an all-time total with a 200. Typing the query
+    params as `date` makes FastAPI itself reject bad input."""
+    resp = client.get(
+        "/api/v1/analytics/summary",
+        params={"date_from": "2026-13-01"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+def test_a_row_saved_in_the_last_second_of_date_to_is_still_counted(client, auth_headers, db):
+    """PR review: a literal 23:59:59 cutoff misses a row saved with
+    microseconds later in that same last second. The exclusive
+    `< date_to + 1 day` bound this PR switches to doesn't have that edge."""
+    today = datetime.utcnow().date()
+    late_row_today = datetime.combine(today, datetime.min.time()).replace(
+        hour=23, minute=59, second=59, microsecond=999999,
+    )
+    _make_generation(db, late_row_today)
+
+    resp = client.get(
+        "/api/v1/analytics/summary",
+        params={"date_from": today.strftime("%Y-%m-%d"), "date_to": today.strftime("%Y-%m-%d")},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["generations"] == 1
+
+
+def test_archived_cdds_and_blueprints_are_excluded_from_the_comparison_table(db):
+    """PR review: get_project_metrics_batch counted archived rows, but the
+    summary cards (count_cdds_scoped / count_blueprints_scoped) already
+    exclude them via _live_only -- the comparison table must agree."""
+    from promptops_app.database import CourseDesignDocument, ModuleBlueprint, Project
+    from promptops_app.repositories.analytics_repository import get_project_metrics_batch
+
+    project = Project(name="Archive Test", client_name="c", is_active=True)
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+
+    live_cdd = CourseDesignDocument(
+        project_id=project.id, title="Live", course_title="Live Course", created_by="u",
+    )
+    archived_cdd = CourseDesignDocument(
+        project_id=project.id, title="Archived", course_title="Archived Course",
+        created_by="u", deleted_at=datetime.utcnow(),
+    )
+    live_bp = ModuleBlueprint(
+        project_id=project.id, title="Live BP", module_title="Live Module", created_by="u",
+    )
+    archived_bp = ModuleBlueprint(
+        project_id=project.id, title="Archived BP", module_title="Archived Module",
+        created_by="u", deleted_at=datetime.utcnow(),
+    )
+    db.add_all([live_cdd, archived_cdd, live_bp, archived_bp])
+    db.commit()
+
+    metrics = get_project_metrics_batch(db, [project.id])
+    assert metrics[project.id]["cdds"] == 1
+    assert metrics[project.id]["blueprints"] == 1
+
+
+def test_a_non_admins_counts_stay_scoped_to_their_own_rows_with_a_date_range(client, author_headers, db):
+    """PR review: confirm the date filter doesn't widen a non-admin's scope --
+    an author's counters must stay limited to their own generations even
+    when a range is applied."""
+    now = datetime.utcnow()
+    _make_generation(db, now - timedelta(days=1))  # created_by="test_admin", not the author
+    db.add(Generation(
+        prompt_name="p", prompt_version="v1", block_type="lesson",
+        topic="t", output_text="x", project_id=1,
+        created_by="test_author", created_at=now - timedelta(days=1),
+    ))
+    db.commit()
+
+    resp = client.get(
+        "/api/v1/analytics/summary",
+        params={"date_from": (now - timedelta(days=7)).strftime("%Y-%m-%d")},
+        headers=author_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["generations"] == 1

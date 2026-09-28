@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from datetime import date as _date, datetime as _dt, timedelta as _timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -56,8 +57,9 @@ router = APIRouter()
 )
 def get_summary(
     project_id: int | None = Query(default=None),
-    date_from: str | None = Query(default=None, description="Inclusive start date (YYYY-MM-DD)."),
-    date_to: str | None = Query(default=None, description="Inclusive end date (YYYY-MM-DD)."),
+    date_from: _date | None = Query(default=None, description="Inclusive start date."),
+    date_to: _date | None = Query(default=None, description="Inclusive end date."),
+    tz_offset_minutes: int = Query(default=0, description="Browser's Date.getTimezoneOffset() value, so date ranges line up with the user's local calendar day."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> AnalyticsSummaryResponse:
@@ -71,8 +73,7 @@ def get_summary(
         document_repository, generation_repository, prompt_repository,
     )
 
-    parsed_from = _parse_audit_date(date_from)
-    parsed_to = _parse_audit_date(date_to, end_of_day=True)
+    parsed_from, parsed_to = _resolve_date_range(date_from, date_to, tz_offset_minutes)
 
     scope = dict(
         user_name=current_user.username,
@@ -99,16 +100,16 @@ def get_summary(
     description="Admin only. Returns generation and block counts per project.",
 )
 def get_project_analytics(
-    date_from: str | None = Query(default=None, description="Inclusive start date (YYYY-MM-DD)."),
-    date_to: str | None = Query(default=None, description="Inclusive end date (YYYY-MM-DD)."),
+    date_from: _date | None = Query(default=None, description="Inclusive start date."),
+    date_to: _date | None = Query(default=None, description="Inclusive end date."),
+    tz_offset_minutes: int = Query(default=0, description="Browser's Date.getTimezoneOffset() value, so date ranges line up with the user's local calendar day."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("analytics.view_all")),
 ) -> list[ProjectAnalyticsRow]:
     """Return project-level metrics for the admin comparison table."""
     from promptops_app.repositories import analytics_repository
 
-    parsed_from = _parse_audit_date(date_from)
-    parsed_to = _parse_audit_date(date_to, end_of_day=True)
+    parsed_from, parsed_to = _resolve_date_range(date_from, date_to, tz_offset_minutes)
 
     projects = analytics_repository.list_active_projects_for_analytics(db)
     metrics = analytics_repository.get_project_metrics_batch(
@@ -174,6 +175,27 @@ def get_usage_summary(
         estimated_cost_usd=summary.get("total_cost", 0.0),
         by_model=by_model,
     )
+
+
+def _resolve_date_range(
+    date_from: _date | None, date_to: _date | None, tz_offset_minutes: int = 0,
+) -> tuple[_dt | None, _dt | None]:
+    """Turn calendar-date query params into a UTC timestamp range.
+
+    `tz_offset_minutes` is the browser's own Date.getTimezoneOffset() value
+    (minutes to ADD to local time to reach UTC), so a range like "This Month"
+    lines up with the user's own local midnight-to-midnight, not UTC's --
+    without it, a user ahead of UTC (e.g. IST) can see "This Month" as empty
+    for the first few hours of the month.
+
+    The upper bound is exclusive (start of the day after date_to), so it
+    never misses rows saved in the last second of date_to the way a literal
+    "23:59:59" cutoff would.
+    """
+    offset = _timedelta(minutes=tz_offset_minutes)
+    start = _dt.combine(date_from, _dt.min.time()) + offset if date_from else None
+    end = _dt.combine(date_to, _dt.min.time()) + _timedelta(days=1) + offset if date_to else None
+    return start, end
 
 
 def _parse_audit_date(value: str | None, *, end_of_day: bool = False):
@@ -361,6 +383,9 @@ def export_audit_trail(
 def get_generation_history(
     limit: int = Query(default=20, ge=1, le=100),
     project_id: int | None = Query(default=None),
+    date_from: _date | None = Query(default=None, description="Inclusive start date."),
+    date_to: _date | None = Query(default=None, description="Inclusive end date."),
+    tz_offset_minutes: int = Query(default=0, description="Browser's Date.getTimezoneOffset() value, so date ranges line up with the user's local calendar day."),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> list[GenerationHistoryRow]:
@@ -369,7 +394,11 @@ def get_generation_history(
         blueprint_repository, cdd_repository, generation_repository,
     )
 
-    scope = dict(user_name=current_user.username, project_id=project_id, is_admin=(current_user.role == "admin"))
+    parsed_from, parsed_to = _resolve_date_range(date_from, date_to, tz_offset_minutes)
+    scope = dict(
+        user_name=current_user.username, project_id=project_id, is_admin=(current_user.role == "admin"),
+        date_from=parsed_from, date_to=parsed_to,
+    )
     gens = generation_repository.list_recent_generations(db, limit=limit, **scope)
 
     rows = []
