@@ -213,6 +213,18 @@ export default function EditorPage() {
 
   const courseComplete = displayGens.length > 0 && allCourseApproved;
 
+  // CAS AIM findings, Phase 6 (finding 14): export.course already includes
+  // the author/ID role (app/core/permissions.py) — the full-title download
+  // just had no path that didn't require every block approved first, which
+  // an ID can never do themselves (workflow.approve is admin/reviewer only).
+  // This counts approval state for the Draft Package section below, which
+  // is available regardless of courseComplete.
+  const courseApprovalCounts = useMemo(() => {
+    const all = courseBlocks.length > 0 ? courseBlocks : blocks;
+    const approved = all.filter((b) => WORKFLOW_EXPORTABLE.includes(b.workflow_state)).length;
+    return { approved, total: all.length };
+  }, [courseBlocks, blocks]);
+
   const genValSum = validationSummary(genValidation);
   const exportBlockedByValidation = genValSum.errors > 0;
   const canExportGenFinal = !exportBlockedByValidation;
@@ -245,13 +257,15 @@ export default function EditorPage() {
     if (id) dispatch(setSelectedGenerationAction(id));
   }
 
-  async function onExportCourse(fmt) {
+  async function onExportCourse(fmt, exportableOnly = true) {
     const name = (selCourse?.title || selCourse?.name || 'course').replace(/\s+/g, '_');
+    const suffix = exportableOnly ? 'full_course' : 'draft_course';
     await dispatch(exportCourseThunk({
       courseId: numericCourseId,
       format: fmt,
       template: courseTemplate,
-      filename: `${name}_full_course.${fmt === 'zip' ? 'zip' : fmt}`,
+      filename: `${name}_${suffix}.${fmt === 'zip' ? 'zip' : fmt}`,
+      exportableOnly,
     }));
   }
 
@@ -486,11 +500,41 @@ export default function EditorPage() {
       noPadding
     >
       <div className={styles.page}>
+        {displayGens.length > 0 && (
+          <div className={styles.completionBanner}>
+            <div className={styles.completionBanner__icon}>📦</div>
+            <div className={styles.completionBanner__body}>
+              <strong>Download Draft Package</strong>
+              <p>
+                Every generated block, regardless of approval status — for reviewing or
+                sharing work in progress. Anyone who can export this title can use this.
+              </p>
+              {!allCourseApproved && (
+                <p style={{ color: '#b45309', fontWeight: 600 }}>
+                  ⚠️ {courseApprovalCounts.approved} of {courseApprovalCounts.total} block(s)
+                  approved — the Final Package below stays hidden until all of them are.
+                </p>
+              )}
+              <div className={styles.exportGrid4}>
+                {['md', 'html', 'docx', 'xlsx', 'zip'].map((fmt) => (
+                  <ExportTileButton
+                    key={fmt}
+                    format={fmt}
+                    label={fmt.toUpperCase()}
+                    loading={isExporting}
+                    onClick={() => onExportCourse(fmt, false)}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         {courseComplete && (
           <div className={styles.completionBanner}>
             <div className={styles.completionBanner__icon}>🎉</div>
             <div className={styles.completionBanner__body}>
-              <strong>{L.title} Generation Complete!</strong>
+              <strong>{L.title} Generation Complete! (Final Package)</strong>
               <p>All blocks are approved. Validate content below before downloading the full title package.</p>
               <div className={styles.completionBanner__valRow}>
                 <Button
