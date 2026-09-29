@@ -226,9 +226,9 @@ export const exportGenerationThunk = createAsyncThunk(
 
 export const exportCourseThunk = createAsyncThunk(
   'editor/exportCourse',
-  async ({ courseId, format, template, filename, exportableOnly = true }, { rejectWithValue }) => {
+  async ({ courseId, format, template, filename }, { rejectWithValue }) => {
     try {
-      const response = await editorService.exportCourse(courseId, format, template, exportableOnly);
+      const response = await editorService.exportCourse(courseId, format, template);
       downloadBlob(response.data, filename);
       toast.success('Export downloaded.');
     } catch (e) {

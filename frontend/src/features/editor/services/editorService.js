@@ -90,8 +90,8 @@ export const editorService = {
     params: { format, template: template || 'default' },
   }),
 
-  exportCourse: (courseId, format, template, exportableOnly = true) => api.download(BLOCKS.EXPORT_COURSE(courseId), {
-    params: { format, template: template || 'default', exportable_only: exportableOnly },
+  exportCourse: (courseId, format, template) => api.download(BLOCKS.EXPORT_COURSE(courseId), {
+    params: { format, template: template || 'default' },
   }),
 
   cleanupAssets: (urls) => api.post(ASSETS.CLEANUP, { urls }),
