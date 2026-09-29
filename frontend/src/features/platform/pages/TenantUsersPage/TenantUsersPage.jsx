@@ -271,13 +271,13 @@ export default function TenantUsersPage() {
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add User" size="sm" footer={null}>
         <form onSubmit={handleAdd} className={styles.form}>
           <Input
-            label="Username *"
+            label="Username"
             value={addForm.username}
             onChange={(e) => setAddForm((f) => ({ ...f, username: e.target.value }))}
             required
           />
           <Input
-            label="Password *"
+            label="Password"
             type="password"
             minLength={6}
             value={addForm.password}

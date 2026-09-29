@@ -576,7 +576,7 @@ export default function InlinePromptControls({
           {showCreate && (
             <div className={styles.subPanel}>
               <p className={styles.subPanel__title}>➕ Create New {compLabel} Prompt</p>
-              <Input label="Asset Name *" value={createForm.name} onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))} />
+              <Input label="Asset Name" value={createForm.name} onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))} required />
               <Input label="Description" value={createForm.description} onChange={(e) => setCreateForm((f) => ({ ...f, description: e.target.value }))} />
               <label className={styles.fieldLabel}>System Prompt</label>
               <textarea className={styles.textarea} rows={5} value={createForm.system || effectiveSystem} onChange={(e) => setCreateForm((f) => ({ ...f, system: e.target.value }))} />

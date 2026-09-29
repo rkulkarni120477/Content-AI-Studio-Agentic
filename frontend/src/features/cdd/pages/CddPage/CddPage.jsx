@@ -752,7 +752,7 @@ export default function CddPage() {
 
               <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
                 <Input
-                  label={`${L.title} *`}
+                  label={L.title}
                   required
                   placeholder="e.g. Foundations of Clinical Nursing"
                   error={generateForm.formState.errors.course_title?.message}

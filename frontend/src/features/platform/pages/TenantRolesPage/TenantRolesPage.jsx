@@ -304,7 +304,7 @@ export default function TenantRolesPage() {
       {/* Add role */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add Role" size="md" footer={null}>
         <form onSubmit={handleAdd} className={styles.form}>
-          <Input label="Role name *" value={addForm.name} placeholder="e.g. content_reviewer"
+          <Input label="Role name" value={addForm.name} placeholder="e.g. content_reviewer"
             onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))} required />
           <Input label="Description" value={addForm.description} placeholder="What this role is for"
             onChange={(e) => setAddForm((f) => ({ ...f, description: e.target.value }))} />
@@ -321,7 +321,7 @@ export default function TenantRolesPage() {
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit Role" size="md" footer={null}>
         {editing && (
           <form onSubmit={handleEdit} className={styles.form}>
-            <Input label="Role name *" value={editForm.name}
+            <Input label="Role name" value={editForm.name}
               onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} required />
             <Input label="Description" value={editForm.description}
               onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))} />

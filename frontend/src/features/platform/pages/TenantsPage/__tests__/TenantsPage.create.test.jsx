@@ -132,3 +132,23 @@ describe('TenantsPage — New Tenant template selection', () => {
     expect(createTenant.mock.calls[0][0].template).toBe('minimal');
   });
 });
+
+describe('TenantsPage — CAS-139: required-field asterisk consistency', () => {
+  it('renders exactly one asterisk per required field, not two', async () => {
+    // The form used to hardcode "Organization code *" etc. as the label text
+    // AND pass required (which renders its own styled asterisk) -- doubling up.
+    await openNewTenantForm();
+    for (const labelText of ['Organization code', 'Client Name', 'Username', 'Password']) {
+      const label = screen.getByText(labelText, { exact: false, selector: 'label' });
+      const asterisks = label.textContent.match(/\*/g) || [];
+      expect(asterisks).toHaveLength(1);
+    }
+  });
+
+  it("the single asterisk is the component's own styled marker, not literal text", async () => {
+    await openNewTenantForm();
+    const label = screen.getByText('Organization code', { exact: false, selector: 'label' });
+    const markerSpan = label.querySelector('span[aria-hidden="true"]');
+    expect(markerSpan?.textContent).toBe('*');
+  });
+});
