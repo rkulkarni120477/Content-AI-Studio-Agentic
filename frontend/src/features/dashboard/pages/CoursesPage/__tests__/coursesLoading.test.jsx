@@ -8,7 +8,7 @@
 // (+ gating the fetch effect on selCluster.id === cid) closes that gap the
 // same way clustersLoadedFor closed it for ClustersPage.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
@@ -16,6 +16,7 @@ import { configureStore } from '@reduxjs/toolkit';
 const getProject = vi.fn();
 const listClusters = vi.fn();
 const listCourses = vi.fn();
+const restoreCourse = vi.fn();
 
 vi.mock('@features/dashboard/services/dashboardService', () => ({
   dashboardService: {
@@ -24,6 +25,7 @@ vi.mock('@features/dashboard/services/dashboardService', () => ({
     listCourses: (...a) => listCourses(...a),
     createCourse: () => Promise.resolve({}),
     deleteCourse: () => Promise.resolve({}),
+    restoreCourse: (...a) => restoreCourse(...a),
     permanentlyDeleteCourse: () => Promise.resolve({}),
   },
 }));
@@ -97,6 +99,7 @@ beforeEach(() => {
   getProject.mockReset();
   listClusters.mockReset();
   listCourses.mockReset();
+  restoreCourse.mockReset().mockResolvedValue({});
   emptyStatesRendered.length = 0;
 });
 afterEach(cleanup);
@@ -200,6 +203,24 @@ describe('CoursesPage — the empty state waits for an answer', () => {
       setSelectedCluster(CLUSTER_A),
     ]);
     await waitFor(() => expect(emptyStatesRendered.length).toBeGreaterThan(0));
+  });
+
+  it('restores an archived title and refreshes the list', async () => {
+    listCourses.mockResolvedValue({
+      items: [{ ...course(11, 'Archived Course'), is_active: false }],
+      total: 1,
+    });
+
+    renderAt('/projects/23/clusters/1/courses', [
+      setSelectedProject(PROJECT),
+      setSelectedCluster(CLUSTER_A),
+    ]);
+
+    const restoreButton = await screen.findByRole('button', { name: '↩ Restore' });
+    fireEvent.click(restoreButton);
+
+    await waitFor(() => expect(restoreCourse).toHaveBeenCalledWith(11));
+    await waitFor(() => expect(listCourses).toHaveBeenCalledTimes(2));
   });
 });
 

@@ -156,6 +156,16 @@ export default function CoursesPage() {
     }
   }
 
+  async function handleRestore(course) {
+    try {
+      await dashboardService.restoreCourse(course.id);
+      toast.success(`${L.title} restored`);
+      dispatch(fetchCoursesThunk(cid));
+    } catch (e) {
+      toast.error(extractErrorMessage(e));
+    }
+  }
+
   function courseBadge(course) {
     if (course.is_active === false) return 'Archived';
     if (course.source_type === 'imscc' || course.source_type === 'cendoc') return 'Imported';
@@ -220,6 +230,7 @@ export default function CoursesPage() {
                 onEdit={archived ? undefined : () => setEditModal({ type: 'course', item: course })}
                 onDelete={() => (archived ? setPurgeTarget(course) : setDeleteTarget(course))}
                 deleteLabel={archived ? '🗑️ Permanently delete' : '🗑️ Delete'}
+                onRestore={archived && canDeleteCourse ? () => handleRestore(course) : undefined}
                 onManageUsers={archived ? undefined : () => setUsersModal({ scope: 'course', item: course })}
                 canEdit={canEditCourse && !archived}
                 canDelete={canDeleteCourse}

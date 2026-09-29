@@ -201,6 +201,24 @@ def delete_course(
     _log.info("course_archived  user=%s  course_id=%d", current_user.username, course_id)
 
 
+@router.post(
+    "/courses/{course_id}/restore",
+    status_code=204,
+    summary="Restore an archived course",
+)
+def restore_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("course.delete")),
+) -> None:
+    """Restore an archived course without changing its associated content."""
+    course = _get_course_or_404(db, course_id)
+    if not course.is_active:
+        course.is_active = True
+        db.commit()
+        _log.info("course_restored  user=%s  course_id=%d", current_user.username, course_id)
+
+
 @router.delete(
     "/courses/{course_id}/permanent",
     status_code=204,

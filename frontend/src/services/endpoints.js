@@ -61,6 +61,7 @@ export const COURSES = {
   GET:              (id)      => `/api/v1/courses/${id}`,
   UPDATE:           (id)      => `/api/v1/courses/${id}`,
   DELETE:           (id)      => `/api/v1/courses/${id}`,
+  RESTORE:          (id)      => `/api/v1/courses/${id}/restore`,
   PERMANENT_DELETE: (id)      => `/api/v1/courses/${id}/permanent`,
   USERS:            (id)      => `/api/v1/courses/${id}/users`,
   UNASSIGN_USER:    (id, user) => `/api/v1/courses/${id}/users/${encodeURIComponent(user)}`,
