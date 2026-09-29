@@ -573,6 +573,11 @@ def run_generation_job(job_id: str) -> None:  # noqa: C901 (complexity)
             project_id=project_id,
             course_id=course_id,
             job_id=job_id,   # idempotency key — see the guard at job start (P4.1)
+            # Source traceability (CAS AIM findings, Phase 3): same shape
+            # blueprints.py/block_wide_service.py already persist for
+            # Blueprint/CDD generation_params, so ArtifactReferenceTrace's
+            # existing dis_source_units lookup works unchanged here.
+            generation_params=json.dumps({"dis_source_units": dis_source_units}),
         )
         db.add(g_entry)
         db.commit()

@@ -186,3 +186,82 @@ class TestTheGenerationsAuditRowRecordsUnavailability:
         metadata = self._audit_metadata_for(db, job_id)
         assert metadata["source_context_unavailable"] is None
         assert metadata["dis_source_units_count"] == 1
+
+
+class TestTheGenerationRecordsWhichSourcesItUsed:
+    """CAS AIM findings, Phase 3: only a COUNT of source units ever reached
+    anywhere an ID could read it (dis_source_units_count, above) -- not which
+    documents they actually were. This mirrors BlueprintVersion.generation_params
+    (blueprints.py) onto the Generation row itself, so ArtifactReferenceTrace
+    (already wired into EditorPage) has something to render."""
+
+    @pytest.fixture(autouse=True)
+    def job_env(self, monkeypatch):
+        from tests.conftest import _TestSessionLocal
+
+        monkeypatch.setattr("promptops_app.jobs.generation_jobs.SessionLocal", _TestSessionLocal)
+        monkeypatch.setattr(
+            "promptops_app.services.ce_validation_service.run_ce_validation",
+            lambda out, db, **kwargs: out,
+        )
+
+        class _FakeTask:
+            id = "fake-task-id"
+
+        class _FakeCeleryTask:
+            @staticmethod
+            def delay(*args, **kwargs):
+                return _FakeTask()
+
+        monkeypatch.setattr(
+            "promptops_app.jobs.plagiarism_jobs.run_plagiarism_scan", _FakeCeleryTask(),
+        )
+
+    @pytest.fixture(autouse=True)
+    def stub_llm(self, monkeypatch):
+        from promptops_app.services.llm_service import LLMResult
+
+        def fake(model_choice, system_prompt, user_prompt, *args, **kwargs):
+            return LLMResult(text="## Section\n\nBody.", model=model_choice,
+                             prompt_tokens=10, completion_tokens=20,
+                             status="success", stop_reason="stop")
+
+        monkeypatch.setattr("promptops_app.jobs.generation_jobs._llm_call", fake)
+
+    def _run_job_from_params(self, db, **param_overrides):
+        from promptops_app.database import GenerationJob
+        from promptops_app.jobs.generation_jobs import run_generation_job
+
+        params = {
+            "topic": "Test Topic", "b_type": "Lesson", "model_choice": "GPT-5.4",
+            "user_name": "tester",
+        }
+        params.update(param_overrides)
+        job = GenerationJob(id=str(uuid.uuid4()), job_type="generation", status="queued",
+                           input_payload_json=json.dumps(params))
+        db.add(job)
+        db.commit()
+        run_generation_job(job.id)
+        return job.id
+
+    def test_generation_params_carries_the_full_source_unit_list(self, db):
+        from promptops_app.database import Generation
+
+        units = [
+            {"content_unit_id": "u1", "title": "FAA Handbook p.12", "job_id": "faa"},
+            {"content_unit_id": "u2", "title": "Hydraulics Textbook p.4", "job_id": "book_a"},
+        ]
+        job_id = self._run_job_from_params(db, dis_source_units=units)
+
+        gen = db.query(Generation).filter_by(job_id=job_id).first()
+        assert gen.generation_params is not None
+        stored = json.loads(gen.generation_params)
+        assert stored["dis_source_units"] == units
+
+    def test_no_source_units_stores_an_empty_list_not_nothing(self, db):
+        from promptops_app.database import Generation
+
+        job_id = self._run_job_from_params(db, dis_source_units=[])
+
+        gen = db.query(Generation).filter_by(job_id=job_id).first()
+        assert json.loads(gen.generation_params)["dis_source_units"] == []

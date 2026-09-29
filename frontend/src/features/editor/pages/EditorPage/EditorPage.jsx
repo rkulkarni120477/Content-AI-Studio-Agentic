@@ -45,6 +45,7 @@ import PageContainer from '@components/layout/PageContainer/PageContainer';
 import SectionBadge from '@components/streamlit/SectionBadge/SectionBadge';
 import ValidationPanel from '@features/editor/components/ValidationPanel/ValidationPanel';
 import GenerationTraceBar from '@features/editor/components/GenerationTraceBar/GenerationTraceBar';
+import ArtifactReferenceTrace from '@features/sourceLibrary/components/ArtifactReferenceTrace/ArtifactReferenceTrace';
 import ExportTileButton from '@features/editor/components/ExportTileButton/ExportTileButton';
 import PromptDownloadButton from '@features/editor/components/PromptDownloadButton/PromptDownloadButton';
 import Button from '@components/common/Button/Button';
@@ -629,6 +630,14 @@ export default function EditorPage() {
             promptVersion={genDetail?.prompt_version || selectedGen?.prompt_version}
             cddLabel={traceCdd}
             blueprintLabel={traceBp}
+          />
+        )}
+
+        {selectedGenId && (
+          <ArtifactReferenceTrace
+            title="Source Library documents used for this generation"
+            generationParams={genDetail?.generation_params}
+            fallbackParams={selectedGen?.generation_params}
           />
         )}
 

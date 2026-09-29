@@ -117,6 +117,7 @@ class GenerationRead(BaseModel):
     course_id: Optional[int] = None
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    generation_params: Optional[str] = None
     blocks: list[GenerationBlockSummary] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
