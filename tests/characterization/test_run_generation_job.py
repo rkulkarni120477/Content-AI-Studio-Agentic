@@ -85,7 +85,9 @@ class TestRunGenerationJob:
         job = _make_job(db)
         run_generation_job(job.id)
 
-        assert len(capture_llm) == 1
+        # 2 calls: the primary generation, then the continuity review pass
+        # (CANNED_LLM_TEXT has 3 headings, meeting its review threshold).
+        assert len(capture_llm) == 2
         call = capture_llm[0]
         # PERSONA_PREFIX_TEMPLATE rendered via {single}-brace .format().
         assert call["system"].startswith(

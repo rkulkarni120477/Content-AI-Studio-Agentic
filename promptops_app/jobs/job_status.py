@@ -21,16 +21,17 @@ class JobStatus:
 
 
 # (progress_pct, human-readable label) — mirrors the % shown in the UI
-STAGE_CONTEXT       = (10,  "Preparing context...")
-STAGE_PROMPT        = (25,  "Building prompt...")
-STAGE_LLM           = (45,  "Calling LLM...")
-STAGE_CE_VALIDATION = (65,  "CE Validation...")
-STAGE_SPLIT         = (80,  "Splitting content blocks...")
-STAGE_SAVE          = (92,  "Saving output...")
-STAGE_DONE          = (100, "Completed")
+STAGE_CONTEXT           = (10,  "Preparing context...")
+STAGE_PROMPT            = (25,  "Building prompt...")
+STAGE_LLM               = (45,  "Calling LLM...")
+STAGE_CE_VALIDATION     = (65,  "CE Validation...")
+STAGE_CONTINUITY_REVIEW = (74,  "Reviewing continuity...")
+STAGE_SPLIT             = (80,  "Splitting content blocks...")
+STAGE_SAVE              = (92,  "Saving output...")
+STAGE_DONE              = (100, "Completed")
 
 # Ordered list used by the progress bar stepper in the UI
-ALL_STAGES = [STAGE_CONTEXT, STAGE_PROMPT, STAGE_LLM, STAGE_CE_VALIDATION, STAGE_SPLIT, STAGE_SAVE, STAGE_DONE]
+ALL_STAGES = [STAGE_CONTEXT, STAGE_PROMPT, STAGE_LLM, STAGE_CE_VALIDATION, STAGE_CONTINUITY_REVIEW, STAGE_SPLIT, STAGE_SAVE, STAGE_DONE]
 
 
 def _now() -> datetime:
