@@ -985,6 +985,16 @@ def export_course(
         default=None,
         description="Optional filter, e.g. 'published' — only include blocks in this state.",
     ),
+    exportable_only: bool = Query(
+        default=True,
+        description=(
+            "If false, include every block regardless of workflow state — a "
+            "draft package for an author whose content isn't approved yet. "
+            "CAS AIM findings, finding 14: export.course already includes the "
+            "author role; the full-title download just had no path that "
+            "didn't require every block to be approved first."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.course")),
 ) -> Response:
@@ -999,10 +1009,14 @@ def export_course(
     from promptops_app.repositories import course_repository
 
     ordered_blocks, modules_struct, _views = generation_repository.build_blueprint_export_layout(
-        db, course_id, workflow_state=workflow_state,
+        db, course_id, workflow_state=workflow_state, exportable_only=exportable_only,
     )
     if not ordered_blocks:
-        raise WorkflowError("No approved or published blocks found for this course.")
+        raise WorkflowError(
+            "No approved or published blocks found for this course."
+            if exportable_only else
+            "No generated blocks found for this course."
+        )
 
     course = course_repository.get_course_by_id(db, course_id)
     topic = course.name if course else f"Course {course_id}"
