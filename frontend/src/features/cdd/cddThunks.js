@@ -128,8 +128,10 @@ export const importCddThunk = createAsyncThunk(
         return rejectWithValue(`Select a project before importing a ${L.blueprintLower}.`);
       }
       const result = await cddService.importCdd(payload, payload.onProgress);
-      toast.success(`${L.cdd} imported and set as active.`);
-      queueDeferredToast(`${L.cdd} imported and pinned as active.`);
+      // Already in the tenant's words; { localized } stops the global toast
+      // wrapper from rewriting them a second time (see app/store.js).
+      toast.success(`${L.cdd} imported and set as active.`, { localized: true });
+      queueDeferredToast(`${L.cdd} imported and pinned as active.`, 'success', { localized: true });
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },

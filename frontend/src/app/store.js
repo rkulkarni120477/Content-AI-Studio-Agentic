@@ -47,9 +47,17 @@ const store = configureStore({
 // Rewrite default product terms in every toast using the current tenant labels,
 // so notifications stay in sync with the rest of the UI even when a thunk
 // still has a hardcoded "Style"/"CDD"/"Blueprint"/"Title" string.
+// A message already built from the tenant labels passes { localized: true } to
+// skip this: rewriting it again renames a label that is itself a default term
+// (a tenant whose CDD is called "Blueprint" would see its Blueprint label).
 function wrapToastMethod(method) {
   const original = toast[method].bind(toast);
   toast[method] = (message, opts) => {
+    if (opts?.localized) {
+      const rest = { ...opts };
+      delete rest.localized;
+      return original(message, rest);
+    }
     if (typeof message === 'string') {
       return original(applyTerminology(message, labelsFromState(store.getState)), opts);
     }
