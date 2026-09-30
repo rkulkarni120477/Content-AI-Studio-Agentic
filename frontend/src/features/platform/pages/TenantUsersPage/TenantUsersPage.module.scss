@@ -241,6 +241,10 @@
   color: $color-gray-700;
 }
 
+.requiredMark {
+  color: $color-danger;
+}
+
 .select {
   padding: $space-3;
   border: 1px solid $color-gray-300;

@@ -290,7 +290,7 @@ export default function TenantUsersPage() {
             onChange={(e) => setAddForm((f) => ({ ...f, display_name: e.target.value }))}
           />
           <label className={styles.selectLabel}>
-            Role (permissions) *
+            Role (permissions) <span className={styles.requiredMark} aria-hidden="true">*</span>
             <select className={styles.select} value={addForm.roleOption}
               onChange={(e) => setAddForm((f) => ({ ...f, roleOption: e.target.value }))}>
               {roles.map((r) => (
@@ -326,7 +326,7 @@ export default function TenantUsersPage() {
               onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
             />
             <label className={styles.selectLabel}>
-              Role (permissions) *
+              Role (permissions) <span className={styles.requiredMark} aria-hidden="true">*</span>
               <select className={styles.select} value={editForm.roleOption}
                 onChange={(e) => setEditForm((f) => ({ ...f, roleOption: e.target.value }))}>
                 {roles.map((r) => (
