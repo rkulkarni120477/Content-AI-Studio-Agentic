@@ -126,11 +126,11 @@ export default function BlueprintPage() {
     cdds.forEach((c) => {
       opts.push({
         value: String(c.id),
-        label: `${c.title || c.course_title} (${c.active_version || 'v1'})`,
+        label: `${applyTerminology(c.title || c.course_title, L, ['cdd'])} (${c.active_version || 'v1'})`,
       });
     });
     return opts;
-  }, [cdds]);
+  }, [cdds, L]);
 
   const existingNums = useMemo(
     () => existingModuleNumbersForCdd(blueprints, linkedCddId),
@@ -289,7 +289,7 @@ export default function BlueprintPage() {
 
   function onConfirmModule() {
     if (!selectedModuleOpt) {
-      toast.error(isDluCdd ? 'Select a day first.' : 'Select a module or title-end item first.');
+      toast.error(isDluCdd ? 'Select a day first.' : `Select a module or ${L.titleLower}-end item first.`);
       return;
     }
     setModuleConfirmed(true);
@@ -669,10 +669,10 @@ export default function BlueprintPage() {
     setSavedInstrs(list || []);
   }
 
-  const styleLabel = activeStyle?.name || 'None — no active style';
+  const styleLabel = applyTerminology(activeStyle?.name, L, ['style']) || `None — no active ${L.styleLower}`;
   const styleOk = Boolean(activeStyle);
   const cddLabel = activeCdd
-    ? `${activeCdd.title || activeCdd.course_title}`
+    ? applyTerminology(activeCdd.title || activeCdd.course_title, L, ['cdd'])
   : `None — no ${L.cdd} pinned`;
   const cddOk = Boolean(activeCdd);
 
@@ -681,7 +681,7 @@ export default function BlueprintPage() {
     if (selectedModuleOpt.isCourseEnd) {
       return (
         <div className={styles.statusInfo}>
-          📋 Title-end item selected: <strong>{selectedModuleOpt.courseEndLabel}</strong>
+          📋 {L.title}-end item selected: <strong>{selectedModuleOpt.courseEndLabel}</strong>
         </div>
       );
     }
@@ -844,7 +844,7 @@ export default function BlueprintPage() {
 
               {moduleOptions.length > 0 ? (
                 <>
-                  <div className={styles.moduleLabel}>{isDluCdd ? 'Select Day' : 'Select Module / Title-End Item'}</div>
+                  <div className={styles.moduleLabel}>{isDluCdd ? 'Select Day' : `Select Module / ${L.title}-End Item`}</div>
                   <Select
                     label=""
                     options={moduleOptions.map((o) => ({
@@ -1046,7 +1046,7 @@ export default function BlueprintPage() {
                         if (!bpCdd) return null;
                         return (
                           <div className={styles.cddLink}>
-                            🔗 Linked to {L.cdd}: <strong>{bpCdd.title || bpCdd.course_title}</strong>
+                            🔗 Linked to {L.cdd}: <strong>{applyTerminology(bpCdd.title || bpCdd.course_title, L, ['cdd'])}</strong>
                             {' '}({bpCdd.active_version || 'v1'})
                           </div>
                         );
@@ -1180,7 +1180,7 @@ export default function BlueprintPage() {
 
               {activeStyle && (
                 <div className={styles.styleBanner}>
-                  🎨 <strong>{L.style} &quot;{activeStyle.name}&quot;</strong> will be applied to this {L.blueprint}.
+                  🎨 <strong>{L.style} &quot;{applyTerminology(activeStyle.name, L, ['style'])}&quot;</strong> will be applied to this {L.blueprint}.
                 </div>
               )}
 

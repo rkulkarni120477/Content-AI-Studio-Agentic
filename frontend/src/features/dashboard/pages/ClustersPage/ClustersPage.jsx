@@ -180,7 +180,7 @@ export default function ClustersPage() {
               title={`🗂️ ${cluster.name}`}
               description={cluster.description}
               descriptionPlaceholder="No description provided."
-              footerLine={`${cluster.course_count ?? 0} title${cluster.course_count !== 1 ? 's' : ''}`}
+              footerLine={`${cluster.course_count ?? 0} ${cluster.course_count === 1 ? L.titleLower : L.titlesLower}`}
               onOpen={() => handleOpen(cluster)}
               onEdit={() => setEditModal({ type: 'cluster', item: cluster })}
               onDelete={() => setDeleteTarget(cluster)}
@@ -199,7 +199,7 @@ export default function ClustersPage() {
       )}
 
       <EditEntityModal open={Boolean(editModal)} entityType="cluster" entity={editModal?.item} onClose={() => setEditModal(null)} onSaved={() => dispatch(fetchClustersThunk(pid))} />
-      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Category" message={`Delete "${deleteTarget?.name}"? Categories with active titles cannot be deleted.`} loading={deleteLoading} />
+      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Category" message={`Delete "${deleteTarget?.name}"? Categories with active ${L.titlesLower} cannot be deleted.`} loading={deleteLoading} />
     </SelectionLayout>
   );
 }

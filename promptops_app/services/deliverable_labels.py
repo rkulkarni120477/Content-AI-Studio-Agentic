@@ -19,6 +19,7 @@ no override gets exactly the wording it gets today.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from app.schemas.ui_labels import parse_ui_labels
@@ -68,3 +69,26 @@ def long_label(db: Any, project_id: Optional[str], key: str = "cdd") -> str:
 def filename_slug(word: str) -> str:
     """A label reduced to something safe in a download filename."""
     return "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in word).strip("_") or "Export"
+
+
+def apply_terminology(text: str, db: Any, project_id: Optional[str], keys=None) -> str:
+    """Swap default product words in a display/deliverable string for the tenant's.
+
+    Whole-word, case-sensitive, singular + plural. Display-only — used for the
+    text that goes INTO a deliverable (heading, filename); it never touches
+    stored data, identifiers or prompts. Mirrors the frontend applyTerminology
+    (frontend/src/config/tenantLabels.js). A tenant with no override, or any
+    lookup failure, yields the text unchanged.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    out = text
+    for key in (keys or list(DEFAULTS.keys())):
+        default = DEFAULTS.get(key)
+        word = label(db, project_id, key)
+        if not default or not word or word == default:
+            continue
+        # Plural before singular so "CDDs" isn't half-rewritten by the singular pass.
+        for frm, to in ((f"{default}s", f"{word}s"), (default, word)):
+            out = re.sub(rf"\b{re.escape(frm)}\b", to, out)
+    return out

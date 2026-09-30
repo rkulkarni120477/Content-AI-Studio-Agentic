@@ -43,6 +43,7 @@ import Loader from '@components/common/Loader/Loader';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import styles from './GeneratePage.module.scss';
 
 const SUPP_UPLOADS = [
@@ -317,13 +318,15 @@ export default function GeneratePage() {
     }
   }
 
+  // Names are stored with the default word baked in — swap the tenant's word in
+  // at display time (per-key, so only the renamed term changes).
   const cddDisp = activeCdd
-    ? `${activeCdd.title || activeCdd.course_title} (${activeCdd.active_version || 'v1'})`
+    ? `${applyTerminology(activeCdd.title || activeCdd.course_title, L, ['cdd'])} (${activeCdd.active_version || 'v1'})`
     : 'None linked';
   const bpDisp = activeBlueprint
-    ? `${activeBlueprint.title} (${activeBlueprint.active_version || 'v1'})`
+    ? `${applyTerminology(activeBlueprint.title, L, ['blueprint'])} (${activeBlueprint.active_version || 'v1'})`
     : 'None linked';
-  const styleDisp = activeStyle?.name || 'None';
+  const styleDisp = applyTerminology(activeStyle?.name, L, ['style']) || 'None';
 
   // Job + results only belong on the title that launched them. On any other
   // title (existing or brand-new) these read empty, so the page shows the normal

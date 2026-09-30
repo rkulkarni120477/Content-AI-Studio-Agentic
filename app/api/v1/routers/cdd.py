@@ -199,6 +199,7 @@ def _is_dlu_prompt(*texts: str) -> bool:
 from promptops_app.services.deliverable_labels import (  # noqa: E402
     filename_slug,
     label as deliverable_label,
+    apply_terminology as deliverable_apply_terminology,
 )
 from promptops_app.services.block_wide_service import (  # noqa: E402
     generate_cdd_via_digests as _generate_cdd_via_digests,
@@ -2303,6 +2304,11 @@ def export_cdd(
     if not version_record:
         raise NotFoundError(f"CDD active version '{cdd.active_version}'", cdd_id)
 
+    # Tenant's word swapped into the title for the deliverable only (heading +
+    # filename); the stored cdd.title is left untouched. Logs below keep the raw
+    # title for traceability to the actual record.
+    disp_title = deliverable_apply_terminology(cdd.title, db, cdd.project_id, ['cdd'])
+
     # Build export blocks — same logic as the Streamlit download button.
     parsed = parse_cdd_flat(version_record.full_content or "")
 
@@ -2319,13 +2325,13 @@ def export_cdd(
             if (clean or "").strip():
                 sheets.append((label, clean))
         if sheets:
-            buf = build_xlsx_worksheets(cdd.title, sheets)
+            buf = build_xlsx_worksheets(disp_title, sheets)
             # Prefixed with the tenant's own word for the deliverable. A tenant
             # that calls this a Blueprint was still handed a file named
             # CDD_<title>.xlsx — and the title itself said CDD too, so the word
             # appeared twice in a filename for a thing they never call that.
             fname = (f"{filename_slug(deliverable_label(db, cdd.project_id))}_"
-                     f"{cdd.title.replace(' ', '_')}_{cdd.active_version}.xlsx")
+                     f"{disp_title.replace(' ', '_')}_{cdd.active_version}.xlsx")
             _log.info(
                 "cdd_exported_dlu_xlsx  user=%s  cdd_id=%d  sheets=%d",
                 current_user.username, cdd_id, len(sheets),
@@ -2371,7 +2377,7 @@ def export_cdd(
 
     export_request = ExportRequest(
         fmt=format,
-        topic=cdd.title,
+        topic=disp_title,
         blocks=export_blocks,
         user_name=current_user.username,
         is_admin=(current_user.role == "admin"),
@@ -2380,7 +2386,7 @@ def export_cdd(
         project_id=cdd.project_id,
         course_id=cdd.course_id,
         file_name=(f"{filename_slug(deliverable_label(db, cdd.project_id))}_"
-                   f"{cdd.title.replace(' ', '_')}_{cdd.active_version}.{format}"),
+                   f"{disp_title.replace(' ', '_')}_{cdd.active_version}.{format}"),
     )
 
     result = export_content(db, export_request)

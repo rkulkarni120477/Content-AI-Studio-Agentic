@@ -484,7 +484,7 @@ export default function StylePage() {
               </div>
               {activeStyle && (
                 <div className={styles.activeIndicator}>
-                  <span aria-hidden="true">🎨</span> Active: <strong>{activeStyle.name}</strong>
+                  <span aria-hidden="true">🎨</span> Active: <strong>{applyTerminology(activeStyle.name, L, ['style'])}</strong>
                 </div>
               )}
               {isLoading ? (
@@ -501,7 +501,7 @@ export default function StylePage() {
                   {filteredStyles.map((style) => (
                     <li key={style.id} className={`${styles.styleItem} ${style.is_active ? styles['styleItem--active'] : ''}`}>
                       <div className={styles.styleItem__info}>
-                        <span className={styles.styleItem__name}>{style.name}</span>
+                        <span className={styles.styleItem__name}>{applyTerminology(style.name, L, ['style'])}</span>
                         {style.understanding_preview && (
                           <span className={styles.styleItem__desc}>
                             {applyTerminology(style.understanding_preview, L, ['style'])}
@@ -714,7 +714,7 @@ export default function StylePage() {
       <Modal
         open={Boolean(viewStyleId)}
         onClose={() => { setViewStyleId(null); setViewStyle(null); }}
-        title={`${L.style} Details${viewStyle?.name ? ` — ${viewStyle.name}` : ''}`}
+        title={`${L.style} Details${viewStyle?.name ? ` — ${applyTerminology(viewStyle.name, L, ['style'])}` : ''}`}
         size="lg"
         footer={
           <>
@@ -735,7 +735,7 @@ export default function StylePage() {
       <Modal
         open={Boolean(refineStyle)}
         onClose={() => { setRefineStyle(null); setRefineCorrections(''); }}
-        title={`Refine ${L.style} Understanding${refineStyle?.name ? ` — ${refineStyle.name}` : ''}`}
+        title={`Refine ${L.style} Understanding${refineStyle?.name ? ` — ${applyTerminology(refineStyle.name, L, ['style'])}` : ''}`}
         size="md"
         footer={
           <>
