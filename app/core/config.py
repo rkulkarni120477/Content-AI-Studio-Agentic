@@ -230,8 +230,8 @@ class AppSettings(BaseSettings):
         default=False,
         alias="CE_REVIEW_ENABLED",
     )
-    # CE review retention (days) for finding/result detail rows. 0 = keep forever
-    # (default). Ships OFF; a future maintenance task can call the prune helper.
+    # CE review retention window (days) for finding/result detail. 0 = off (keep
+    # forever, default). When > 0, old detail is pruned at app startup.
     ce_review_retention_days: int = Field(
         default=0,
         alias="CE_REVIEW_RETENTION_DAYS",

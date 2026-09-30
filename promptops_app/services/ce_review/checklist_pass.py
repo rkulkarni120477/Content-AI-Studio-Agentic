@@ -20,7 +20,6 @@ _log = logging.getLogger(__name__)
 
 _BATCH = 15                                   # rules per LLM call — keeps output small
 _VALID = {"pass", "fail", "warning", "na"}
-_MAX_LESSON_CHARS = 60_000                    # generous guard; a DLU is ~50-70k chars
 
 _SYSTEM = (
     "You are a content-editor reviewing an educational lesson against a checklist. "
@@ -31,21 +30,21 @@ _SYSTEM = (
 )
 
 
-def _grade_batch(lesson: str, rules: list[dict], *, model: str, usage_ctx) -> dict:
-    """Grade one batch → {item_key: {status, explanation, recommendation}}. Empty on error."""
+def _grade_batch(lesson: str, rules: list[dict], *, model: str, usage_ctx) -> tuple[dict, bool]:
+    """Grade one batch → ({item_key: {...}}, ok). ok=False if the AI call failed/truncated."""
     rules_txt = "\n".join(f"- [{r['item_key']}] {r['rule_text']}" for r in rules)
     user = f"RULES:\n{rules_txt}\n\nLESSON:\n{lesson}"
     res = generate_with_metadata(model, _SYSTEM, user, usage_ctx=usage_ctx,
                                  max_tokens=output_cap(model))
     if getattr(res, "status", None) == "error" or getattr(res, "truncated", False):
-        return {}
+        return {}, False
     data = safe_json_loads(res.text or "")
     rows = data.get("results", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
     out = {}
     for row in rows:
         if isinstance(row, dict) and row.get("item_key"):
             out[str(row["item_key"])] = row
-    return out
+    return out, True
 
 
 def evaluate_checklist(db, review, lesson: str, items: list, *, model_choice: str | None = None) -> dict:
@@ -53,7 +52,7 @@ def evaluate_checklist(db, review, lesson: str, items: list, *, model_choice: st
     from promptops_app.database import ReviewChecklistResult
 
     model = model_choice or DEFAULT_MODEL_NAME
-    lesson = (lesson or "")[:_MAX_LESSON_CHARS]
+    lesson = lesson or ""   # full lesson — size guard lives in execute_review (#2)
     usage_ctx = UsageLogContext(user_name=review.created_by or "", project_id=review.project_id,
                                 course_id=review.course_id, entity_type="ce_review",
                                 entity_id=str(review.id))
@@ -61,11 +60,16 @@ def evaluate_checklist(db, review, lesson: str, items: list, *, model_choice: st
     tally = {"pass": 0, "fail": 0, "warning": 0, "na": 0}
     now = datetime.now(timezone.utc)
 
-    # Grade in batches; collect every rule's outcome.
+    # Grade in batches; collect every rule's outcome. Track failed AI calls so a
+    # total outage is reported as a failed run, not a clean pass (#3).
     graded: dict[str, dict] = {}
+    failed_calls = 0
     for i in range(0, len(rules), _BATCH):
         batch = rules[i:i + _BATCH]
-        graded.update(_grade_batch(lesson, batch, model=model, usage_ctx=usage_ctx))
+        batch_graded, ok = _grade_batch(lesson, batch, model=model, usage_ctx=usage_ctx)
+        graded.update(batch_graded)
+        if not ok:
+            failed_calls += 1
 
     for it in items:
         row = graded.get(it.item_key)
@@ -84,5 +88,6 @@ def evaluate_checklist(db, review, lesson: str, items: list, *, model_choice: st
             created_at=now,
         ))
     db.flush()
+    tally["failed_calls"] = failed_calls
     _log.info("checklist_pass review=%s tally=%s", review.id, tally)
     return tally

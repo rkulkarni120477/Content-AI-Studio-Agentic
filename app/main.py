@@ -87,6 +87,11 @@ async def lifespan(app: FastAPI):
     from promptops_app.jobs.reaper import reap_orphaned_jobs
     reap_orphaned_jobs()
 
+    # CE review retention — prune old finding/result detail on startup. No-op
+    # unless CE_REVIEW_ENABLED and CE_REVIEW_RETENTION_DAYS > 0. Never blocks startup.
+    from promptops_app.services.ce_review.retention import run_startup_prune
+    run_startup_prune()
+
     _log.info("startup_complete  llm_clients=ready")
 
     yield  # Application runs here

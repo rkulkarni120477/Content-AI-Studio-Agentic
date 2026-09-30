@@ -12,6 +12,7 @@ skip-unchanged match), and the source ids/text later passes need.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -60,9 +61,14 @@ def resolve_basis(db, *, project_id: Optional[int], course_id: Optional[int]) ->
             .first()
         )
         if checklist is not None:
+            # Hash the rules (text + mandatory flag) into the version so editing,
+            # deleting, or re-flagging a rule invalidates skip-unchanged (#5).
+            rules_sig = "|".join(f"{i.item_key}:{i.rule_text}:{int(bool(i.is_mandatory))}"
+                                 for i in checklist.items)
+            rules_hash = hashlib.sha256(rules_sig.encode("utf-8")).hexdigest()[:10]
             return ReviewBasis(
                 basis="checklist",
-                version=f"cl:{checklist.id}:v{checklist.version}",
+                version=f"cl:{checklist.id}:v{checklist.version}:{rules_hash}",
                 label=f"{checklist.name} (v{checklist.version})",
                 checklist_id=checklist.id,
             )

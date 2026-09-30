@@ -72,6 +72,15 @@ export default function ReviewPanel({ generationId = null, projectId = null, onC
     dispatch(fetchFindingsThunk(review.id));
   }, [review?.id, review?.run_status, review?.review_basis, dispatch]);
 
+  // Resume tracking a still-running review (e.g. after a page reload) by polling
+  // its status until it finishes — so the panel never gets stuck on "Running…" (#10).
+  useEffect(() => {
+    const active = review?.run_status === 'running' || review?.run_status === 'queued';
+    if (!active || isRunning || !generationId) return undefined;
+    const t = setInterval(() => dispatch(fetchLatestReviewThunk(generationId)), 3000);
+    return () => clearInterval(t);
+  }, [review?.run_status, review?.id, isRunning, generationId, dispatch]);
+
   async function onStart() {
     if (!generationId || isRunning) return;
     await dispatch(startReviewThunk({ generationId, modelChoice }));
@@ -233,6 +242,7 @@ export default function ReviewPanel({ generationId = null, projectId = null, onC
                         <div className={styles.resultRule}>
                           {f.title || f.category}
                           <span className={styles.cat}>{f.category.replace(/_/g, ' ')}</span>
+                          {f.block_label && <span className={styles.loc}>in {f.block_label}</span>}
                           {f.status !== 'open' && <span className={`${styles.fstat} ${styles[`fstat_${f.status}`] || ''}`}>{f.status}</span>}
                         </div>
                         {f.detail && <div className={styles.resultExpl}>{f.detail}</div>}

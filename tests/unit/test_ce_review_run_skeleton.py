@@ -118,7 +118,33 @@ def test_checklist_version_bump_triggers_new_run(db):
 
     review2, reused = prepare_review(db, gen, actor="alice")
     assert reused is False
-    assert review2.checklist_version.endswith(":v2")
+    assert ":v2:" in review2.checklist_version   # cl:{id}:v2:{rules_hash}
+
+
+def test_editing_a_rule_triggers_new_run(db):
+    # Same content + same checklist version, but a rule edited → skip-unchanged must
+    # NOT reuse the old run (#5).
+    cl = _make_checklist(db)
+    gen = _make_generation(db)
+    r1, _ = prepare_review(db, gen, actor="alice")
+    execute_review(db, r1)
+    cl.items[0].rule_text = "Rewritten rule text"
+    db.flush()
+    r2, reused = prepare_review(db, gen, actor="alice")
+    assert reused is False and r2.id != r1.id
+
+
+def test_orphaned_active_review_is_cleared(db):
+    # A stuck 'running' review with no live job must not block a new Start (#4).
+    from promptops_app.database import ContentReview
+    _make_checklist(db)
+    gen = _make_generation(db)
+    db.add(ContentReview(generation_id=gen.id, project_id=PROJECT_ID, review_basis="checklist",
+                         checklist_version="stale", content_fingerprint="x",
+                         run_status="running", job_id=None))
+    db.flush()
+    review, reused = prepare_review(db, gen, actor="alice")   # would raise "already running" before the fix
+    assert reused is False and review.run_status == "queued"
 
 
 def test_style_fallback_when_no_checklist(db):
@@ -170,7 +196,9 @@ def test_checklist_pass_grades_and_stores_non_pass(db, monkeypatch):
 
     execute_review(db, review)
 
-    assert review.counts["checklist"] == {"pass": 1, "fail": 1, "warning": 1, "na": 0}
+    ct = review.counts["checklist"]
+    assert (ct["pass"], ct["fail"], ct["warning"], ct["na"]) == (1, 1, 1, 0)
+    assert ct["failed_calls"] == 0
     rows = db.query(ReviewChecklistResult).filter(ReviewChecklistResult.review_id == review.id).all()
     assert {r.item_key for r in rows} == {"r002", "r003"}        # only non-pass stored
     assert next(r for r in rows if r.item_key == "r002").recommendation == "add it"
@@ -262,6 +290,34 @@ def test_verdict_flips_to_ready_after_dismiss(db, monkeypatch):
     assert review.verdict == "warnings"
     dismiss(db, review, f, "alice")                     # dismiss last open issue
     assert review.verdict == "ready"
+
+
+def test_oversized_lesson_fails_clearly_not_truncated(db):
+    # A lesson beyond the size ceiling must fail with a clear message, never be
+    # silently truncated and graded on a slice (#2).
+    from promptops_app.services.ce_review import review_runner
+    _make_checklist(db)
+    big = "word " * 45000                          # ~225k chars > 200k ceiling
+    gen = _make_generation(db, blocks=(big,))
+    review, _ = prepare_review(db, gen, actor="alice")
+    execute_review(db, review)
+    assert review.run_status == "failed"
+    assert "too large" in (review.error_message or "").lower()
+
+
+def test_ai_failure_marks_run_failed_not_ready(db, monkeypatch):
+    from types import SimpleNamespace
+    from promptops_app.services.ce_review import issue_pass
+    _make_checklist(db)
+    gen = _make_generation(db)
+    review, _ = prepare_review(db, gen, actor="alice")
+    # Issue-detection AI call errors → run must be 'failed', never a clean 'ready'.
+    monkeypatch.setattr(issue_pass, "generate_with_metadata",
+                        lambda *a, **k: SimpleNamespace(status="error", truncated=False, text=""))
+    execute_review(db, review)
+    assert review.run_status == "failed"
+    assert review.verdict != "ready"
+    assert review.error_message
 
 
 def test_rereview_carries_dismissals_and_chains(db, monkeypatch):
@@ -369,6 +425,35 @@ def test_apply_many_one_snapshot_per_block(db):
     assert summary["applied"] == 2
     assert block.content == "1 two three 4"
     assert db.query(BlockVersion).filter(BlockVersion.block_id == block.id).count() == 1   # one restore point
+
+
+def test_retention_prunes_old_detail_keeps_headers_and_recent(db):
+    from datetime import datetime, timedelta, timezone
+    from promptops_app.database import ContentReview, ReviewFinding
+    from promptops_app.services.ce_review.retention import prune_old_review_details
+    now = datetime.now(timezone.utc)
+
+    def _review(completed):
+        r = ContentReview(generation_id=1, project_id=PROJECT_ID, review_basis="checklist",
+                          checklist_version="v", content_fingerprint="x",
+                          run_status="completed", completed_at=completed)
+        db.add(r); db.flush()
+        db.add(ReviewFinding(review_id=r.id, category="grammar_language", severity="minor",
+                             status="open", anchor_quote="q"))
+        db.flush()
+        return r
+
+    old = _review(now - timedelta(days=120))     # older than 90 → prune detail
+    recent = _review(now - timedelta(days=10))   # within 90 → keep
+
+    removed = prune_old_review_details(db, 90)
+    assert removed == 1
+    assert db.query(ReviewFinding).filter(ReviewFinding.review_id == old.id).count() == 0
+    assert db.query(ReviewFinding).filter(ReviewFinding.review_id == recent.id).count() == 1
+    # Headers kept for both.
+    assert db.query(ContentReview).filter(ContentReview.id.in_([old.id, recent.id])).count() == 2
+    # Off (0) is a no-op.
+    assert prune_old_review_details(db, 0) == 0
 
 
 def test_dismiss_leaves_content_unchanged(db):

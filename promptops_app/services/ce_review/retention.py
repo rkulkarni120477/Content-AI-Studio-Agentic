@@ -1,8 +1,10 @@
 """CE review retention — prune old finding/result detail, keep run headers.
 
-Ships OFF (days=0 keeps everything). Not wired to a scheduler; a future
-maintenance task can call ``prune_old_review_details``. Headers (content_reviews)
-and dismissals are kept forever (audit trail + carry-forward).
+Runs at app startup (like the job reaper). Off by default: only prunes when
+``CE_REVIEW_RETENTION_DAYS > 0``. Only the bulky detail rows (findings + checklist
+results) of reviews completed longer ago than the retention window are removed —
+the ``content_reviews`` headers (audit trail) and ``review_dismissals``
+(carry-forward) are kept forever.
 """
 from __future__ import annotations
 
@@ -29,3 +31,23 @@ def prune_old_review_details(db, days: int) -> int:
     db.commit()
     _log.info("ce_review_pruned reviews=%d findings=%d results=%d", len(old_ids), f, c)
     return f + c
+
+
+def run_startup_prune() -> None:
+    """Called once at app startup. Off (days<=0) → does nothing; on → prunes.
+    Fail-safe: never blocks startup."""
+    try:
+        from app.core.config import settings
+        if not getattr(settings, "ce_review_enabled", False):
+            return
+        days = getattr(settings, "ce_review_retention_days", 0) or 0
+        if days <= 0:
+            return                      # retention off → stays off
+        from promptops_app.database import SessionLocal
+        db = SessionLocal()
+        try:
+            prune_old_review_details(db, days)
+        finally:
+            db.close()
+    except Exception as exc:  # pragma: no cover - never break startup
+        _log.warning("ce_review retention prune skipped: %s", exc)

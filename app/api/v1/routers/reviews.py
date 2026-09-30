@@ -143,14 +143,22 @@ def get_findings(
     current_user=Depends(require_permission("editor.edit")),
     tenant=Depends(get_tenant_context),
 ) -> list[FindingRead]:
-    from promptops_app.database import ContentReview, ReviewFinding
+    from promptops_app.database import Block, ContentReview, ReviewFinding
     tenant_id, is_platform_admin = tenant
     get_scoped_or_404(db, ContentReview, review_id, tenant_id, is_platform_admin)  # tenant gate
     _rank = {"blocker": 0, "major": 1, "minor": 2}
     rows = db.query(ReviewFinding).filter(ReviewFinding.review_id == review_id).all()
+    # Look up block labels once so each finding can show which block it's in (#6).
+    block_ids = {r.block_id for r in rows if r.block_id}
+    labels = {b.id: b.block_label for b in db.query(Block).filter(Block.id.in_(block_ids))} if block_ids else {}
     # open first, then by severity — done in Python to keep the query index-simple.
     rows.sort(key=lambda r: (r.status != "open", _rank.get(r.severity, 3), r.id))
-    return [FindingRead.model_validate(r) for r in rows]
+    out = []
+    for r in rows:
+        fr = FindingRead.model_validate(r)
+        fr.block_label = labels.get(r.block_id)
+        out.append(fr)
+    return out
 
 
 def _get_review_finding(db, review_id, finding_id, tenant):

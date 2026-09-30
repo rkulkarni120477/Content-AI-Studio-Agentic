@@ -3,7 +3,7 @@ import { reviewService } from './services/reviewService';
 import { extractErrorMessage } from '@utils/helpers';
 
 const POLL_INTERVAL_MS = 2000;
-const MAX_POLLS = 150;          // ~5 min ceiling
+const MAX_POLLS = 300;          // ~10 min ceiling (large lessons review in chunks)
 const MAX_POLL_ERRORS = 5;
 
 /** Fetch the active checklist for a project (null if none). */
@@ -64,16 +64,6 @@ export const updateChecklistItemThunk = createAsyncThunk(
   async ({ checklistId, itemId, patch }, { rejectWithValue }) => {
     try {
       return await reviewService.updateItem(checklistId, itemId, patch);
-    } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
-  },
-);
-
-/** Reorder a checklist's rules by id. Returns the updated checklist. */
-export const reorderChecklistThunk = createAsyncThunk(
-  'review/reorder',
-  async ({ checklistId, itemIds }, { rejectWithValue }) => {
-    try {
-      return await reviewService.reorder(checklistId, itemIds);
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
 );

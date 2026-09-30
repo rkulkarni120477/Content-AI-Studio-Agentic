@@ -9,15 +9,15 @@ failed mandatory rules block "Ready for Approval").
 Additive only — no existing table is altered or dropped. The feature is gated by
 the CE_REVIEW_ENABLED flag; these tables are simply unused until it is on.
 
-Revision ID: 000100000027
-Revises: 000100000026
+Revision ID: 000100000028
+Revises: 000100000027
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000027"
-down_revision = "000100000026"
+revision = "000100000028"
+down_revision = "000100000027"
 branch_labels = None
 depends_on = None
 

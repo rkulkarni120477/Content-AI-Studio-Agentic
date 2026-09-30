@@ -24,7 +24,6 @@ _log = logging.getLogger(__name__)
 _CAP = 30                                  # max findings shown per run
 _QUOTE_MAX = 300
 _REPL_MAX = 8000                           # absolute storage backstop
-_LESSON_MAX = 60_000
 _SEV_RANK = {"blocker": 0, "major": 1, "minor": 2}
 _CONTENT_CATS = {"incorrect_incomplete", "unsupported"}   # only these may be 'blocker'
 _BLOCK_CATS = "incorrect_incomplete, formatting_structure, style_tone, grammar_language, unsupported"
@@ -46,14 +45,14 @@ _CROSS_SYS = (
 )
 
 
-def _call(system: str, user: str, *, model: str, usage_ctx) -> list:
-    """One detection call → list of raw issue dicts. Empty on error/truncation."""
+def _call(system: str, user: str, *, model: str, usage_ctx) -> tuple[list, bool]:
+    """One detection call → (raw issue dicts, ok). ok=False if the AI call failed/truncated."""
     res = generate_with_metadata(model, system, user, usage_ctx=usage_ctx, max_tokens=output_cap(model))
     if getattr(res, "status", None) == "error" or getattr(res, "truncated", False):
-        return []
+        return [], False
     data = safe_json_loads(res.text or "")
     issues = data.get("issues", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    return [i for i in issues if isinstance(i, dict)]
+    return [i for i in issues if isinstance(i, dict)], True
 
 
 def _clamp_severity(category: str, sev: str) -> str:
@@ -108,21 +107,28 @@ def detect_issues(db, review, parts: list[dict], *, model_choice: str | None = N
     usage_ctx = UsageLogContext(user_name=review.created_by or "", project_id=review.project_id,
                                 course_id=review.course_id, entity_type="ce_review", entity_id=str(review.id))
     findings: list[dict] = []
+    failed_calls = 0            # track AI failures so a total outage isn't a clean run (#3)
 
     # Per-block passes.
     for p in parts:
         content = p.get("content") or ""
         if not content.strip():
             continue
-        for raw in _call(_BLOCK_SYS, f"BLOCK:\n{content}", model=model, usage_ctx=usage_ctx):
+        issues, ok = _call(_BLOCK_SYS, f"BLOCK:\n{content}", model=model, usage_ctx=usage_ctx)
+        if not ok:
+            failed_calls += 1
+        for raw in issues:
             f = _build(raw, block_id=p.get("block_id"), block_content=content, project_id=review.project_id)
             if f:
                 findings.append(f)
 
     # Cross-block pass (consistency + repetition) — quotes anchor to whichever block holds them.
-    lesson = "\n\n".join(f"## {p.get('block_label') or ''}\n{p.get('content') or ''}" for p in parts)[:_LESSON_MAX]
+    lesson = "\n\n".join(f"## {p.get('block_label') or ''}\n{p.get('content') or ''}" for p in parts)
     by_block = {p.get("block_id"): (p.get("content") or "") for p in parts}
-    for raw in _call(_CROSS_SYS, f"LESSON:\n{lesson}", model=model, usage_ctx=usage_ctx):
+    cross_issues, ok = _call(_CROSS_SYS, f"LESSON:\n{lesson}", model=model, usage_ctx=usage_ctx)
+    if not ok:
+        failed_calls += 1
+    for raw in cross_issues:
         quote = str(raw.get("quote") or "")[:_QUOTE_MAX]
         host = next((bid for bid, c in by_block.items() if contains(c, quote)), None)
         f = _build(raw, block_id=host, block_content=by_block.get(host, ""), project_id=review.project_id)
@@ -153,6 +159,7 @@ def detect_issues(db, review, parts: list[dict], *, model_choice: str | None = N
         db.add(ReviewFinding(review_id=review.id, status="dismissed", created_at=now,
                              dismissed_at=now, dismiss_reason="Carried from a previous review", **f))
     db.flush()
-    _log.info("issue_pass review=%s open=%d more=%d carried_dismissed=%d",
-              review.id, len(kept), more, len(carried))
-    return {"total": len(kept), "more": more, "applied": 0, "dismissed": len(carried)}
+    _log.info("issue_pass review=%s open=%d more=%d carried_dismissed=%d failed=%d",
+              review.id, len(kept), more, len(carried), failed_calls)
+    return {"total": len(kept), "more": more, "applied": 0, "dismissed": len(carried),
+            "failed_calls": failed_calls}

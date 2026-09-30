@@ -5,14 +5,14 @@ optional replacement text + tier (inline | large | guidance), severity, a
 fingerprint for dedup/dismissal carry-forward, and the apply/dismiss columns
 Step 5 fills. Additive; gated by CE_REVIEW_ENABLED.
 
-Revision ID: 000100000030
-Revises: 000100000029
+Revision ID: 000100000031
+Revises: 000100000030
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000030"
-down_revision = "000100000029"
+revision = "000100000031"
+down_revision = "000100000030"
 branch_labels = None
 depends_on = None
 

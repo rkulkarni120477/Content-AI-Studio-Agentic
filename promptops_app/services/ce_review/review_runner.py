@@ -27,8 +27,28 @@ class ReviewError(Exception):
     """A review cannot be started (no basis, empty content, already running)."""
 
 
+_MAX_REVIEW_CHARS = 200_000   # lesson size ceiling for a single-pass review (#2)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _clear_orphaned_active(db, generation_id: int) -> None:
+    """Mark active reviews whose job is terminal/missing as failed, so a crash or
+    restart can't leave a generation permanently blocked by the one-active index."""
+    from promptops_app.database import ContentReview, GenerationJob
+    actives = db.query(ContentReview).filter(
+        ContentReview.generation_id == generation_id,
+        ContentReview.run_status.in_(("queued", "running")),
+    ).all()
+    for r in actives:
+        job = db.query(GenerationJob).filter(GenerationJob.id == r.job_id).first() if r.job_id else None
+        if job is None or job.status in ("completed", "failed", "cancelled"):
+            r.run_status = "failed"
+            r.error_message = "Interrupted (server restart or lost worker). Please run the review again."
+            r.completed_at = _now()
+    db.flush()
 
 
 def prepare_review(
@@ -65,6 +85,10 @@ def prepare_review(
         raise ReviewError("This lesson has no content to review yet.")
 
     fp = fingerprint(text, basis_version=basis.version)
+
+    # Clear orphaned "active" reviews whose job has finished/vanished (e.g. server
+    # restart) so the one-active-run index doesn't block every future Start (#4).
+    _clear_orphaned_active(db, generation.id)
 
     # Skip-unchanged: an identical completed run → return it, no new work.
     existing = (
@@ -129,6 +153,20 @@ def execute_review(db, review) -> None:
     generation = db.query(Generation).filter(Generation.id == review.generation_id).first()
     lesson, parts = assemble_generation(generation) if generation else ("", [])
 
+    # Guard against silently reviewing only part of a very large lesson (#2): fail
+    # with a clear message rather than truncate. Tunable; models are 1M-context so
+    # this bounds cost, not capability. (Chunked grading is a possible follow-up.)
+    if len(lesson) > _MAX_REVIEW_CHARS:
+        review.run_status = "failed"
+        review.error_message = (
+            f"This lesson is too large to review in one pass ({len(lesson):,} characters, "
+            f"limit {_MAX_REVIEW_CHARS:,}). Please split it into smaller lessons."
+        )
+        review.completed_at = _now()
+        db.commit()
+        _log.warning("ce_review_too_large review=%s chars=%d", review.id, len(lesson))
+        return
+
     # Pass 1 — checklist evaluation (checklist basis only).
     checklist_tally = {"pass": 0, "fail": 0, "warning": 0, "na": 0}
     if review.review_basis == "checklist" and review.checklist_id and lesson.strip():
@@ -138,11 +176,23 @@ def execute_review(db, review) -> None:
             from promptops_app.services.ce_review.checklist_pass import evaluate_checklist
             checklist_tally = evaluate_checklist(db, review, lesson, items, model_choice=review.model_used)
 
-    # Pass 2 — issue detection (both bases) — one failed pass never voids the other.
+    # Pass 2 — issue detection (both bases).
     findings_tally = {"total": 0, "more": 0, "applied": 0, "dismissed": 0}
     if parts:
         from promptops_app.services.ce_review.issue_pass import detect_issues
         findings_tally = detect_issues(db, review, parts, model_choice=review.model_used)
+
+    # If any AI check failed, the review is incomplete — mark it failed rather than
+    # showing a false "Ready" from an empty result (#3).
+    failed_calls = checklist_tally.get("failed_calls", 0) + findings_tally.get("failed_calls", 0)
+    if failed_calls:
+        review.counts = {"checklist": checklist_tally, "findings": findings_tally}
+        review.run_status = "failed"
+        review.error_message = "Some AI checks could not complete. Please run the review again."
+        review.completed_at = _now()
+        db.commit()
+        _log.warning("ce_review_failed review=%s failed_calls=%d", review.id, failed_calls)
+        return
 
     # Verdict from mandatory-rule fails (only these block "Ready for Approval").
     from promptops_app.services.ce_review.verdict import compute as compute_verdict

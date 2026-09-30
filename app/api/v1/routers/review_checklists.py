@@ -7,8 +7,7 @@ Manages the per-client (tenant) CE checklist used by the CE Agent Review:
   Get the active checklist + rules       → GET    /api/v1/review-checklists/active
   Get one checklist + rules              → GET    /api/v1/review-checklists/{id}
   Edit one rule                          → PATCH  /api/v1/review-checklists/{id}/items/{item_id}
-  Reorder rules                          → POST   /api/v1/review-checklists/{id}/reorder
-  Archive a checklist                    → POST   /api/v1/review-checklists/{id}/archive
+  Delete rule(s) / whole checklist       → DELETE /api/v1/review-checklists/{id}[/items/...]
 
 The upload parses the file to text and stores it as a Document, then enqueues a
 background job (``review.checklist_import``) that splits it into rules — poll
@@ -34,7 +33,6 @@ from app.schemas.common import JobAcceptedResponse
 from app.schemas.review_checklist import (
     ChecklistItemIdsRequest,
     ChecklistItemUpdateRequest,
-    ChecklistReorderRequest,
     DeleteResult,
     ReviewChecklistItemRead,
     ReviewChecklistRead,
@@ -295,36 +293,6 @@ def update_item(
     return ReviewChecklistItemRead.model_validate(item)
 
 
-@router.post(
-    "/{checklist_id}/reorder",
-    response_model=ReviewChecklistRead,
-    summary="Reorder a checklist's rules",
-)
-def reorder_items(
-    checklist_id: int,
-    body: ChecklistReorderRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("review.configure")),
-    tenant=Depends(get_tenant_context),
-) -> ReviewChecklistRead:
-    from promptops_app.database import ReviewChecklistItem
-
-    checklist = _get_checklist_or_404(db, checklist_id, tenant)
-    items = {i.id: i for i in checklist.items}
-    # Only ids that belong to this checklist are honoured; unknown ids are ignored.
-    pos = 0
-    for iid in body.item_ids:
-        it = items.get(iid)
-        if it is not None:
-            it.position = pos
-            pos += 1
-    db.commit()
-    db.refresh(checklist)
-    _log.info("checklist_reordered user=%s checklist=%d n=%d",
-              current_user.username, checklist.id, pos)
-    return _to_read(checklist)
-
-
 @router.delete(
     "/{checklist_id}/items/{item_id}",
     response_model=DeleteResult,
@@ -393,30 +361,3 @@ def delete_checklist(
     db.commit()
     _log.info("checklist_deleted user=%s checklist=%d", current_user.username, checklist_id)
     return DeleteResult(deleted=1)
-
-
-@router.post(
-    "/{checklist_id}/archive",
-    response_model=ReviewChecklistSummary,
-    summary="Archive a checklist",
-)
-def archive_checklist(
-    checklist_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_permission("review.configure")),
-    tenant=Depends(get_tenant_context),
-) -> ReviewChecklistSummary:
-    from datetime import datetime, timezone
-
-    checklist = _get_checklist_or_404(db, checklist_id, tenant)
-    checklist.status = "archived"
-    checklist.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(checklist)
-    _log.info("checklist_archived user=%s checklist=%d", current_user.username, checklist.id)
-    return ReviewChecklistSummary(
-        id=checklist.id, project_id=checklist.project_id, name=checklist.name,
-        version=checklist.version, status=checklist.status, item_count=len(checklist.items),
-        source_document_id=checklist.source_document_id, created_by=checklist.created_by,
-        created_at=checklist.created_at, updated_at=checklist.updated_at,
-    )

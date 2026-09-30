@@ -39,10 +39,6 @@ export const reviewService = {
   updateItem: (checklistId, itemId, patch) =>
     api.patch(REVIEW_CHECKLISTS.UPDATE_ITEM(checklistId, itemId), patch),
 
-  /** Reorder a checklist's rules by id. */
-  reorder: (checklistId, itemIds) =>
-    api.post(REVIEW_CHECKLISTS.REORDER(checklistId), { item_ids: itemIds }),
-
   /** Delete one rule (hard delete). */
   deleteItem: (checklistId, itemId) => api.delete(REVIEW_CHECKLISTS.UPDATE_ITEM(checklistId, itemId)),
 
@@ -52,9 +48,6 @@ export const reviewService = {
 
   /** Delete the whole checklist (hard delete — rules + source file). */
   deleteChecklist: (checklistId) => api.delete(REVIEW_CHECKLISTS.GET(checklistId)),
-
-  /** Archive a checklist. */
-  archive: (checklistId) => api.post(REVIEW_CHECKLISTS.ARCHIVE(checklistId)),
 
   // ── Review runs ─────────────────────────────────────────────────────────────
 

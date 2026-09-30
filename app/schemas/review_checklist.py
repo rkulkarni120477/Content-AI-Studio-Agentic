@@ -62,12 +62,6 @@ class ChecklistItemUpdateRequest(BaseModel):
     position: Optional[int] = Field(default=None, ge=0)
 
 
-class ChecklistReorderRequest(BaseModel):
-    """New display order — the full list of item ids in the order wanted."""
-
-    item_ids: List[int] = Field(..., min_length=1)
-
-
 class ChecklistItemIdsRequest(BaseModel):
     """Rule ids to act on (e.g. bulk delete)."""
 

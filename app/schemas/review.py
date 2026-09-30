@@ -47,6 +47,8 @@ class FindingRead(BaseModel):
 
     id: int
     block_id: Optional[int] = None
+    block_label: Optional[str] = None           # which block the issue is in
+    checklist_item_key: Optional[str] = None    # related rule, when the issue maps to one
     category: str
     severity: str                               # blocker | major | minor
     title: Optional[str] = None

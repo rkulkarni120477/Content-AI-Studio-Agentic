@@ -4,14 +4,14 @@ Persists a dismissed finding's fingerprint per generation, so re-reviewing the
 same lesson keeps it dismissed instead of resurfacing it (decision 8). Outlives
 any single review run. Additive; gated by CE_REVIEW_ENABLED.
 
-Revision ID: 000100000031
-Revises: 000100000030
+Revision ID: 000100000032
+Revises: 000100000031
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000031"
-down_revision = "000100000030"
+revision = "000100000032"
+down_revision = "000100000031"
 branch_labels = None
 depends_on = None
 

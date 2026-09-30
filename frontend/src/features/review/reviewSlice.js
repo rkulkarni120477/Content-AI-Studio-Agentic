@@ -3,7 +3,6 @@ import {
   fetchActiveChecklistThunk,
   uploadChecklistThunk,
   updateChecklistItemThunk,
-  reorderChecklistThunk,
   deleteChecklistItemsThunk,
   deleteChecklistThunk,
   fetchLatestReviewThunk,
@@ -87,11 +86,6 @@ const reviewSlice = createSlice({
       .addCase(updateChecklistItemThunk.rejected, (s, { payload }) => {
         s.savingItemId = null; s.error = payload;
       })
-
-      .addCase(reorderChecklistThunk.fulfilled, (s, { payload }) => {
-        if (payload) s.checklist = payload;
-      })
-      .addCase(reorderChecklistThunk.rejected, (s, { payload }) => { s.error = payload; })
 
       .addCase(deleteChecklistItemsThunk.fulfilled, (s, { payload }) => {
         const gone = new Set(payload.itemIds);

@@ -8,15 +8,15 @@ status, and — from later steps — the verdict and counts.
 
 Additive only. Gated by CE_REVIEW_ENABLED; unused until the feature is on.
 
-Revision ID: 000100000028
-Revises: 000100000027
+Revision ID: 000100000029
+Revises: 000100000028
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000028"
-down_revision = "000100000027"
+revision = "000100000029"
+down_revision = "000100000028"
 branch_labels = None
 depends_on = None
 

@@ -137,8 +137,6 @@ export const REVIEW_CHECKLISTS = {
   GET:         (id) => `/api/v1/review-checklists/${id}`,
   UPDATE_ITEM: (id, itemId) => `/api/v1/review-checklists/${id}/items/${itemId}`,   // PATCH + DELETE
   BULK_DELETE_ITEMS: (id) => `/api/v1/review-checklists/${id}/items/bulk-delete`,
-  REORDER:     (id) => `/api/v1/review-checklists/${id}/reorder`,
-  ARCHIVE:     (id) => `/api/v1/review-checklists/${id}/archive`,
 };
 
 // ─── CE Agent Review — review runs ────────────────────────────────────────────

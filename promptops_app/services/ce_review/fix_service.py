@@ -23,9 +23,10 @@ def _now():
 
 
 def _audit(db, actor: str, action: str, review, metadata: dict) -> None:
-    """Fail-safe audit write for a review action."""
+    """Fail-safe audit write for a review action (logged against the generation;
+    any specific block id is carried in metadata)."""
     from promptops_app.services.audit_service import log_audit_event
-    log_audit_event(db, actor or "cas-user", action, entity_type="block",
+    log_audit_event(db, actor or "cas-user", action, entity_type="generation",
                     entity_id=review.generation_id, project_id=review.project_id,
                     course_id=review.course_id, metadata={**metadata, "review_id": review.id})
 

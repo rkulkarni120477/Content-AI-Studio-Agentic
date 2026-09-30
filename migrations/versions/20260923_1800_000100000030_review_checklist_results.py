@@ -4,14 +4,14 @@ One row per checklist rule that did NOT pass (fail | warning | na) for a given
 review. Pass rows are omitted (absence = pass) to keep the table ~70% smaller.
 Additive; gated by CE_REVIEW_ENABLED.
 
-Revision ID: 000100000029
-Revises: 000100000028
+Revision ID: 000100000030
+Revises: 000100000029
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "000100000029"
-down_revision = "000100000028"
+revision = "000100000030"
+down_revision = "000100000029"
 branch_labels = None
 depends_on = None
 
