@@ -91,6 +91,12 @@ export const JOB_TYPE_META = {
     failed: 'Import failed',
     segment: 'sources',
   },
+  import_reverse: {
+    label: 'Import design retry',
+    complete: 'Import design retry complete',
+    failed: 'Import design retry failed',
+    segment: 'style',
+  },
 };
 
 export function jobTypeMeta(jobType) {

@@ -81,6 +81,8 @@ def build_style(
             "",           # no custom instructions
             [],           # no reference documents (style is inferred from lessons)
             user_name,
+            project_id=course.project_id,
+            course_id=course.id,
         )
         create_style_version(
             db, style,
