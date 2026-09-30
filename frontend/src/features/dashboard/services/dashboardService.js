@@ -24,6 +24,7 @@ export const dashboardService = {
   getCourse:       (id)           => api.get(COURSES.GET(id)),
   updateCourse:    (id, data)     => api.put(COURSES.UPDATE(id), data),
   deleteCourse:    (id)           => api.delete(COURSES.DELETE(id)),
+  restoreCourse:   (id)           => api.post(COURSES.RESTORE(id)),
   permanentlyDeleteCourse: (id)   => api.delete(COURSES.PERMANENT_DELETE(id)),
   listCourseUsers: (id)           => api.get(COURSES.USERS(id)),
   assignCourseUser:(id, username)=> api.post(COURSES.USERS(id), { username }),

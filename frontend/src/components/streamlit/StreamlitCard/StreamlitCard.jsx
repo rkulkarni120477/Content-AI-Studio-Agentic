@@ -15,6 +15,7 @@ export default function StreamlitCard({
   onEdit,
   onDelete,
   deleteLabel = '🗑️ Delete',
+  onRestore,
   onManageUsers,
   canEdit = false,
   canDelete = false,
@@ -64,6 +65,11 @@ export default function StreamlitCard({
         {canManageUsers && (
           <Button variant="secondary" size="sm" onClick={onManageUsers}>
             👥 Users
+          </Button>
+        )}
+        {onRestore && (
+          <Button variant="secondary" size="sm" onClick={onRestore}>
+            ↩ Restore
           </Button>
         )}
         {canDelete && (

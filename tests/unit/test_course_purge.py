@@ -166,3 +166,23 @@ def test_permanent_delete_endpoint_rejects_active_course(db):
         permanently_delete_course(
             course.id, db, SimpleNamespace(username="tester")
         )
+
+
+def test_restore_course_reactivates_without_removing_content(db, course_graph):
+    from types import SimpleNamespace
+
+    from app.api.v1.routers.courses import restore_course
+    from promptops_app.database import Block, Course
+
+    course_id = course_graph["course"].id
+    block_id = course_graph["block"].id
+
+    restore_course(course_id, db, SimpleNamespace(username="tester"))
+
+    restored = db.query(Course).filter_by(id=course_id).one()
+    assert restored.is_active is True
+    assert db.query(Block).filter_by(id=block_id).one().content == "Hello"
+    active_courses = course_repository.list_courses_for_cluster(
+        db, course_graph["cluster"].id
+    )
+    assert [item.id for item in active_courses] == [course_id]
