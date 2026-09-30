@@ -391,7 +391,10 @@ export default function PromptFormPage() {
           </div>
         )}
         <div className="field">
-          <label>{isPipeline ? 'Registry name *' : 'Title *'}</label>
+          <label>
+            {isPipeline ? 'Registry name' : 'Title'}
+            {' '}<span className="required-mark" aria-hidden="true">*</span>
+          </label>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -461,7 +464,7 @@ export default function PromptFormPage() {
               </div>
             )}
             <div className="field">
-              <label>System prompt *</label>
+              <label>System prompt <span className="required-mark" aria-hidden="true">*</span></label>
               <textarea
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
@@ -472,7 +475,10 @@ export default function PromptFormPage() {
           </>
         )}
         <div className="field">
-          <label>{isPipeline ? 'User prompt template *' : 'Content *'}</label>
+          <label>
+            {isPipeline ? 'User prompt template' : 'Content'}
+            {' '}<span className="required-mark" aria-hidden="true">*</span>
+          </label>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={10} required />
           {legacyVars.length > 0 && (
             <p className="var-tip" style={{ color: 'var(--warning, #b45309)' }}>
@@ -490,7 +496,7 @@ export default function PromptFormPage() {
         {!isPipeline && (
         <div className="inline-fields">
           <div className="field">
-            <label>Category *</label>
+            <label>Category <span className="required-mark" aria-hidden="true">*</span></label>
             <input value={category} onChange={(e) => setCategory(e.target.value)} list="catList" required />
             <datalist id="catList" />
           </div>

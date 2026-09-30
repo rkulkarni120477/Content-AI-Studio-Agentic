@@ -163,7 +163,7 @@ export default function RequestNewPage() {
         )}
         {type === 'update' && !linkedPromptId && (
           <div className="field">
-            <label>Prompt to update *</label>
+            <label>Prompt to update <span className="required-mark" aria-hidden="true">*</span></label>
             {prompts === null ? (
               <p style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Loading prompts…</p>
             ) : (
@@ -187,7 +187,7 @@ export default function RequestNewPage() {
           </div>
         )}
         <div className="field">
-          <label>Title *</label>
+          <label>Title <span className="required-mark" aria-hidden="true">*</span></label>
           <input value={title} onChange={(e) => setTitle(e.target.value)} required />
         </div>
         <div className="field">
