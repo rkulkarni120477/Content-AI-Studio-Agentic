@@ -123,6 +123,17 @@ function refreshRelated(dispatch, job) {
       dispatch(fetchStylesThunk());
     });
   }
+  if (type === 'import' || type === 'import_reverse') {
+    import('@features/cdd/cddThunks').then(({ fetchCddsThunk }) => {
+      dispatch(fetchCddsThunk(courseId));
+    });
+    import('@features/blueprint/blueprintThunks').then(({ fetchBlueprintsThunk }) => {
+      if (fetchBlueprintsThunk) dispatch(fetchBlueprintsThunk(courseId));
+    });
+    import('@features/style/styleThunks').then(({ fetchStylesThunk }) => {
+      dispatch(fetchStylesThunk({ courseId }));
+    });
+  }
   if (type === 'generation') {
     import('@features/generate/generateThunks').then((mod) => {
       if (mod.fetchGenerationsThunk) dispatch(mod.fetchGenerationsThunk(courseId));
