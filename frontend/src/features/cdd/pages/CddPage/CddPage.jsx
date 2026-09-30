@@ -51,6 +51,7 @@ import EmptyState from '@components/common/EmptyState/EmptyState';
 import ErrorState from '@components/common/ErrorState/ErrorState';
 
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 import styles from './CddPage.module.scss';
 
 const REF_DOCS_HINT = (L) => `All processed DIS Source Library documents are shown here. Whatever you select is retrieved and passed to the model as reference context when you click "Generate ${L.cdd} with AI".`;
@@ -149,16 +150,16 @@ export default function CddPage() {
     : activeCdd;
 
   const styleOptions = useMemo(() => {
-    const opts = [{ value: '', label: '— No style —' }];
+    const opts = [{ value: '', label: `— No ${L.styleLower} —` }];
     const mostRecent = stylesList[0];
     stylesList.forEach((s) => {
       let tag = '';
       if (s.is_active) tag = ' ✅ Active';
       else if (mostRecent && s.id === mostRecent.id) tag = ' 🕐 Latest';
-      opts.push({ value: String(s.id), label: `${s.name}${tag}` });
+      opts.push({ value: String(s.id), label: `${applyTerminology(s.name, L, ['style'])}${tag}` });
     });
     return opts;
-  }, [stylesList]);
+  }, [stylesList, L]);
 
   const selectedStyle = stylesList.find((s) => s.id === selectedStyleId)
     || (selectedStyleId === null && activeStyle)
@@ -637,7 +638,7 @@ export default function CddPage() {
   }
 
   const stylePinLabel = selectedStyle
-    ? (selectedStyle.is_active ? 'active style' : 'manually selected')
+    ? (selectedStyle.is_active ? `active ${L.styleLower}` : 'manually selected')
     : null;
 
   const previewFullContent = versionDetail?.full_content
@@ -677,7 +678,7 @@ export default function CddPage() {
                   />
                   {selectedStyle ? (
                     <div className={styles.styleBannerOk}>
-                      🎨 <strong>{selectedStyle.name}</strong> will be applied
+                      🎨 <strong>{applyTerminology(selectedStyle.name, L, ['style'])}</strong> will be applied
                       <span className={styles.styleBannerOk__muted}> ({stylePinLabel})</span>
                     </div>
                   ) : (
@@ -900,7 +901,7 @@ export default function CddPage() {
                     options={cdds.map((c) => ({
                       value: String(c.id),
                       label: [
-                        `${c.title || c.course_title} (ID: ${c.id})`,
+                        `${applyTerminology(c.title || c.course_title, L, ['cdd'])} (ID: ${c.id})`,
                         formatDate(c.created_at),
                         c.created_by,
                       ].filter(Boolean).join(' — '),
@@ -937,7 +938,7 @@ export default function CddPage() {
                       <div className={styles.activeContent}>
                         <div className={styles.activeContent__header}>
                           <h3 className={styles.activeContent__title}>
-                            {displayCdd.title || displayCdd.course_title}
+                            {applyTerminology(displayCdd.title || displayCdd.course_title, L, ['cdd'])}
                           </h3>
                           <div className={styles.activeContent__actions}>
                             <Button variant="ghost" size="sm" onClick={() => onExport('md')}>↓ MD</Button>

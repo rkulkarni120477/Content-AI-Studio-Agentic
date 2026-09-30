@@ -1895,6 +1895,10 @@ def export_blueprint(
     )
     from promptops_app.repositories import blueprint_repository
     from promptops_app.services.export_service import ExportRequest, export_content
+    from promptops_app.services.deliverable_labels import (
+        label as deliverable_label, filename_slug,
+        apply_terminology as deliverable_apply_terminology,
+    )
 
     bp = _get_blueprint_or_404(db, blueprint_id, current_user)
     if not bp.active_version:
@@ -1903,6 +1907,12 @@ def export_blueprint(
     ver = blueprint_repository.get_blueprint_version(db, blueprint_id, bp.active_version)
     if not ver:
         raise NotFoundError(f"Blueprint version '{bp.active_version}'", blueprint_id)
+
+    # Tenant's word swapped into the title for the deliverable only (heading +
+    # filename); the stored bp.title is left untouched so the DLU day/topic parser
+    # (parse_day_and_title) keeps working on the canonical wording.
+    bp_prefix = filename_slug(deliverable_label(db, bp.project_id, 'blueprint'))
+    disp_title = deliverable_apply_terminology(bp.title, db, bp.project_id, ['blueprint'])
 
     # Block-wide Blueprint + XLSX → one sheet per worksheet (reuses cdd.py's
     # DLU-CDD parser/exporter — worksheet detection is heading-shape-based, not
@@ -1927,8 +1937,8 @@ def export_blueprint(
             if (clean or "").strip():
                 sheets.append((label, clean))
         if sheets:
-            buf = build_xlsx_worksheets(bp.title, sheets)
-            fname = f"Blueprint_{bp.title.replace(' ', '_')}_{bp.active_version}.xlsx"
+            buf = build_xlsx_worksheets(disp_title, sheets)
+            fname = f"{bp_prefix}_{disp_title.replace(' ', '_')}_{bp.active_version}.xlsx"
             _log.info(
                 "blueprint_exported_dlu_xlsx  user=%s  blueprint_id=%d  sheets=%d",
                 current_user.username, blueprint_id, len(sheets),
@@ -1963,11 +1973,11 @@ def export_blueprint(
         export_blocks = [("Blueprint Content", ver.full_content or "")]
 
     export_req = ExportRequest(
-        fmt=format, topic=bp.title,
+        fmt=format, topic=disp_title,
         blocks=export_blocks,
         user_name=current_user.username, is_admin=(current_user.role == "admin"),
         entity_type="blueprint", entity_id=bp.id,
-        file_name=f"Blueprint_{bp.title.replace(' ', '_')}_{bp.active_version}.{format}",
+        file_name=f"{bp_prefix}_{disp_title.replace(' ', '_')}_{bp.active_version}.{format}",
     )
     result = export_content(db, export_req)
     if not result.success:
@@ -1995,8 +2005,13 @@ def export_module_lessons(
     """
     from promptops_app.repositories import generation_repository
     from promptops_app.services.export_service import ExportRequest, export_content
+    from promptops_app.services.deliverable_labels import (
+        apply_terminology as deliverable_apply_terminology,
+    )
 
     bp = _get_blueprint_or_404(db, blueprint_id, current_user)
+    # Deliverable-only word swap; stored bp.title untouched (see export_blueprint).
+    disp_title = deliverable_apply_terminology(bp.title, db, bp.project_id, ['blueprint'])
 
     latest_gens = generation_repository.list_latest_generations_for_blueprint(db, blueprint_id)
     if not latest_gens:
@@ -2019,11 +2034,11 @@ def export_module_lessons(
     lesson_blocks.sort(key=_lesson_order)
 
     export_req = ExportRequest(
-        fmt=format, topic=bp.title,
+        fmt=format, topic=disp_title,
         blocks=[(b.block_label, b.content or "") for b in lesson_blocks],
         user_name=current_user.username, is_admin=(current_user.role == "admin"),
         entity_type="module", entity_id=bp.id,
-        file_name=f"{bp.title.replace(' ', '_')}_lessons.{format}",
+        file_name=f"{disp_title.replace(' ', '_')}_lessons.{format}",
     )
     result = export_content(db, export_req)
     if not result.success:

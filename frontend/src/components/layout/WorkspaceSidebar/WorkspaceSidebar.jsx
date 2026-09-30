@@ -11,6 +11,7 @@ import { fetchCddsThunk } from '@features/cdd/cddThunks';
 import { fetchStylesThunk } from '@features/style/styleThunks';
 import { useAuth } from '@hooks/useAuth';
 import { useLabels } from '@hooks/useLabels';
+import { applyTerminology } from '@config/tenantLabels';
 // ROLE_LABELS/ROLES were only used by the sidebar identity chip, now moved to the top header.
 import { ROUTES } from '@utils/constants';
 import TargetModelPanel from './TargetModelPanel';
@@ -109,9 +110,11 @@ export default function WorkspaceSidebar() {
   }
 
   // const roleColor = ROLE_COLORS[role] ?? '#4338ca'; // identity moved to top header
-  const styleLabel = activeStyle?.name || '—';
+  // Swap the tenant's word into the stored name at display time (names are stored
+  // with the default word baked in at import; DB is left untouched).
+  const styleLabel = applyTerminology(activeStyle?.name, L, ['style']) || '—';
   const cddLabel = activeCdd
-    ? `${activeCdd.title || activeCdd.course_title || L.cdd} (${activeCdd.active_version || 'v1'})`
+    ? `${applyTerminology(activeCdd.title || activeCdd.course_title || L.cdd, L, ['cdd'])} (${activeCdd.active_version || 'v1'})`
     : '—';
 
   return (
