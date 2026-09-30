@@ -128,8 +128,8 @@ export const importCddThunk = createAsyncThunk(
         return rejectWithValue(`Select a project before importing a ${L.blueprintLower}.`);
       }
       const result = await cddService.importCdd(payload, payload.onProgress);
-      toast.success(`${L.blueprint} imported and set as active.`);
-      queueDeferredToast(`${L.blueprint} imported and pinned as active.`);
+      toast.success(`${L.cdd} imported and set as active.`);
+      queueDeferredToast(`${L.cdd} imported and pinned as active.`);
       return result;
     } catch (e) { return rejectWithValue(extractErrorMessage(e)); }
   },
