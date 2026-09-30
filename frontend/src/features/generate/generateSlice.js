@@ -1,6 +1,8 @@
 import { createSlice } from '@reduxjs/toolkit';
 import { launchGenerationThunk, pollJobThunk, cancelJobThunk, invalidatePollSession } from './generateThunks';
 import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
+import { logoutThunk } from '@features/auth/authThunks';
+import { forceLogout } from '@features/auth/authSlice';
 
 const initialState = {
   activeJobId:         null,
@@ -104,7 +106,17 @@ const generateSlice = createSlice({
         s.error = payload;
         s.jobStatus = JOB_STATUSES.RUNNING;
         s.isGenerating = true;
-      });
+      })
+
+      // CAS-146: logout is a plain client-side action, no page reload -- this
+      // slice (and no other, except auth itself) used to survive a logout,
+      // so switching tenants in the same tab left the previous tenant's
+      // activeJobId/latestBlocks in memory. A stale activeJobId then got
+      // polled under the new tenant's session; the backend fix (jobs.py) now
+      // 404s that poll, but resetting here means the old tenant's "Latest
+      // Results" is never even rendered while that poll is in flight.
+      .addCase(logoutThunk.fulfilled, () => initialState)
+      .addCase(forceLogout, () => initialState);
   },
 });
 

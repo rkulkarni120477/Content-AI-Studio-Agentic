@@ -20,7 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db
+from app.core.dependencies import get_current_user, get_db, get_tenant_context
 from app.core.exceptions import JobNotFoundError
 from app.schemas.common import ActiveJobResponse, JobListResponse, JobStatusResponse
 
@@ -98,6 +98,30 @@ def _result_payload(job) -> Optional[dict]:
     except (TypeError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _get_owned_job_or_404(db, job_id: str, tenant_id, is_platform_admin: bool):
+    """Fetch a job, 404-ing if it doesn't exist OR belongs to another tenant.
+
+    CAS-146: this router's per-job endpoints (status poll, cancel, day
+    progress) used to fetch a GenerationJob by id alone, with no ownership
+    check at all -- any authenticated user, in any tenant, could poll or
+    cancel any other tenant's job by id (and read back its full result,
+    including generated blocks) since job ids are just opaque hex strings,
+    not secrets. Same-tenant users may still see each other's jobs (e.g. a
+    lead checking an ID's build) -- this only blocks a DIFFERENT project.
+    404, not 403: a cross-tenant caller shouldn't learn the id even exists.
+    """
+    from promptops_app.repositories import job_repository
+
+    job = job_repository.get_job(db, job_id)
+    if not job:
+        raise JobNotFoundError(job_id)
+    if not is_platform_admin:
+        job_project_id = str(job.project_id) if job.project_id is not None else None
+        if tenant_id is None or job_project_id != tenant_id:
+            raise JobNotFoundError(job_id)
+    return job
 
 
 def _build_status_response(job, db, current_user) -> JobStatusResponse:
@@ -280,6 +304,7 @@ def get_block_job_progress(
     job_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
 ) -> dict:
     """Let the UI show "day 7 of 20" instead of a bar frozen at 20%.
 
@@ -295,11 +320,8 @@ def get_block_job_progress(
     """
     import json as _json
 
-    from promptops_app.repositories import job_repository
-
-    job = job_repository.get_job(db, job_id)
-    if not job:
-        raise JobNotFoundError(job_id)
+    tenant_id, is_platform_admin = tenant
+    job = _get_owned_job_or_404(db, job_id, tenant_id, is_platform_admin)
     if job.job_type not in ("cdd_block", "blueprint_block"):
         return {"progress": None}
 
@@ -342,6 +364,7 @@ def get_job_status(
     job_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
 ) -> JobStatusResponse:
     """
     Return the current state of a background job.
@@ -349,11 +372,8 @@ def get_job_status(
     Reads the GenerationJob row, which the Celery worker updates via
     job_status.set_running(), set_completed(), and set_failed().
     """
-    from promptops_app.repositories import job_repository
-
-    job = job_repository.get_job(db, job_id)
-    if not job:
-        raise JobNotFoundError(job_id)
+    tenant_id, is_platform_admin = tenant
+    job = _get_owned_job_or_404(db, job_id, tenant_id, is_platform_admin)
 
     return _build_status_response(job, db, current_user)
 
@@ -368,6 +388,7 @@ def cancel_job(
     job_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    tenant=Depends(get_tenant_context),
 ) -> JobStatusResponse:
     """
     Cancel a generation job.
@@ -376,11 +397,9 @@ def cancel_job(
     The Celery task may already be running; cancellation is best-effort.
     """
     from promptops_app.jobs.job_status import set_cancelled
-    from promptops_app.repositories import job_repository
 
-    job = job_repository.get_job(db, job_id)
-    if not job:
-        raise JobNotFoundError(job_id)
+    tenant_id, is_platform_admin = tenant
+    job = _get_owned_job_or_404(db, job_id, tenant_id, is_platform_admin)
 
     from promptops_app.jobs.job_status import JobStatus
     if job.status not in JobStatus.TERMINAL:
