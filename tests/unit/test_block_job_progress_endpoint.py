@@ -48,7 +48,7 @@ def _call(monkeypatch, job, dis_reply=None, dis_error=None):
     # The singleton, not the class: the route deliberately reuses the shared client
     # rather than constructing one per poll (see test_the_shared_client_is_reused).
     monkeypatch.setattr(dis_mod, "dis_client", _Client())
-    return jobs_router.get_block_job_progress(job_id="j1", db=object(),
+    return jobs_router.get_block_job_progress(job_id="j1", db=object(), tenant=(None, True),
                                               current_user=_user()), captured
 
 
@@ -111,7 +111,7 @@ def test_a_missing_job_is_still_a_real_404(monkeypatch):
     """Degrading everything to null must not swallow a genuinely wrong job id."""
     monkeypatch.setattr(job_repository, "get_job", lambda db, jid: None)
     with pytest.raises(JobNotFoundError):
-        jobs_router.get_block_job_progress(job_id="nope", db=object(), current_user=_user())
+        jobs_router.get_block_job_progress(job_id="nope", db=object(), current_user=_user(), tenant=(None, True))
 
 
 def test_the_shared_client_is_reused_rather_than_one_built_per_poll(monkeypatch):
@@ -137,7 +137,7 @@ def test_the_shared_client_is_reused_rather_than_one_built_per_poll(monkeypatch)
                         lambda *a, **kw: {"progress": SNAPSHOT})
 
     for _ in range(5):
-        jobs_router.get_block_job_progress(job_id="j1", db=object(), current_user=_user())
+        jobs_router.get_block_job_progress(job_id="j1", db=object(), current_user=_user(), tenant=(None, True))
 
     assert constructed == [], "a DISClient was constructed inside the poll path"
 

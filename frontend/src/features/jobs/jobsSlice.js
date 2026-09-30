@@ -1,5 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit';
 import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
+import { logoutThunk } from '@features/auth/authThunks';
+import { forceLogout } from '@features/auth/authSlice';
 
 const DISMISSED_KEY = 'cas_dismissed_jobs';
 
@@ -18,6 +20,14 @@ function saveDismissed(ids) {
     sessionStorage.setItem(DISMISSED_KEY, JSON.stringify(ids.slice(-80)));
   } catch {
     /* ignore quota */
+  }
+}
+
+function clearDismissed() {
+  try {
+    sessionStorage.removeItem(DISMISSED_KEY);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -118,6 +128,24 @@ const jobsSlice = createSlice({
       const id = String(action.payload);
       delete state.jobsById[id];
     },
+  },
+  extraReducers: (builder) => {
+    // CAS-146: this slice used to survive a logout (no page reload happens),
+    // so the job bell could keep showing another tenant's jobs after
+    // switching accounts in the same tab. dismissedIds is also cleared,
+    // including its sessionStorage backing, so it never carries a stale
+    // per-tenant dismiss list into the next session either.
+    const resetOnLogout = (state) => {
+      state.jobsById = {};
+      state.dismissedIds = [];
+      state.pollCourseId = null;
+      state.isResuming = false;
+      state.lastError = null;
+      clearDismissed();
+    };
+    builder
+      .addCase(logoutThunk.fulfilled, resetOnLogout)
+      .addCase(forceLogout, resetOnLogout);
   },
 });
 
