@@ -51,14 +51,14 @@ function renderPage() {
 // This form's fields are plain <label> + input siblings with no htmlFor/id
 // association, so getByLabelText can't resolve them — walk to the label's
 // next sibling instead.
-function fieldFor(labelText) {
-  return screen.getByText(labelText).nextElementSibling;
+function fieldFor(labelText, options) {
+  return screen.getByText(labelText, options).nextElementSibling;
 }
 
 async function fillAndSubmit() {
   fireEvent.change(screen.getByPlaceholderText('unique_slug_generation'), { target: { value: 'my_prompt' } });
-  fireEvent.change(fieldFor('System prompt *'), { target: { value: 'sys' } });
-  fireEvent.change(fieldFor('User prompt template *'), { target: { value: 'user' } });
+  fireEvent.change(fieldFor('System prompt', { exact: false }), { target: { value: 'sys' } });
+  fireEvent.change(fieldFor('User prompt template', { exact: false }), { target: { value: 'user' } });
   fireEvent.click(screen.getByText('Create prompt'));
   await waitFor(() => expect(createPipelinePrompt).toHaveBeenCalled());
 }

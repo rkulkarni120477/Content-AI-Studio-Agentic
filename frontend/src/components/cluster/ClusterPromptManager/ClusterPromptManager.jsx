@@ -247,7 +247,7 @@ export default function ClusterPromptManager({ clusters = [] }) {
               value={assignClusterId}
               onChange={(e) => setAssignClusterId(e.target.value)}
             />
-            <Input label="Prompt Name *" value={name} onChange={(e) => setName(e.target.value)} required />
+            <Input label="Prompt Name" value={name} onChange={(e) => setName(e.target.value)} required />
             <Input
               label="Description"
               value={description}

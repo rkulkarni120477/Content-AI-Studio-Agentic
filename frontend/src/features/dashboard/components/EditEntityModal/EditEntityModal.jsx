@@ -122,7 +122,8 @@ export default function EditEntityModal({
         />
         {entityType === 'project' && (
           <Select
-            label="Client *"
+            label="Client"
+            required
             options={CLIENT_OPTIONS}
             value={clientName || 'demo'}
             onChange={(e) => setClientName(e.target.value)}

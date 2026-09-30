@@ -673,14 +673,14 @@ export default function TenantsPage() {
         <p className={styles.modalSub}>Creates the organization, its Source Library client, and an initial tenant admin account.</p>
         <form onSubmit={handleCreate} className={styles.form}>
           <Input
-            label="Organization code *"
+            label="Organization code"
             value={form.slug}
             onChange={(e) => set('slug', e.target.value)}
             placeholder="e.g. aim003"
             required
           />
           <Input
-            label="Client Name *"
+            label="Client Name"
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
             placeholder="e.g. Nova Publishing"
@@ -704,13 +704,13 @@ export default function TenantsPage() {
 
           <div className={styles.sectionLabel}>Initial tenant admin</div>
           <Input
-            label="Username *"
+            label="Username"
             value={form.admin_username}
             onChange={(e) => set('admin_username', e.target.value)}
             required
           />
           <Input
-            label="Password *"
+            label="Password"
             type="password"
             value={form.admin_password}
             onChange={(e) => set('admin_password', e.target.value)}

@@ -131,6 +131,10 @@
     .field{margin-bottom:14px}
     .field label{display:block;font-size:.8rem;font-weight:600;margin-bottom:5px;color:var(--muted)}
     .field-note{font-weight:400;font-size:.74rem;color:var(--muted)}
+    /* CAS-139: same required-field marker color/weight as the shared Input/Select
+       components ($color-danger === --danger here) -- this page predates those and
+       still uses its own plain global CSS, not CSS modules. */
+    .required-mark{color:var(--danger)}
     .field input,.field textarea,.field select{width:100%;max-width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:.88rem;font-family:inherit;outline:none;transition:border-color .15s,box-shadow .15s}
     .field select{appearance:none;-webkit-appearance:none;padding-right:36px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23374151' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;background-size:16px 16px}
     .field--compact{max-width:280px;margin-bottom:0}

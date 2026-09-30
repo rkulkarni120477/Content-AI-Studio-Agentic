@@ -271,13 +271,13 @@ export default function TenantUsersPage() {
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add User" size="sm" footer={null}>
         <form onSubmit={handleAdd} className={styles.form}>
           <Input
-            label="Username *"
+            label="Username"
             value={addForm.username}
             onChange={(e) => setAddForm((f) => ({ ...f, username: e.target.value }))}
             required
           />
           <Input
-            label="Password *"
+            label="Password"
             type="password"
             minLength={6}
             value={addForm.password}
@@ -290,7 +290,7 @@ export default function TenantUsersPage() {
             onChange={(e) => setAddForm((f) => ({ ...f, display_name: e.target.value }))}
           />
           <label className={styles.selectLabel}>
-            Role (permissions) *
+            Role (permissions) <span className={styles.requiredMark} aria-hidden="true">*</span>
             <select className={styles.select} value={addForm.roleOption}
               onChange={(e) => setAddForm((f) => ({ ...f, roleOption: e.target.value }))}>
               {roles.map((r) => (
@@ -326,7 +326,7 @@ export default function TenantUsersPage() {
               onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
             />
             <label className={styles.selectLabel}>
-              Role (permissions) *
+              Role (permissions) <span className={styles.requiredMark} aria-hidden="true">*</span>
               <select className={styles.select} value={editForm.roleOption}
                 onChange={(e) => setEditForm((f) => ({ ...f, roleOption: e.target.value }))}>
                 {roles.map((r) => (

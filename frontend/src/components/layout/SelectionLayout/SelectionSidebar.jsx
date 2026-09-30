@@ -292,9 +292,10 @@ export default function SelectionSidebar({
           </button>
           {showNewProject && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Project Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label="Project Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <Select
-                label="Client *"
+                label="Client"
+                required
                 options={CLIENT_OPTIONS}
                 value={form.client}
                 onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))}
@@ -334,7 +335,7 @@ export default function SelectionSidebar({
           </button>
           {showNewCluster && (
             <form className={styles.form} onSubmit={submitCreate}>
-              <Input label="Category Name *" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              <Input label="Category Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
               <label className={styles.textareaLabel}>
                 Description
                 <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={styles.textarea} />
