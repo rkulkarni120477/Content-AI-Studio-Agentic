@@ -32,9 +32,9 @@ export const JOB_TYPE_META = {
     segment: 'blueprint',
   },
   outline_import: {
-    label: 'Outline import',
-    complete: 'Outline import complete',
-    failed: 'Outline import failed',
+    label: 'Blueprint import',
+    complete: 'Blueprint import complete',
+    failed: 'Blueprint import failed',
     segment: 'blueprint',
   },
   style_understand: {

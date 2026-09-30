@@ -5,7 +5,7 @@ import { extractErrorMessage, formatUsageSummaryMessage, hasOverBudget } from '@
 import { resolveProjectId } from '@utils/workspaceContext';
 import { createBlockJobThunks } from '@features/shared/blockJob';
 import { createArchiveThunks } from '@features/shared/documentArchive';
-import { labelsFromState } from '@config/tenantLabels';
+import { labelsFromState, withArticle } from '@config/tenantLabels';
 import { trackAndPollJob, waitForJobTerminal } from '@features/jobs/jobsThunks';
 import { JOB_STATUSES, isTerminalJobStatus } from '@utils/constants';
 import toast from 'react-hot-toast';
@@ -126,13 +126,14 @@ export const {
  */
 export const importBlueprintThunk = createAsyncThunk(
   'blueprint/import',
-  async (payload, { rejectWithValue }) => {
+  async (payload, { getState, rejectWithValue }) => {
     try {
+      const L = labelsFromState(getState);
       if (!payload?.projectId) {
-        return rejectWithValue('Select a project before importing an Outline.');
+        return rejectWithValue(`Select a project before importing ${withArticle(L.blueprint)}.`);
       }
       const result = await blueprintService.importBlueprint(payload, payload.onProgress);
-      toast.success('Outline imported and set as active.');
+      toast.success(`${L.blueprint} imported and set as active.`);
       // Degraded import (e.g. the file couldn't be structured and came in as one
       // section) — tell the user rather than showing only the success toast.
       if (result?.importWarnings?.length) {
@@ -173,7 +174,7 @@ export const pollOutlineImportJobThunk = createAsyncThunk(
       // JobTracker owns success/failure toasts when the job was registered there.
       const tracked = Boolean(getState()?.jobs?.jobsById?.[String(jobId)]);
       if (status.status === JOB_STATUSES.COMPLETED || status.status === 'completed') {
-        if (!tracked) toast.success('Outline imported and set as active.');
+        if (!tracked) toast.success(`${labelsFromState(getState).blueprint} imported and set as active.`);
         // Degraded (single-section) import — the worker records it as the job warning.
         if (status.warning) toast(status.warning, { icon: '⚠️' });
         if (courseId) dispatch(fetchBlueprintsThunk(courseId));
@@ -212,10 +213,11 @@ export const pollOutlineImportJobThunk = createAsyncThunk(
 /** Enqueue an async import, then start polling its job. */
 export const importBlueprintAsyncThunk = createAsyncThunk(
   'blueprint/importAsync',
-  async (payload, { dispatch, rejectWithValue }) => {
+  async (payload, { dispatch, getState, rejectWithValue }) => {
     try {
       if (!payload?.projectId) {
-        return rejectWithValue('Select a project before importing an Outline.');
+        const L = labelsFromState(getState);
+        return rejectWithValue(`Select a project before importing ${withArticle(L.blueprint)}.`);
       }
       const res = await blueprintService.importBlueprintAsync(payload, payload.onProgress);
       if (!res?.job_id) {

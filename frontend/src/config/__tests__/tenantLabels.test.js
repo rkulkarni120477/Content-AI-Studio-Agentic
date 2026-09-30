@@ -4,10 +4,29 @@ import {
   describeOverrides,
   lowerFirst,
   pluralize,
+  withArticle,
   sanitizeOverrides,
   applyTerminology,
   DEFAULT_LABELS,
 } from '../tenantLabels';
+
+describe('withArticle', () => {
+  it('uses "an" before a vowel and "a" otherwise', () => {
+    expect(withArticle('Outline')).toBe('an Outline');
+    expect(withArticle('Blueprint')).toBe('a Blueprint');
+    expect(withArticle('Learning Plan')).toBe('a Learning Plan');
+  });
+
+  it('goes by the spoken first letter for acronyms', () => {
+    expect(withArticle('CDD')).toBe('a CDD');
+    expect(withArticle('SOP')).toBe('an SOP');
+  });
+
+  it('leaves a blank word alone', () => {
+    expect(withArticle('')).toBe('');
+    expect(withArticle(undefined)).toBe(undefined);
+  });
+});
 
 describe('pluralize', () => {
   it('adds -s to ordinary words', () => {
