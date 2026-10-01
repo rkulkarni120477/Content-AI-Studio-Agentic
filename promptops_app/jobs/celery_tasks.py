@@ -29,6 +29,7 @@ from promptops_app.jobs import (
     import_jobs,
     outline_import_jobs,
     regen_jobs,
+    review_jobs,
 )
 
 
@@ -130,6 +131,18 @@ def run_blueprint_regen_section_task(job_id: str) -> None:
     design_jobs.run_blueprint_regen_section_job(job_id)
 
 
+@celery_app.task(name="review.checklist_import")
+def run_checklist_import_task(job_id: str) -> None:
+    """Celery entry point for splitting an uploaded CE checklist into rules."""
+    review_jobs.run_checklist_import_job(job_id)
+
+
+@celery_app.task(name="review.run")
+def run_ce_review_task(job_id: str) -> None:
+    """Celery entry point for running a CE review of a generation."""
+    review_jobs.run_ce_review_job(job_id)
+
+
 # Maps a plain job function → its Celery task, so the dispatch layer can accept
 # the same ``run_*`` reference the ThreadPoolExecutor path uses and route it to
 # the matching task without the call sites needing to know about Celery.
@@ -149,4 +162,6 @@ TASK_FOR_FUNC = {
     design_jobs.run_cdd_regen_section_job: run_cdd_regen_section_task,
     design_jobs.run_blueprint_regen_item_job: run_blueprint_regen_item_task,
     design_jobs.run_blueprint_regen_section_job: run_blueprint_regen_section_task,
+    review_jobs.run_checklist_import_job: run_checklist_import_task,
+    review_jobs.run_ce_review_job: run_ce_review_task,
 }

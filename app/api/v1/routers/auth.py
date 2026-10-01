@@ -84,6 +84,7 @@ def build_user_profile(user) -> UserProfileResponse:
         # settings plus the resolved DIS client, and a client-specific answer that
         # only some endpoints bother to compute is worse than no flag at all.
         digest_pipeline_enabled=settings.digest_pipeline_on_for(dis_profile.get("client_id")),
+        ce_review_enabled=settings.ce_review_enabled,
         **dis_profile,
     )
 

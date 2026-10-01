@@ -1420,6 +1420,179 @@ class FeedbackItem(Base):
     def __init__(self, **kwargs): super().__init__(**kwargs)
 
 
+class ReviewChecklist(Base):
+    """A CE checklist uploaded once per client (tenant) for content review.
+
+    The uploaded document is parsed and split by the LLM into individual
+    ``ReviewChecklistItem`` rules. Scoped to a tenant via ``project_id`` (so
+    ``apply_tenant_filter`` isolates it automatically). ``version`` increments
+    each time the checklist is re-uploaded, so a review can record exactly which
+    checklist version it was judged against. Part of the CE Agent Review feature,
+    gated by ``CE_REVIEW_ENABLED``.
+    """
+    __tablename__ = "review_checklists"
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    project_id         = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    name               = Column(String(255), nullable=False)
+    # The Document row the checklist was parsed from (nullable: manual edits or
+    # legacy rows carry none). SET NULL on delete so removing the source file
+    # never cascades away the rules the user has since curated.
+    source_document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    version            = Column(Integer, nullable=False, default=1)
+    status             = Column(String(20), nullable=False, default="active", index=True)  # active | archived
+    created_by         = Column(String(100), nullable=True)
+    created_at         = Column(DateTime, default=datetime.utcnow)
+    updated_at         = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    items              = relationship(
+        "ReviewChecklistItem", back_populates="checklist", cascade="all, delete-orphan",
+        order_by="ReviewChecklistItem.position",
+    )
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ReviewChecklistItem(Base):
+    """One rule extracted from a CE checklist.
+
+    Carries ``project_id`` directly (denormalised from the parent checklist) so
+    items are tenant-scoped without a join, mirroring ``FeedbackItem``.
+    ``item_key`` is a stable slug that keeps a rule's identity across edits and
+    re-reviews. ``is_mandatory`` marks the rules that block "Ready for Approval"
+    when they fail — imported false by default; the user ticks the ones that
+    matter. ``applies_to`` optionally narrows a rule to certain block types
+    (NULL = applies to the whole lesson).
+    """
+    __tablename__ = "review_checklist_items"
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    checklist_id = Column(
+        Integer, ForeignKey("review_checklists.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    project_id   = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    item_key     = Column(String(80), nullable=False)          # stable slug within a checklist
+    section      = Column(String(255), nullable=True)          # grouping heading from the source doc
+    rule_text    = Column(Text, nullable=False)                # the rule as it will be shown/evaluated
+    is_mandatory = Column(Boolean, nullable=False, default=False)
+    applies_to   = Column(JSON, nullable=True)                 # optional list of block types; NULL = all
+    guidance     = Column(Text, nullable=True)                 # optional how-to-satisfy note
+    position     = Column(Integer, nullable=False, default=0)  # display / evaluation order
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    checklist    = relationship("ReviewChecklist", back_populates="items")
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ContentReview(Base):
+    """One CE review run of a single generation (lesson).
+
+    Records which basis the content was judged against (an uploaded checklist,
+    or the project's Style writing rules as a fallback), the content fingerprint
+    (so an identical re-run returns the previous result instead of re-billing),
+    the run lifecycle, and — from later steps — the verdict and finding counts.
+
+    ``review_basis``: "checklist" | "style" | "none".
+    ``run_status``:   queued | running | completed | failed | cancelled.
+    ``verdict``:      null until Step 6 computes it.
+    Part of the CE Agent Review feature, gated by ``CE_REVIEW_ENABLED``.
+    """
+    __tablename__ = "content_reviews"
+    id                  = Column(Integer, primary_key=True, autoincrement=True)
+    generation_id       = Column(
+        Integer, ForeignKey("generations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    project_id          = Column(Integer, nullable=True, index=True)
+    course_id           = Column(Integer, nullable=True)
+    # Review basis — what the content was judged against.
+    checklist_id        = Column(Integer, ForeignKey("review_checklists.id", ondelete="SET NULL"), nullable=True)
+    review_basis        = Column(String(20), nullable=False, default="none")   # checklist | style | none
+    checklist_version   = Column(String(40), nullable=True)
+    # Content identity for skip-unchanged.
+    content_fingerprint = Column(String(64), nullable=False, index=True)
+    # Lifecycle.
+    job_id              = Column(String(64), nullable=True)
+    run_status          = Column(String(20), nullable=False, default="queued", index=True)
+    verdict             = Column(String(30), nullable=True)     # computed in Step 6
+    counts              = Column(JSON, nullable=True)
+    model_used          = Column(String(160), nullable=True)
+    rerun_of_id         = Column(Integer, ForeignKey("content_reviews.id", ondelete="SET NULL"), nullable=True)
+    error_message       = Column(Text, nullable=True)
+    created_by          = Column(String(100), nullable=True)
+    created_at          = Column(DateTime, default=datetime.utcnow, index=True)
+    started_at          = Column(DateTime, nullable=True)
+    completed_at        = Column(DateTime, nullable=True)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ReviewChecklistResult(Base):
+    """One checklist rule's outcome for a review — only non-pass rows stored.
+
+    Absence of a row for a rule means it passed. ``rule_text`` is snapshotted so
+    the result stays readable even if the rule is later edited. Reached only via
+    a tenant-scoped ContentReview, so no project_id is needed here.
+    """
+    __tablename__ = "review_checklist_results"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    review_id      = Column(Integer, ForeignKey("content_reviews.id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    item_key       = Column(String(80), nullable=False)     # which rule
+    rule_text      = Column(Text, nullable=True)             # snapshot
+    status         = Column(String(12), nullable=False)     # fail | warning | na
+    explanation    = Column(Text, nullable=True)
+    recommendation = Column(Text, nullable=True)
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ReviewFinding(Base):
+    """One issue detected in a review — anchored to a verbatim quote, optionally
+    with tiered replacement text. ``fingerprint`` powers dedup + dismissal
+    carry-forward; apply/dismiss columns are filled in Step 5.
+
+    tier:   inline | large | guidance    status: open | applied | dismissed | stale | apply_failed
+    """
+    __tablename__ = "review_findings"
+    id                    = Column(Integer, primary_key=True, autoincrement=True)
+    review_id             = Column(Integer, ForeignKey("content_reviews.id", ondelete="CASCADE"), nullable=False)
+    block_id              = Column(Integer, nullable=True, index=True)   # null = cross-block
+    project_id            = Column(Integer, nullable=True, index=True)   # denormalised for tenant filter
+    category              = Column(String(40), nullable=False)
+    severity              = Column(String(10), nullable=False)          # blocker | major | minor
+    checklist_item_key    = Column(String(80), nullable=True)
+    title                 = Column(String(255), nullable=True)
+    detail                = Column(Text, nullable=True)
+    anchor_quote          = Column(String(300), nullable=True)
+    anchor_hash           = Column(String(64), nullable=True)
+    suggested_replacement = Column(Text, nullable=True)
+    tier                  = Column(String(12), nullable=False, default="guidance")
+    auto_applicable       = Column(Boolean, nullable=False, default=False)
+    status                = Column(String(12), nullable=False, default="open")
+    fingerprint           = Column(String(64), nullable=True, index=True)
+    # Apply / dismiss (Step 5).
+    applied_version_id    = Column(Integer, nullable=True)
+    applied_by            = Column(String(100), nullable=True)
+    applied_at            = Column(DateTime, nullable=True)
+    dismissed_by          = Column(String(100), nullable=True)
+    dismissed_at          = Column(DateTime, nullable=True)
+    dismiss_reason        = Column(Text, nullable=True)
+    created_at            = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
+class ReviewDismissal(Base):
+    """A dismissed finding's fingerprint, kept per generation so re-reviewing the
+    same lesson keeps it dismissed (decision 8). Unique on (generation_id, fingerprint).
+    """
+    __tablename__ = "review_dismissals"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    generation_id = Column(Integer, ForeignKey("generations.id", ondelete="CASCADE"), nullable=False)
+    project_id    = Column(Integer, nullable=True, index=True)
+    fingerprint   = Column(String(64), nullable=False)
+    dismissed_by  = Column(String(100), nullable=True)
+    dismissed_at  = Column(DateTime, nullable=True)
+    reason        = Column(Text, nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    def __init__(self, **kwargs): super().__init__(**kwargs)
+
+
 # =============================================================================
 # Database Initialization & Migrations
 # =============================================================================

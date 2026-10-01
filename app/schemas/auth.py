@@ -104,6 +104,10 @@ class UserProfileResponse(BaseModel):
         default=False,
         description="Whether block-wide (digest-pipeline) CDD/Blueprint generation is enabled for this user's DIS client.",
     )
+    ce_review_enabled: bool = Field(
+        default=False,
+        description="Whether the CE Agent Review (checklist-based content review) feature is enabled.",
+    )
 
 
 class TokenResponse(BaseModel):

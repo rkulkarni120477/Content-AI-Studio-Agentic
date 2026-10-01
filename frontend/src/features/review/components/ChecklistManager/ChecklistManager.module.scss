@@ -1,0 +1,150 @@
+.manager {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.uploadRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.uploadFields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 1 1 320px;
+}
+
+.fileInput {
+  font-size: 0.82rem;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.nameInput {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.hint {
+  font-size: 0.82rem;
+  color: #6b7280;
+  margin: 0;
+}
+
+.empty {
+  font-size: 0.88rem;
+  color: #6b7280;
+  margin: 0.25rem 0;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
+}
+
+.badge {
+  background: #eef2ff;
+  color: #4338ca;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.metaText {
+  color: #6b7280;
+  font-size: 0.82rem;
+}
+
+.tableWrap {
+  overflow: auto;            /* scroll a long rules list within a bounded height */
+  max-height: 340px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  min-width: 520px;
+
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid #f3f4f6;
+    vertical-align: top;
+  }
+
+  thead th {
+    position: sticky;        /* header stays visible while the rules scroll */
+    top: 0;
+    background: #f9fafb;
+    color: #6b7280;
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+}
+
+.colSel   { width: 2rem; text-align: center; }
+.colNum   { width: 2.5rem; color: #9ca3af; font-variant-numeric: tabular-nums; }
+.colSection { width: 9rem; color: #6b7280; }
+.colMand  { width: 6rem; text-align: center; }
+.colAct   { width: 4.5rem; text-align: right; white-space: nowrap; }
+
+.rowSelected { background: #eef2ff; }
+
+.metaActions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.ruleText { line-height: 1.4; }
+
+.editBox {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.editArea {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #c7cbd1;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.editActions {
+  display: flex;
+  gap: 0.4rem;
+}

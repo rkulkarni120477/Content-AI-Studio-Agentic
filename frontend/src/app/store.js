@@ -14,6 +14,7 @@ import promptsReducer    from '@features/prompts/promptsSlice';
 import analyticsReducer  from '@features/analytics/analyticsSlice';
 import importReducer     from '@features/import/importSlice';
 import jobsReducer       from '@features/jobs/jobsSlice';
+import reviewReducer     from '@features/review/reviewSlice';
 
 const store = configureStore({
   reducer: {
@@ -30,6 +31,7 @@ const store = configureStore({
     analytics: analyticsReducer,
     import:    importReducer,
     jobs:      jobsReducer,
+    review:    reviewReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

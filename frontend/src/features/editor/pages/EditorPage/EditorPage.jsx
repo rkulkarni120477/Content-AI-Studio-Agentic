@@ -52,6 +52,8 @@ import Button from '@components/common/Button/Button';
 import Select from '@components/common/Select/Select';
 import Loader from '@components/common/Loader/Loader';
 import EditorBlockCard from '@features/editor/components/EditorBlockCard/EditorBlockCard';
+import ReviewPanel from '@features/review/components/ReviewPanel/ReviewPanel';
+import { useAuth } from '@hooks/useAuth';
 import { useLabels } from '@hooks/useLabels';
 import styles from './EditorPage.module.scss';
 
@@ -76,6 +78,8 @@ export default function EditorPage() {
   const { courseId } = useParams();
   const dispatch = useAppDispatch();
   const L = useLabels();
+  const { user } = useAuth();
+  const ceReviewEnabled = Boolean(user?.ce_review_enabled);
 
   const generations = useAppSelector(selectGenerations);
   const selectedGenId = useAppSelector(selectSelectedGenerationId);
@@ -557,6 +561,14 @@ export default function EditorPage() {
           title="Content Editor & Export"
           subtitle="Review, edit, and refine generated blocks. Submit quality reviews, run AI evaluations, and export to Markdown, JSON, HTML, or DOCX."
         />
+
+        {ceReviewEnabled && (
+          <ReviewPanel
+            generationId={selectedGenId || null}
+            projectId={selCourse?.project_id ?? selProject?.id ?? null}
+            onContentChanged={() => selectedGenId && dispatch(fetchGenerationBlocksThunk(selectedGenId))}
+          />
+        )}
 
         <div className={styles.filterRow}>
           <div className={styles.filterRow__col}>

@@ -115,6 +115,19 @@ if settings.import_courses_enabled:
 api_v1_router.include_router(blocks_router,    tags=["Blocks"])
 api_v1_router.include_router(workflow_router,  prefix="/workflow",   tags=["Workflow"])
 
+# ── CE Agent Review (checklist-based content review) ──────────────────────────
+# Mounted ONLY when the flag is on — with it off the API surface is byte-for-byte
+# identical to today. See docs/ce-agent-review-plan.md.
+if settings.ce_review_enabled:
+    from app.api.v1.routers.review_checklists import router as review_checklists_router
+    from app.api.v1.routers.reviews import router as reviews_router
+    api_v1_router.include_router(
+        review_checklists_router, prefix="/review-checklists", tags=["CE Review"],
+    )
+    api_v1_router.include_router(
+        reviews_router, prefix="/reviews", tags=["CE Review"],
+    )
+
 # ── Observability ─────────────────────────────────────────────────────────────
 api_v1_router.include_router(analytics_router, prefix="/analytics",  tags=["Analytics"])
 
