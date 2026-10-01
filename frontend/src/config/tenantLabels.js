@@ -74,6 +74,17 @@ export function lowerFirst(word) {
   return word.charAt(0).toLowerCase() + word.slice(1);
 }
 
+/**
+ * Prefix a display word with "a" or "an", so a renamed label keeps its grammar:
+ * "an Outline", "a Blueprint". Acronyms go by how the first letter is spoken
+ * ("a CDD", "an SOP"); other words by their first letter being a vowel.
+ */
+export function withArticle(word) {
+  if (!word) return word;
+  const anLetters = /^[A-Z0-9]{2,}$/.test(word) ? /^[AEFHILMNORSX]/ : /^[aeiou]/i;
+  return `${anLetters.test(word) ? 'an' : 'a'} ${word}`;
+}
+
 /** Drop unknown keys and blank values — a blank box means "use the default". */
 export function sanitizeOverrides(overrides) {
   const clean = {};
