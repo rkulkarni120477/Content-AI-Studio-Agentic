@@ -2323,7 +2323,8 @@ def export_cdd(
         for label, content in split_cdd_worksheets(cs_text):
             clean = _strip_ui_hidden_text(content)
             if (clean or "").strip():
-                sheets.append((label, clean))
+                # Swap the tenant's word into the body too (e.g. "CONTENT TYPE: CDD").
+                sheets.append((label, deliverable_apply_terminology(clean, db, cdd.project_id)))
         if sheets:
             buf = build_xlsx_worksheets(disp_title, sheets)
             # Prefixed with the tenant's own word for the deliverable. A tenant
@@ -2370,10 +2371,13 @@ def export_cdd(
         if content:
             content = _strip_ui_hidden_text(content)
             if content:
+                # Swap the tenant's word into the body (e.g. "CONTENT TYPE: CDD").
+                content = deliverable_apply_terminology(content, db, cdd.project_id)
                 export_blocks.append((section_label, content))
 
     if not export_blocks:
-        export_blocks = [("CDD Content", version_record.full_content or "")]
+        export_blocks = [(deliverable_apply_terminology("CDD Content", db, cdd.project_id),
+                          deliverable_apply_terminology(version_record.full_content or "", db, cdd.project_id))]
 
     export_request = ExportRequest(
         fmt=format,

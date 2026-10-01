@@ -1935,7 +1935,8 @@ def export_blueprint(
         for label, content in split_cdd_worksheets(ver.full_content or ""):
             clean = _strip_ui_hidden_text(content)
             if (clean or "").strip():
-                sheets.append((label, clean))
+                # Swap the tenant's word into the body (e.g. "CONTENT TYPE: BLUEPRINT").
+                sheets.append((label, deliverable_apply_terminology(clean, db, bp.project_id)))
         if sheets:
             buf = build_xlsx_worksheets(disp_title, sheets)
             fname = f"{bp_prefix}_{disp_title.replace(' ', '_')}_{bp.active_version}.xlsx"
@@ -1967,10 +1968,12 @@ def export_blueprint(
         content = _strip_ui_hidden_text(content)
         if not content:
             continue
-        export_blocks.append((section_key, content))
+        # Swap the tenant's word into the body (e.g. "CONTENT TYPE: BLUEPRINT").
+        export_blocks.append((section_key, deliverable_apply_terminology(content, db, bp.project_id)))
 
     if not export_blocks:
-        export_blocks = [("Blueprint Content", ver.full_content or "")]
+        export_blocks = [("Blueprint Content",
+                          deliverable_apply_terminology(ver.full_content or "", db, bp.project_id))]
 
     export_req = ExportRequest(
         fmt=format, topic=disp_title,
@@ -2035,7 +2038,7 @@ def export_module_lessons(
 
     export_req = ExportRequest(
         fmt=format, topic=disp_title,
-        blocks=[(b.block_label, b.content or "") for b in lesson_blocks],
+        blocks=[(b.block_label, deliverable_apply_terminology(b.content or "", db, bp.project_id)) for b in lesson_blocks],
         user_name=current_user.username, is_admin=(current_user.role == "admin"),
         entity_type="module", entity_id=bp.id,
         file_name=f"{disp_title.replace(' ', '_')}_lessons.{format}",

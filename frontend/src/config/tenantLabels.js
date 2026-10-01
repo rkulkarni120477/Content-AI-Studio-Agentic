@@ -178,14 +178,19 @@ export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS, o
   if (!text || typeof text !== 'string') return text;
   let out = text;
   const identifiers = Boolean(options?.identifiers);
+  // UPPERCASE forms (['TITLE', ...]) cover ALL-CAPS markers inside generated
+  // content, e.g. "CONTENT TYPE: BLUEPRINT". CDD is already an all-caps acronym,
+  // so its existing entry handles both cases.
   const all = {
     title: [
       ['Titles', L.titles], ['Title', L.title],
       ['titles', L.titlesLower], ['title', L.titleLower],
+      ['TITLES', (L.titles || '').toUpperCase()], ['TITLE', (L.title || '').toUpperCase()],
     ],
     style: [
       ['Styles', L.styles], ['Style', L.style],
       ['styles', L.stylesLower], ['style', L.styleLower],
+      ['STYLES', (L.styles || '').toUpperCase()], ['STYLE', (L.style || '').toUpperCase()],
     ],
     cdd: [
       ['CDDs', L.cdds], ['CDD', L.cdd],
@@ -194,6 +199,7 @@ export function applyTerminology(text, L = FALLBACK_LABELS, keys = LABEL_KEYS, o
     blueprint: [
       ['Blueprints', L.blueprints], ['Blueprint', L.blueprint],
       ['blueprints', L.blueprintsLower], ['blueprint', L.blueprintLower],
+      ['BLUEPRINTS', (L.blueprints || '').toUpperCase()], ['BLUEPRINT', (L.blueprint || '').toUpperCase()],
     ],
   };
   for (const key of keys) {

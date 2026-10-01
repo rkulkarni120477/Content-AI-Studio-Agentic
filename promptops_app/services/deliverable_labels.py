@@ -74,9 +74,11 @@ def filename_slug(word: str) -> str:
 def apply_terminology(text: str, db: Any, project_id: Optional[str], keys=None) -> str:
     """Swap default product words in a display/deliverable string for the tenant's.
 
-    Whole-word, case-sensitive, singular + plural. Display-only — used for the
-    text that goes INTO a deliverable (heading, filename); it never touches
-    stored data, identifiers or prompts. Mirrors the frontend applyTerminology
+    Whole-word, case-sensitive, singular + plural, in Title/UPPER/lower case.
+    UPPER covers ALL-CAPS markers in generated content (e.g. "CONTENT TYPE:
+    BLUEPRINT"). Display-only — used for the text that goes INTO a deliverable
+    (heading, filename, rendered body); it never touches stored data, identifiers
+    or prompts. Mirrors the frontend applyTerminology
     (frontend/src/config/tenantLabels.js). A tenant with no override, or any
     lookup failure, yields the text unchanged.
     """
@@ -88,7 +90,17 @@ def apply_terminology(text: str, db: Any, project_id: Optional[str], keys=None) 
         word = label(db, project_id, key)
         if not default or not word or word == default:
             continue
-        # Plural before singular so "CDDs" isn't half-rewritten by the singular pass.
-        for frm, to in ((f"{default}s", f"{word}s"), (default, word)):
+        # Title/UPPER/lower, plural before singular; dedupe by source so an
+        # acronym like CDD (whose UPPER form equals its default) maps only once.
+        variants = [
+            (f"{default}s", f"{word}s"), (default, word),
+            (f"{default.upper()}S", f"{word.upper()}S"), (default.upper(), word.upper()),
+            (f"{default.lower()}s", f"{word.lower()}s"), (default.lower(), word.lower()),
+        ]
+        seen = set()
+        for frm, to in variants:
+            if not frm or frm in seen or frm == to:
+                continue
+            seen.add(frm)
             out = re.sub(rf"\b{re.escape(frm)}\b", to, out)
     return out
