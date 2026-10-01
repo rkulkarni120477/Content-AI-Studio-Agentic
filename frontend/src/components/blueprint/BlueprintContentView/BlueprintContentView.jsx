@@ -186,7 +186,7 @@ export default function BlueprintContentView({
               onClick={() => toggle(id)}
               aria-expanded={open}
             >
-              <span>{applyTerminology(sec.title, L)}</span>
+              <span>{applyTerminology(sec.title, L, ['blueprint'])}</span>
               <span aria-hidden="true">{open ? '▾' : '▸'}</span>
             </button>
             {open && (
@@ -194,7 +194,7 @@ export default function BlueprintContentView({
                 <div
                   className={`${styles.section__text} markdown-content`}
                   dangerouslySetInnerHTML={{
-                    __html: renderMarkdownPreview(applyTerminology(sec.content, L)),
+                    __html: renderMarkdownPreview(applyTerminology(sec.content, L, ['blueprint'])),
                   }}
                 />
                 {editable && (
