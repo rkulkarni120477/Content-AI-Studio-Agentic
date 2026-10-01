@@ -43,6 +43,12 @@ _CROSS_SYS = (
     'Return ONLY JSON: {"issues":[{"category":"..","severity":"major|minor",'
     '"title":"..","detail":"..","quote":"<verbatim snippet>"}]}.'
 )
+# Appended only when checklist rules are supplied — asks the model to map each issue
+# to the related rule key (AC-3), or null when none applies.
+_RULE_SUFFIX = (
+    ' Also add "rule_key" to each issue: the checklist rule key (from the RULES list) '
+    "this issue most relates to, or null if none. Use a key exactly as listed."
+)
 
 
 def _call(system: str, user: str, *, model: str, usage_ctx) -> tuple[list, bool]:
@@ -75,7 +81,7 @@ def _tier(block_len: int, quote: str, replacement: str | None) -> tuple[str, boo
     return "guidance", False
 
 
-def _build(raw: dict, *, block_id, block_content: str, project_id) -> dict | None:
+def _build(raw: dict, *, block_id, block_content: str, project_id, valid_keys: set | None = None) -> dict | None:
     """Turn one raw LLM issue into a finding dict, or None to drop it."""
     category = str(raw.get("category", "")).strip().lower()
     quote = str(raw.get("quote") or "")[:_QUOTE_MAX]
@@ -86,6 +92,10 @@ def _build(raw: dict, *, block_id, block_content: str, project_id) -> dict | Non
     replacement = raw.get("replacement")
     replacement = str(replacement)[:_REPL_MAX] if replacement else None
     tier, auto = (_tier(len(block_content or ""), quote, replacement) if anchored else ("guidance", False))
+    # Related checklist rule (AC-3) — only kept when it's a real key from this checklist.
+    rule_key = str(raw.get("rule_key") or "").strip()[:80] or None
+    if rule_key and valid_keys is not None and rule_key not in valid_keys:
+        rule_key = None
     # instrumentation: replacement size relative to block (tunes tier thresholds later)
     if replacement and block_content:
         _log.info("finding_ratio cat=%s ratio=%.3f tier=%s", category,
@@ -95,12 +105,18 @@ def _build(raw: dict, *, block_id, block_content: str, project_id) -> dict | Non
         "title": (str(raw.get("title") or "")[:255] or None), "detail": (str(raw.get("detail") or "") or None),
         "anchor_quote": quote, "anchor_hash": anchor_hash(quote),
         "suggested_replacement": replacement, "tier": tier, "auto_applicable": auto,
+        "checklist_item_key": rule_key,
         "fingerprint": anchor_hash(f"{block_id}|{category}|{quote}"),
     }
 
 
-def detect_issues(db, review, parts: list[dict], *, model_choice: str | None = None) -> dict:
-    """Run detection, persist findings (deduped, capped), return findings tally."""
+def detect_issues(db, review, parts: list[dict], *, model_choice: str | None = None,
+                  rules: list[dict] | None = None) -> dict:
+    """Run detection, persist findings (deduped, capped), return findings tally.
+
+    `rules` (item_key/rule_text dicts) lets the model tag each issue with the
+    related checklist rule key (AC-3); omitted → findings carry no rule key.
+    """
     from promptops_app.database import ReviewFinding
 
     model = model_choice or DEFAULT_MODEL_NAME
@@ -109,29 +125,39 @@ def detect_issues(db, review, parts: list[dict], *, model_choice: str | None = N
     findings: list[dict] = []
     failed_calls = 0            # track AI failures so a total outage isn't a clean run (#3)
 
+    # Checklist rule reference — fed to the prompt so issues can map to a rule key (AC-3).
+    rules = rules or []
+    valid_keys = {r["item_key"] for r in rules} or None
+    rules_ref = "\n".join(f"- [{r['item_key']}] {r['rule_text']}" for r in rules)
+    block_sys = _BLOCK_SYS + _RULE_SUFFIX if rules else _BLOCK_SYS
+    cross_sys = _CROSS_SYS + _RULE_SUFFIX if rules else _CROSS_SYS
+    rules_block = f"RULES:\n{rules_ref}\n\n" if rules else ""
+
     # Per-block passes.
     for p in parts:
         content = p.get("content") or ""
         if not content.strip():
             continue
-        issues, ok = _call(_BLOCK_SYS, f"BLOCK:\n{content}", model=model, usage_ctx=usage_ctx)
+        issues, ok = _call(block_sys, f"{rules_block}BLOCK:\n{content}", model=model, usage_ctx=usage_ctx)
         if not ok:
             failed_calls += 1
         for raw in issues:
-            f = _build(raw, block_id=p.get("block_id"), block_content=content, project_id=review.project_id)
+            f = _build(raw, block_id=p.get("block_id"), block_content=content,
+                       project_id=review.project_id, valid_keys=valid_keys)
             if f:
                 findings.append(f)
 
     # Cross-block pass (consistency + repetition) — quotes anchor to whichever block holds them.
     lesson = "\n\n".join(f"## {p.get('block_label') or ''}\n{p.get('content') or ''}" for p in parts)
     by_block = {p.get("block_id"): (p.get("content") or "") for p in parts}
-    cross_issues, ok = _call(_CROSS_SYS, f"LESSON:\n{lesson}", model=model, usage_ctx=usage_ctx)
+    cross_issues, ok = _call(cross_sys, f"{rules_block}LESSON:\n{lesson}", model=model, usage_ctx=usage_ctx)
     if not ok:
         failed_calls += 1
     for raw in cross_issues:
         quote = str(raw.get("quote") or "")[:_QUOTE_MAX]
         host = next((bid for bid, c in by_block.items() if contains(c, quote)), None)
-        f = _build(raw, block_id=host, block_content=by_block.get(host, ""), project_id=review.project_id)
+        f = _build(raw, block_id=host, block_content=by_block.get(host, ""),
+                   project_id=review.project_id, valid_keys=valid_keys)
         if f:
             findings.append(f)
 

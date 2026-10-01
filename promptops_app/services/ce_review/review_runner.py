@@ -42,13 +42,18 @@ def _clear_orphaned_active(db, generation_id: int) -> None:
         ContentReview.generation_id == generation_id,
         ContentReview.run_status.in_(("queued", "running")),
     ).all()
+    changed = False
     for r in actives:
         job = db.query(GenerationJob).filter(GenerationJob.id == r.job_id).first() if r.job_id else None
         if job is None or job.status in ("completed", "failed", "cancelled"):
             r.run_status = "failed"
             r.error_message = "Interrupted (server restart or lost worker). Please run the review again."
             r.completed_at = _now()
-    db.flush()
+            changed = True
+    # Commit, not just flush: the reuse path returns without committing, which would
+    # otherwise roll this cleanup back and leave the orphan stuck "running" forever (#1).
+    if changed:
+        db.commit()
 
 
 def prepare_review(
@@ -169,6 +174,7 @@ def execute_review(db, review) -> None:
 
     # Pass 1 — checklist evaluation (checklist basis only).
     checklist_tally = {"pass": 0, "fail": 0, "warning": 0, "na": 0}
+    items = []
     if review.review_basis == "checklist" and review.checklist_id and lesson.strip():
         checklist = db.query(ReviewChecklist).filter(ReviewChecklist.id == review.checklist_id).first()
         items = list(checklist.items) if checklist else []
@@ -176,11 +182,13 @@ def execute_review(db, review) -> None:
             from promptops_app.services.ce_review.checklist_pass import evaluate_checklist
             checklist_tally = evaluate_checklist(db, review, lesson, items, model_choice=review.model_used)
 
-    # Pass 2 — issue detection (both bases).
+    # Pass 2 — issue detection (both bases). Pass checklist rules so each issue can
+    # map to the related rule key (AC-3).
     findings_tally = {"total": 0, "more": 0, "applied": 0, "dismissed": 0}
     if parts:
         from promptops_app.services.ce_review.issue_pass import detect_issues
-        findings_tally = detect_issues(db, review, parts, model_choice=review.model_used)
+        rules = [{"item_key": it.item_key, "rule_text": it.rule_text} for it in items]
+        findings_tally = detect_issues(db, review, parts, model_choice=review.model_used, rules=rules)
 
     # If any AI check failed, the review is incomplete — mark it failed rather than
     # showing a false "Ready" from an empty result (#3).

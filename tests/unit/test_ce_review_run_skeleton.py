@@ -147,6 +147,25 @@ def test_orphaned_active_review_is_cleared(db):
     assert reused is False and review.run_status == "queued"
 
 
+def test_orphan_cleanup_survives_reuse_path_rollback(db):
+    # Reuse path returns without committing; the orphan cleanup must still persist (#1).
+    from promptops_app.database import ContentReview
+    _make_checklist(db)
+    gen = _make_generation(db)
+    done, _ = prepare_review(db, gen, actor="alice")
+    execute_review(db, done)                                  # a completed run to reuse
+    orphan = ContentReview(generation_id=gen.id, project_id=PROJECT_ID, review_basis="checklist",
+                           checklist_version="stale", content_fingerprint="other",
+                           run_status="running", job_id=None)
+    db.add(orphan); db.flush()
+    orphan_id = orphan.id
+
+    review, reused = prepare_review(db, gen, actor="bob")     # identical content → reuse path
+    assert reused is True
+    db.rollback()                                            # simulate request session closing uncommitted
+    assert db.query(ContentReview).get(orphan_id).run_status == "failed"
+
+
 def test_style_fallback_when_no_checklist(db):
     # No checklist; an active global style with writing rules.
     db.add(Style(style_id="s1", name="House Style", is_active=True,
@@ -234,6 +253,34 @@ def test_issue_detection_anchors_tiers_and_dedups(db, monkeypatch):
     assert f.severity == "major"                 # grammar clamped down from blocker
     assert f.tier == "inline" and f.auto_applicable is True   # short replacement, anchored
     assert review.counts["findings"]["total"] == 1
+
+
+def test_issue_maps_to_checklist_rule_key_valid_only(db, monkeypatch):
+    from types import SimpleNamespace
+    from promptops_app.database import ReviewFinding
+    from promptops_app.services.ce_review import checklist_pass, issue_pass
+
+    _make_checklist(db)   # single rule r001
+    gen = _make_generation(db, blocks=("The sky is often blue during the day on clear afternoons.",))
+    review, _ = prepare_review(db, gen, actor="alice")
+    monkeypatch.setattr(checklist_pass, "generate_with_metadata",
+                        lambda *a, **k: SimpleNamespace(status="ok", truncated=False, text='{"results":[]}'))
+
+    # One issue cites the real rule key r001; another cites a bogus r999 → key dropped.
+    def fake(model, system, user, **kw):
+        if "CROSS-block" in system:
+            return SimpleNamespace(status="ok", truncated=False, text='{"issues":[]}')
+        return SimpleNamespace(status="ok", truncated=False, text=(
+            '{"issues":[{"category":"unsupported","severity":"major","title":"a","quote":"often blue",'
+            '"rule_key":"r001"},'
+            '{"category":"unsupported","severity":"minor","title":"b","quote":"clear afternoons",'
+            '"rule_key":"r999"}]}'))
+    monkeypatch.setattr(issue_pass, "generate_with_metadata", fake)
+
+    execute_review(db, review)
+    rows = {f.title: f for f in db.query(ReviewFinding).filter(ReviewFinding.review_id == review.id).all()}
+    assert rows["a"].checklist_item_key == "r001"   # valid key kept
+    assert rows["b"].checklist_item_key is None      # unknown key discarded
 
 
 def _checklist_llm(monkeypatch, status, item_key="r001"):

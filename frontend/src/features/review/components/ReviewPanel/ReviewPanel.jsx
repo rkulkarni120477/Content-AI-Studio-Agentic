@@ -74,10 +74,15 @@ export default function ReviewPanel({ generationId = null, projectId = null, onC
 
   // Resume tracking a still-running review (e.g. after a page reload) by polling
   // its status until it finishes — so the panel never gets stuck on "Running…" (#10).
+  // Bounded (10 min) so a truly stalled job can't poll forever.
   useEffect(() => {
     const active = review?.run_status === 'running' || review?.run_status === 'queued';
     if (!active || isRunning || !generationId) return undefined;
-    const t = setInterval(() => dispatch(fetchLatestReviewThunk(generationId)), 3000);
+    let polls = 0;
+    const t = setInterval(() => {
+      if (++polls > 200) { clearInterval(t); return; }   // ~10 min ceiling
+      dispatch(fetchLatestReviewThunk(generationId));
+    }, 3000);
     return () => clearInterval(t);
   }, [review?.run_status, review?.id, isRunning, generationId, dispatch]);
 
@@ -243,6 +248,7 @@ export default function ReviewPanel({ generationId = null, projectId = null, onC
                           {f.title || f.category}
                           <span className={styles.cat}>{f.category.replace(/_/g, ' ')}</span>
                           {f.block_label && <span className={styles.loc}>in {f.block_label}</span>}
+                          {f.checklist_item_key && <span className={styles.loc}>rule {f.checklist_item_key}</span>}
                           {f.status !== 'open' && <span className={`${styles.fstat} ${styles[`fstat_${f.status}`] || ''}`}>{f.status}</span>}
                         </div>
                         {f.detail && <div className={styles.resultExpl}>{f.detail}</div>}
