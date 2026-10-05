@@ -153,7 +153,7 @@ def create_sqlite_db_from_sql(sql_file: str, output_db: str) -> None:
 def main():
     """Main conversion workflow."""
     repo_root = Path(__file__).parent.parent
-    dump_file = repo_root / 'db' / 'cas-prod-db 1'
+    dump_file = repo_root / 'db' / 'cas-prod-db.dump'
     output_db = repo_root / 'content_ai.db'
 
     print(f"PostgreSQL → SQLite Conversion")
