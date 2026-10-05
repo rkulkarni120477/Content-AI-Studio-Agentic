@@ -396,7 +396,7 @@ def delete_style(
     style_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("style.delete")),
-) -> None:
+):
     """Hard-delete a style. Admin only."""
     style = _get_style_or_404(db, style_id, current_user)
     db.delete(style)

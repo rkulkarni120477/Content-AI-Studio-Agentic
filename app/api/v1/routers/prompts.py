@@ -703,7 +703,7 @@ def unset_fixing(
     course_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("prompts.view")),
-) -> None:
+):
     from promptops_app.repositories import prompt_repository
 
     ids = _scope_ids(scope_level, project_id, cluster_id, course_id)
@@ -1053,7 +1053,7 @@ def update_prompt(
 
 
 @router.delete("/{prompt_id}", status_code=204, summary="Delete a prompt asset")
-def delete_prompt(prompt_id: int, request: Request, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.manage"))) -> None:
+def delete_prompt(prompt_id: int, request: Request, db: Session = Depends(get_db), current_user=Depends(require_permission("prompts.manage"))):
     """Hard-delete a prompt and all its versions. Admin or Lead only."""
     prompt = _get_prompt_or_404(db, prompt_id, for_write=True, **_tenant_kwargs(current_user))
     name = prompt.name

@@ -463,7 +463,7 @@ def delete_feedback_item(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("feedback.delete")),
     tenant=Depends(get_tenant_context),
-) -> None:
+):
     from promptops_app.database import FeedbackItem
 
     tenant_id, is_platform_admin = tenant

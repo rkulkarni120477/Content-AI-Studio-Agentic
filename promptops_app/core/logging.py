@@ -86,29 +86,38 @@ def start_session_log(username: str) -> None:
     Call this once, right after a successful login. Any previous session
     file for the same username is detached (left on disk as history) and
     this new one takes over as the live target.
+
+    Runs in a background thread to avoid blocking login responses.
     """
-    configure_logging()
+    def _setup_session_log():
+        try:
+            configure_logging()
+            Path("logs/sessions").mkdir(parents=True, exist_ok=True)
+            path = f"logs/sessions/{_safe_filename(username)}_{time.strftime('%Y%m%d_%H%M%S')}.log"
 
-    Path("logs/sessions").mkdir(parents=True, exist_ok=True)
-    path = f"logs/sessions/{_safe_filename(username)}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+            handler = logging.FileHandler(path, encoding="utf-8")
+            handler.setFormatter(_JsonFormatter())
+            handler.addFilter(_SessionFilter(username))
 
-    handler = logging.FileHandler(path, encoding="utf-8")
-    handler.setFormatter(_JsonFormatter())
-    handler.addFilter(_SessionFilter(username))
+            root = logging.getLogger()
+            with _session_lock:
+                old = _session_handlers.get(username)
+                if old is not None:
+                    root.removeHandler(old)
+                    old.close()
+                root.addHandler(handler)
+                _session_handlers[username] = handler
 
-    root = logging.getLogger()
-    with _session_lock:
-        old = _session_handlers.get(username)
-        if old is not None:
-            root.removeHandler(old)
-            old.close()
-        root.addHandler(handler)
-        _session_handlers[username] = handler
+            session_username_ctx.set(username)
+            logging.getLogger(__name__).info(
+                "session_log_started", extra={"event": "session_log_started", "username": username, "file": path},
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "session_log_setup_failed", extra={"error": str(e), "username": username}
+            )
 
-    session_username_ctx.set(username)
-    logging.getLogger(__name__).info(
-        "session_log_started", extra={"event": "session_log_started", "username": username, "file": path},
-    )
+    threading.Thread(target=_setup_session_log, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

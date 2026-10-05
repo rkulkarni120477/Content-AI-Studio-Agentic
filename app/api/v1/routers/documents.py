@@ -191,7 +191,7 @@ def delete_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
-) -> None:
+):
     """Soft-archive a document by marking it inactive."""
     doc = _get_document_or_404(db, document_id)
     doc.status = "archived"

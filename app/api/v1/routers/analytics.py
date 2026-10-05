@@ -19,7 +19,7 @@ import logging
 from datetime import date as _date, datetime as _dt, timedelta as _timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -311,7 +311,7 @@ def _resolve_audit_trail_query(query: AuditTrailFilters, current_user) -> tuple[
     ),
 )
 def list_audit_trail(
-    filters: AuditTrailQuery,
+    filters: AuditTrailQuery = Body(...),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> PaginatedResponse[AuditEventRead]:
@@ -353,7 +353,7 @@ def list_audit_trail(
     description="Downloads audit events as CSV using the same filters as GET /audit-trail.",
 )
 def export_audit_trail(
-    query: AuditTrailFilters,
+    query: AuditTrailFilters = Body(...),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.audit_log")),
 ) -> Response:

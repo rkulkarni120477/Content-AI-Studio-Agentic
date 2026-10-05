@@ -153,7 +153,7 @@ def delete_project(
     project_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("project.delete")),
-) -> None:
+):
     """Soft-delete (archive) a project. Admin only."""
     project = _get_project_or_404(db, project_id)
     project.is_active = False
@@ -220,7 +220,7 @@ def unassign_user_from_project(
     username: str,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
-) -> None:
+):
     """Remove a user's project assignment."""
     from promptops_app.repositories import project_repository
 

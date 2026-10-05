@@ -193,7 +193,7 @@ def delete_course(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.delete")),
-) -> None:
+):
     """Soft-delete (archive) a course. Content remains until permanently deleted."""
     course = _get_course_or_404(db, course_id)
     course.is_active = False
@@ -210,7 +210,7 @@ def restore_course(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.delete")),
-) -> None:
+):
     """Restore an archived course without changing its associated content."""
     course = _get_course_or_404(db, course_id)
     if not course.is_active:
@@ -228,7 +228,7 @@ def permanently_delete_course(
     course_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("course.delete")),
-) -> None:
+):
     """Hard-delete an archived course and all of its content.
 
     The course must already be archived (``is_active=False``). Active courses
@@ -317,7 +317,7 @@ def unassign_user_from_course(
     username: str,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("users.assign")),
-) -> None:
+):
     """Revoke course-level access."""
     from promptops_app.repositories import course_assignment_repository
 

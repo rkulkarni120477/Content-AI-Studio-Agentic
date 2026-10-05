@@ -252,7 +252,7 @@ def delete_budget(
     policy_id: int,
     db: Session = Depends(get_db),
     _=Depends(_require_platform_admin),
-) -> None:
+):
     from promptops_app.database import BudgetPolicy
 
     policy = db.query(BudgetPolicy).filter(BudgetPolicy.id == policy_id).first()
@@ -376,7 +376,7 @@ def delete_tenant(
     project_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(_require_platform_admin),
-) -> None:
+):
     """Hard delete — the tenant and every course/block/generation/etc. under
     it are gone, irreversibly. See tenant_service.hard_delete_tenant for
     exactly what is and isn't touched (LLM usage/audit/budget history is
@@ -539,7 +539,7 @@ def delete_member(
     user_id: int,
     db: Session = Depends(get_db),
     _=Depends(_require_platform_admin),
-) -> None:
+):
     from promptops_app.database import TenantMembership, User
 
     _get_tenant_or_404(db, project_id)
@@ -638,7 +638,7 @@ def delete_role(
     role_id: int,
     db: Session = Depends(get_db),
     _=Depends(_require_platform_admin),
-) -> None:
+):
     _get_tenant_or_404(db, project_id)
     role = tenant_service.get_custom_role_or_404(db, project_id, role_id)
     tenant_service.delete_custom_role(db, role)
