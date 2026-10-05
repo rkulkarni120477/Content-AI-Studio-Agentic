@@ -49,6 +49,11 @@ if not settings.database_url.startswith("sqlite"):
         max_overflow=20,     # extra connections allowed under load
         pool_recycle=3600,   # recycle connections after 1 hour to avoid stale state
     )
+else:
+    # SQLite timeout to prevent hanging on locked databases
+    _engine_kwargs.update(
+        connect_args={"timeout": 5},  # 5 second timeout for SQLite connections
+    )
 
 engine = create_engine(settings.database_url, **_engine_kwargs)
 
