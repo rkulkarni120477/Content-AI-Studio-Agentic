@@ -311,14 +311,14 @@ def _resolve_audit_trail_query(query: AuditTrailFilters, current_user) -> tuple[
     ),
 )
 def list_audit_trail(
-    query: Annotated[AuditTrailQuery, Query()],
+    filters: AuditTrailQuery,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("system.analytics")),
 ) -> PaginatedResponse[AuditEventRead]:
     """Return paginated audit log events with optional filters."""
     from promptops_app.services.audit_service import count_trail, get_audit_trail as fetch_audit_trail
 
-    trail_kw, q = _resolve_audit_trail_query(query, current_user)
+    trail_kw, q = _resolve_audit_trail_query(filters, current_user)
     offset = (q.page - 1) * q.page_size
     total = count_trail(db, **trail_kw)
     events = fetch_audit_trail(
@@ -353,7 +353,7 @@ def list_audit_trail(
     description="Downloads audit events as CSV using the same filters as GET /audit-trail.",
 )
 def export_audit_trail(
-    query: Annotated[AuditTrailFilters, Query()],
+    query: AuditTrailFilters,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("export.audit_log")),
 ) -> Response:
