@@ -52,7 +52,7 @@ if not settings.database_url.startswith("sqlite"):
 else:
     # SQLite timeout to prevent hanging on locked databases
     _engine_kwargs.update(
-        connect_args={"timeout": 5},  # 5 second timeout for SQLite connections
+        connect_args={"timeout": 60},  # 60 second timeout for SQLite connections
     )
 
 engine = create_engine(settings.database_url, **_engine_kwargs)
