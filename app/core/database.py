@@ -53,6 +53,15 @@ if not settings.database_url.startswith("sqlite"):
 engine = create_engine(settings.database_url, **_engine_kwargs)
 
 
+# Enable foreign keys for SQLite
+if settings.database_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 # ---------------------------------------------------------------------------
 # Session factory
 # ---------------------------------------------------------------------------
