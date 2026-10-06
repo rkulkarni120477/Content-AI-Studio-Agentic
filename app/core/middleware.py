@@ -83,8 +83,8 @@ class RequestLoggingMiddleware:
         scope.setdefault("state", {})["request_id"] = request_id
 
         # Tag logs with the caller, but never use the unvalidated token for auth.
-        from promptops_app.core.logging import session_username_ctx
         from app.core.security import decode_access_token
+        from promptops_app.core.logging import session_username_ctx
 
         auth_header = headers.get(b"authorization", b"").decode("latin-1")
         if auth_header.lower().startswith("bearer "):

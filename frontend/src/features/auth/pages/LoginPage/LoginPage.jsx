@@ -96,6 +96,10 @@ export default function LoginPage() {
   function handlePasswordLogin(e) {
     e.preventDefault();
     setUrlError(null);
+    if (!platformMode && !orgCode.trim()) {
+      setUrlError('Enter your organization code, or select Platform administrator.');
+      return;
+    }
     dispatch(loginThunk({
       username: username.trim(),
       password,
@@ -190,7 +194,11 @@ export default function LoginPage() {
               <input
                 type="checkbox"
                 checked={platformMode}
-                onChange={(e) => setPlatformMode(e.target.checked)}
+                onChange={(e) => {
+                  setPlatformMode(e.target.checked);
+                  setUrlError(null);
+                  dispatch(clearError());
+                }}
               />
               Platform administrator
             </label>
