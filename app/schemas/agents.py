@@ -31,6 +31,7 @@ class AgentConfigurationUpdate(BaseModel):
 
 class AgentCreateRequest(BaseModel):
     """Request to create a new agent."""
+    project_id: int = Field(..., description="Project ID for tenant scoping")
     name: str = Field(..., description="Display name for the agent")
     template_id: int = Field(..., description="Platform template ID to base on")
     call_handle: str = Field(..., description="Internal identifier (must be unique per tenant)")

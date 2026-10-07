@@ -3,7 +3,8 @@
   "default_tenant_id": "cengage",
   "available_clients": [
     "aim",
-    "cengage"
+    "cengage",
+    "academian_education_pvt_ltd"
   ],
   "super_admin_usernames": [
     "admin",

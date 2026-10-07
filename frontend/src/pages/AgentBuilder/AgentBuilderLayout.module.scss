@@ -1,0 +1,134 @@
+/**
+ * AgentBuilderLayout styles
+ */
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+  background: var(--color-bg-primary, #fff);
+
+  &--collapsed {
+    grid-template-columns: 60px 1fr;
+
+    .sidebar__toggle {
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+    }
+  }
+}
+
+.sidebar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-secondary, #f8f9fa);
+  border-right: 1px solid var(--color-border, #e0e0e0);
+  overflow-y: auto;
+  transition: all 0.3s ease;
+
+  &__toggle {
+    position: absolute;
+    top: 1rem;
+    right: -14px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--color-border, #e0e0e0);
+    background: var(--color-bg-secondary, #f8f9fa);
+    border-radius: 0 4px 4px 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    z-index: 10;
+
+    &:hover {
+      background: var(--color-bg-primary, #fff);
+      border-color: var(--color-primary, #007bff);
+    }
+  }
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem;
+
+  @media (max-width: 768px) {
+    padding: 1rem;
+  }
+}
+
+// Dark mode
+@media (prefers-color-scheme: dark) {
+  .layout {
+    background: var(--color-bg-primary, #1a1a1a);
+  }
+
+  .sidebar {
+    background: var(--color-bg-secondary, #2a2a2a);
+    border-right-color: var(--color-border, #404040);
+
+    &__toggle {
+      background: var(--color-bg-secondary, #2a2a2a);
+      border-color: var(--color-border, #404040);
+
+      &:hover {
+        background: var(--color-bg-primary, #1a1a1a);
+      }
+    }
+  }
+}
+
+// Scrollbar styling
+.sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+
+    &:hover {
+      background: rgba(0, 0, 0, 0.3);
+    }
+  }
+}
+
+.content {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+
+    &:hover {
+      background: rgba(0, 0, 0, 0.3);
+    }
+  }
+}

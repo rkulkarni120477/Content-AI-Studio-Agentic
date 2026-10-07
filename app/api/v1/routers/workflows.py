@@ -47,6 +47,13 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _user_value(current_user, key: str, default=None):
+    if isinstance(current_user, dict):
+        return current_user.get(key, default)
+    attribute = "_project_id" if key == "project_id" else key
+    return getattr(current_user, attribute, default)
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -135,7 +142,7 @@ async def create_workflow(
     call_handle must be unique within the tenant.
     """
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found in user context")
 
@@ -163,7 +170,7 @@ async def create_workflow(
             call_handle=request.call_handle,
             description=request.description,
             definition=definition_dict,
-            created_by=current_user.get("username", "unknown"),
+            created_by=_user_value(current_user, "username", "unknown"),
         )
         return _serialize_workflow(workflow)
 
@@ -193,7 +200,7 @@ async def list_workflows(
 ):
     """List all workflows for the current tenant."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -244,7 +251,7 @@ async def get_workflow(
 ):
     """Get detailed information about a specific workflow."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -272,7 +279,7 @@ async def update_workflow(
 ):
     """Update a workflow definition."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -305,7 +312,7 @@ async def update_workflow(
             name=request.name if request else None,
             description=request.description if request else None,
             definition=definition_dict,
-            updated_by=current_user.get("username", "unknown"),
+            updated_by=_user_value(current_user, "username", "unknown"),
         )
         return _serialize_workflow(workflow)
 
@@ -333,7 +340,7 @@ async def delete_workflow(
 ):
     """Archive (soft-delete) a workflow."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -370,20 +377,20 @@ async def execute_workflow(
 ):
     """Start a workflow execution."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
         # Verify workflow exists
         _get_workflow_or_404(db, workflow_id, project_id)
 
-        user_role = current_user.get("role", "author")
+        user_role = _user_value(current_user, "role", "author")
 
         workflow_run = AgentWorkflowService.execute_workflow(
             db=db,
             workflow_id=workflow_id,
             project_id=project_id,
-            initiated_by=current_user.get("username", "unknown"),
+            initiated_by=_user_value(current_user, "username", "unknown"),
             initiated_by_role=user_role,
             input_content=request.input_content if request else "",
             input_context=request.input_context if request else None,
@@ -420,7 +427,7 @@ async def list_workflow_runs(
 ):
     """List runs for a workflow."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -482,7 +489,7 @@ async def get_workflow_run(
 ):
     """Get the current state of a workflow run."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -510,7 +517,7 @@ async def pause_workflow_run(
 ):
     """Pause a running workflow execution."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -545,7 +552,7 @@ async def resume_workflow_run(
 ):
     """Resume a paused workflow execution."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 
@@ -581,7 +588,7 @@ async def complete_agent_step(
 ):
     """Mark an agent step complete and trigger next handoff."""
     try:
-        project_id = current_user.get("project_id")
+        project_id = _user_value(current_user, "project_id")
         if not project_id:
             raise HTTPException(status_code=400, detail="Project ID not found")
 

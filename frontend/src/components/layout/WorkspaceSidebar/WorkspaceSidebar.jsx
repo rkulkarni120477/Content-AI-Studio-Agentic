@@ -28,6 +28,7 @@ import styles from './WorkspaceSidebar.module.scss';
 // the three renameable stages (see @config/tenantLabels). Items without a
 // labelKey keep their fixed label.
 const NAV_ITEMS = [
+  { label: 'Agent Builder', icon: '🤖', segment: 'agent-builder', external: true },
   { label: 'Source Library', icon: '📚', segment: 'sources' },
   { labelKey: 'style',     icon: '🎨', segment: 'style' },
   { labelKey: 'cdd',       icon: '📘', segment: 'cdd' },
@@ -212,6 +213,26 @@ export default function WorkspaceSidebar() {
       <nav className={styles.nav}>
         {NAV_ITEMS.map((item) => {
           const itemLabel = item.labelKey ? L[item.labelKey] : item.label;
+
+          // Handle external Agent Builder link
+          if (item.external) {
+            return (
+              <NavLink
+                key={item.segment}
+                to="/agent-builder/agents"
+                className={({ isActive }) => cn(
+                  styles.nav__item,
+                  collapsed && styles['nav__item--collapsed'],
+                  isActive && styles['nav__item--active'],
+                )}
+                title={collapsed ? itemLabel : undefined}
+              >
+                <span>{item.icon}</span>
+                {!collapsed && ` ${itemLabel}`}
+              </NavLink>
+            );
+          }
+
           return (
             <NavLink
               key={item.segment}

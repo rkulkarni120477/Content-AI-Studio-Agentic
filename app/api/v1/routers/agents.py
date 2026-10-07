@@ -219,7 +219,8 @@ def create_agent(
     current_user=Depends(require_permission("agents.create")),
 ) -> AgentResponse:
     """Create a new agent definition based on a platform template."""
-    _log.info(f"Creating agent {request_body.name} for project {current_user.project_id}")
+    project_id = request_body.project_id
+    _log.info(f"Creating agent {request_body.name} for project {project_id}")
 
     # Validate template exists
     # TODO: Check if template exists in agent_templates table
@@ -228,7 +229,7 @@ def create_agent(
     config_dict = request_body.configuration.dict(exclude_none=True) if request_body.configuration else {}
 
     agent = AgentDefinition(
-        project_id=current_user.project_id,
+        project_id=project_id,
         template_id=request_body.template_id,
         name=request_body.name,
         call_handle=request_body.call_handle,
@@ -253,6 +254,7 @@ def create_agent(
     description="List all agents in the tenant's project.",
 )
 def list_agents(
+    project_id: int = Query(..., description="Project ID for tenant scoping"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     lifecycle_state: Optional[str] = Query(None, description="Filter by lifecycle state"),
@@ -261,7 +263,7 @@ def list_agents(
 ) -> PaginatedResponse[AgentListItem]:
     """List all agents for the tenant's project."""
     query = db.query(AgentDefinition).filter(
-        AgentDefinition.project_id == current_user.project_id
+        AgentDefinition.project_id == project_id
     )
 
     if lifecycle_state:
@@ -300,11 +302,12 @@ def list_agents(
 )
 def get_agent(
     agent_id: int = Path(..., description="Agent ID"),
+    project_id: int = Query(..., description="Project ID for tenant scoping"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> AgentResponse:
     """Get full details of an agent."""
-    agent = _get_agent_or_404(db, agent_id, current_user.project_id)
+    agent = _get_agent_or_404(db, agent_id, project_id)
     return _serialize_agent(agent)
 
 
@@ -317,11 +320,12 @@ def get_agent(
 def update_agent(
     agent_id: int = Path(..., description="Agent ID"),
     request_body: AgentUpdateRequest = None,
+    project_id: int = Query(..., description="Project ID for tenant scoping"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("agents.update")),
 ) -> AgentResponse:
     """Update an agent's configuration or state."""
-    agent = _get_agent_or_404(db, agent_id, current_user.project_id)
+    agent = _get_agent_or_404(db, agent_id, project_id)
 
     if request_body.name:
         agent.name = request_body.name
@@ -357,11 +361,12 @@ def update_agent(
 )
 def delete_agent(
     agent_id: int = Path(..., description="Agent ID"),
+    project_id: int = Query(..., description="Project ID for tenant scoping"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("agents.delete")),
 ):
     """Archive an agent by setting its state to archived."""
-    agent = _get_agent_or_404(db, agent_id, current_user.project_id)
+    agent = _get_agent_or_404(db, agent_id, project_id)
     agent.lifecycle_state = "archived"
     agent.lifecycle_reason = f"Archived by {current_user.username}"
     db.commit()
@@ -381,17 +386,18 @@ def delete_agent(
 def create_run(
     agent_id: int = Path(..., description="Agent ID"),
     request_body: RunCreateRequest = None,
+    project_id: int = Query(..., description="Project ID for tenant scoping"),
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("agents.run")),
 ) -> RunResponse:
     """Create and start a new agent run."""
-    agent = _get_agent_or_404(db, agent_id, current_user.project_id)
+    agent = _get_agent_or_404(db, agent_id, project_id)
 
     try:
         input_context = request_body.input_context or {}
         run = AgentRunService.create_run(
             db=db,
-            project_id=current_user.project_id,
+            project_id=project_id,
             definition_id=agent_id,
             initiated_by=current_user.username,
             initiated_by_role=current_user.role,

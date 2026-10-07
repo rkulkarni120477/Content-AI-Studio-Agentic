@@ -270,6 +270,42 @@ export default function SelectionSidebar({
 
       <div className={styles.divider} />
 
+      {/* Agent Builder Navigation */}
+      {!collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn)}
+          onClick={() => {
+            const pid = Number(projectId) || Number(routeProjectId) || selectedProject?.id;
+            if (pid) {
+              dispatch(setSelectedProject(selectedProject || { id: pid }));
+            }
+            navigate(`/agent-builder/agents${pid ? `?project=${pid}` : ''}`);
+          }}
+          title="Open Agent Builder"
+        >
+          🤖 Agent Builder
+        </button>
+      )}
+      {collapsed && (
+        <button
+          type="button"
+          className={cn(styles.navBtn, styles.iconOnly)}
+          onClick={() => {
+            const pid = Number(projectId) || Number(routeProjectId) || selectedProject?.id;
+            if (pid) {
+              dispatch(setSelectedProject(selectedProject || { id: pid }));
+            }
+            navigate(`/agent-builder/agents${pid ? `?project=${pid}` : ''}`);
+          }}
+          title="Agent Builder"
+        >
+          🤖
+        </button>
+      )}
+
+      <div className={styles.divider} />
+
       {isAdmin && variant === 'project' && collapsed && (
         <button
           type="button"

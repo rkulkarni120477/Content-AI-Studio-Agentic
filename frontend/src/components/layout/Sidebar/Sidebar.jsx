@@ -7,6 +7,7 @@ import styles from './Sidebar.module.scss';
 
 const NAV_ITEMS = [
   { label: 'Dashboard',    icon: '🏠', to: ROUTES.DASHBOARD,  roles: null },
+  { label: 'Agent Builder', icon: '🤖', to: '/agent-builder/agents',  roles: null },
   { label: 'Style',        icon: '🎨', to: ROUTES.STYLE,      roles: null },
   { label: 'Workflow',     icon: '⚙️',  to: ROUTES.WORKFLOW,   roles: null },
   { label: 'Prompts',      icon: '📝', to: ROUTES.PROMPTS,    roles: null },

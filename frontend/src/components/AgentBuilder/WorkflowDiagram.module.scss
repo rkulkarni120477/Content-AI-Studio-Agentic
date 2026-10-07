@@ -1,0 +1,75 @@
+.container {
+  padding: 2rem;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  overflow-x: auto;
+}
+
+.diagram {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  min-width: fit-content;
+}
+
+.agentBox {
+  flex-shrink: 0;
+  padding: 1rem;
+  background: #f8f9fa;
+  border: 2px solid #667eea;
+  border-radius: 8px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+
+  &:hover {
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+    transform: translateY(-2px);
+  }
+
+  &.active {
+    background: #667eea;
+    color: white;
+    border-color: #764ba2;
+  }
+
+  &.executing {
+    animation: pulse 1s infinite;
+  }
+}
+
+.agentName {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+}
+
+.agentType {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.arrow {
+  flex-shrink: 0;
+  font-size: 1.5rem;
+  color: #999;
+}
+
+.condition {
+  font-size: 0.75rem;
+  color: #666;
+  background: #f0f0f0;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  margin: 0 0.5rem;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}

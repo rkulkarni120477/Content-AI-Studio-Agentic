@@ -93,7 +93,7 @@ api_v1_router.include_router(feedback_router,   prefix="/feedback",   tags=["Fee
 
 # ── Agent Builder (Single & Multi-Agent Execution) ────────────────────────
 api_v1_router.include_router(agents_router,    prefix="/agents",     tags=["Agent Builder"])
-api_v1_router.include_router(workflows_router, prefix="/workflows",  tags=["Workflows"])
+api_v1_router.include_router(workflows_router, tags=["Workflows"])
 
 # ── Prompt registry ───────────────────────────────────────────────────────────
 api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])

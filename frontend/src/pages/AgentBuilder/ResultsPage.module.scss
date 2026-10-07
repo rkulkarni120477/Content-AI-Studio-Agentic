@@ -1,0 +1,100 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.title {
+  margin: 0;
+  color: var(--color-text-primary, #000);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--color-text-secondary, #666);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--color-border, #e0e0e0);
+}
+
+.tab {
+  padding: 0.75rem 1rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary, #666);
+  cursor: pointer;
+
+  &--active {
+    border-bottom-color: var(--color-primary, #007bff);
+    color: var(--color-primary, #007bff);
+    font-weight: 600;
+  }
+}
+
+.content,
+.tabContent {
+  display: grid;
+  gap: 1rem;
+}
+
+.tabContent {
+  padding: 1.5rem;
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 8px;
+  background: var(--color-bg-primary, #fff);
+  color: var(--color-text-primary, #000);
+}
+
+.placeholder {
+  color: var(--color-text-secondary, #666);
+}
+
+.analyticsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 1rem;
+}
+
+.metric {
+  padding: 1rem;
+  border-radius: 6px;
+  background: var(--color-bg-secondary, #f8f9fa);
+}
+
+.metricLabel {
+  color: var(--color-text-secondary, #666);
+}
+
+.metricValue {
+  margin-top: 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #000);
+}
+
+.costBreakdown {
+  margin-top: 1.5rem;
+  color: var(--color-text-primary, #000);
+}
+
+.costTable {
+  width: 100%;
+  border-collapse: collapse;
+
+  th,
+  td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--color-border, #e0e0e0);
+    text-align: left;
+  }
+}

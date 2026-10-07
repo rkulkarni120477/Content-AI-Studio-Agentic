@@ -5,6 +5,7 @@ import { ROUTES } from '@utils/constants';
 import { Suspense } from 'react';
 import Loader from '@components/common/Loader/Loader';
 import { promptLibraryRoute } from '@features/promptLibrary/routes';
+import { agentBuilderRoutes } from '@features/agentBuilder/routes';
 import { lazyWithReload } from '@utils/lazyWithReload';
 
 const LoginPage     = lazyWithReload(() => import('@features/auth/pages/LoginPage/LoginPage'));
@@ -71,6 +72,7 @@ export const router = createBrowserRouter([
       { path: '/projects/:projectId/clusters/:clusterId/courses', element: wrap(<CoursesPage />) },
       { path: '/projects/:projectId/import', element: wrap(<ImportWizardPage />) },
       promptLibraryRoute,
+      agentBuilderRoutes,
     ],
   },
 
