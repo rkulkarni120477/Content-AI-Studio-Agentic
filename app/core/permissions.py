@@ -177,6 +177,28 @@ _PERMISSIONS: dict[str, list[str]] = {
     "prompt_library.review_read_all": [_ADMIN, _REVIEWER],
     "prompt_library.audit":           [_ADMIN],
 
+    # ── Agent Builder ─────────────────────────────────────────────────────────
+    # Agent discovery: authors can see available agents they can run
+    "agents.view":                [_ADMIN, _REVIEWER, _AUTHOR],
+    # Creation and configuration: admin only (tenant admin)
+    "agents.create":              [_ADMIN],
+    "agents.configure":           [_ADMIN],
+    "agents.templates.manage":    [_ADMIN],  # Platform admin only (tested separately)
+    # Testing and activation: admin only
+    "agents.test":                [_ADMIN, _AUTHOR],  # Authors can test before activation
+    "agents.activate":            [_ADMIN],
+    "agents.pause":               [_ADMIN],
+    "agents.archive":             [_ADMIN],
+    # Execution: authors run agents, reviewers run review agents
+    "agents.run":                 [_ADMIN, _REVIEWER, _AUTHOR],
+    # Change application: authors apply their own agent results
+    "agents.apply":               [_ADMIN, _REVIEWER, _AUTHOR],
+    # History and inspection
+    "agents.runs.view_own":       [_ADMIN, _REVIEWER, _AUTHOR],  # See own runs
+    "agents.runs.view_tenant":    [_ADMIN, _REVIEWER],            # Admin/reviewer: all runs
+    "agents.costs.view_own":      [_ADMIN, _REVIEWER, _AUTHOR],
+    "agents.costs.view_tenant":   [_ADMIN],
+
     # ── System administration ─────────────────────────────────────────────────
     "system.clear_db":       [_ADMIN],
     "system.view_logs":      [_ADMIN, _REVIEWER],
@@ -212,6 +234,14 @@ _REVIEWER_BLOCKLIST: frozenset[str] = frozenset({
     "central.create",
     "central.edit",
     "central.delete",
+    # Agent builder: reviewers cannot configure or activate agents
+    "agents.create",
+    "agents.configure",
+    "agents.templates.manage",
+    "agents.activate",
+    "agents.pause",
+    "agents.archive",
+    "agents.costs.view_tenant",
 })
 
 

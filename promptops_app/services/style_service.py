@@ -4,7 +4,7 @@ Calls go through llm_client. No Streamlit dependency.
 
 Prompt source (load order):
   1. DB — admin-editable via Prompts page (prompt name: "style_understanding")
-  2. promptops_app/prompts/templates/style_understanding.md
+  2. docs/promptops_app/prompts/templates/style_understanding.md
   3. Inline constant _STYLE_UNDERSTANDING_SYSTEM (backward-compat fallback)
 """
 

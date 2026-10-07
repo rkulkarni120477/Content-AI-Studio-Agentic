@@ -222,7 +222,7 @@ def test_the_narrative_user_contract_has_exactly_one_wording():
         assert "--- USER ---" in text, f"{path} lost its USER section"
         return re.sub(r"\s+", " ", text.split("--- USER ---", 1)[1]).strip()
 
-    base = Path("promptops_app/prompts/templates")
+    base = Path("docs/promptops_app/prompts/templates")
     cdd = user_half(base / "cdd_reduce.md")
     blueprint = user_half(base / "blueprint_reduce_worksheet.md")
     code = re.sub(r"\s+", " ", _DEFAULT_NARRATIVE_USER).strip()

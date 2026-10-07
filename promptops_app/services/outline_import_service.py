@@ -11,7 +11,7 @@ imported Outline is byte-for-byte a normal blueprint in the same tables.
 
 The one thing that makes the display identical for free: a generated DLU Outline
 is just markdown whose day parts sit under a ``### DLU Outline`` heading as
-``N. **Part Name**`` lines (see aim_prompts/AIM_DLU_OUTLINE_PROMPT.md). The
+``N. **Part Name**`` lines (see docs/aim_prompts/AIM_DLU_OUTLINE_PROMPT.md). The
 frontend ``dluBlueprint.js`` / backend ``blueprint_parser.is_dlu_blueprint``
 detect that shape by pattern alone — so if this module emits the same shape, the
 screen renders it as the day accordions with no renderer change.
@@ -456,7 +456,7 @@ _RESTRUCTURE_SYSTEM = (
     "4. Output GitHub-flavored Markdown only — no commentary, no explanations, no code fences."
 )
 
-# The target shape is aim_prompts/AIM_DLU_OUTLINE_PROMPT.md's OUTPUT SHAPE, condensed.
+# The target shape is docs/aim_prompts/AIM_DLU_OUTLINE_PROMPT.md's OUTPUT SHAPE, condensed.
 # The five parts MUST sit under "### DLU Outline" as "N. **Name**" lines — that is
 # the exact pattern dluBlueprint.js / is_dlu_blueprint key on to render the accordions.
 _RESTRUCTURE_USER = """Convert the uploaded Outline content below into this exact structure. Keep every heading verbatim.

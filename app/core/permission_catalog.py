@@ -182,6 +182,26 @@ PERMISSION_CATEGORIES: list[dict] = [
         ],
     },
     {
+        "category": "agents",
+        "label": "Agent Builder",
+        "permissions": [
+            {"key": "agents.view",                "label": "Discover available agents"},
+            {"key": "agents.create",              "label": "Create new agents"},
+            {"key": "agents.configure",           "label": "Configure agent settings"},
+            {"key": "agents.test",                "label": "Test agents"},
+            {"key": "agents.activate",            "label": "Activate agents"},
+            {"key": "agents.pause",               "label": "Pause agents"},
+            {"key": "agents.archive",             "label": "Archive agents"},
+            {"key": "agents.run",                 "label": "Run agents"},
+            {"key": "agents.apply",               "label": "Apply agent-suggested changes"},
+            {"key": "agents.runs.view_own",       "label": "View own run history"},
+            {"key": "agents.runs.view_tenant",    "label": "View all tenant run history"},
+            {"key": "agents.costs.view_own",      "label": "View own agent costs"},
+            {"key": "agents.costs.view_tenant",   "label": "View all tenant agent costs"},
+            {"key": "agents.templates.manage",    "label": "Manage agent templates (platform admin)"},
+        ],
+    },
+    {
         "category": "system",
         "label": "System Administration",
         "permissions": [

@@ -40,7 +40,14 @@ from typing import Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_TEMPLATE_DIR = (
+    Path(__file__).resolve().parents[3]
+    / "docs"
+    / "dis_backend"
+    / "services"
+    / "digests"
+    / "templates"
+)
 _VAR_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
 
 # name -> (mtime_ns, size, text, content_hash)

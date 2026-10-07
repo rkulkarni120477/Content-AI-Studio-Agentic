@@ -7,7 +7,7 @@ Load order (highest priority first)
    With ``PROMPT_RESOLVE_BY_COMPONENT`` enabled, the DB tier resolves the
    pipeline row by scope fixing → component default → legacy stem ``name``;
    otherwise by stem ``name`` only.
-2. **File**     — ``promptops_app/prompts/templates/<name>.md``.
+2. **File**     — ``docs/promptops_app/prompts/templates/<name>.md``.
 3. ``FileNotFoundError`` if neither source is available.
 
 Template file format
@@ -34,7 +34,13 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_TEMPLATE_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "promptops_app"
+    / "prompts"
+    / "templates"
+)
 
 # ── Component-keyed resolution (Phase 8 name-key fix) ─────────────────────────
 #
@@ -177,7 +183,7 @@ _REGISTRY: dict[str, dict] = {
     },
     # ── Reverse pipeline (IMSCC import) — additive, file-only templates ─────────
     # Not in _STEM_COMPONENT, so they resolve straight from the file tier; the
-    # forward scratch prompts above are never touched. See reverse_cas.md §S5.
+    # forward scratch prompts above are never touched. See docs/reverse_cas.md §S5.
     "reverse_blueprint": {
         "version":      "v1",
         "description":  "Reconstruct a module blueprint from imported module content.",

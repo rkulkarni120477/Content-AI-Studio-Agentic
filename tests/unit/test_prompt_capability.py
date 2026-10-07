@@ -721,7 +721,7 @@ def test_the_shipped_aim_blueprint_prompt_reconciles_clean():
     would notice."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[2]
-    doc = root / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md"
+    doc = root / "docs" / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md"
     assert doc.exists(), f"{doc.name} is missing — update this test if it was renamed"
     fence = chr(96) * 3
     parts = doc.read_text(encoding="utf-8").split(fence + "text")
@@ -747,7 +747,7 @@ def test_the_shipped_prompt_renders_on_both_generation_routes():
     from promptops_app.prompts.prompt_builder import render
     root = pathlib.Path(__file__).resolve().parents[2]
     fence = chr(96) * 3
-    parts = (root / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
+    parts = (root / "docs" / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
     system, user = parts[1].split(fence)[0], parts[2].split(fence)[0]
 
     # verbatim from each router's variables dict
@@ -768,7 +768,7 @@ def test_the_shipped_prompt_reconciles_on_both_components():
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[2]
     fence = chr(96) * 3
-    parts = (root / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
+    parts = (root / "docs" / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
     text = parts[1].split(fence)[0] + parts[2].split(fence)[0]
     for component in ("cdd", "blueprint"):
         report = assess(text, component=component)
@@ -830,7 +830,7 @@ def _shipped_prompt_text() -> str:
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[2]
     fence = chr(96) * 3
-    parts = (root / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
+    parts = (root / "docs" / "aim_prompts" / "AIM_BLOCK_BLUEPRINT_PROMPT.md").read_text(encoding="utf-8").split(fence + "text")
     return parts[1].split(fence)[0] + parts[2].split(fence)[0]
 
 

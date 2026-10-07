@@ -38,6 +38,10 @@ from app.core.middleware import RequestLoggingMiddleware
 from app.core.llm_client import initialise_llm_clients
 from promptops_app.services.budget_service import BudgetExceededError
 
+# Import agent builder models to register them with SQLAlchemy Base
+# This must happen early to ensure all models are available for migrations
+from promptops_app import agents_models as _agent_models  # noqa: F401
+
 _log = logging.getLogger(__name__)
 
 
