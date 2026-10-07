@@ -32,6 +32,7 @@ from fastapi import APIRouter
 
 from app.core.config import settings
 from app.api.v1.routers.admin import router as admin_router
+from app.api.v1.routers.agents import router as agents_router
 from app.api.v1.routers.analytics import router as analytics_router
 from app.api.v1.routers.assets import router as assets_router
 from app.api.v1.routers.auth import router as auth_router
@@ -88,6 +89,9 @@ api_v1_router.include_router(blueprints_router, prefix="/blueprints", tags=["Blu
 api_v1_router.include_router(generations_router,prefix="/generations",tags=["Generations"])
 api_v1_router.include_router(jobs_router,       prefix="/jobs",       tags=["Jobs"])
 api_v1_router.include_router(feedback_router,   prefix="/feedback",   tags=["Feedback"])
+
+# ── Agent Builder (Single & Multi-Agent Execution) ────────────────────────
+api_v1_router.include_router(agents_router,    prefix="/agents",     tags=["Agent Builder"])
 
 # ── Prompt registry ───────────────────────────────────────────────────────────
 api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])
