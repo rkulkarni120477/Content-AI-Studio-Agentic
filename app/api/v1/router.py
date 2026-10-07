@@ -33,6 +33,7 @@ from fastapi import APIRouter
 from app.core.config import settings
 from app.api.v1.routers.admin import router as admin_router
 from app.api.v1.routers.agents import router as agents_router
+from app.api.v1.routers.workflows import router as workflows_router
 from app.api.v1.routers.analytics import router as analytics_router
 from app.api.v1.routers.assets import router as assets_router
 from app.api.v1.routers.auth import router as auth_router
@@ -92,6 +93,7 @@ api_v1_router.include_router(feedback_router,   prefix="/feedback",   tags=["Fee
 
 # ── Agent Builder (Single & Multi-Agent Execution) ────────────────────────
 api_v1_router.include_router(agents_router,    prefix="/agents",     tags=["Agent Builder"])
+api_v1_router.include_router(workflows_router, prefix="/workflows",  tags=["Workflows"])
 
 # ── Prompt registry ───────────────────────────────────────────────────────────
 api_v1_router.include_router(prompts_router,   prefix="/prompts",    tags=["Prompts"])

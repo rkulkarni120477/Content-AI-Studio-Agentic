@@ -200,6 +200,128 @@ class ResumeRequest(BaseModel):
 
 
 # =============================================================================
+# Workflow Schemas (Phase 3: Multi-Agent Execution)
+# =============================================================================
+
+class WorkflowAgentStep(BaseModel):
+    """Definition of an agent step in a workflow."""
+    agent_id: int = Field(..., description="Agent definition ID")
+    step_id: Optional[str] = Field(None, description="Optional human-readable step identifier")
+    description: Optional[str] = Field(None, description="Purpose of this agent in the workflow")
+
+
+class WorkflowHandoffRule(BaseModel):
+    """Handoff rule for workflow routing."""
+    from_agent_id: int = Field(..., description="Source agent ID")
+    to_agent_ids: List[int] = Field(..., description="Target agent ID(s) - list for concurrent, single for sequential")
+    rule_type: str = Field("sequential", description="sequential|conditional|concurrent")
+    condition: Optional[str] = Field(None, description="Condition expression for routing (e.g., 'output.type == review')")
+
+
+class WorkflowDefinition(BaseModel):
+    """Complete workflow definition structure."""
+    agent_steps: List[WorkflowAgentStep] = Field(..., description="Agents in the workflow")
+    handoff_rules: List[WorkflowHandoffRule] = Field(..., description="Rules for agent handoffs")
+
+
+class WorkflowCreateRequest(BaseModel):
+    """Request to create a new workflow."""
+    name: str = Field(..., description="Display name for the workflow")
+    call_handle: str = Field(..., description="Code identifier (unique per tenant)")
+    description: Optional[str] = Field(None, description="Workflow description")
+    definition: WorkflowDefinition = Field(..., description="Workflow DAG and routing")
+
+
+class WorkflowUpdateRequest(BaseModel):
+    """Request to update a workflow."""
+    name: Optional[str] = Field(None, description="New display name")
+    description: Optional[str] = Field(None, description="Updated description")
+    definition: Optional[WorkflowDefinition] = Field(None, description="Updated workflow definition")
+
+
+class WorkflowResponse(BaseModel):
+    """Full workflow definition response."""
+    id: int
+    project_id: int
+    name: str
+    call_handle: str
+    description: Optional[str]
+    definition: Dict[str, Any]
+    is_active: bool
+    owner: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkflowListItem(BaseModel):
+    """Lightweight workflow item for list responses."""
+    id: int
+    name: str
+    call_handle: str
+    is_active: bool
+    owner: str
+    created_at: datetime
+
+
+class WorkflowListResponse(BaseModel):
+    """Paginated list of workflows."""
+    items: List[WorkflowListItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class WorkflowRunCreateRequest(BaseModel):
+    """Request to start a workflow execution."""
+    input_content: str = Field(..., description="Initial content to process")
+    input_context: Optional[Dict[str, Any]] = Field(None, description="Additional context")
+    request_id: Optional[str] = Field(None, description="Idempotency key for safe replay")
+
+
+class WorkflowRunResponse(BaseModel):
+    """Full workflow run details."""
+    id: int
+    project_id: int
+    workflow_id: int
+    initiated_by: str
+    state: str  # queued|running|completed|failed|paused
+    result: Optional[Dict[str, Any]]
+    total_cost: Optional[float]
+    execution_time_ms: Optional[int]
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    created_at: datetime
+
+
+class WorkflowRunListItem(BaseModel):
+    """Lightweight workflow run item for list responses."""
+    id: int
+    workflow_id: int
+    state: str
+    initiated_by: str
+    total_cost: Optional[float]
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    created_at: datetime
+
+
+class WorkflowRunListResponse(BaseModel):
+    """Paginated list of workflow runs."""
+    items: List[WorkflowRunListItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class CompleteAgentStepRequest(BaseModel):
+    """Request to mark an agent step complete in a workflow."""
+    agent_run_id: int = Field(..., description="ID of the completed agent run")
+    result: Dict[str, Any] = Field(..., description="Output from the agent")
+
+
+# =============================================================================
 # Budget & Cost Schemas
 # =============================================================================
 

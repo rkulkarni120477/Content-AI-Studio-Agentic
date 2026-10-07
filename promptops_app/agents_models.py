@@ -562,12 +562,15 @@ class WorkflowRun(Base):
     input_context = Column(Text, nullable=True)  # JSON initial context
 
     # State
-    state = Column(String(20), nullable=False, default="queued")  # queued|running|completed|failed
+    state = Column(String(20), nullable=False, default="queued")  # queued|running|completed|failed|paused
     result = Column(Text, nullable=True)  # Final merged result
 
     # Metrics
     total_cost = Column(Float, nullable=True)
     execution_time_ms = Column(Integer, nullable=True)
+
+    # Idempotency
+    request_id = Column(String(64), nullable=True, index=True, unique=True)  # Prevent duplicate submissions
 
     # Timestamps
     started_at = Column(DateTime, nullable=True)
